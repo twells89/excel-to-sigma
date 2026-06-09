@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+# generated fixtures / scratch
+skills/excel-to-sigma/scripts/Sample Forecast.xlsx
+*.tmp
+.DS_Store
