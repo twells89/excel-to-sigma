@@ -30,14 +30,25 @@ Entry columns only, UPPER_SNAKE_CASE headers, dates as ISO. (System columns are
 excluded — Sigma auto-populates them.)
 
 ## 4. Build the input-table workbook  (API)
+
+**Preferred — linked off a dimension spine (grain auto-populates, no CSV paste):**
+```bash
+# spine.sql = a SELECT that generates the grain (e.g. CALENDAR × CATEGORY × BU
+# with a surrogate GRAIN_KEY); forecasters fill only FORECAST_AMOUNT
+.venv/bin/python build-input-table-wb.py --name "Forecast Entry" --connection cb2f5180-… \
+  --spine-sql spine.sql --spine-cols GRAIN_KEY,REGION,MONTH_DATE,CATEGORY_CODE \
+  --key GRAIN_KEY --entry-cols FORECAST_AMOUNT:number
+```
+
+**Alternative — empty table seeded by CSV paste (for starting values):**
 ```bash
 .venv/bin/python build-input-table-wb.py --name "Forecast Entry" --connection cb2f5180-… \
   --columns REGION:text,BRANCH:text,SUB_BRANCH:text,MONTH_DATE:datetime,CATEGORY_CODE:number,FORECAST_AMOUNT:number
-# prints the workbook URL
 ```
 
 ## 5. Load data + view  (UI — see refs/input-tables.md)
-1. Open the workbook → the input table → **paste** `forecast_input_paste.csv`.
+1. *(empty mode only)* Open the workbook → the input table → **paste**
+   `forecast_input_paste.csv`. *(linked mode skips this — the grain came from the spine.)*
 2. **Publish** (data commits to the warehouse only on publish).
 3. Input-table element → **Warehouse views → Create new** → copy the
    `database.schema.view` path.

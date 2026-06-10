@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Phase 3 — POST a workbook containing an empty input table at the fact grain.
+"""Phase 3 — POST a workbook with an input table at the fact grain.
 
-Builds the input-table STRUCTURE (the part that IS scriptable). After this runs,
-do the three UI steps from refs/input-tables.md: paste/upload the CSV, Publish,
-and create the warehouse view.
+Two modes (see refs/input-tables.md):
+
+  LINKED (preferred — fully API, grain inherited from a spine, no CSV paste):
+    builds a custom-SQL spine element + a linked input table off it.
+    python build-input-table-wb.py --name "Forecast Entry" --connection <writeConn> \
+      --spine-sql spine.sql --spine-cols REGION,BRANCH,SUB_BRANCH,MONTH_DATE,CATEGORY_CODE \
+      --key MONTH_DATE --entry-cols FORECAST_AMOUNT:number
+    (--linked-cols defaults to all spine cols except --key)
+
+  EMPTY (seed starting values via UI CSV paste afterward):
+    python build-input-table-wb.py --name "Forecast Entry" --connection <writeConn> \
+      --columns REGION:text,MONTH_DATE:datetime,CATEGORY_CODE:number,FORECAST_AMOUNT:number
 
 Auth: reads ~/.sigma-migration/env (SIGMA_BASE_URL/CLIENT_ID/CLIENT_SECRET).
-
-Usage:
-    python build-input-table-wb.py --name "Forecast Entry" \
-        --connection cb2f5180-… \
-        --columns REGION:text,BRANCH:text,MONTH_DATE:datetime,CATEGORY_CODE:number,FORECAST_AMOUNT:number \
-        [--folder <uuid>]
 """
 import argparse
 import json
 import os
-import subprocess
 import urllib.request
 import urllib.parse
 
@@ -30,7 +32,7 @@ def token():
             line = line.strip().replace("export ", "")
             if "=" in line:
                 k, v = line.split("=", 1)
-                env[k] = v.strip().strip('"')
+                env[k] = v.strip().strip('"').strip("'")
     data = urllib.parse.urlencode({
         "grant_type": "client_credentials",
         "client_id": env["SIGMA_CLIENT_ID"],
@@ -38,56 +40,98 @@ def token():
     }).encode()
     req = urllib.request.Request(env["SIGMA_BASE_URL"] + "/v2/auth/token", data=data,
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
-    tok = json.load(urllib.request.urlopen(req))["access_token"]
-    return env["SIGMA_BASE_URL"], tok
+    return env["SIGMA_BASE_URL"], json.load(urllib.request.urlopen(req))["access_token"]
 
 
 def home_folder(base, tok):
-    req = urllib.request.Request(base + "/v2/whoami",
-                                 headers={"Authorization": f"Bearer {tok}"})
+    req = urllib.request.Request(base + "/v2/whoami", headers={"Authorization": f"Bearer {tok}"})
     uid = json.load(urllib.request.urlopen(req))["userId"]
-    req = urllib.request.Request(base + f"/v2/members/{uid}",
-                                 headers={"Authorization": f"Bearer {tok}"})
+    req = urllib.request.Request(base + f"/v2/members/{uid}", headers={"Authorization": f"Bearer {tok}"})
     return json.load(urllib.request.urlopen(req)).get("homeFolderId")
+
+
+def title(alias):
+    return alias.replace("_", " ").title()
+
+
+def build_empty(args):
+    cols = [{"id": "ID"}]
+    for spec in args.columns.split(","):
+        name, _, typ = spec.partition(":")
+        cols.append({"id": name.strip(), "type": (typ or "text").strip()})
+    for sc in SYSTEM_COLS[1:]:
+        cols.append({"id": sc})
+    desc = "Excel→Sigma input table (empty). Paste/upload the seed CSV, publish, then create a warehouse view."
+    elements = [{
+        "id": "inputTable", "kind": "input-table", "name": args.name,
+        "source": {"kind": "empty", "connectionId": args.connection},
+        "inputMode": "explore", "columns": cols,
+    }]
+    nxt = "open the input table → paste the seed CSV → PUBLISH → Warehouse views → Create new → copy the view path."
+    return desc, elements, nxt
+
+
+def build_linked(args):
+    spine_cols = [c.strip() for c in args.spine_cols.split(",")]
+    if args.key not in spine_cols:
+        raise SystemExit(f"--key {args.key} must be one of --spine-cols ({spine_cols})")
+    linked = ([c.strip() for c in args.linked_cols.split(",")]
+              if args.linked_cols else [c for c in spine_cols if c != args.key])
+    stmt = open(args.spine_sql).read() if args.spine_sql else args.spine_statement
+    if not stmt:
+        raise SystemExit("linked mode needs --spine-sql <file> or --spine-statement")
+
+    spine = {
+        "id": "spine", "kind": "table", "name": "Spine",
+        "source": {"kind": "sql", "connectionId": args.connection, "statement": stmt},
+        "columns": [{"id": a, "formula": f"[Custom SQL/{a}]", "name": title(a)} for a in spine_cols],
+    }
+    it_cols = [{"id": "pk", "key": args.key}]                       # primary key → spine column id
+    for a in linked:                                               # linked (inherited, non-editable) columns
+        it_cols.append({"id": f"lk_{a}", "formula": f"[Spine/{title(a)}]"})
+    for spec in args.entry_cols.split(","):                        # own editable entry columns
+        name, _, typ = spec.partition(":")
+        it_cols.append({"id": name.strip(), "type": (typ or "number").strip()})
+    it_cols += [{"id": "UPDATED_AT"}, {"id": "UPDATED_BY"}]
+    elements = [spine, {
+        "id": "inputTable", "kind": "input-table", "name": args.name,
+        "source": {"kind": "linked", "from": "spine"},
+        "inputMode": "explore", "columns": it_cols,
+    }]
+    desc = "Excel→Sigma linked input table — grain inherited from the spine. Publish, then create a warehouse view."
+    nxt = "PUBLISH the workbook → input-table element → Warehouse views → Create new → copy the view path. (No CSV paste — grain came from the spine.)"
+    return desc, elements, nxt
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
     ap.add_argument("--connection", required=True, help="write-enabled connectionId")
-    ap.add_argument("--columns", required=True, help="comma list of NAME:type")
     ap.add_argument("--folder", default=None)
+    # empty mode
+    ap.add_argument("--columns", help="empty mode: comma list of NAME:type")
+    # linked mode
+    ap.add_argument("--spine-sql", help="linked mode: path to a .sql file for the spine")
+    ap.add_argument("--spine-statement", help="linked mode: inline spine SQL (alt to --spine-sql)")
+    ap.add_argument("--spine-cols", help="linked mode: comma list of spine SELECT aliases")
+    ap.add_argument("--key", help="linked mode: spine alias used as the primary key")
+    ap.add_argument("--linked-cols", help="linked mode: spine aliases to inherit (default: all but --key)")
+    ap.add_argument("--entry-cols", help="linked mode: comma list of NAME:type entry columns")
     args = ap.parse_args()
 
     base, tok = token()
     folder = args.folder or home_folder(base, tok)
 
-    cols = [{"id": "ID"}]  # row id first; system cols carry NO type
-    for spec in args.columns.split(","):
-        name, _, typ = spec.partition(":")
-        cols.append({"id": name.strip(), "type": (typ or "text").strip()})
-    for sc in SYSTEM_COLS[1:]:
-        cols.append({"id": sc})
+    if args.spine_cols or args.spine_sql or args.spine_statement:
+        desc, elements, nxt = build_linked(args)
+    elif args.columns:
+        desc, elements, nxt = build_empty(args)
+    else:
+        raise SystemExit("provide --columns (empty mode) or --spine-cols/--spine-sql + --key + --entry-cols (linked mode)")
 
-    spec = {
-        "name": args.name,
-        "description": "Excel→Sigma input table (empty). Paste/upload the seed CSV, "
-                       "publish, then create a warehouse view.",
-        "folderId": folder,
-        "schemaVersion": 1,
-        "pages": [{
-            "id": "entryPage",
-            "name": args.name,
-            "elements": [{
-                "id": "inputTable",
-                "kind": "input-table",
-                "name": args.name,
-                "source": {"kind": "empty", "connectionId": args.connection},
-                "inputMode": "explore",
-                "columns": cols,
-            }],
-        }],
-    }
+    spec = {"name": args.name, "description": desc, "folderId": folder,
+            "schemaVersion": 1,
+            "pages": [{"id": "entryPage", "name": args.name, "elements": elements}]}
 
     body = json.dumps(spec).encode()
     req = urllib.request.Request(base + "/v2/workbooks/spec", data=body, method="POST",
@@ -98,11 +142,9 @@ def main():
     wbid = resp.get("workbookId")
     print("workbookId:", wbid)
     if wbid:
-        req = urllib.request.Request(base + f"/v2/workbooks/{wbid}",
-                                     headers={"Authorization": f"Bearer {tok}"})
+        req = urllib.request.Request(base + f"/v2/workbooks/{wbid}", headers={"Authorization": f"Bearer {tok}"})
         print("url:", json.load(urllib.request.urlopen(req)).get("url"))
-        print("\nNEXT (UI): open the input table → paste the seed CSV → PUBLISH → "
-              "Warehouse views → Create new → copy the view path.")
+        print(f"\nNEXT (UI): {nxt}")
 
 
 if __name__ == "__main__":

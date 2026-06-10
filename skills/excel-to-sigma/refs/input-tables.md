@@ -37,11 +37,13 @@ Verified against the live Sigma OpenAPI and `/v2/connections` on 2026-06-08:
 
 | Step | Path | Notes |
 |---|---|---|
-| input-table **structure** | ✅ API — `POST /v2/workbooks/spec` | columns, types, validation, protection |
-| seed **data** load | ⚠️ **UI only** | CSV upload or clipboard paste; no REST endpoint exists. Only `*/materialization*` endpoints exist, which are unrelated. |
+| input-table **structure** | ✅ API — `POST /v2/workbooks/spec` | columns, types; titles (`name`) + `tableStyle`/`sort` round-trip. Validation/protection are UI. |
+| **linked**-table grain (rows from a spine element) | ✅ **API** | `source.kind: linked` + `from: <parentElementId>` — grain **inherited from the parent**, no CSV paste. Preferred when the grain is a dimension product (see "Linked input tables" below). |
+| seed **data** load into an *empty/CSV* table | ⚠️ **UI only** | CSV upload or clipboard paste; no REST endpoint exists. Only `*/materialization*` endpoints exist, which are unrelated. Avoid entirely by using a linked table. |
 | **Publish** | ⚠️ UI | data commits to the warehouse only on publish |
 | **warehouse view** | ⚠️ **UI only** | input-table element → Warehouse views → Create new |
 | DM **source-swap** | ✅ API — `POST`/`PUT /v2/dataModels/spec` | `SELECT … FROM <view>` |
+| **"Editable in published version"** data-entry permission | ⚠️ **UI only** | The input-table element spec carries ONLY `id/kind/source/inputMode/columns` — there is NO permission field (verified 2026-06-09 against WANDA's viewer-editable input tables; none expose it). Default = editable in draft only. To let viewers edit in the published workbook: input table → **"Editable in" → Editable in published version – Explore / all users** → **Publish**. Still a Sigma Beta feature. `inputMode` ('explore'/'view') is a separate, unrelated element setting. |
 
 So a converter auto-builds the input-table **structure** and the **DM-on-view**,
 and hands the user three explicit clicks in between. Don't try to script the
@@ -53,11 +55,12 @@ swaps between *registered sources*, not to an ad-hoc input-table view.)
 ```yaml
 - id: forecastInput
   kind: input-table
-  name: Forecast Entry          # NOTE: element name often reverts to "New Input Table" in the UI; harmless
+  name: Forecast Entry          # element TITLE — persists in the spec & round-trips on GET
   source:
     kind: empty
     connectionId: cb2f5180-…    # MUST be a write-enabled connection (writeAccess: true)
   inputMode: explore            # 'explore' = editable; 'view' also seen on WANDA
+  tableStyle: { preset: presentation }   # optional — tableStyle + sort round-trip too
   columns:
     - id: REGION                # data-entry columns: give a `type`
       type: text
@@ -79,6 +82,66 @@ swaps between *registered sources*, not to an ad-hoc input-table view.)
   via data validation, configured in UI).
 - The system columns (`ID` = Row ID; `CREATED_*`/`UPDATED_*` = row edit history)
   auto-populate. **Exclude them from the seed CSV.**
+- **Titles & customizations now round-trip**: the element `name` is the visible
+  title; `tableStyle` and `sort` persist in the spec too (treat like a `table`
+  element). (Data validation / column protection / data-entry permission remain
+  UI — see the matrix above.)
+
+## Linked input tables — the powerful path (VERIFIED 2026-06-10, API-authorable)
+
+For a planning model the grain is almost always **derivable from dimensions**
+(Region × Branch × Month × Category …). Instead of seeding an *empty* table with a
+pasted CSV, build a **dimension-spine element** and a **linked input table** off
+it. The grain rows are **inherited from the parent automatically** — forecasters
+fill only the measure column. This is fully **POST-authorable** (verified on a
+feature-enabled org), which eliminates the manual CSV-paste step for the grain.
+
+```yaml
+# 1) the spine: any element whose rows define the grain — a warehouse/data-model
+#    dimension, or a custom-SQL cross-join (CALENDAR × CATEGORY × BU), etc.
+- id: spine
+  kind: table
+  source: { kind: data-model, dataModelId: <dm>, elementId: <el> }   # or warehouse-table / sql
+  columns:
+    - { id: storeKey, formula: '[D_STORE/Store Key]' }
+    - { id: storeName, formula: '[D_STORE/Store Name]' }
+
+# 2) the linked input table — rows come FROM the spine
+- id: forecastEntry
+  kind: input-table
+  source:
+    kind: linked
+    from: spine                 # the PARENT element id (rows are inherited from it)
+  inputMode: explore
+  columns:
+    - id: pk
+      key: storeKey             # PRIMARY KEY → references the PARENT's column id (static row identifier)
+    - id: storeNameLinked
+      formula: '[D_STORE/Store Name]'   # LINKED column — inherits live parent value, NOT editable
+    - id: FORECAST_AMOUNT
+      type: number              # OWN entry column — the only thing forecasters type
+    - id: UPDATED_AT            # system edit-history columns (no type)
+    - id: UPDATED_BY
+```
+
+Why this is the strong default for Excel planning models:
+
+- **Grain is API-seeded, not pasted.** The rows come from the spine — no CSV paste,
+  no 2,000-row paste cap, no manual step. Build the whole thing in one POST.
+- **Stale-spine problem solved.** The Ledcor model's calendar spine ended *before*
+  the forecast window. With a linked table you point at a **freshly generated**
+  spine (e.g. a custom-SQL `CALENDAR × CATEGORY × BU` cross-join element) and the
+  grain is correct by construction — exactly the "derive, don't port" rule.
+- **Dimension columns are locked for free.** Linked columns are non-editable by
+  definition, so the grain keys can't be edited — you get column protection on the
+  dimensions without the separate UI step. Only the entry column(s) are writable.
+- **`from` / `key` survive POST.** The `from: spine` and `key: storeKey` references
+  use your spec ids and Sigma maps them (like layout `elementId`s) — verified.
+
+Use **empty + CSV** (below) instead when you're seeding **starting values**
+(e.g. last year's actuals as a baseline to adjust), where the rows aren't simply a
+dimension cross-product. Use **linked** when the grain is a dimension product and
+forecasters enter net-new measures.
 
 ## The seed CSV (paste-ready)
 

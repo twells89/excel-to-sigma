@@ -113,16 +113,26 @@ build rules in `refs/sigma-build-gotchas.md`.
 
 ## Phase 3 — Stand up the input table (`scripts/build-input-table-wb.py`)
 
-POST a workbook with an **empty input-table element** at the fact grain:
-`kind: input-table`, `source: { kind: empty, connectionId: <write-conn> }`,
-`inputMode: explore`, and a `columns[]` list (data columns + the system columns
-`ID/CREATED_AT/CREATED_BY/UPDATED_AT/UPDATED_BY`). This is **API**.
+Two authoring modes — **prefer linked** when the grain is a dimension product
+(the usual case for planning models); use **empty + CSV** for seeding starting
+values. See `refs/input-tables.md` for the full shapes.
 
-Then the **manual UI steps** (no REST endpoint — see `refs/input-tables.md`):
-1. Open the input table in the workbook → **paste / upload** the Phase-1 CSV.
-2. **Publish** the workbook (data only commits to the warehouse on publish).
-3. Input-table element → **Warehouse views → Create new** → note the
-   `database.schema.view` path.
+**Mode A — Linked (preferred, fully API).** POST a **dimension-spine element**
+(warehouse / data-model dimension, or a custom-SQL `CALENDAR × CATEGORY × BU`
+cross-join) **plus** a linked input table off it:
+`kind: input-table`, `source: { kind: linked, from: <spineElementId> }`, a primary
+key column (`{ id, key: <spineColumnId> }`), any linked dimension columns
+(`formula: '[Spine/Col]'`, auto-locked), and the **entry column(s)** forecasters
+fill (`type: number`). The **grain rows are inherited from the spine** — no CSV
+paste. Then UI: **Publish** → input-table element → **Warehouse views → Create
+new** → note the `database.schema.view` path. (Two UI clicks, not three.)
+
+**Mode B — Empty + CSV.** POST an **empty input-table element** at the fact grain
+(`source: { kind: empty, connectionId: <write-conn> }`, `inputMode: explore`, data
+columns + system columns `ID/CREATED_AT/CREATED_BY/UPDATED_AT/UPDATED_BY`). Then
+UI: open the input table → **paste / upload** the Phase-1 CSV → **Publish** →
+**Warehouse views → Create new**. Use when rows are starting values, not a clean
+dimension cross-product.
 
 ## Phase 4 — Source-swap the DM onto the view (`scripts/build-dm-on-view.py`)
 
@@ -139,19 +149,22 @@ compiles (`verify-workbook`) and the totals tie out.
 
 ---
 
-## Scriptability matrix (verified vs. live OpenAPI + connections, 2026-06-08)
+## Scriptability matrix (verified vs. live OpenAPI + connections; input-table re-verified 2026-06-10)
 
 | Step | Path |
 |---|---|
-| input-table **structure** (columns/types/validation/protection) | ✅ API (workbook spec) |
-| seed **data** load (CSV upload / paste) | ⚠️ UI only — no REST endpoint |
+| input-table **structure** (columns/types; title `name`, `tableStyle`, `sort` round-trip) | ✅ API (workbook spec) |
+| **linked**-table grain — rows from a spine element (`source.kind: linked` + `from`) | ✅ API — **no CSV paste** |
+| seed **data** load into an *empty/CSV* table (CSV upload / paste) | ⚠️ UI only — no REST endpoint (avoid via linked mode) |
 | **Publish** (commits writeback) | ⚠️ UI |
 | **warehouse view** on the input table | ⚠️ UI only |
 | DM **source-swap** to `FROM <view>` | ✅ API (DM spec PUT/POST) |
 | read/output DM + workbook build | ✅ API |
+| data validation / column protection / data-entry permission | ⚠️ UI (linked dimension columns are auto-locked) |
 
-Bake the three UI steps into the run as explicit "do this, then tell me the view
-path" hand-offs. Everything around them is scripted.
+With **linked mode** the only mandatory UI steps are **Publish** and **Create
+warehouse view** — everything else, including the grain, is scripted. Bake those
+two into the run as explicit "do this, then tell me the view path" hand-offs.
 
 ---
 

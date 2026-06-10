@@ -30,7 +30,7 @@ def token():
             line = line.strip().replace("export ", "")
             if "=" in line:
                 k, v = line.split("=", 1)
-                env[k] = v.strip().strip('"')
+                env[k] = v.strip().strip('"').strip("'")
     data = urllib.parse.urlencode({
         "grant_type": "client_credentials",
         "client_id": env["SIGMA_CLIENT_ID"],
