@@ -53,6 +53,47 @@ So the migration is two halves:
 
 ---
 
+## Preserve the inputs — never ship a read-only port
+
+**A spreadsheet is an app people type into. If the conversion is read-only, you've
+demoted it.** Don't default every table to a read-only DM element. Classify each
+source table by *how it's used* and route accordingly:
+
+| Source table is… | → Sigma | Editable? |
+|---|---|---|
+| **Entered** (users type values: budget inputs, a tracker, subscriptions) | **input table** (empty / CSV / linked) | ✅ like Excel/Sheets |
+| **Derived** (formula rollups: the income statement, SUMIFS summaries) | read-only DM element + metrics | ❌ recomputes |
+| **Reference dim** (lookup lists users maintain) | input table if maintained, else read-only | depends |
+
+A Phase-0 heuristic: a formal Table that's *fed by* formulas/other sheets and only
+*read* downstream = **derived**; a Table whose cells are typed values with no
+inbound formula = **entered**. Route entered → input-table builder, derived →
+read-only DM/metric builder. When unsure, ask the user how they use that sheet.
+
+### Doing inputs *today*, before the bulk-seed API
+
+Bulk-seeding an input table from the Excel rows is a separate in-progress API.
+Until it lands, you can **still ship editable surfaces** — pick by usage:
+
+- **Net-new entry at a known grain** (forecasts, plans): **linked input table off a
+  dimension spine** — grain auto-populates, forecasters fill the measure. Fully
+  API today, no seed. (`refs/input-tables.md` → "the powerful path".)
+- **Augment / annotate existing rows** (flags, planned values, notes alongside
+  live data): **linked input table off the converted read-only element** — users
+  see all their migrated rows as live context columns *and* type into added entry
+  columns. Fully API today, no seed. (Reference build:
+  `~/excel-convert-tests/saas_editable.json` — 130 subs shown live + editable
+  PLANNED_SEATS/RENEWAL_RISK/NOTES.)
+- **Edit the original values in place** (change a budget number that's already
+  there): needs an **empty/CSV input table holding the data** → that's the
+  bulk-seed gap. Bridge = UI CSV paste now; seamless once the seed API ships.
+
+Design so the editable surfaces exist from day one; the seed API just fills the
+"edit-in-place" case later. **Don't build a read-only model and call it a
+migration.**
+
+---
+
 ## Prerequisites
 
 ### Sigma access
