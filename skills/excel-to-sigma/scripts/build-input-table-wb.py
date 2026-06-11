@@ -3,8 +3,11 @@
 
 Two modes (see refs/input-tables.md):
 
-  LINKED (preferred — fully API, grain inherited from a spine, no CSV paste):
-    builds a custom-SQL spine element + a linked input table off it.
+  LINKED (⚠️ scaffold only — inherited columns do NOT resolve via POST):
+    builds a custom-SQL spine element + a linked input table off it. The PK/grain
+    and entry columns populate, but linked context columns render "multiple values"
+    (verified 2026-06-10; publish doesn't fix). Add the real linked columns in the
+    UI. Prefer building linked input tables entirely in the UI for now.
     python build-input-table-wb.py --name "Forecast Entry" --connection <writeConn> \
       --spine-sql spine.sql --spine-cols REGION,BRANCH,SUB_BRANCH,MONTH_DATE,CATEGORY_CODE \
       --key MONTH_DATE --entry-cols FORECAST_AMOUNT:number
@@ -98,8 +101,10 @@ def build_linked(args):
         "source": {"kind": "linked", "from": "spine"},
         "inputMode": "explore", "columns": it_cols,
     }]
-    desc = "Excel→Sigma linked input table — grain inherited from the spine. Publish, then create a warehouse view."
-    nxt = "PUBLISH the workbook → input-table element → Warehouse views → Create new → copy the view path. (No CSV paste — grain came from the spine.)"
+    desc = "Excel→Sigma linked input table SCAFFOLD — PK/grain + entry cols only; linked context cols do NOT resolve via POST (add in UI)."
+    nxt = ("⚠️ Linked CONTEXT columns will show 'multiple values' (POST can't author the "
+           "link — verified). This built the PK/grain + entry columns; add linked columns "
+           "in the UI, or rebuild the whole linked table in the UI. Then Publish + Create warehouse view.")
     return desc, elements, nxt
 
 

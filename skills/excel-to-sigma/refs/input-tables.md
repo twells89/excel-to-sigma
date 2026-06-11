@@ -38,8 +38,8 @@ Verified against the live Sigma OpenAPI and `/v2/connections` on 2026-06-08:
 | Step | Path | Notes |
 |---|---|---|
 | input-table **structure** | ✅ API — `POST /v2/workbooks/spec` | columns, types; titles (`name`) + `tableStyle`/`sort` round-trip. Validation/protection are UI. |
-| **linked**-table grain (rows from a spine element) | ✅ **API** | `source.kind: linked` + `from: <parentElementId>` — grain **inherited from the parent**, no CSV paste. Preferred when the grain is a dimension product (see "Linked input tables" below). |
-| seed **data** load into an *empty/CSV* table | ⚠️ **UI only** | CSV upload or clipboard paste; no REST endpoint exists. Only `*/materialization*` endpoints exist, which are unrelated. Avoid entirely by using a linked table. |
+| **linked** input table (inherited columns resolve) | ❌ **UI only** | spec POST yields inherited columns that show **"multiple values"** (publish doesn't fix; verified 2026-06-10). PK/grain + entry cols populate, but the linked correlation is UI-only state. See "Linked input tables" below. |
+| seed **data** load into an empty/CSV table | ⚠️ **UI now** | CSV upload / clipboard paste; no REST endpoint (only `*/materialization*`, unrelated). **Bulk-seed API in progress.** |
 | **Publish** | ⚠️ UI | data commits to the warehouse only on publish |
 | **warehouse view** | ⚠️ **UI only** | input-table element → Warehouse views → Create new |
 | DM **source-swap** | ✅ API — `POST`/`PUT /v2/dataModels/spec` | `SELECT … FROM <view>` |
@@ -87,14 +87,25 @@ swaps between *registered sources*, not to an ad-hoc input-table view.)
   element). (Data validation / column protection / data-entry permission remain
   UI — see the matrix above.)
 
-## Linked input tables — the powerful path (VERIFIED 2026-06-10, API-authorable)
+## Linked input tables — UI-authored only (spec POST does NOT work)
 
-For a planning model the grain is almost always **derivable from dimensions**
-(Region × Branch × Month × Category …). Instead of seeding an *empty* table with a
-pasted CSV, build a **dimension-spine element** and a **linked input table** off
-it. The grain rows are **inherited from the parent automatically** — forecasters
-fill only the measure column. This is fully **POST-authorable** (verified on a
-feature-enabled org), which eliminates the manual CSV-paste step for the grain.
+> **⚠️ CORRECTION (2026-06-10). An earlier version of this file called linked
+> input tables "the powerful path, API-authorable." That was wrong** — it was
+> validated only by structure (`/elements`), never by querying the data. When you
+> author a linked input table via `POST /v2/workbooks/spec`, the **inherited
+> columns don't resolve: every row shows "multiple values."** Publishing does not
+> fix it, and re-POSTing a known-good UI-built linked table verbatim reproduces the
+> break. The linked-column key-correlation is UI-only server state the spec can't
+> carry. **Build linked input tables in the UI.**
+>
+> What a POST *does* create: the PK column + the grain (PK rows populate from the
+> parent) + editable entry columns. What it *cannot* create: working inherited/
+> linked context columns. So even the "blank forecast grid off a spine" idea gives
+> rows whose dimension context columns read "multiple values" — poor UX; do it in
+> the UI.
+
+The idea below is the *intended* design (and how a UI-built linked table looks),
+but it must be built in the UI, not POSTed:
 
 ```yaml
 # 1) the spine: any element whose rows define the grain — a warehouse/data-model
@@ -124,19 +135,16 @@ feature-enabled org), which eliminates the manual CSV-paste step for the grain.
     - id: UPDATED_BY
 ```
 
-Why this is the strong default for Excel planning models:
+Why it's still the right *design* (build it in the UI):
 
-- **Grain is API-seeded, not pasted.** The rows come from the spine — no CSV paste,
-  no 2,000-row paste cap, no manual step. Build the whole thing in one POST.
-- **Stale-spine problem solved.** The Ledcor model's calendar spine ended *before*
-  the forecast window. With a linked table you point at a **freshly generated**
-  spine (e.g. a custom-SQL `CALENDAR × CATEGORY × BU` cross-join element) and the
-  grain is correct by construction — exactly the "derive, don't port" rule.
-- **Dimension columns are locked for free.** Linked columns are non-editable by
-  definition, so the grain keys can't be edited — you get column protection on the
-  dimensions without the separate UI step. Only the entry column(s) are writable.
-- **`from` / `key` survive POST.** The `from: spine` and `key: storeKey` references
-  use your spec ids and Sigma maps them (like layout `elementId`s) — verified.
+- **Grain derives from a spine, not a paste.** Point the linked table at a freshly
+  generated spine (e.g. a custom-SQL `CALENDAR × CATEGORY × BU` cross-join) and the
+  grain is correct by construction — solves the stale-spine problem ("derive, don't
+  port"). Forecasters fill only the measure; dimension columns are read-only.
+- **But the linkage is UI-only.** When built in the UI the inherited columns
+  resolve correctly; when POSTed they show "multiple values" (see correction
+  above). So: generate the spine via API if you like, then **add the linked input
+  table in the UI** pointing at it.
 
 Use **empty + CSV** (below) instead when you're seeding **starting values**
 (e.g. last year's actuals as a baseline to adjust), where the rows aren't simply a

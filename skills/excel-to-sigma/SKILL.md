@@ -70,23 +70,30 @@ A Phase-0 heuristic: a formal Table that's *fed by* formulas/other sheets and on
 inbound formula = **entered**. Route entered → input-table builder, derived →
 read-only DM/metric builder. When unsure, ask the user how they use that sheet.
 
-### Doing inputs *today*, before the bulk-seed API
+### What's actually buildable via API today (validated 2026-06-10 by MCP query)
 
-Bulk-seeding an input table from the Excel rows is a separate in-progress API.
-Until it lands, you can **still ship editable surfaces** — pick by usage:
+> **Hard-won correction.** Earlier drafts claimed linked input tables were the
+> "powerful path, fully API, no seed." **That was wrong — validated only by
+> structure (`/elements`), never by querying the data.** A linked input table
+> authored via `POST /v2/workbooks/spec` has **inherited columns that don't
+> resolve** — every row shows **"multiple values"** (publish doesn't fix it;
+> re-POSTing a known-good UI-built spec reproduces the break). The linked-column
+> key-correlation is UI-only state the spec can't carry. See
+> `refs/input-tables.md`.
 
-- **Net-new entry at a known grain** (forecasts, plans): **linked input table off a
-  dimension spine** — grain auto-populates, forecasters fill the measure. Fully
-  API today, no seed. (`refs/input-tables.md` → "the powerful path".)
-- **Augment / annotate existing rows** (flags, planned values, notes alongside
-  live data): **linked input table off the converted read-only element** — users
-  see all their migrated rows as live context columns *and* type into added entry
-  columns. Fully API today, no seed. (Reference build:
-  `~/excel-convert-tests/saas_editable.json` — 130 subs shown live + editable
-  PLANNED_SEATS/RENEWAL_RISK/NOTES.)
-- **Edit the original values in place** (change a budget number that's already
-  there): needs an **empty/CSV input table holding the data** → that's the
-  bulk-seed gap. Bridge = UI CSV paste now; seamless once the seed API ships.
+So, honestly, by usage pattern:
+
+| Need | API today? | How |
+|---|---|---|
+| **Edit-in-place of the migrated rows** (the common spreadsheet case) | ❌ | empty/CSV input table **structure** is API; loading the rows = UI CSV paste now, the **bulk-seed API** later |
+| **Net-new entry at a grain** (blank forecast grid) | ⚠️ partial | a linked-off-spine table's PK/grain + entry columns populate via POST, but the **dimension context columns show "multiple values"** → UX is poor; build in UI for now |
+| **Augment / annotate existing rows** (notes/flags beside live data) | ❌ via API | needs working linked columns → **UI-authored** |
+
+**Bottom line today:** via API you can scaffold input-table *structure* and build
+read-only DMs; making input tables actually *show the migrated data editable*
+needs the UI (CSV paste / UI-built linked tables) until the bulk-seed API lands.
+Don't promise "editable via API" — scaffold the structure, then hand off the
+data-load/link step as a UI action (or wait for the seed API).
 
 Design so the editable surfaces exist from day one; the seed API just fills the
 "edit-in-place" case later. **Don't build a read-only model and call it a
@@ -154,26 +161,23 @@ build rules in `refs/sigma-build-gotchas.md`.
 
 ## Phase 3 — Stand up the input table (`scripts/build-input-table-wb.py`)
 
-Two authoring modes — **prefer linked** when the grain is a dimension product
-(the usual case for planning models); use **empty + CSV** for seeding starting
-values. See `refs/input-tables.md` for the full shapes.
+Build the **empty input-table structure via API**; load/link the data via UI for
+now (or the bulk-seed API later). See `refs/input-tables.md`.
 
-**Mode A — Linked (preferred, fully API).** POST a **dimension-spine element**
-(warehouse / data-model dimension, or a custom-SQL `CALENDAR × CATEGORY × BU`
-cross-join) **plus** a linked input table off it:
-`kind: input-table`, `source: { kind: linked, from: <spineElementId> }`, a primary
-key column (`{ id, key: <spineColumnId> }`), any linked dimension columns
-(`formula: '[Spine/Col]'`, auto-locked), and the **entry column(s)** forecasters
-fill (`type: number`). The **grain rows are inherited from the spine** — no CSV
-paste. Then UI: **Publish** → input-table element → **Warehouse views → Create
-new** → note the `database.schema.view` path. (Two UI clicks, not three.)
+**Empty input table (API for structure).** POST an **empty input-table element** at
+the fact grain (`source: { kind: empty, connectionId: <write-conn> }`,
+`inputMode: explore`, data columns + system columns
+`ID/CREATED_AT/CREATED_BY/UPDATED_AT/UPDATED_BY`). Then UI: open the input table →
+**paste / upload** the Phase-1 CSV → **Publish** → **Warehouse views → Create
+new**. (The CSV paste is the current bridge for the bulk-seed API.)
 
-**Mode B — Empty + CSV.** POST an **empty input-table element** at the fact grain
-(`source: { kind: empty, connectionId: <write-conn> }`, `inputMode: explore`, data
-columns + system columns `ID/CREATED_AT/CREATED_BY/UPDATED_AT/UPDATED_BY`). Then
-UI: open the input table → **paste / upload** the Phase-1 CSV → **Publish** →
-**Warehouse views → Create new**. Use when rows are starting values, not a clean
-dimension cross-product.
+> **Do NOT auto-build linked input tables via the spec.** It looks like it works
+> (the POST succeeds, `/elements` shows the columns) but the **inherited columns
+> resolve to "multiple values"** — the linked correlation is UI-only (validated
+> 2026-06-10, publish doesn't fix it). `build-input-table-wb.py --linked` only
+> scaffolds the PK/grain + entry columns; the *linked context columns must be
+> added in the UI*. If a usage pattern needs live context columns beside editable
+> cells, build that table in the UI.
 
 ## Phase 4 — Source-swap the DM onto the view (`scripts/build-dm-on-view.py`)
 
@@ -195,8 +199,8 @@ compiles (`verify-workbook`) and the totals tie out.
 | Step | Path |
 |---|---|
 | input-table **structure** (columns/types; title `name`, `tableStyle`, `sort` round-trip) | ✅ API (workbook spec) |
-| **linked**-table grain — rows from a spine element (`source.kind: linked` + `from`) | ✅ API — **no CSV paste** |
-| seed **data** load into an *empty/CSV* table (CSV upload / paste) | ⚠️ UI only — no REST endpoint (avoid via linked mode) |
+| **linked** input table (inherited columns resolve) | ❌ UI only — spec POST yields "multiple values" (publish doesn't fix); PK/grain + entry cols populate but linked cols don't |
+| seed **data** load into an empty/CSV table (CSV upload / paste) | ⚠️ UI now — no REST endpoint; bulk-seed API in progress |
 | **Publish** (commits writeback) | ⚠️ UI |
 | **warehouse view** on the input table | ⚠️ UI only |
 | DM **source-swap** to `FROM <view>` | ✅ API (DM spec PUT/POST) |
