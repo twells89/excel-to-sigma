@@ -60,3 +60,33 @@ Allocation **−415,557** · Net Contribution **2,662,748**.
 
 > Validated run (2026-06-08): exact parity on all sections. workbook
 > `cb6c53ef-…`, view `SIGMA_WRITE_DB.SIGMA_WRITE.FORECAST_ENTRY`, DM `04e462d8-…`.
+
+---
+
+# Worked example B — actuals + driver-grown + manual P&L (one-shot builder)
+
+For a "report drawn in cells" planning model (live actuals + assumption-driven
+forecast + manual cells) — the FP&A case. `xlsx-discover.py` now prints a
+**cell-level model map** (ACTUAL / DRIVER_GROWTH / MANUAL / FLAT / DERIVED); after
+confirming intent (read-only / editable / what-if — see `refs/model-taxonomy.md`),
+drive the whole build from a **model-plan JSON**:
+
+```bash
+# dry run: local parity + emits dm_spec.json / wb_spec.json / seed CSVs to /tmp/fcst-build
+.venv/bin/python build-forecast-model.py sample-model-plan.json
+# build live (DM + workbook with union[actuals,forecast], KPIs, Actual|Forecast pivot, trend, editable rate+manual tables)
+.venv/bin/python build-forecast-model.py --post sample-model-plan.json
+```
+
+The forecast is computed (`base × (1+rate)^n`); editable rate/manual input tables
+override via `Coalesce(input, default)`, so **parity holds before any seeding**
+(verified: Revenue 6,961,218.48 · EBITDA 62,327.16 · **Net Income −135,372.84**).
+Then: paste `rate_seed.csv` / `manual_seed.csv` into the two editable tables +
+Publish to make them live; run `wb-rep push` for the designed layout (the POST
+lands auto-arranged). See `refs/forecast-recipes.md`.
+
+If `.xlsm`: run `macro-classify.py` first (`refs/macro-handling.md`) — surface
+FLAG/ACTION macros before building.
+
+> Note: delete a test workbook/DM via `DELETE /v2/files/{inodeId}` (not
+> `/v2/workbooks/{id}`, which 404s).
