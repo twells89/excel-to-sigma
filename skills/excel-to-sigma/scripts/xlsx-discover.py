@@ -63,6 +63,61 @@ def classify(headers, body_rows, nrows, referenced_by_others):
     return "ENTERED", "typed values, no inbound formulas → input table (editable)", wide_flag
 
 
+SHEET_REF_RE = re.compile(r"(?:'([^']+)'|([A-Za-z0-9_]+))!\$?[A-Z]+\$?\d+")
+GROWTH_RE = re.compile(r"^=\s*\$?[A-Z]+\$?\d+\s*\*\s*\(\s*1\s*[+\-]", re.I)   # prior*(1±rate)
+FLAT_RE   = re.compile(r"^=\s*\$?[A-Z]+\$?\d+\s*$")                          # =single cell
+SUMIFS_RE = re.compile(r"\bSUMIFS?\b|\bSUMPRODUCT\b", re.I)
+ARITH_RE  = re.compile(r"[A-Z]+\$?\d+\s*[-+*/]\s*\$?[A-Z]+\$?\d+|^=IF\(", re.I)
+
+def classify_report_cells(wb):
+    """Cell-level model map for 'report drawn in cells' sheets (no formal Table).
+    Returns per-sheet counts by class + the detected source/driver sheets."""
+    table_sheets = {ws.title for ws in wb.worksheets if len(ws.tables)}
+    sheetmap = {}          # sheet -> Counter of classes
+    source_sheets = Counter()   # tabs feeding SUMIFS (actuals source)
+    driver_sheets = Counter()   # tabs referenced by growth (1+rate) formulas
+    for ws in wb.worksheets:
+        if ws.title in table_sheets:
+            continue
+        counts = Counter()
+        # which rows contain a formula (to spot manual literals sitting among formulas)
+        rows_with_formula = set()
+        numeric_cells = []
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if isinstance(v, str) and v.startswith("="):
+                    rows_with_formula.add(c.row)
+                elif isinstance(v, (int, float)) and c.column > 1:
+                    numeric_cells.append(c)
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if not (isinstance(v, str) and v.startswith("=")):
+                    continue
+                if SUMIFS_RE.search(v):
+                    counts["ACTUAL"] += 1
+                    for m in SHEET_REF_RE.finditer(v):
+                        source_sheets[m.group(1) or m.group(2)] += 1
+                elif GROWTH_RE.match(v):
+                    counts["DRIVER_GROWTH"] += 1
+                    for m in SHEET_REF_RE.finditer(v):
+                        driver_sheets[m.group(1) or m.group(2)] += 1
+                elif FLAT_RE.match(v):
+                    counts["FLAT"] += 1
+                elif ARITH_RE.search(v):
+                    counts["DERIVED"] += 1
+                else:
+                    counts["OTHER_FORMULA"] += 1
+        # manual inputs = numeric literals sitting in rows that are otherwise formula-driven
+        manual = sum(1 for c in numeric_cells if c.row in rows_with_formula)
+        if manual:
+            counts["MANUAL"] = manual
+        if counts:
+            sheetmap[ws.title] = counts
+    return sheetmap, source_sheets, driver_sheets
+
+
 def main(path):
     wb = load_workbook(path, data_only=False)
     print(f"# Discovery: {path}\n")
@@ -151,8 +206,30 @@ def main(path):
         print("  🔒 read-only — rebuild as DM metrics + workbook elements (the SUMIFS/"
               "rollups become grouped aggregates), not input tables.")
 
-    print("\nNext: ENTERED → input-table builder (build-input-table-wb.py); DERIVED → "
-          "read-only DM (build-dm-on-view.py / metrics); wide → unpivot first.")
+    # ---- cell-level MODEL MAP (for report-drawn-in-cells models; see refs/model-taxonomy.md) ----
+    sheetmap, source_sheets, driver_sheets = classify_report_cells(wb)
+    if sheetmap:
+        print("\n## Model map (cell-level) — for report sheets drawn in cells")
+        ICON = {"ACTUAL": "📥 ACTUAL (live source)", "DRIVER_GROWTH": "📈 DRIVER-grown",
+                "MANUAL": "✏️  MANUAL input", "DERIVED": "🧮 DERIVED", "FLAT": "➡️  FLAT (carry)",
+                "OTHER_FORMULA": "· other"}
+        for sheet, counts in sheetmap.items():
+            parts = [f"{ICON.get(k,k)}={v}" for k, v in counts.most_common()]
+            print(f"  • {sheet}: " + ", ".join(parts))
+        if source_sheets:
+            print(f"  → actuals source (SUMIFS targets): {', '.join(source_sheets)}  "
+                  f"= live read-only DM element")
+        if driver_sheets:
+            print(f"  → driver/assumptions sheet (1±rate refs): {', '.join(driver_sheets)}  "
+                  f"= editable rates table / controls")
+        print("  Architecture: union [live ACTUAL] + [forecast]; forecast = DRIVER-grown "
+              "(base×(1+rate)^n, rate from drivers) + MANUAL (editable input table) + FLAT. "
+              "Subtotals/margins = DERIVED workbook calcs. See refs/forecast-recipes.md.")
+        print("  ASK INTENT before building (read-only report / editable plan / live what-if) "
+              "→ determines static vs input-table vs driver-override. See refs/model-taxonomy.md.")
+
+    print("\nNext: classify intent → build per refs/forecast-recipes.md; ENTERED → input-table "
+          "builder; DERIVED → read-only DM; wide → unpivot first; macros → macro-classify.py.")
 
 
 if __name__ == "__main__":

@@ -25,6 +25,9 @@ user-invocable: true
 - `refs/input-tables.md` — the validated input-table workflow + the API-vs-UI split. **This is the crown jewel of the skill: the source-swap goes through a warehouse view, NOT a direct DM source binding.**
 - `refs/excel-translation.md` — the translation surface, the formal-Table-only MVP rule, and what "formula translation" actually means here (grain selection, not business logic).
 - `refs/sigma-build-gotchas.md` — the hard-won Sigma spec rules (SQL element formula prefix, DM POST envelope, element-name/ID reassignment, publish gate).
+- `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
+- `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
+- `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
 - `~/sigma-skills/sigma-workbooks/SKILL.md` + the Sigma OpenAPI — canonical workbook spec.
 
 ---
@@ -142,6 +145,39 @@ Walk the `.xlsx` (OOXML = a ZIP of XML; `openpyxl` reads it). Produce an invento
 State the inventory back to the user and confirm the **canonical grain** of the
 fact Table before building.
 
+### Phase 0b — Macro inventory & disposition gate (if `.xlsm`/`.xlsb`/`.xls`)
+
+If the file is macro-enabled, run the macro pass **before building** — a dropped
+macro is a silent loss of behavior (see `refs/macro-handling.md`):
+
+```bash
+python scripts/macro-classify.py <file.xlsm>          # report
+python scripts/macro-classify.py --json <file.xlsm>   # contract for build steps
+```
+
+Each procedure is classified (olevba-extracted VBA) and routed: **AUTO** (covered
+by the data/formula conversion or safely dropped), **CONTROL** (controls / editable
+assumptions table), **ACTION** (Sigma Action — *gated on the Actions primitive*;
+scaffold a placeholder + inventory entry now), or **FLAG** (external I/O / opaque —
+human review). **Surface the FLAG and ACTION items to the user and get
+acknowledgement before build.** Never silently omit a macro.
+
+### Phase 0c — Model map & intent (for "report drawn in cells" / planning models)
+
+When there are **no formal Tables** (a cell-drawn P&L/budget/forecast), don't punt
+to "manual rebuild." `xlsx-discover.py` now prints a **cell-level model map**:
+classifies each formula/value as **ACTUAL** (SUMIFS over a data tab → live DM),
+**DRIVER_GROWTH** (`prior×(1±rate)` → closed-form `base×(1+rate)^n`), **MANUAL**
+(literal among formulas → editable input table), **FLAT** (`=prior` → carry), or
+**DERIVED** (totals/margins → workbook calc), and names the actuals-source +
+drivers sheets.
+
+That map *is* the architecture: **union [live ACTUAL] + [forecast]**. Before
+building, **present the map and ask the 3 intent questions** (read-only report /
+editable plan / live what-if; which inputs editable; actuals live or snapshot) —
+see `refs/model-taxonomy.md`. Then build per `refs/forecast-recipes.md` and
+**assert parity to the cent** against the sheet's cached totals (the trust gate).
+
 ## Phase 1 — Pick the grain & extract the seed (`scripts/xlsx-to-input-csv.py`)
 
 For the fact Table, emit a **paste-ready CSV** with:
@@ -221,7 +257,10 @@ two into the run as explicit "do this, then tell me the view path" hand-offs.
 - Power Query / ODBC / SharePoint-Online sources — MVP assumes inline data +
   Snowflake landing (the other source paths are additive; see
   `refs/excel-translation.md`).
-- `.xlsm` / VBA / macros — flagged in Phase 0, never executed.
+- `.xlsm` / VBA / macros — **detected + classified + routed** (Phase 0b,
+  `scripts/macro-classify.py` + `refs/macro-handling.md`); never *executed*.
+  Write-back macros (`ACTION`) are gated on the forthcoming Sigma Actions
+  primitive — scaffolded as placeholders + inventory until it ships.
 
 See `refs/excel-translation.md` for the full converter-build design and the
 ~60–70% pipeline reuse from `tableau-to-sigma`.
