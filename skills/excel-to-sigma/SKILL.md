@@ -28,6 +28,7 @@ user-invocable: true
 - `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
 - `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
 - `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
+- `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The data-page + column-per-line-`Coalesce` + `transpose` + pivot recipe, canonical-formula inference, plug-cycle breaking, blank-as-zero, and the simulate-and-freeze parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
 - `~/sigma-skills/sigma-workbooks/SKILL.md` + the Sigma OpenAPI — canonical workbook spec.
 
 ---
@@ -177,6 +178,30 @@ building, **present the map and ask the 3 intent questions** (read-only report /
 editable plan / live what-if; which inputs editable; actuals live or snapshot) —
 see `refs/model-taxonomy.md`. Then build per `refs/forecast-recipes.md` and
 **assert parity to the cent** against the sheet's cached totals (the trust gate).
+
+### Phase 0d — Template-family fingerprint & routing (financial-statement models)
+
+Before choosing a build path, **fingerprint the file** (see `refs/research-template-coa.md`):
+a **broker/FactSet equity-research model** (line-items down rows, YEARS across columns, sections
+like PROFIT AND LOSS / PER SHARE DATA / BALANCE SHEET; often `__FDSCACHE__` + thousands of named
+ranges) routes to the **research archetype**, NOT the FP&A forecast path:
+
+```bash
+python scripts/infer-canonical-formulas.py <file.xlsx> --sheet="FY results" \
+       --first-row=7 --last-row=<end> --out plan.json     # per-file inference + parity gate
+python scripts/build-research-model.py plan.json --conn <writeConn> --folder <id> [--post]
+```
+
+`infer-canonical-formulas.py` extracts the hard-coded grid + one canonical formula per derived
+line, breaks plug-cycles, and simulates-and-freezes to guarantee **displayed parity = 100%**.
+`build-research-model.py` posts the DM (data page) + workbook (computation + transpose + pivot).
+
+**For a fleet of similar files off one template** (the ~850-file case), use
+`scripts/batch-convert.py` — it fingerprints, maps each file's line items to a canonical
+chart-of-accounts (`refs/research-template-coa.md` + `coa.json`), converts, parity-gates, and
+emits a **triage manifest** (AUTO_PARITY / NEEDS_REVIEW / FAILED) with no silent truncation.
+Read `refs/research-template-coa.md` first. Everything else (a cell-drawn P&L with a data tab,
+SUMIFS actuals, driver growth) stays on the FP&A path below.
 
 ## Phase 1 — Pick the grain & extract the seed (`scripts/xlsx-to-input-csv.py`)
 

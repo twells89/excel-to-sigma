@@ -90,3 +90,36 @@ FLAG/ACTION macros before building.
 
 > Note: delete a test workbook/DM via `DELETE /v2/files/{inodeId}` (not
 > `/v2/workbooks/{id}`, which 404s).
+
+---
+
+## Worked example C — equity-research model (broker / FactSet house template)
+
+For a sell-side research model (line-items × YEARS, statement sections; e.g. a FactSet-style broker model). Generate the synthetic fixture, then convert it:
+
+```bash
+# fake, no-customer-data fixture (Acme Widgets NV): plug-cycle + %-literal + Lag + #REF! + MIXED
+.venv/bin/python make-sample-research-model.py                       # -> scripts/Sample Research Model.xlsx
+
+# infer the two-layer plan (hard-coded grid + ONE canonical formula per derived line)
+.venv/bin/python infer-canonical-formulas.py "Sample Research Model.xlsx" \
+    --sheet="FY results" --first-row=7 --last-row=45 --out plan.json
+
+# build DM (data page) + workbook (computation + transpose + display pivot)
+.venv/bin/python build-research-model.py plan.json --conn <writeConn> --folder <id> --post
+```
+
+The report shows `input / derived / ratio` counts, live-verified vs frozen formula
+cells, and resolved anchors. Verified end-to-end: the synthetic fixture round-trips
+to **100% cell parity**, and a real broker equity-research model rebuilt to **100.00% parity
+(3,263/3,263 cells), ~81% live Sigma formulas** — far simpler than a hand build (one
+column per line, not per-year `User`/`Calc`/`(1)` triplets). See `refs/research-recipes.md`.
+
+**A fleet of similar files** (the ~850-file case) → `batch-convert.py` fingerprints,
+maps to the chart-of-accounts (`coa.json`), converts, parity-gates, and emits a triage
+manifest (AUTO_PARITY / NEEDS_REVIEW / FAILED) + the top unmapped labels to grow the COA:
+
+```bash
+.venv/bin/python batch-convert.py /path/to/models/ --sheet="FY results" --out manifest.json
+```
+See `refs/research-template-coa.md`.
