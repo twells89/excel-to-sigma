@@ -111,13 +111,33 @@ def coa_map(plan):
     return mapped, unmapped
 
 
+def pick_annual_sheet(sheets, explicit):
+    """Prefer the contract's known annual-sheet names (case-insensitive substring) before
+    falling back to infer's content auto-detection (None)."""
+    if explicit:
+        return explicit
+    names = COA["template"].get("annual_sheet_names", [])
+    lc = {norm(s): s for s in sheets}
+    for want in names:                                   # exact-ish first
+        for ns, orig in lc.items():
+            if norm(want) == ns:
+                return orig
+    for want in names:                                   # then substring
+        for ns, orig in lc.items():
+            if norm(want) in ns or ns in norm(want):
+                return orig
+    return None                                          # auto-detect
+
+
 def triage(path, sheet):
     entry = {"file": os.path.basename(path),
              "hash": hashlib.sha1(open(path, "rb").read()).hexdigest()[:12]}
     try:
         strip = strip_report(path)
         entry["stripped"] = strip
-        plan = INF.infer(path, sheet=sheet)
+        chosen = pick_annual_sheet(strip["sheets"], sheet)
+        entry["chosen_sheet"] = chosen
+        plan = INF.infer(path, sheet=chosen)
     except BaseException as ex:                          # incl. ValueError from axis detection
         entry.update(bucket="FAILED", fingerprint_class="UNKNOWN",
                      reasons=[f"inference error: {ex}"])

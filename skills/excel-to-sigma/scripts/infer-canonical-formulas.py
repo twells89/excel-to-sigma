@@ -38,7 +38,18 @@ except ImportError:
 CELL_RE  = re.compile(r"^(\$?)([A-Z]{1,3})(\$?)(\d+)$")
 RANGE_RE = re.compile(r"^(\$?[A-Z]{1,3}\$?\d+):(\$?[A-Z]{1,3}\$?\d+)$")
 ERR_RE   = re.compile(r"#(REF|N/A|VALUE|DIV/0|NAME|NUM|NULL)!?", re.I)
-YEAR_RE  = re.compile(r"^(19|20)\d{2}$")
+YEAR_RE  = re.compile(r"^(19|20)\d{2}\s*[EFPefp]?$")   # 2024, 2024E, 2025F …
+
+
+def year_of(cached, formula=None):
+    """Return the int year a header cell denotes (int/float, '2024E' text, or =prev+1), else None."""
+    if isinstance(cached, (int, float)) and 1900 <= cached <= 2100:
+        return int(cached)
+    if isinstance(cached, str) and YEAR_RE.match(cached.strip()):
+        return int(cached.strip()[:4])
+    if isinstance(formula, str) and re.match(r"^=\s*\$?[A-Z]+\$?\d+\s*\+\s*1\s*$", formula):
+        return "INC"                                   # =prev+1 — resolve from neighbour
+    return None
 
 
 # ------------------------------------------------------------------ load
@@ -48,47 +59,103 @@ def load(path):
     return f, v
 
 
-def pick_sheet(wb, name):
-    if name and name in wb.sheetnames:
-        return wb[name]
-    # skip FactSet cache / veryHidden; take the widest visible sheet
-    cand = [ws for ws in wb.worksheets
+FIN_HINTS = ("turnover", "revenue", "sales", "gross profit", "gross margin", "ebitda", "ebit",
+             "net income", "net attributable", "net result", "eps", "operating", "tax",
+             "dividend", "cash flow", "balance sheet", "per share", "pre-tax", "pretax",
+             "chiffre", "résultat", "resultat", "marge", "bpa")
+
+# distinct statement anchor CATEGORIES — a real financials sheet hits several; an industry-comps
+# or quarterly-only tab hits few. Used to pick the financials sheet by structure, not keyword count.
+ANCHOR_CATS = {
+    "revenue":  ("turnover", "revenue", "net revenue", "sales", "chiffre"),
+    "profit":   ("gross profit", "ebit", "ebitda", "operating income", "margin", "marge"),
+    "bottom":   ("net income", "net attributable", "net result", "résultat net", "net profit"),
+    "pershare": ("eps", "per share", "dividend", "bpa", "dps"),
+}
+
+
+def pick_sheet(wb_f, wb_v, name):
+    """Pick the ANNUAL financial-statement sheet by CONTENT, not size: a detectable year
+    axis + the most financial-statement labels in col A. (House-template files name it
+    variously — 'FY results' / 'Annuals' / 'P&L Annual' — and the widest sheet is usually
+    an industry-comps or quarterly tab, not the financials.)"""
+    if name and name in wb_f.sheetnames:
+        return wb_f[name]
+    best, best_score = None, (-1, -1)
+    for ws in wb_f.worksheets:
+        if ws.sheet_state != "visible" or ws.title.startswith("__") or ws.title.endswith(">>"):
+            continue
+        try:
+            hr, axis, _, _ = detect_year_axis(ws, wb_v[ws.title])
+        except Exception:
+            axis = None
+        if not axis or len(axis) < 3:
+            continue
+        lc = detect_label_col(ws, hr, [c for c, _ in axis])     # labels may be in col A or B
+        hits = 0; cats = set()
+        for r in range(hr + 1, min(ws.max_row or 1, hr + 500) + 1):
+            a = ws.cell(r, lc).value
+            if not isinstance(a, str):
+                continue
+            al = a.lower()
+            if any(h in al for h in FIN_HINTS):
+                hits += 1
+            for cat, words in ANCHOR_CATS.items():
+                if any(w in al for w in words):
+                    cats.add(cat)
+        score = (len(cats), hits, len(axis))                    # statement structure first
+        if score > best_score:
+            best_score, best = score, ws
+    if best is not None:
+        return best
+    cand = [ws for ws in wb_f.worksheets
             if ws.sheet_state == "visible" and not ws.title.startswith("__")]
-    return max(cand, key=lambda w: (w.max_row or 0) * (w.max_column or 0)) if cand else wb.active
+    return max(cand, key=lambda w: (w.max_row or 0) * (w.max_column or 0)) if cand else wb_f.active
 
 
 # ------------------------------------------------------------------ year axis
 def detect_year_axis(ws_f, ws_v):
-    """Return (header_row, [(col_idx, year_int)], first_year_col, last_year_col).
-    A year column runs while the header cell is a 4-digit year (cached) or an
-    increment formula (=<prev>+1). Stops at the first break (notes columns)."""
+    """Return (header_row, [(col_idx, year_int)], first, last). Finds the header row with the
+    MOST year cells and takes those columns — tolerating GAPS (segment/interim columns between
+    years, e.g. Stellantis) and 'E'/'F' suffixes. Duplicate/interim year labels are dropped
+    (keep the first full-year column per distinct year)."""
     best = None
-    for r in range(1, min(ws_f.max_row, 15) + 1):
-        cols = []
-        for c in range(2, min(ws_f.max_column, 60) + 1):
-            fv = ws_f.cell(r, c).value
-            cv = ws_v.cell(r, c).value
-            is_year = (isinstance(cv, (int, float)) and YEAR_RE.match(str(int(cv)))) or \
-                      (isinstance(fv, str) and re.match(r"^=\s*\$?[A-Z]+\$?\d+\s*\+\s*1\s*$", fv))
-            if is_year:
-                cols.append(c)
-            elif cols:
-                break            # end of the contiguous year run
-        if len(cols) > (len(best[1]) if best else 0):
-            best = (r, cols)
-    if not best:
+    for r in range(1, min(ws_f.max_row or 1, 15) + 1):
+        cells = []
+        for c in range(2, min(ws_f.max_column or 1, 400) + 1):
+            y = year_of(ws_v.cell(r, c).value, ws_f.cell(r, c).value)
+            if y is not None:
+                cells.append((c, y))
+        if len(cells) > (len(best[1]) if best else 0):
+            best = (r, cells)
+    if not best or len(best[1]) < 3:
         return None, [], None, None
-    hr, cols = best
-    axis = []
-    for c in cols:
-        cv = ws_v.cell(hr, c).value
-        yr = int(cv) if isinstance(cv, (int, float)) and YEAR_RE.match(str(int(cv))) else None
-        axis.append((c, yr))
-    # fill any None years by walking the increment (=prev+1)
-    for i in range(1, len(axis)):
-        if axis[i][1] is None and axis[i - 1][1] is not None:
-            axis[i] = (axis[i][0], axis[i - 1][1] + 1)
-    return hr, axis, cols[0], cols[-1]
+    hr, cells = best
+    # resolve =prev+1 markers left-to-right; drop duplicate years (keep first col per year)
+    axis, seen, prev = [], set(), None
+    for c, y in cells:
+        if y == "INC":
+            y = (prev + 1) if isinstance(prev, int) else None
+        if not isinstance(y, int) or y in seen:
+            prev = y if isinstance(y, int) else prev
+            continue
+        seen.add(y); axis.append((c, y)); prev = y
+    if len(axis) < 3:
+        return None, [], None, None
+    return hr, axis, axis[0][0], axis[-1][0]
+
+
+def detect_label_col(ws, header_row, year_cols):
+    """The label column is the left-most column (A or B) with the most text below the header
+    (some templates indent labels into col B). Restrict to columns left of the first year."""
+    limit = min(year_cols[0] - 1, 3) if year_cols else 2
+    best, best_n = 1, -1
+    for c in range(1, max(limit, 1) + 1):
+        n = sum(1 for r in range(header_row + 1, min(ws.max_row or 1, header_row + 300) + 1)
+                if isinstance(ws.cell(r, c).value, str) and ws.cell(r, c).value.strip())
+        if n > best_n:
+            best_n, best = n, c
+    return best
 
 
 # ------------------------------------------------------------------ row / label map
@@ -110,15 +177,15 @@ def is_section_header(text, has_year_data):
     return False
 
 
-def build_row_map(ws_f, ws_v, axis, first_row, last_row):
+def build_row_map(ws_f, ws_v, axis, first_row, last_row, label_col=1):
     """row -> {label, section, sec_order, line_order, uname, cells{col:(kind,val,formula,cached)}}
-    Only rows with >=1 non-empty year cell are data rows."""
+    Only rows with >=1 non-empty year cell are data rows. Labels read from `label_col` (A or B)."""
     year_cols = [c for c, _ in axis]
     rows = {}
     section, sec_order, line_order = "(none)", 0, 0
     name_seen = Counter()
     for r in range(first_row, last_row + 1):
-        label = ws_f.cell(r, 1).value
+        label = ws_f.cell(r, label_col).value
         label = str(label).strip() if label is not None else ""
         # gather year cells
         cells = {}
@@ -172,12 +239,13 @@ def expand_range_rows(a, b):
     return list(range(min(pa[1], pb[1]), max(pa[1], pb[1]) + 1))
 
 
-def normalize_formula(formula, self_col, self_row, row_by_num):
+def normalize_formula(formula, self_col, self_row, row_by_num, ycol2pos):
     """Return (canonical_key, sigma_expr_template, deps:set(row), flags:set).
-    canonical_key: period-relative string used for the modal vote (refs -> R<row>@<off>).
-    sigma_expr_template: same but refs -> {{R<row>@<off>}} placeholders, later rendered.
-    Cross-sheet refs / errors / unresolved rows set flags and make the row non-derivable
-    from this cell (caller decides)."""
+    canonical_key: period-relative string used for the modal vote (refs -> R<row>@<off>),
+    where <off> is a YEAR-POSITION delta (handles non-contiguous year columns). A ref into a
+    non-year column (segment/other dimension) -> flag `cross_dim` (carry as data). Cross-sheet
+    refs / errors / unresolved rows set flags and make the row non-derivable from this cell."""
+    self_pos = ycol2pos.get(self_col)
     flags = set()
     deps = set()
     try:
@@ -208,9 +276,11 @@ def normalize_formula(formula, self_col, self_row, row_by_num):
             if not p:
                 flags.add("weird_ref"); out.append("REF"); continue
             col, row, col_abs, row_abs = p
+            if col not in ycol2pos:              # segment / other-dimension column -> carry
+                flags.add("cross_dim"); out.append("XCOL"); continue
             if col_abs:                          # absolute column -> fixed base period
                 flags.add("abs_col_ref")
-            off = 0 if col_abs else (col - self_col)
+            off = 0 if col_abs else (ycol2pos[col] - self_pos)
             if row not in row_by_num:
                 flags.add("unresolved_ref"); out.append(f"?{row}"); continue
             deps.add(row); out.append(f"R{row}@{off}")
@@ -234,7 +304,7 @@ def normalize_formula(formula, self_col, self_row, row_by_num):
 
 
 # ------------------------------------------------------------------ render to Sigma
-UNRENDERABLE = ("XREF", "ERR", "RANGE", "REF", "?")   # tokens with no safe Sigma form
+UNRENDERABLE = ("XREF", "ERR", "RANGE", "REF", "?", "XCOL")   # tokens with no safe Sigma form
 
 
 def col_id(row):
@@ -326,7 +396,7 @@ def approx(a, b, abs_tol=0.01, rel_tol=0.001):
 def _eval_rform(key, pos, computed):
     """Evaluate a canonical KEY (R<row>@<off> form) at year-position `pos`, using the
     already-computed grid, with Sigma's null-propagation (any None operand -> None)."""
-    if not key or any(t in key for t in ("XREF", "ERR", "REF", "RANGE", "?")):
+    if not key or any(t in key for t in ("XREF", "ERR", "REF", "RANGE", "?", "XCOL")):
         return None
     if re.search(r"\b(IF|MIN|MAX|ROUND|ABS|INT)\(", key, re.I):
         return None
@@ -442,17 +512,19 @@ def simulate_and_freeze(plan_lines, rows, axis, cached):
 # ------------------------------------------------------------------ main inference
 def infer(path, sheet=None, first_row=None, last_row=None):
     wb_f, wb_v = load(path)
-    ws_f = pick_sheet(wb_f, sheet)
+    ws_f = pick_sheet(wb_f, wb_v, sheet)
     ws_v = wb_v[ws_f.title]
     hr, axis, fc, lc = detect_year_axis(ws_f, ws_v)
     if not axis:
         raise ValueError(f"could not detect a year axis on sheet {ws_f.title!r}")
     first_row = first_row or (hr + 1)
     last_row = last_row or ws_f.max_row
-    rows = build_row_map(ws_f, ws_v, axis, first_row, last_row)
-    row_by_num = rows
     year_cols = [c for c, _ in axis]
     col_year = dict(axis)
+    ycol2pos = {c: i for i, c in enumerate(year_cols)}
+    label_col = detect_label_col(ws_f, hr, year_cols)
+    rows = build_row_map(ws_f, ws_v, axis, first_row, last_row, label_col)
+    row_by_num = rows
 
     # cached grid for parity
     cached = {}
@@ -483,7 +555,7 @@ def infer(path, sheet=None, first_row=None, last_row=None):
                     typed[yr] = float(lit)
                 continue
             # FORMULA
-            key, _, deps, flags = normalize_formula(fml, c, r, row_by_num)
+            key, _, deps, flags = normalize_formula(fml, c, r, row_by_num, ycol2pos)
             if "cross_sheet" in flags:
                 n_xsheet += 1
                 if isinstance(cv, (int, float)):

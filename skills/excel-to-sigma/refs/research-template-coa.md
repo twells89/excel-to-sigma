@@ -66,6 +66,26 @@ per file (~1,700 calls; throttle/retry/resume; one folder per sector; guard name
 Editable entry is **opt-in per file**, routed to the input-table hand-off, and cheap only once
 the bulk-seed API lands. Don't promise editable-at-scale today.
 
+## Template variation observed (a 3-file calibration sample)
+
+The fleet is **not one uniform template** — even a tiny sample surfaced ≥3 sub-layouts. The
+detector was generalized to absorb the mechanical differences; the fingerprint safely
+quarantines the structurally different ones (FAILED, never silently mangled):
+
+| Sub-layout | Traits | Detector handling | Bucket |
+|---|---|---|---|
+| **A — canonical FactSet** | `FY results`/`Quarterly`, labels col A, contiguous years col B+, standard sections | full support → **100% parity** | AUTO / NEEDS_REVIEW |
+| **B — segment × year FactSet** | annual sheet named e.g. `Annuals`; **labels in col B**; **year columns non-contiguous** (segment + interim `H1 20xx` columns between years); sections named `Income Statement`/`Balance Sheet`; a **segment dimension** (per-division columns) | picks the right sheet + label col + gapped/`E`-suffix years; segment-column refs carried as data | NEEDS_REVIEW / FAILED until its section names + segment handling are added |
+| **C — multi-sheet / IPO-era** | no `__FDSCACHE__`; a thin annual sheet whose cells are **cross-sheet links** to a quarters sheet; financials split across tabs | picks the annual sheet; all-links → all carried | FAILED (needs a follow-the-links multi-sheet mode) |
+
+Detector generalizations added for this: **label-column detection** (A or B), **year detection
+anywhere with gaps + `E`/`F` suffixes**, **year-POSITION offsets** (so `Lag` works across gaps),
+and **contract-driven sheet selection** (`annual_sheet_names` in `coa.json`, matched before
+content auto-detection). **To onboard sub-layouts B/C:** add their section names to
+`sections_expected`, their sheet names to `annual_sheet_names`, grow COA aliases from the rollup,
+and (for the segment dimension / multi-sheet split) extend the recipe. This is the calibration
+loop — each new sample either passes or tells you exactly what to add.
+
 ## Run
 
 ```bash

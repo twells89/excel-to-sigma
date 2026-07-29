@@ -3,6 +3,8 @@
   "template": {
     "name": "broker-factset-equity-research",
     "sheets_expected": ["FY results", "Quarterly"],
+    "annual_sheet_names": ["FY results", "Annuals", "P&L Annual", "Income Statement", "P&L", "Financials", "Model"],
+    "_annual_sheet_names_note": "The annual-statement sheet is named variously across the fleet (grow this list from failures). batch-convert.py prefers a name match before content auto-detection.",
     "sections_expected": ["PROFIT AND LOSS", "PER SHARE DATA", "EVALUATION", "BALANCE SHEET", "CHANGE IN NET DEBT", "COMPUTED ASSUMPTIONS"],
     "fdscache_marker": "__FDSCACHE__",
     "fingerprint_weights": {"sections": 0.4, "sheets": 0.15, "label_jaccard": 0.25, "formula_shapes": 0.2},
