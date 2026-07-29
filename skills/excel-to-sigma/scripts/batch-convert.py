@@ -47,7 +47,12 @@ def alias_index(coa):
 
 
 ALIAS = alias_index(COA)
-STABLE_SECTIONS = set(COA["template"]["sections_expected"])
+STABLE_NORM = {norm(s) for s in COA["template"]["sections_expected"]}
+
+
+def in_stable(section):
+    n = norm(section)
+    return any(n == e or n in e or e in n for e in STABLE_NORM)
 
 
 def strip_report(path):
@@ -68,9 +73,10 @@ def is_detail(l):
 def fingerprint(plan, sheets, n_mapped):
     """Similarity (not equality) to the house template -> SAME / VARIANT / UNKNOWN."""
     T = COA["template"]; w = T["fingerprint_weights"]
-    file_secs = {norm(l["section"]) for l in plan["lines"]}
+    file_secs = {norm(l["section"]) for l in plan["lines"] if l["section"] != "(none)"}
     exp_secs = {norm(s) for s in T["sections_expected"]}
-    sec_score = len(file_secs & exp_secs) / max(len(exp_secs), 1)
+    matched = sum(1 for e in exp_secs if any(e in fs or fs in e for fs in file_secs))
+    sec_score = min(matched / 3.0, 1.0)                 # recognizing >=3 known sections = full
     sheet_score = len({norm(s) for s in sheets} & {norm(s) for s in T["sheets_expected"]}) / \
                   max(len(T["sheets_expected"]), 1)
     accountish = [l for l in plan["lines"] if not is_detail(l)]      # headline lines only
@@ -149,7 +155,7 @@ def triage(path, sheet):
     anchors = list(plan["anchors"])
     # a real gap = a HEADLINE line (not a ratio/sub-item) in a stable section that didn't map
     unmapped_stable = [l["label"] for l in plan["lines"]
-                       if l["row"] not in mapped and l["section"] in STABLE_SECTIONS
+                       if l["row"] not in mapped and in_stable(l["section"])
                        and not is_detail(l)]
     reasons = []
     # no-silent-truncation invariants
@@ -157,7 +163,7 @@ def triage(path, sheet):
         reasons.append("INVARIANT: no year axis detected")
     if not anchors:
         reasons.append("INVARIANT: no anchor line (revenue/EBIT/net income/EPS) resolved")
-    sections_found = {l["section"] for l in plan["lines"]} & STABLE_SECTIONS
+    sections_found = {norm(l["section"]) for l in plan["lines"] if in_stable(l["section"])}
     if len(sections_found) < 2:
         reasons.append(f"INVARIANT: only {len(sections_found)} known section(s) found")
     entry.update(sheet=plan["sheet"], fingerprint=sc, fingerprint_class=cls, fingerprint_detail=det,

@@ -162,6 +162,11 @@ def detect_label_col(ws, header_row, year_cols):
 SECTION_HINTS = ("PROFIT AND LOSS", "PER SHARE DATA", "EVALUATION", "BALANCE SHEET",
                  "CHANGE IN NET DEBT", "CASH FLOW", "COMPUTED ASSUMPTIONS", "RATIOS",
                  "INCOME STATEMENT", "VALUATION")
+# substrings that mark a statement section even in mixed case (sub-layout B names its sections
+# "Income Statement" / "Cash Flow" / "Balance Sheet" and uses ":"-terminated sub-headers)
+SECTION_KEYWORDS = ("income statement", "balance sheet", "cash flow", "profit and loss",
+                    "profit & loss", "per share", "valuation", "ratios", "enterprise value",
+                    "assets", "liabilities", "equity", "net debt", "shareholders")
 
 
 def is_section_header(text, has_year_data):
@@ -170,10 +175,14 @@ def is_section_header(text, has_year_data):
     t = text.strip()
     if t.upper() in SECTION_HINTS:
         return True
-    # ALL-CAPS-ish, multi-word, no leading indentation, few punctuation
+    tl = t.lower()
+    if any(h in tl for h in SECTION_KEYWORDS) and not any(ch.isdigit() for ch in t):
+        return True
     letters = [ch for ch in t if ch.isalpha()]
     if len(letters) >= 3 and t == t.upper() and not t.startswith(" ") and ":" not in t:
         return True
+    if t.endswith(":") and 3 <= len(t) <= 44 and not any(ch.isdigit() for ch in t):
+        return True                                      # sub-header, e.g. "Non-current assets:"
     return False
 
 
@@ -182,27 +191,34 @@ def build_row_map(ws_f, ws_v, axis, first_row, last_row, label_col=1):
     Only rows with >=1 non-empty year cell are data rows. Labels read from `label_col` (A or B)."""
     year_cols = [c for c, _ in axis]
     rows = {}
-    section, sec_order, line_order = "(none)", 0, 0
+    # seed the first section from the header-row label (e.g. "Income Statement" shares the year row)
+    init = ws_f.cell(first_row - 1, label_col).value
+    section = init.strip() if isinstance(init, str) and is_section_header(init.strip(), False) else "(none)"
+    sec_order, line_order = (1 if section != "(none)" else 0), 0
     name_seen = Counter()
     for r in range(first_row, last_row + 1):
         label = ws_f.cell(r, label_col).value
         label = str(label).strip() if label is not None else ""
         # gather year cells
         cells = {}
-        has_data = False
+        has_data = False        # a data LINE needs a numeric/formula year cell — text-only rows
+                                # (e.g. a segment-header row whose year col holds "Stellantis") are
+                                # headers, not line items, and an all-text/all-null column breaks the
+                                # column-to-row transpose (type can't unify).
         for c in year_cols:
             fv = ws_f.cell(r, c).value
             cv = ws_v.cell(r, c).value
             if fv is None and cv is None:
                 cells[c] = ("EMPTY", None, None, None); continue
-            has_data = True
             if isinstance(fv, str) and fv.startswith("="):
-                cells[c] = ("FORMULA", None, fv, cv)
+                cells[c] = ("FORMULA", None, fv, cv); has_data = True
             elif isinstance(fv, (int, float)):
-                cells[c] = ("LITERAL", fv, None, cv)
+                cells[c] = ("LITERAL", fv, None, cv); has_data = True
+            elif isinstance(cv, (int, float)):
+                # array/CSE formula or other exotic cell with a cached number -> carry the value
+                cells[c] = ("LITERAL", cv, None, cv); has_data = True
             else:
-                # text literal in a data row is rare; treat as label-ish, ignore for value
-                cells[c] = ("TEXT", fv, None, cv)
+                cells[c] = ("EMPTY", None, None, None)   # text in a year col -> ignore (not data)
         if is_section_header(label, has_data):
             section = label.strip(); sec_order += 1; line_order = 0
             continue
@@ -338,9 +354,13 @@ def render_sigma(key):
     s = re.sub(r"\bIF\(", "If(", s)
     s = re.sub(r"\bSUM\(", "Sum(", s)
     s = re.sub(r"([0-9.]+)\s*%", r"(\1 * 0.01)", s)         # Excel 101% -> (101*0.01)
-    # Sigma rejects a unary '+' prefix (Excel '=+B8+B11'): drop '+' at start / after '(' or ','
-    for _ in range(3):
-        s = re.sub(r"(^|[(,])\s*\+", r"\1", s.strip())
+    # Excel tolerates operator runs (=A+ +B, =A- -B, =+B); Sigma rejects them. Collapse:
+    for _ in range(5):
+        s = re.sub(r"\+\s*\+", "+", s)
+        s = re.sub(r"\+\s*-", "-", s)
+        s = re.sub(r"-\s*\+", "-", s)
+        s = re.sub(r"-\s*-", "+", s)
+        s = re.sub(r"(^|[(,])\s*\+", r"\1", s.strip())      # drop unary '+' at start / after ( ,
     return s if _safe_sigma(s) else None                     # unsupported -> carry as data
 
 
@@ -726,15 +746,23 @@ def break_cycles(plan_lines, by_row):
 
 
 def _anchors(plan_lines):
-    want = {"turnover": "Turnover", "ebit ": "EBIT", "= ebit": "EBIT",
-            "net income": "Net income", "net attributable": "Net attributable",
-            "eps reported": "EPS reported", "eps adjusted": "EPS adjusted"}
+    # ordered specific->general so e.g. "ebitda" is claimed before a looser pattern
+    want = [("consolidated profit attributable", "Net attributable"),
+            ("net attributable", "Net attributable"), ("net income", "Net income"),
+            ("net profit", "Net income"), ("net result", "Net income"),
+            ("ebitda", "EBITDA"), ("operating income", "EBIT"), ("= ebit", "EBIT"),
+            ("ebit (", "EBIT"), ("turnover", "Revenue"), ("net revenue", "Revenue"),
+            ("total revenue", "Revenue"), ("revenue", "Revenue"), ("sales", "Revenue"),
+            ("eps (calculated)", "EPS reported"), ("eps reported", "EPS reported"),
+            ("eps adjusted", "EPS adjusted"), ("earnings per share", "EPS reported"),
+            ("eps", "EPS reported")]
     found = {}
     for p in plan_lines:
         low = (p["label"] or "").lower()
-        for k, nm in want.items():
+        for k, nm in want:
             if k in low and nm not in found:
                 found[nm] = {"col_id": p["col_id"], "label": p["label"], "row": p["row"]}
+                break                       # one anchor category per row
     return found
 
 
