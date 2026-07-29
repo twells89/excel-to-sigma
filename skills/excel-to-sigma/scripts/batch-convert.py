@@ -84,12 +84,17 @@ def fingerprint(plan, sheets, n_mapped):
     # formula-shape signal: how many derived canonicals look like a COA shape (rough: has refs)
     shp = sum(1 for l in plan["lines"] if l["kind"] in ("derived", "ratio") and l.get("canonical"))
     shp_score = min(shp / 20.0, 1.0)
+    # anchor coverage — the most template-agnostic "this is a financial statement" signal
+    acat = {"Revenue": "rev", "EBIT": "profit", "EBITDA": "profit", "Net income": "bottom",
+            "Net attributable": "bottom", "EPS reported": "eps", "EPS adjusted": "eps"}
+    anchor_score = len({acat[a] for a in plan["anchors"] if a in acat}) / 4.0
     score = (w["sections"] * sec_score + w["sheets"] * sheet_score +
-             w["label_jaccard"] * lab_score + w["formula_shapes"] * shp_score)
+             w["label_jaccard"] * lab_score + w["formula_shapes"] * shp_score +
+             w.get("anchors", 0) * anchor_score)
     cls = "SAME" if score >= T["thresholds"]["same"] else \
           ("VARIANT" if score >= T["thresholds"]["variant"] else "UNKNOWN")
     return round(score, 3), cls, {"sections": round(sec_score, 2), "sheets": round(sheet_score, 2),
-                                  "labels": round(lab_score, 2)}
+                                  "labels": round(lab_score, 2), "anchors": round(anchor_score, 2)}
 
 
 def coa_map(plan):
@@ -161,11 +166,14 @@ def triage(path, sheet):
     # no-silent-truncation invariants
     if n_periods == 0:
         reasons.append("INVARIANT: no year axis detected")
-    if not anchors:
-        reasons.append("INVARIANT: no anchor line (revenue/EBIT/net income/EPS) resolved")
+    acat = {"Revenue": "rev", "EBIT": "profit", "EBITDA": "profit", "Net income": "bottom",
+            "Net attributable": "bottom", "EPS reported": "eps", "EPS adjusted": "eps"}
+    ncat = len({acat[a] for a in anchors if a in acat})
+    if ncat < 2:                                          # revenue + a profit/bottom line = a statement
+        reasons.append(f"INVARIANT: only {ncat} anchor categor(ies) resolved")
     sections_found = {norm(l["section"]) for l in plan["lines"] if in_stable(l["section"])}
-    if len(sections_found) < 2:
-        reasons.append(f"INVARIANT: only {len(sections_found)} known section(s) found")
+    if len(sections_found) < 2:                           # non-fatal: operating models lack section headers
+        reasons.append(f"note: few recognised sections ({len(sections_found)}) — check section mapping")
     entry.update(sheet=plan["sheet"], fingerprint=sc, fingerprint_class=cls, fingerprint_detail=det,
                  n_periods=n_periods, periods=[p["year"] for p in plan["periods"]][:2] +
                  [plan["periods"][-1]["year"]] if plan["periods"] else [],

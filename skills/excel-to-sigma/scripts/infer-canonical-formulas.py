@@ -74,13 +74,36 @@ ANCHOR_CATS = {
 }
 
 
+XSHEET_ONE = re.compile(r"^=\s*(?:'([^']+)'|([A-Za-z0-9_ .&\-]+))!\$?[A-Z]{1,3}\$?\d+\s*$")
+
+
+def resolve_rollup(wb_f, ws):
+    """Sub-layout C: a thin annual sheet whose cells are single cross-sheet links to ONE other
+    sheet (the real engine). If >=50% of this sheet's formula cells are single cross-sheet refs
+    to one sheet, redirect to that source (its FY/bare-year columns hold the live formulas)."""
+    tgt_count, total = Counter(), 0
+    for row in ws.iter_rows():
+        for c in row:
+            v = c.value
+            if isinstance(v, str) and v.startswith("="):
+                total += 1
+                m = XSHEET_ONE.match(v)
+                if m:
+                    tgt_count[(m.group(1) or m.group(2)).strip()] += 1
+    if total >= 10 and tgt_count:
+        tgt, n = tgt_count.most_common(1)[0]
+        if n / total >= 0.5 and tgt in wb_f.sheetnames and tgt != ws.title:
+            return wb_f[tgt]
+    return ws
+
+
 def pick_sheet(wb_f, wb_v, name):
     """Pick the ANNUAL financial-statement sheet by CONTENT, not size: a detectable year
     axis + the most financial-statement labels in col A. (House-template files name it
     variously — 'FY results' / 'Annuals' / 'P&L Annual' — and the widest sheet is usually
     an industry-comps or quarterly tab, not the financials.)"""
     if name and name in wb_f.sheetnames:
-        return wb_f[name]
+        return resolve_rollup(wb_f, wb_f[name])          # redirect a rollup sheet to its source
     best, best_score = None, (-1, -1)
     for ws in wb_f.worksheets:
         if ws.sheet_state != "visible" or ws.title.startswith("__") or ws.title.endswith(">>"):
@@ -107,10 +130,11 @@ def pick_sheet(wb_f, wb_v, name):
         if score > best_score:
             best_score, best = score, ws
     if best is not None:
-        return best
+        return resolve_rollup(wb_f, best)
     cand = [ws for ws in wb_f.worksheets
             if ws.sheet_state == "visible" and not ws.title.startswith("__")]
-    return max(cand, key=lambda w: (w.max_row or 0) * (w.max_column or 0)) if cand else wb_f.active
+    return resolve_rollup(wb_f, max(cand, key=lambda w: (w.max_row or 0) * (w.max_column or 0))) \
+        if cand else wb_f.active
 
 
 # ------------------------------------------------------------------ year axis

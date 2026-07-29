@@ -76,17 +76,20 @@ quarantines the structurally different ones (FAILED, never silently mangled):
 |---|---|---|---|
 | **A — canonical FactSet** | `FY results`/`Quarterly`, labels col A, contiguous years col B+, standard sections | full support → **100% parity** | AUTO / NEEDS_REVIEW |
 | **B — segment × year FactSet** | annual sheet named e.g. `Annuals`; **labels in col B**; **year columns non-contiguous** (segment + interim `H1 20xx` columns between years); sections named `Income Statement`/`Balance Sheet`; per-division segment columns; array/CSE formulas | **SUPPORTED → 100% parity** (segment-column refs carried as data; consolidated year columns modelled) | VARIANT → NEEDS_REVIEW |
-| **C — multi-sheet / IPO-era** | no `__FDSCACHE__`; a thin annual sheet whose cells are **cross-sheet links** to a quarters sheet; financials split across tabs | picks the annual sheet; all-links → all carried | FAILED (needs a follow-the-links multi-sheet mode) |
+| **C — multi-sheet / IPO-era** | no `__FDSCACHE__`; a thin annual sheet whose cells are **cross-sheet links** to a quarters sheet (the real engine); no section headers | **SUPPORTED → 100% parity** — `resolve_rollup` redirects to the source sheet; its FY (bare-year) columns hold the live formulas (quarterly columns auto-skipped) | VARIANT → NEEDS_REVIEW |
 
 Detector generalizations: **label-column detection** (A or B), **year detection anywhere with
-gaps + `E`/`F` suffixes**, **year-POSITION offsets** (so `Lag` works across gaps), **contract-driven
-sheet selection** (`annual_sheet_names`), section/anchor recognition for `Income Statement` /
-`Cash Flow` / `Balance Sheet`-style names, a **file-relative fingerprint** (recognising ≥3 known
-sections = full credit), operator-run collapse (`+ +`/`- -`), text-only rows excluded as lines
-(they broke the transpose), and array/CSE cells carried by cached value. **To onboard sub-layout C**
-(multi-sheet): a follow-the-links mode that resolves the annual sheet's cross-sheet refs into the
-data page. This is the calibration loop — each new sample either passes or tells you exactly what
-to add.
+gaps + `E`/`F` suffixes** (also auto-skips `Q1/H1/9M` interim columns, keeping only bare-year FY
+columns), **year-POSITION offsets** (so `Lag` works across gaps), **contract-driven sheet selection**
+(`annual_sheet_names`), **rollup redirect** (`resolve_rollup`: a sheet that's mostly single
+cross-sheet links → redirect to its source), section/anchor recognition for `Income Statement` /
+`Cash Flow` / `Balance Sheet`-style names, an **anchor-coverage fingerprint** (fraction of
+{revenue, profit, bottom-line, EPS} resolved — the most template-agnostic signal, so section-less
+operating models still recognise), a **file-relative section score**, operator-run collapse
+(`+ +`/`- -`), text-only rows excluded as lines (they broke the transpose), and array/CSE cells
+carried by cached value. The FAILED gate now needs a year axis **and** ≥2 anchor categories (not a
+section count). This is the calibration loop — each new sample either passes or tells you exactly
+what to add.
 
 ## Run
 
