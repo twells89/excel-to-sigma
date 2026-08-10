@@ -47,7 +47,12 @@ def alias_index(coa):
 
 
 ALIAS = alias_index(COA)
-STABLE_SECTIONS = set(COA["template"]["sections_expected"])
+STABLE_NORM = {norm(s) for s in COA["template"]["sections_expected"]}
+
+
+def in_stable(section):
+    n = norm(section)
+    return any(n == e or n in e or e in n for e in STABLE_NORM)
 
 
 def strip_report(path):
@@ -68,9 +73,10 @@ def is_detail(l):
 def fingerprint(plan, sheets, n_mapped):
     """Similarity (not equality) to the house template -> SAME / VARIANT / UNKNOWN."""
     T = COA["template"]; w = T["fingerprint_weights"]
-    file_secs = {norm(l["section"]) for l in plan["lines"]}
+    file_secs = {norm(l["section"]) for l in plan["lines"] if l["section"] != "(none)"}
     exp_secs = {norm(s) for s in T["sections_expected"]}
-    sec_score = len(file_secs & exp_secs) / max(len(exp_secs), 1)
+    matched = sum(1 for e in exp_secs if any(e in fs or fs in e for fs in file_secs))
+    sec_score = min(matched / 3.0, 1.0)                 # recognizing >=3 known sections = full
     sheet_score = len({norm(s) for s in sheets} & {norm(s) for s in T["sheets_expected"]}) / \
                   max(len(T["sheets_expected"]), 1)
     accountish = [l for l in plan["lines"] if not is_detail(l)]      # headline lines only
@@ -78,12 +84,17 @@ def fingerprint(plan, sheets, n_mapped):
     # formula-shape signal: how many derived canonicals look like a COA shape (rough: has refs)
     shp = sum(1 for l in plan["lines"] if l["kind"] in ("derived", "ratio") and l.get("canonical"))
     shp_score = min(shp / 20.0, 1.0)
+    # anchor coverage — the most template-agnostic "this is a financial statement" signal
+    acat = {"Revenue": "rev", "EBIT": "profit", "EBITDA": "profit", "Net income": "bottom",
+            "Net attributable": "bottom", "EPS reported": "eps", "EPS adjusted": "eps"}
+    anchor_score = len({acat[a] for a in plan["anchors"] if a in acat}) / 4.0
     score = (w["sections"] * sec_score + w["sheets"] * sheet_score +
-             w["label_jaccard"] * lab_score + w["formula_shapes"] * shp_score)
+             w["label_jaccard"] * lab_score + w["formula_shapes"] * shp_score +
+             w.get("anchors", 0) * anchor_score)
     cls = "SAME" if score >= T["thresholds"]["same"] else \
           ("VARIANT" if score >= T["thresholds"]["variant"] else "UNKNOWN")
     return round(score, 3), cls, {"sections": round(sec_score, 2), "sheets": round(sheet_score, 2),
-                                  "labels": round(lab_score, 2)}
+                                  "labels": round(lab_score, 2), "anchors": round(anchor_score, 2)}
 
 
 def coa_map(plan):
@@ -111,13 +122,33 @@ def coa_map(plan):
     return mapped, unmapped
 
 
+def pick_annual_sheet(sheets, explicit):
+    """Prefer the contract's known annual-sheet names (case-insensitive substring) before
+    falling back to infer's content auto-detection (None)."""
+    if explicit:
+        return explicit
+    names = COA["template"].get("annual_sheet_names", [])
+    lc = {norm(s): s for s in sheets}
+    for want in names:                                   # exact-ish first
+        for ns, orig in lc.items():
+            if norm(want) == ns:
+                return orig
+    for want in names:                                   # then substring
+        for ns, orig in lc.items():
+            if norm(want) in ns or ns in norm(want):
+                return orig
+    return None                                          # auto-detect
+
+
 def triage(path, sheet):
     entry = {"file": os.path.basename(path),
              "hash": hashlib.sha1(open(path, "rb").read()).hexdigest()[:12]}
     try:
         strip = strip_report(path)
         entry["stripped"] = strip
-        plan = INF.infer(path, sheet=sheet)
+        chosen = pick_annual_sheet(strip["sheets"], sheet)
+        entry["chosen_sheet"] = chosen
+        plan = INF.infer(path, sheet=chosen)
     except BaseException as ex:                          # incl. ValueError from axis detection
         entry.update(bucket="FAILED", fingerprint_class="UNKNOWN",
                      reasons=[f"inference error: {ex}"])
@@ -129,17 +160,20 @@ def triage(path, sheet):
     anchors = list(plan["anchors"])
     # a real gap = a HEADLINE line (not a ratio/sub-item) in a stable section that didn't map
     unmapped_stable = [l["label"] for l in plan["lines"]
-                       if l["row"] not in mapped and l["section"] in STABLE_SECTIONS
+                       if l["row"] not in mapped and in_stable(l["section"])
                        and not is_detail(l)]
     reasons = []
     # no-silent-truncation invariants
     if n_periods == 0:
         reasons.append("INVARIANT: no year axis detected")
-    if not anchors:
-        reasons.append("INVARIANT: no anchor line (revenue/EBIT/net income/EPS) resolved")
-    sections_found = {l["section"] for l in plan["lines"]} & STABLE_SECTIONS
-    if len(sections_found) < 2:
-        reasons.append(f"INVARIANT: only {len(sections_found)} known section(s) found")
+    acat = {"Revenue": "rev", "EBIT": "profit", "EBITDA": "profit", "Net income": "bottom",
+            "Net attributable": "bottom", "EPS reported": "eps", "EPS adjusted": "eps"}
+    ncat = len({acat[a] for a in anchors if a in acat})
+    if ncat < 2:                                          # revenue + a profit/bottom line = a statement
+        reasons.append(f"INVARIANT: only {ncat} anchor categor(ies) resolved")
+    sections_found = {norm(l["section"]) for l in plan["lines"] if in_stable(l["section"])}
+    if len(sections_found) < 2:                           # non-fatal: operating models lack section headers
+        reasons.append(f"note: few recognised sections ({len(sections_found)}) — check section mapping")
     entry.update(sheet=plan["sheet"], fingerprint=sc, fingerprint_class=cls, fingerprint_detail=det,
                  n_periods=n_periods, periods=[p["year"] for p in plan["periods"]][:2] +
                  [plan["periods"][-1]["year"]] if plan["periods"] else [],

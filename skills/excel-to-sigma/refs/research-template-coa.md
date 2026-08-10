@@ -66,6 +66,31 @@ per file (~1,700 calls; throttle/retry/resume; one folder per sector; guard name
 Editable entry is **opt-in per file**, routed to the input-table hand-off, and cheap only once
 the bulk-seed API lands. Don't promise editable-at-scale today.
 
+## Template variation observed (a 3-file calibration sample)
+
+The fleet is **not one uniform template** — even a tiny sample surfaced ≥3 sub-layouts. The
+detector was generalized to absorb the mechanical differences; the fingerprint safely
+quarantines the structurally different ones (FAILED, never silently mangled):
+
+| Sub-layout | Traits | Detector handling | Bucket |
+|---|---|---|---|
+| **A — canonical FactSet** | `FY results`/`Quarterly`, labels col A, contiguous years col B+, standard sections | full support → **100% parity** | AUTO / NEEDS_REVIEW |
+| **B — segment × year FactSet** | annual sheet named e.g. `Annuals`; **labels in col B**; **year columns non-contiguous** (segment + interim `H1 20xx` columns between years); sections named `Income Statement`/`Balance Sheet`; per-division segment columns; array/CSE formulas | **SUPPORTED → 100% parity** (segment-column refs carried as data; consolidated year columns modelled) | VARIANT → NEEDS_REVIEW |
+| **C — multi-sheet / IPO-era** | no `__FDSCACHE__`; a thin annual sheet whose cells are **cross-sheet links** to a quarters sheet (the real engine); no section headers | **SUPPORTED → 100% parity** — `resolve_rollup` redirects to the source sheet; its FY (bare-year) columns hold the live formulas (quarterly columns auto-skipped) | VARIANT → NEEDS_REVIEW |
+
+Detector generalizations: **label-column detection** (A or B), **year detection anywhere with
+gaps + `E`/`F` suffixes** (also auto-skips `Q1/H1/9M` interim columns, keeping only bare-year FY
+columns), **year-POSITION offsets** (so `Lag` works across gaps), **contract-driven sheet selection**
+(`annual_sheet_names`), **rollup redirect** (`resolve_rollup`: a sheet that's mostly single
+cross-sheet links → redirect to its source), section/anchor recognition for `Income Statement` /
+`Cash Flow` / `Balance Sheet`-style names, an **anchor-coverage fingerprint** (fraction of
+{revenue, profit, bottom-line, EPS} resolved — the most template-agnostic signal, so section-less
+operating models still recognise), a **file-relative section score**, operator-run collapse
+(`+ +`/`- -`), text-only rows excluded as lines (they broke the transpose), and array/CSE cells
+carried by cached value. The FAILED gate now needs a year axis **and** ≥2 anchor categories (not a
+section count). This is the calibration loop — each new sample either passes or tells you exactly
+what to add.
+
 ## Run
 
 ```bash
