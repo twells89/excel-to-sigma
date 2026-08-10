@@ -24,7 +24,7 @@ user-invocable: true
 **Read ALL of the following before replying or taking any action:**
 - `refs/input-tables.md` — the validated input-table workflow + the API-vs-UI split. **This is the crown jewel of the skill: the source-swap goes through a warehouse view, NOT a direct DM source binding.**
 - `refs/excel-translation.md` — the translation surface, the formal-Table-only MVP rule, and what "formula translation" actually means here (grain selection, not business logic).
-- `refs/sigma-build-gotchas.md` — the hard-won Sigma spec rules (SQL element formula prefix, DM POST envelope, element-name/ID reassignment, publish gate).
+- `refs/sigma-build-gotchas.md` — the hard-won Sigma spec rules (SQL element formula prefix, DM POST envelope, released workbook document wrapper, element-name/ID reassignment, publish gate).
 - `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
 - `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
 - `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
@@ -213,12 +213,20 @@ For the fact Table, emit a **paste-ready CSV** with:
 
 Parse Excel date serials → ISO dates here.
 
-## Phase 2 — Build the read/output DM (against a seed)
+## Phase 2 — Build the read/output DM (against a seed) + reuse-check
 
-Land the seed (inline `VALUES` custom-SQL for ≤~1k rows; PUT-to-stage + COPY INTO
-for larger) and POST the DM (fact + dim elements + relationships + a flattened
-`*_REPORT` join element for grouping). Verify rollups against the seed. Full
-build rules in `refs/sigma-build-gotchas.md`.
+Before POSTing a new DM, check whether an existing Sigma data model already
+covers the same grain (same formal-Table columns / warehouse view). Prefer
+reusing or extending that DM over spawning another copy. When no match, land
+the seed (inline `VALUES` custom-SQL for ≤~1k rows; PUT-to-stage + COPY INTO for
+larger) and POST the DM (fact + dim elements + relationships + a flattened
+`*_REPORT` join element for grouping).
+
+**Post-DM readback (hard gate):** after `POST /v2/dataModels/spec`, GET the
+live spec and map server-assigned element/column ids before any workbook build
+(`build-forecast-model.py` / `build-research-model.py` already do this via
+`map_dm*`). Never trust authored ids past the POST. Full build rules in
+`refs/sigma-build-gotchas.md`.
 
 ## Phase 3 — Stand up the input table (`scripts/build-input-table-wb.py`)
 
@@ -247,11 +255,28 @@ the write connection. Display names stay identical, so the workbook + metrics ar
 unchanged. This is **API**. Verify the section rollups hit the same parity targets
 as Phase 2.
 
-## Phase 5 — Build / repoint the workbook & verify
+## Phase 5 — Build / repoint the workbook, layout last, parity
 
 Build the dashboard pages (Forecast Summary pivot + KPIs, trend charts) per
-`~/sigma-skills/sigma-workbooks`, sourced from the DM. Confirm every element
-compiles (`verify-workbook`) and the totals tie out.
+`~/sigma-skills/sigma-workbooks`, sourced from the DM. Builders author a nested
+`pages[].elements` draft; **`scripts/lib/workbook_wire.py` assembles layout XML
+as the last write**, then wraps via `code_rep` into the released
+`{ name, folderId, document: { schemaVersion, kind, pages, elements, layout } }`
+body before `POST /v2/workbooks/spec`. Do **not** POST a flat pre-document
+workbook body (the live API returns HTTP 400). Data-model specs stay unwrapped.
+
+Confirm every element compiles and the totals tie out (parity hard gate —
+Phase 0c/0d simulate-and-freeze, Phase 2/4 section rollups, research
+`batch-convert.py` AUTO_PARITY bucket). Never skip the parity comparison.
+
+### Security: RLS / CLS
+
+Excel workbooks have no native row-/column-level security construct to port —
+access control is file-share / workbook-protection only. Detect workbook
+password protection / sheet protection during Phase 0 and note it for the
+customer; do not invent Sigma RLS from spreadsheet structure. If the landed
+warehouse tables already carry RLS policies outside Excel, leave those to the
+warehouse / Sigma admin — this skill does not apply RLS automatically.
 
 ---
 

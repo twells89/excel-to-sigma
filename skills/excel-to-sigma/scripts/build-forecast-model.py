@@ -17,6 +17,12 @@ Intent (plan.intent):
   editable | what-if → rates + manual cells are editable input tables (Coalesce override)
 """
 import sys, os, json, csv, urllib.request, urllib.parse, urllib.error
+from pathlib import Path
+
+_LIB = Path(__file__).resolve().parent / "lib"
+if str(_LIB) not in sys.path:
+    sys.path.insert(0, str(_LIB))
+import workbook_wire  # noqa: E402
 
 CUR = lambda p: {"kind": "number", "formatString": p["currencyFormat"]}
 PCT = lambda p: {"kind": "number", "formatString": p.get("pctFormat", ".1%")}
@@ -197,7 +203,8 @@ def build_wb_spec(P, dm_id, els):
     hidden_els=[actuals,spineWrap,forecast,pnlCombined]
     if editable: main_els+=[rateInput,manualInput]
     pages=[{"id":"pnl","name":"P&L","elements":main_els},{"id":"model","name":"Model (sources)","visibility":"hidden","elements":hidden_els}]
-    return {"name":P["name"],"schemaVersion":1,"folderId":P["folderId"],"pages":pages}
+    # Nested draft; wire_workbook flattens + wraps at the POST / dry-run boundary.
+    return {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],"pages":pages}
 
 def main():
     args=[a for a in sys.argv[1:] if not a.startswith("-")]
@@ -215,7 +222,7 @@ def main():
     if not do_post:
         # map ids from the local spec (ids as-authored) for a dry-run wb spec
         els={"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"}
-        wb_spec=build_wb_spec(P,"<dm-id>",els)
+        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els))
         json.dump(wb_spec,open(f"{outdir}/wb_spec.json","w"),indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
         return
@@ -224,10 +231,11 @@ def main():
     print("dataModelId:",dm_id)
     full=api(base,tok,"GET",f"/v2/dataModels/{dm_id}/spec")
     els=map_dm_elements(full)
-    wb_spec=build_wb_spec(P,dm_id,els)
+    # Layout is the last write (assembled inside wire_workbook) before POST.
+    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els))
     wb=api(base,tok,"POST","/v2/workbooks/spec",wb_spec)
     print("workbookId:",wb["workbookId"],"| url:",wb.get("url"))
-    print("NOTE: layout posts as auto-arrange — run wb-rep push for the designed layout (see refs).")
+    print("NOTE: POST uses a stacked notebook-flow layout via code_rep; refine with wb-rep push if needed.")
 
 if __name__=="__main__":
     main()
