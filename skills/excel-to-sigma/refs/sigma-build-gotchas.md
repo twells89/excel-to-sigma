@@ -28,13 +28,33 @@ Excel path.
   NOT cross-element relationship refs — otherwise "Rollup cannot reference more
   than one external relation."
 
-## Workbook spec (`POST /v2/workbooks/spec`)
+## Workbook spec (`POST /v2/workbooks/spec`) — released document wrapper
 
-- **Required for create:** top-level `name`, `folderId`, `schemaVersion`, `pages`.
+> **Live-verified 2026-08:** the workbook code-rep surface nests non-metadata
+> fields under a top-level `document` key and rejects the old flat body with
+> HTTP 400 (including `/verify`). Use the vendored adapter at
+> `scripts/lib/code_rep.py`. **Data-model specs are unchanged** — do NOT wrap
+> `/v2/dataModels/.../spec`.
+
+- **Wire body for create:** top-level `name` + `folderId` (+ optional
+  `description`) outside; inside `document`: `schemaVersion`, `kind: workbook`,
+  metadata-only `pages[]`, flat `elements[]`, and required `layout` XML.
+- Builders may still author the convenient nested `pages[].elements` draft.
+  Call `workbook_wire.wire_workbook(spec)` (which builds a stacked layout if
+  missing, then `code_rep.wrap`) **as the last write before POST**. Dry-run
+  artifacts that would be POSTed must be the wrapped shape too.
 - **Every page needs a string `id`** (POST fails with `each page must have a
-  string "id"` otherwise).
+  string "id"` otherwise). Page membership lives in `document.layout`
+  (`<Page id="…"><Element elementId="…"/></Page>`), not in nested
+  `pages[].elements` after wrap.
+- Prefer `<Element>` / `<Container>` tags — `code_rep.wrap` rewrites legacy
+  `<LayoutElement>` / `<GridContainer>` aliases.
+- Theme (if any) goes in `document.settings.theme.{name,overrides}` via
+  `code_rep.set_theme` — never top-level `themeName` / `themeOverrides`.
 - Every element needs a unique `id`; columns need `id` + `name` + `formula`.
-- Send `Content-Type: application/yaml` (or json). Specs round-trip as YAML on GET.
+- Send `Content-Type: application/json` (or yaml). Specs round-trip as YAML on GET.
+- On readback, unwrap with `code_rep.document(resp)` / `code_rep.workbook_elements`
+  — never dig `pages[].elements` on a live GET.
 - **Input-table specifics** live in `refs/input-tables.md` (write connection, empty
   source, system columns without `type`, publish gate).
 

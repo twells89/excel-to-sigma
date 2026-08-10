@@ -22,10 +22,17 @@ Auth: reads ~/.sigma-migration/env (SIGMA_BASE_URL/CLIENT_ID/CLIENT_SECRET).
 import argparse
 import json
 import os
+import sys
 import urllib.request
 import urllib.parse
+from pathlib import Path
 
 SYSTEM_COLS = ["ID", "CREATED_AT", "CREATED_BY", "UPDATED_AT", "UPDATED_BY"]
+
+_LIB = Path(__file__).resolve().parent / "lib"
+if str(_LIB) not in sys.path:
+    sys.path.insert(0, str(_LIB))
+import workbook_wire  # noqa: E402
 
 
 def token():
@@ -134,11 +141,14 @@ def main():
     else:
         raise SystemExit("provide --columns (empty mode) or --spine-cols/--spine-sql + --key + --entry-cols (linked mode)")
 
+    # Nested draft → released document wrapper (code_rep). Layout is assembled
+    # as the last write inside wire_workbook before the POST body is built.
     spec = {"name": args.name, "description": desc, "folderId": folder,
-            "schemaVersion": 1,
+            "schemaVersion": 1, "kind": "workbook",
             "pages": [{"id": "entryPage", "name": args.name, "elements": elements}]}
+    post_body = workbook_wire.wire_workbook(spec)
 
-    body = json.dumps(spec).encode()
+    body = json.dumps(post_body).encode()
     req = urllib.request.Request(base + "/v2/workbooks/spec", data=body, method="POST",
                                  headers={"Authorization": f"Bearer {tok}",
                                           "Content-Type": "application/json",

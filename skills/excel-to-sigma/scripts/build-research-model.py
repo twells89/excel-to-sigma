@@ -28,6 +28,12 @@ Usage:
                           [--name "..."] [--post]         # default = dry-run to /tmp
 """
 import sys, os, json, urllib.request, urllib.parse, urllib.error
+from pathlib import Path
+
+_LIB = Path(__file__).resolve().parent / "lib"
+if str(_LIB) not in sys.path:
+    sys.path.insert(0, str(_LIB))
+import workbook_wire  # noqa: E402
 
 OUTDIR = "/tmp/research-build"
 NUM = {"kind": "number", "formatString": "#,##0.0"}
@@ -216,7 +222,9 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
         {"id": "plumb", "name": "plumbing", "visibility": "hidden",
          "elements": [calc, long_el, dimw, labeled]},
     ]
-    return {"name": name, "schemaVersion": 1, "folderId": folder, "pages": pages}
+    # Nested draft; wire_workbook flattens + wraps at the POST / dry-run boundary.
+    return {"name": name, "schemaVersion": 1, "kind": "workbook",
+            "folderId": folder, "pages": pages}
 
 
 # ---------------------------------------------------------------- main
@@ -245,7 +253,9 @@ def main():
     print(f"data columns (lines with typed values): {len(data_lines)} ; total lines: {len(plan['lines'])}")
 
     if not do_post:
-        wb_spec = build_wb(plan, "<dm-id>", {"data": "data", "linedim": "linedim"}, data_lines, folder or "<folder>", name)
+        wb_spec = workbook_wire.wire_workbook(
+            build_wb(plan, "<dm-id>", {"data": "data", "linedim": "linedim"},
+                     data_lines, folder or "<folder>", name))
         json.dump(wb_spec, open(f"{OUTDIR}/wb_spec.json", "w"), indent=1)
         print(f"DRY RUN — {OUTDIR}/dm_spec.json + wb_spec.json. Re-run with --post (and --conn/--folder) to build live.")
         return
@@ -255,7 +265,9 @@ def main():
     print("dataModelId:", dm_id)
     full = api(base, tok, "GET", f"/v2/dataModels/{dm_id}/spec")
     els = map_dm(full)
-    wb_spec = build_wb(plan, dm_id, els, data_lines, folder, name)
+    # Layout is the last write (assembled inside wire_workbook) before POST.
+    wb_spec = workbook_wire.wire_workbook(
+        build_wb(plan, dm_id, els, data_lines, folder, name))
     json.dump(wb_spec, open(f"{OUTDIR}/wb_spec_live.json", "w"), indent=1)
     wb = api(base, tok, "POST", "/v2/workbooks/spec", wb_spec)
     print("workbookId:", wb.get("workbookId"), "| url:", wb.get("url"))
