@@ -169,6 +169,63 @@ def detect_year_axis(ws_f, ws_v):
     return hr, axis, axis[0][0], axis[-1][0]
 
 
+def _row_year_cells(ws_f, ws_v, r, maxcol):
+    out = []
+    for c in range(2, maxcol + 1):
+        y = year_of(ws_v.cell(r, c).value, ws_f.cell(r, c).value)
+        if y is not None:
+            out.append((c, y))
+    return out
+
+
+def _axis_from_cells(cells):
+    axis, seen, prev = [], set(), None
+    for c, y in cells:
+        if y == "INC":
+            y = (prev + 1) if isinstance(prev, int) else None
+        if not isinstance(y, int) or y in seen:
+            prev = y if isinstance(y, int) else prev
+            continue
+        seen.add(y); axis.append((c, y)); prev = y
+    return axis
+
+
+def find_header_rows(ws_f, ws_v):
+    """Every row that looks like a YEAR-HEADER: >=4 distinct, monotonically increasing years.
+    Returns [(row, axis)] top-to-bottom. Data rows rarely have 4+ increasing year-like values
+    in the header columns, so this reliably finds each sub-table's header."""
+    maxcol = min(ws_f.max_column or 1, 400)
+    out = []
+    for r in range(1, min(ws_f.max_row or 1, 320) + 1):
+        axis = _axis_from_cells(_row_year_cells(ws_f, ws_v, r, maxcol))
+        yrs = [y for _, y in axis]
+        if len(axis) >= 4 and all(yrs[i] < yrs[i + 1] for i in range(len(yrs) - 1)):
+            out.append((r, axis))
+    return out
+
+
+def detect_tables(ws_f, ws_v):
+    """Segment a sheet into sub-tables, each governed by its OWN year-header row — so a sheet
+    with multiple tables at DIFFERENT column->year alignments (e.g. a lower table headed at a
+    different row) is not read on one wrong axis. Consecutive headers sharing the same column
+    set are one table (a repeated/echoed header). Returns [{header_row, axis, first_row, last_row}]."""
+    headers = find_header_rows(ws_f, ws_v)
+    if not headers:
+        return []
+    kept = []
+    for r, axis in headers:
+        cols = tuple(c for c, _ in axis)
+        if kept and cols == tuple(c for c, _ in kept[-1][1]):
+            continue                                     # same grid -> same table
+        kept.append((r, axis))
+    tables = []
+    for i, (r, axis) in enumerate(kept):
+        start = r + 1
+        end = (kept[i + 1][0] - 1) if i + 1 < len(kept) else (ws_f.max_row or start)
+        tables.append({"header_row": r, "axis": axis, "first_row": start, "last_row": end})
+    return tables
+
+
 def detect_label_col(ws, header_row, year_cols):
     """The label column is the left-most column (A or B) with the most text below the header
     (some templates indent labels into col B). Restrict to columns left of the first year."""
@@ -554,11 +611,14 @@ def simulate_and_freeze(plan_lines, rows, axis, cached):
 
 
 # ------------------------------------------------------------------ main inference
-def infer(path, sheet=None, first_row=None, last_row=None):
+def infer(path, sheet=None, first_row=None, last_row=None, axis_override=None, header_row=None):
     wb_f, wb_v = load(path)
     ws_f = pick_sheet(wb_f, wb_v, sheet)
     ws_v = wb_v[ws_f.title]
-    hr, axis, fc, lc = detect_year_axis(ws_f, ws_v)
+    if axis_override is not None:                        # caller forced a specific sub-table's axis
+        axis, hr = axis_override, (header_row if header_row is not None else 1)
+    else:
+        hr, axis, fc, lc = detect_year_axis(ws_f, ws_v)
     if not axis:
         raise ValueError(f"could not detect a year axis on sheet {ws_f.title!r}")
     first_row = first_row or (hr + 1)
