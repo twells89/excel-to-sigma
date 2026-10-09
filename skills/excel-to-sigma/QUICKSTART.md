@@ -15,6 +15,14 @@ python3 -m venv .venv && .venv/bin/pip install openpyxl python-dateutil
 ```
 Or point the next steps at a real `.xlsx`.
 
+To generate three smaller chart-focused fixtures:
+```bash
+.venv/bin/python make-chart-examples.py
+```
+This writes `chart-examples/Sales Performance.xlsx`, `Expense Planning.xlsx`,
+and `Headcount Planning.xlsx`. Each has an editable formal Table plus three
+charts that map directly to Sigma visualizations.
+
 ## 2. Discover
 ```bash
 .venv/bin/python xlsx-discover.py "Sample Forecast.xlsx"

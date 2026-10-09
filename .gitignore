@@ -4,5 +4,6 @@ __pycache__/
 # generated fixtures / scratch (regenerate via the make-sample-*.py scripts)
 skills/excel-to-sigma/scripts/Sample Forecast.xlsx
 skills/excel-to-sigma/scripts/Sample Research Model.xlsx
+skills/excel-to-sigma/scripts/chart-examples/
 *.tmp
 .DS_Store
