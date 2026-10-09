@@ -11,16 +11,24 @@ python3 -m venv .venv && .venv/bin/pip install openpyxl python-dateutil
 
 ## 1. Make (or bring) an Excel model
 ```bash
-.venv/bin/python make-sample-forecast.py        # writes "Sample Forecast.xlsx" (540-row formal Table + dims + a SUMPRODUCT report)
+.venv/bin/python make-sample-forecast.py        # writes "Sample Forecast.xlsx" (540-row formal Table + dims + 3 charts)
 ```
 Or point the next steps at a real `.xlsx`.
+
+To generate three smaller chart-focused fixtures:
+```bash
+.venv/bin/python make-chart-examples.py
+```
+This writes `chart-examples/Sales Performance.xlsx`, `Expense Planning.xlsx`,
+and `Headcount Planning.xlsx`. Each has an editable formal Table plus three
+charts that map directly to Sigma visualizations.
 
 ## 2. Discover
 ```bash
 .venv/bin/python xlsx-discover.py "Sample Forecast.xlsx"
 ```
-Lists formal Tables, their grain, pivots/charts, and a formula census. Confirm the
-fact Table + grain with the user.
+Lists formal Tables, their grain, each chart's type/title/anchor, pivots, and a
+formula census. Confirm the fact Table + grain with the user.
 
 ## 3. Extract the paste-ready seed
 ```bash

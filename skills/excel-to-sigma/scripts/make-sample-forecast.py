@@ -11,7 +11,8 @@ Shape:
   - "Categories"      : formal Table `tblCategory` (dimension)
   - "Calendar"        : formal Table `tblCalendar` (Sept-start fiscal calendar)
   - "Forecast Summary": formula-driven rollup (SUMIFS by statement section x
-                        month) -- the read/output half, rebuilt as DM metrics.
+                        month) plus line, bar, and doughnut charts -- the
+                        read/output half, rebuilt as DM metrics and Sigma charts.
 
 This exercises the whole excel-to-sigma surface: one formal Table at a tidy
 grain (clean input-table candidate), two dimension Tables (DM relationships),
@@ -21,6 +22,7 @@ import random
 from datetime import date
 from dateutil.relativedelta import relativedelta
 from openpyxl import Workbook
+from openpyxl.chart import BarChart, DoughnutChart, LineChart, Reference
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 
@@ -159,9 +161,65 @@ for j in range(2, len(MONTHS) + 3):
     ws4.cell(nrow, j, f"=SUM({col}2:{col}{len(sections)+1})").number_format = "#,##0"
 ws4.column_dimensions["A"].width = 20
 
+# Revenue-mix helper for the doughnut chart.
+ws4["P1"] = "Revenue Category"
+ws4["Q1"] = "FY Revenue"
+for row, (code, label) in enumerate(((4000, "Product Revenue"), (4100, "Service Revenue")), start=2):
+    ws4.cell(row, 16, label)
+    ws4.cell(
+        row,
+        17,
+        f'=SUMIFS({fe}.$F$2:$F${fr_last},{fe}.$E$2:$E${fr_last},{code})',
+    ).number_format = "#,##0"
+ws4.column_dimensions["P"].width = 20
+ws4.column_dimensions["Q"].width = 16
+
+# Excel visuals map directly to the Sigma chart equivalents used in the
+# migration walkthrough.
+line = LineChart()
+line.title = "Monthly Forecast by Statement Section"
+line.y_axis.title = "Forecast Amount"
+line.x_axis.title = "Month"
+line.height = 8
+line.width = 15
+line.add_data(
+    Reference(ws4, min_col=1, min_row=2, max_col=len(MONTHS) + 1, max_row=len(sections) + 1),
+    titles_from_data=True,
+    from_rows=True,
+)
+line.set_categories(Reference(ws4, min_col=2, min_row=1, max_col=len(MONTHS) + 1))
+line.legend.position = "b"
+ws4.add_chart(line, "A8")
+
+bar = BarChart()
+bar.type = "bar"
+bar.style = 10
+bar.title = "FY Forecast by Statement Section"
+bar.x_axis.title = "Forecast Amount"
+bar.height = 8
+bar.width = 11
+bar.add_data(
+    Reference(ws4, min_col=len(MONTHS) + 2, min_row=1, max_row=len(sections) + 1),
+    titles_from_data=True,
+)
+bar.set_categories(Reference(ws4, min_col=1, min_row=2, max_row=len(sections) + 1))
+bar.legend = None
+ws4.add_chart(bar, "P5")
+
+donut = DoughnutChart()
+donut.title = "Revenue Mix"
+donut.holeSize = 55
+donut.height = 8
+donut.width = 11
+donut.add_data(Reference(ws4, min_col=17, min_row=1, max_row=3), titles_from_data=True)
+donut.set_categories(Reference(ws4, min_col=16, min_row=2, max_row=3))
+donut.legend.position = "b"
+ws4.add_chart(donut, "P20")
+
 import os
 out = os.path.join(os.getcwd(), "Sample Forecast.xlsx")
 wb.save(out)
 print(f"wrote {out}")
 print(f"tblForecast rows: {nrows}  (= {len(HIER)} subbranch x {len(CATEGORIES)} cat x {len(MONTHS)} months)")
 print(f"categories: {len(CATEGORIES)}  calendar months: {len(MONTHS)}")
+print("charts: 3  (line, bar, doughnut)")
