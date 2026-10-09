@@ -36,7 +36,6 @@ def add_table(ws, name):
     )
     ws.add_table(table)
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = table.ref
 
 
 def format_data_sheet(ws, date_columns=(), currency_columns=()):
