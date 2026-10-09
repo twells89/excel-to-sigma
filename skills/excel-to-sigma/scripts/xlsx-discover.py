@@ -12,6 +12,7 @@ import sys
 import re
 from collections import Counter
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 # functions we translate today (see refs/excel-translation.md)
 TRANSLATABLE = {
@@ -35,6 +36,34 @@ PK_RE = re.compile(r"(^id|_id|id|code|key|num)$", re.I)
 WIDE_HDR_RE = re.compile(
     r"^(\d{4}([-_/ ]?\d{1,2})?|\d{1,2}[-_/ ]\d{2,4}|"
     r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|q[1-4]|fy\d+|\d+)$", re.I)
+
+
+def chart_title(chart):
+    """Return the visible chart title without depending on openpyxl internals."""
+    if not chart.title:
+        return "(untitled)"
+    if isinstance(chart.title, str):
+        return chart.title
+    try:
+        paragraphs = chart.title.tx.rich.p
+        text = "".join(
+            run.t or ""
+            for paragraph in paragraphs
+            for run in paragraph.r
+        )
+        return text or "(untitled)"
+    except (AttributeError, TypeError):
+        return "(untitled)"
+
+
+def chart_anchor(chart):
+    """Return an A1-style top-left anchor for one/two-cell chart anchors."""
+    if isinstance(chart.anchor, str):
+        return chart.anchor
+    marker = getattr(chart.anchor, "_from", None)
+    if marker is None:
+        return "(unknown)"
+    return f"{get_column_letter(marker.col + 1)}{marker.row + 1}"
 
 
 def classify(headers, body_rows, nrows, referenced_by_others):
@@ -166,6 +195,13 @@ def main(path):
     n_charts = sum(len(getattr(ws, "_charts", [])) for ws in wb.worksheets)
     n_pivots = sum(len(getattr(ws, "_pivots", [])) for ws in wb.worksheets)
     print(f"\n## Visuals: {n_charts} chart(s), {n_pivots} pivot table(s)")
+    for ws in wb.worksheets:
+        for chart in getattr(ws, "_charts", []):
+            chart_type = chart.__class__.__name__.removesuffix("Chart")
+            print(
+                f"  • {chart_type} chart '{chart_title(chart)}' "
+                f"(sheet '{ws.title}', anchor {chart_anchor(chart)})"
+            )
 
     # ---- formula census ----
     func_counts = Counter()
