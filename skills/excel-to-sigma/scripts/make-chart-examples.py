@@ -202,7 +202,7 @@ def make_expenses():
             for category_index, category in enumerate(categories):
                 budget = 18000 + department_index * 7200 + category_index * 4300 + month_index * 950
                 variance_points = month_index + department_index - category_index - 2
-                actual = round(budget * (100 + variance_points) / 100, 2)
+                actual = budget * (100 + variance_points) / 100
                 row = [month, department, category, budget, actual]
                 rows.append(row)
                 data.append(row)
