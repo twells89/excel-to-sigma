@@ -13,12 +13,12 @@ import math
 import re
 from decimal import Decimal,ROUND_HALF_UP
 try:
-    from .input_sync import _digest
-    from .migration_manifest import validate_manifest
+    from .input_sync import _digest, _approved_feature, _manifest_architecture
+    from .migration_manifest import validate_manifest, _plan_hash
     from .workflow_repairs import extract_workflow_repairs
 except ImportError:
-    from input_sync import _digest
-    from migration_manifest import validate_manifest
+    from input_sync import _digest, _approved_feature, _manifest_architecture
+    from migration_manifest import validate_manifest, _plan_hash
     from workflow_repairs import extract_workflow_repairs
 
 class AcceptanceError(ValueError):pass
@@ -58,9 +58,50 @@ def validate_matrix(matrix):
     return True
 
 
-def build_acceptance_matrix(manifests,targets,*,oracles=None):
+def _bound_inputs(target,manifest,receipt,*,validate_source=False):
+    """Exact full assigned architecture, including settings and operation companions."""
+    if validate_source:validate_manifest(manifest)
+    elif _plan_hash(manifest.get('sourceHash'),manifest.get('planProjection'),manifest.get('formulaCells',[]))!=manifest.get('planHash'):
+        raise AcceptanceError('approved input manifest plan hash stale')
+    if manifest.get('target')!={'documentId':target.get('documentId'),'version':target.get('version')}:
+        raise AcceptanceError('manifest target document/version required')
+    for key in ('sourceHash','planHash'):
+        if key in target and target[key]!=manifest.get(key):raise AcceptanceError('input inventory source/plan stale')
+    inputs=_manifest_architecture(manifest)['inputs'];tables=target.get('inputTables')
+    if not inputs or not isinstance(tables,dict) or set(tables)!=set(inputs):
+        raise AcceptanceError('input inventory must exactly cover every planned assigned feature')
+    elements=set();warehouse=set()
+    for feature,spec in inputs.items():
+        _,binding,artifact=_approved_feature(manifest,receipt,feature,require_assigned=True)
+        table=tables[feature]
+        if any(not binding.get(k) or table.get(k)!=binding[k] for k in ('documentId','pageId','elementId')) or table.get('version')!=binding.get('version'):
+            raise AcceptanceError('input inventory assigned destination stale/foreign')
+        if (table.get('connectionId')!=spec.get('connectionId') or not table.get('connectionId')
+                or table.get('targetBindingHash')!=artifact['targetBindingHash']
+                or not table.get('identityEvidenceId') or not table.get('tableIdentity')):
+            raise AcceptanceError('input inventory actual connection/storage/binding evidence required')
+        element=(binding['documentId'],binding['elementId']);storage=(table['connectionId'],table['tableIdentity'])
+        if element in elements or storage in warehouse:raise AcceptanceError('duplicate/shared assigned input identity')
+        elements.add(element);warehouse.add(storage)
+    return tables
+
+
+def _matrix_inputs(matrix,*,validate_source=False):
+    union={}
+    for workflow,target in matrix['workflows'].items():
+        contract=target.get('inputContract') or {}
+        if not contract.get('manifest') or not contract.get('receipt'):raise AcceptanceError('complete approved input contract required')
+        tables=_bound_inputs(target,contract['manifest'],contract['receipt'],validate_source=validate_source)
+        union.update({workflow+':'+feature:table for feature,table in tables.items()})
+    identities=[(t['connectionId'],t['tableIdentity']) for t in union.values()]
+    if len(identities)!=len(set(identities)):raise AcceptanceError('shared staging warehouse input identity')
+    return union
+
+
+def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
     if set(manifests)!={'forecast','research','sales','inventory','expense'} or set(targets)!=set(manifests):
         raise AcceptanceError('all five workflows required')
+    if not isinstance(receipts,dict) or set(receipts)!=set(manifests):raise AcceptanceError('approved assigned receipts for all five workflows required')
     result={'version':1,'workflows':{},'cases':[],'productionStatus':'BLOCKED'}
     def case(workflow,name,count=1,mode='query',**extra):
         entry={'id':workflow+'-'+name,'workflow':workflow,'count':count,'mode':mode,'mandatory':True,**extra}
@@ -69,13 +110,14 @@ def build_acceptance_matrix(manifests,targets,*,oracles=None):
     for workflow,manifest in manifests.items():
         validate_manifest(manifest);target=targets[workflow]
         if not target.get('documentId') or target.get('version') is None or not target.get('url'):raise AcceptanceError('actual staging target/version/URL required')
+        _bound_inputs(target,manifest,receipts[workflow])
         contract=extract_workflow_repairs(manifest['source']['path'])
         if contract['workflow']!=workflow:raise AcceptanceError('source workflow mismatch')
         result['workflows'][workflow]={'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
             'sourceFormulaCount':len(contract['formulaCells']),'sourceStatus':target.get('sourceStatus','REVIEW_REQUIRED'),
             'unresolvedSourceFeatures':copy.deepcopy(target.get('unresolvedSourceFeatures',[])),
             'documentId':target['documentId'],'version':target['version'],'url':target['url'],
-            'inputTables':copy.deepcopy(target.get('inputTables',{})), 'process':WORKFLOW_EXPLANATIONS[workflow],
+            'inputTables':copy.deepcopy(target['inputTables']),'inputContract':{'manifest':copy.deepcopy(manifest),'receipt':copy.deepcopy(receipts[workflow])}, 'process':WORKFLOW_EXPLANATIONS[workflow],
             'implementation':copy.deepcopy(target.get('implementation',{'status':'UNRESOLVED_ACTUAL_TARGET_BINDINGS'})),
             'sourceFeatures':{'charts':[{'title':c['title'],'type':c['chartType'],'source':c['sourceLocation']} for c in contract['charts']],
                 'validationRules':len(contract['validations']),'conditionalFormatRules':len(contract['conditionalFormats']),
@@ -148,13 +190,26 @@ def verify_persistence(before,changed,reopened,restored,*,row_id,key_columns,all
     if not allowed_changes:raise AcceptanceError('persistence case requires an actual deliberate edit')
     old=_index_rows(before,row_id,key_columns);new=_index_rows(changed,row_id,key_columns)
     again=_index_rows(reopened,row_id,key_columns);back=_index_rows(restored,row_id,key_columns)
-    if set(old)!=set(new) or new!=again or old!=back:raise AcceptanceError('row identities/reopen/restore mismatch')
-    expected=copy.deepcopy(old)
+    if set(old)!=set(new) or _digest(new)!=_digest(again) or _digest(old)!=_digest(back):raise AcceptanceError('row identities/reopen/restore mismatch')
+    expected=copy.deepcopy(old);policies={}
     for edit in allowed_changes:
         hits=[r for r in expected.values() if all(r.get(k)==v for k,v in edit['key'].items())]
         if len(hits)!=1 or edit['column'] not in hits[0] or edit['column'] in [row_id,*key_columns]:raise AcceptanceError('invalid edit target')
+        old_value=hits[0][edit['column']];value=edit['value']
+        if (old_value is not None and value is not None and
+                ((isinstance(old_value,bool) != isinstance(value,bool)) or
+                 (isinstance(old_value,(int,float)) != isinstance(value,(int,float))) or
+                 (not isinstance(value,(int,float)) and type(old_value) is not type(value)))):
+            raise AcceptanceError('edit value type differs from original business field')
+        if isinstance(value,(int,float)) and not math.isfinite(value):raise AcceptanceError('finite edit value required')
+        policy=edit.get('comparison','exact');precision=edit.get('precision')
+        if not compare_value(edit['value'],edit['value'],policy,precision=precision):raise AcceptanceError('invalid edit comparison/value')
+        policies[(hits[0][row_id],edit['column'])]=(policy,precision)
         hits[0][edit['column']]=edit['value']
-    if expected!=new:raise AcceptanceError('unexpected input change')
+    if _digest(expected)!=_digest(new):raise AcceptanceError('unexpected input change')
+    if not any(not compare_value(old[rid][column],new[rid][column],policy,precision=precision)
+            for (rid,column),(policy,precision) in policies.items()):
+        raise AcceptanceError('persistence requires an effective saved business edit')
     return True
 
 
@@ -209,6 +264,7 @@ def _evaluate_capture(matrix,capture):
             if allowed and not all(entry.get(k) is True for k in ('validSaved','invalidRejected','cancelPreserved')):
                 raise AcceptanceError('permitted role requires actual Save/Cancel/invalid-entry outcomes')
     if case['id'].endswith('-staging-writeback-isolation'):
+        _matrix_inputs(matrix)
         isolation=capture.get('isolation') or {}
         if not isolation.get('identityEvidenceId') or isolation.get('staging')!=target['inputTables']:raise AcceptanceError('actual full source-bound input identity evidence required')
         assert_isolated_inputs(isolation.get('staging'),isolation.get('original'))
@@ -254,6 +310,9 @@ def validate_ledger(matrix,ledger):
 
 def build_workflow_reports(matrix,ledger,*,final_review=None):
     validate_ledger(matrix,ledger);latest={r['caseId']:r for r in ledger};reports={}
+    blockers=[]
+    try:validate_production_matrix(matrix)
+    except ValueError as error:blockers.append(str(error))
     final=final_review or {}
     reviewed=(final.get('status')=='APPROVED' and final.get('reviewer') and final.get('matrixHash')==matrix['matrixHash']
               and final.get('ledgerHead')==(ledger[-1]['recordHash'] if ledger else None) and final.get('branchCommit'))
@@ -262,7 +321,7 @@ def build_workflow_reports(matrix,ledger,*,final_review=None):
         passed=[c for c in mandatory if latest.get(c['id'],{}).get('status')=='PASSED']
         failed=[c['id'] for c in mandatory if latest.get(c['id'],{}).get('status')=='FAILED']
         unresolved=[c['id'] for c in mandatory if c['id'] not in latest]
-        accepted=len(passed)==len(mandatory) and target.get('sourceStatus') in {'SUPPORTED','REVIEWED_REPLACEMENT','VERIFIED'} and not target.get('unresolvedSourceFeatures')
+        accepted=not blockers and len(passed)==len(mandatory) and target.get('sourceStatus') in {'SUPPORTED','REVIEWED_REPLACEMENT','VERIFIED'} and not target.get('unresolvedSourceFeatures')
         verdict='VERIFIED_COMPLETE' if accepted and reviewed else 'STAGING_ACCEPTANCE_PASSED_REQUIRES_FINAL_REVIEW' if accepted else 'BLOCKED'
         reports[workflow]={'workflow':workflow,'sourceHash':target['sourceHash'],'planHash':target['planHash'],
             'documentId':target['documentId'],'version':target['version'],'url':target['url'],
@@ -270,6 +329,7 @@ def build_workflow_reports(matrix,ledger,*,final_review=None):
             'sourceFeatures':target.get('sourceFeatures',{}),'implementation':target.get('implementation',{}),'editableInputs':target.get('inputTables',{}),'limitations':target.get('limitations',[]),
             'mandatory':len(mandatory),'passed':len(passed),'failed':failed,'unresolved':unresolved,
             'unresolvedSourceFeatures':target.get('unresolvedSourceFeatures',[]),'verdict':verdict,
+            'coverageStatus':'COMPONENT_ONLY' if blockers else 'FULL_MANDATORY_SUITE','completionBlockers':blockers,
             'evidence':[{'case':c['id'],'evidenceId':latest[c['id']]['capture']['evidenceId'],
                 'references':latest[c['id']]['capture']['references'],'screenshots':latest[c['id']]['capture'].get('screenshots',[])} for c in passed]}
     return reports
@@ -281,6 +341,7 @@ def render_reports_markdown(reports):
         lines += ['## '+workflow.title(),'',r['process'],'',f"[{workflow.title()} workbook]({r['url']}) — version {r['version']}",
             '',f"Verdict: **{r['verdict']}**. Passed {r['passed']} of {r['mandatory']} mandatory cases; source formulas accounted: {r['sourceFormulaCount']}.",'']
         lines += ['Source features: '+json.dumps(r.get('sourceFeatures',{}),ensure_ascii=False),'','Editable input bindings: '+json.dumps(r.get('editableInputs',{}),ensure_ascii=False),'','Target implementation: '+json.dumps(r.get('implementation',{}),ensure_ascii=False),'']
+        if r.get('completionBlockers'):lines+=['Completion blocked: '+'; '.join(r['completionBlockers']),'']
         if r['failed']:lines+=['Failed: '+', '.join(r['failed']),'']
         if r['unresolved']:lines+=['Unresolved: '+', '.join(r['unresolved']),'']
         for evidence in r['evidence']:lines+=['- '+evidence['case']+': '+evidence['evidenceId']+' — '+json.dumps(evidence['references'],ensure_ascii=False)]
@@ -294,12 +355,13 @@ def run_integration(matrix,adapter,scope,*,enabled=False):
     The adapter owns browser/query capture and returns evidence only. This module
     never logs its configuration or turns a service write into a browser result.
     """
-    validate_matrix(matrix)
+    validate_production_matrix(matrix)
     if enabled is not True or scope.get('synthetic') is not True or not scope.get('connectionId') or not scope.get('folderId'):
         raise AcceptanceError('opt-in designated synthetic scope required')
     documents={t['documentId'] for t in matrix['workflows'].values()}
     if set(scope.get('documentIds',[]))!=documents:raise AcceptanceError('integration scope must name exactly the staging documents')
     if not scope.get('identityEvidenceId'):raise AcceptanceError('actual isolation query evidence required')
+    if scope.get('stagingInputs')!=_matrix_inputs(matrix):raise AcceptanceError('integration scope must exactly cover the complete assigned input union')
     assert_isolated_inputs(scope.get('stagingInputs'),scope.get('originalInputs'))
     if any(t.get('connectionId')!=scope['connectionId'] for t in scope['stagingInputs'].values()):raise AcceptanceError('integration input connection outside designated scope')
     _no_secrets(scope);ledger=[]
@@ -325,6 +387,7 @@ def validate_production_matrix(matrix):
         'expense':{'policy-reopen-restore':1,'cent-boundary':4,'reconciliation':432,'dashboard-source-static-provenance':8,
             'approval-update-retry-wrong-row':1,'approval-preserves-higher-priority':1,'selection-zero-one-multiple':3},
         'research':{'normalized-live-inputs':145,'source-audit':16,'growth-edit-restored':420,'historical-literal-edit-restored':420,'zero-growth-restored':420}}
+    _matrix_inputs(matrix,validate_source=True)
     actual={c['id']:c for c in matrix['cases']}
     for workflow,count in counts.items():
         if not matrix['workflows'][workflow].get('inputTables'):raise AcceptanceError('actual staged writeback identities missing')

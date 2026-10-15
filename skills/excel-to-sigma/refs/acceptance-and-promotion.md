@@ -84,21 +84,39 @@ review/query the actual join and every normalized value after construction.
 `operation_outcomes.build_outcome_view(binding)` projects persisted operation
 state. Pending/prepared states say "Pending verification". It has no optimistic
 action-chain success effect. `reconcile_operation(expected,capture,operations,
-completed_at=...)` first runs the existing native business audit against complete
+completed_at=...,manifest=...,receipt=...)` requires the validated source manifest
+and its APPROVED_STAGING receipt for the assigned workflowOperations input.
+The complete operations capture must carry sourceHash/planHash/documentId/version,
+origin=sigma-query, executionId/evidenceId, exact assigned binding, typed SDK
+schema and a rowIdBinding (sourceColumnId, readbackColumn, targetBindingHash,
+reviewed evidenceHash). The approved target supplies rowIdColumnId, or the
+reviewed systemColumn alias. This separates the physical SDK row ID from the
+query label. The reconciler then runs the existing native business audit against complete
 before/after rows, exact operation/context/source/plan/document/version and a
 fresh sigma-query evidence reference. It emits a narrow SDK follow-up setting
 CONFIRMED only for the original pending operation. Execute it serially per
-workbook, query the operation row, and use `verify_outcome_row`. The SDK has no
+workbook, query every operations row again, and use `verify_outcome_row`. Its
+sealed plan binds the original capture, assigned destination, complete intended
+rows, exact outcome text and completion timestamp. Verification requires a new
+query/evidence identity, the same target/version/schema/row-ID binding, and
+exact intended fields with every unrelated row preserved. The SDK has no
 compare-and-swap/concurrent uniqueness guarantee; cross-effect partial failure,
 wrong-row prevention and recovery still require published UI acceptance. Failed
 or unconfirmed business reads produce no CONFIRMED write.
 
 ## Mandatory acceptance and reports
 
-`acceptance.build_acceptance_matrix(manifests, targets, oracles=...)` requires all
-five validated source manifests. Targets record actual staging documentId,
+`acceptance.build_acceptance_matrix(manifests, targets, receipts=..., oracles=...)` requires all
+five validated source manifests and their APPROVED_STAGING assigned receipts.
+Each manifest must name its current target document/version. Targets record actual staging documentId,
 version, url, sourceStatus, unresolvedSourceFeatures and isolated warehouse input
-identities (connectionId + tableIdentity). `assert_isolated_inputs` refuses
+identities (connectionId + tableIdentity). inputTables must cover exactly every
+feature in the final sharedInputArchitecture, including settings, companions and
+operations. Each descriptor names assigned documentId/version/pageId/elementId,
+source connectionId, tableIdentity, targetBindingHash and identityEvidenceId.
+The sealed matrix retains the approved manifest/receipt; production and isolation
+validation recheck coverage and reject omitted, extra, stale, foreign or duplicate
+assignments. `assert_isolated_inputs` refuses
 original/shared writeback identities; a copied workbook ID alone is insufficient.
 All mandatory case templates remain unresolved until evidence is recorded.
 Oracles are independently reviewed source equations/goldens, not translator
@@ -118,18 +136,27 @@ cancelPreserved=true. Real published availability derives from entitlement,
 effective inherited grant AND table mode. Explorer is the selected Build user
 with Explore document grant, not Analyze-account parity. Do not broaden roles.
 Persistence captures contain complete before/changed/reopened/restored rows,
-rowIdColumn, keyColumns, allowedChanges and reopen/restore evidence IDs.
+rowIdColumn, keyColumns, allowedChanges and reopen/restore evidence IDs. At
+least one final business value must differ from before; same-value and cancelling
+edits fail. Each allowedChanges entry may declare comparison/precision (default
+exact); changes below its declared money/ratio/date precision do not prove an edit.
+Reopened, restored and allowed-delta snapshots still compare complete typed rows.
 
 `reports --bundle {matrix,ledger,final_review} --out reports.json` renders portable
 per-workflow structured results and Markdown. Each report explains workflow
 rules and shows genuinely passed, failed and unresolved mandatory denominators,
 source formulas, URL/version and evidence references. Final review binds matrix,
 ledger head and exact branchCommit. Source REVIEW_REQUIRED/unresolved features
-cannot become VERIFIED_COMPLETE. Production additionally calls
-`validate_production_matrix`, which rejects a reduced/altered mandatory suite.
+cannot become VERIFIED_COMPLETE. Reports call
+`validate_production_matrix` before any completion verdict. Reduced component
+reports retain their own denominators, but say coverageStatus=COMPONENT_ONLY,
+verdict=BLOCKED and explain completionBlockers; final approval cannot bypass
+the full mandatory suite. Promotion retains the same production gate.
 `run_integration(matrix,adapter,scope,enabled=True)` is opt-in controller injection:
 adapter.capture receives case/target/designated synthetic scope and returns
-actual evidence. It does not log credentials or invent an HTTP/SDK execution API.
+actual evidence. Before the first adapter call, scope.stagingInputs must equal
+the exact matrix union keyed workflow:feature, with no missing/extra table,
+shared original storage, duplicate storage or connection outside scope. It does not log credentials or invent an HTTP/SDK execution API.
 
 ## Original URL preserving promotion and rollback
 

@@ -21,6 +21,103 @@ class AcceptanceTests(unittest.TestCase):
             'sourceHash':'a'*64,'planHash':'b'*64,'documentId':'stage','version':6,
             'actual':[{'key':'A','value':100.01},{'key':'B','value':'Open'}],
             'receipt':{'executionId':'query1','documentId':'stage','version':6,'status':'COMPLETED'},'references':[{'kind':'query','id':'query1'}]}
+    def bound_matrix_inputs(self):
+        from presentation import extract_presentation,build_business_input_architecture,build_business_input_plan
+        from migration_manifest import build_manifest
+        from input_sync import build_artifact_records,_digest
+        from test_presentation import research_runtime_plan
+        names={'sales':'sales-pipeline','inventory':'inventory-reorder','expense':'expense-approval','forecast':'forecast-model','research':'research-model'}
+        manifests={};receipts={};targets={}
+        for workflow,name in names.items():
+            path=ROOT/'tests/fixtures'/('fixture-'+name+'.xlsx');source=extract_presentation(path)
+            arch=build_business_input_architecture(source,connection_id='conn',folder_id='synthetic',research_plan=research_runtime_plan() if workflow=='research' else None)
+            manifest=build_manifest(path,build_business_input_plan(source,arch));manifest['target']={'documentId':'stage-'+workflow,'version':6}
+            bindings={f:{'documentId':'stage-'+workflow,'version':6,'pageId':'page-'+f,'elementId':'assigned-'+workflow+'-'+f,
+                'columnIds':{c['name']:'c'+str(i) for i,c in enumerate(spec['columns'])}} for f,spec in arch['inputs'].items()}
+            receipt={'status':'APPROVED_STAGING','sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'targetBindings':bindings}
+            receipt['artifacts']=build_artifact_records(manifest,arch,bindings)
+            tables={f:{**{k:b[k] for k in ('documentId','version','pageId','elementId')},'connectionId':'conn','tableIdentity':'warehouse-'+workflow+'-'+f,
+                'targetBindingHash':_digest(b),'identityEvidenceId':'actual-'+f} for f,b in bindings.items()}
+            manifests[workflow]=manifest;receipts[workflow]=receipt
+            targets[workflow]={'documentId':'stage-'+workflow,'version':6,'url':'https://example.com/'+workflow,'sourceStatus':'SUPPORTED','inputTables':tables}
+        return manifests,targets,receipts
+
+    def test_reduced_approved_component_report_never_claims_migration_complete(self):
+        p=self.module();m=self.matrix();m.pop('matrixHash');m['workflows']['sales']['sourceStatus']='SUPPORTED';m=p.seal_matrix(m)
+        ledger=p.append_evidence([],m,self.capture(m))
+        report=p.build_workflow_reports(m,ledger,final_review={'status':'APPROVED','reviewer':'independent','matrixHash':m['matrixHash'],'ledgerHead':ledger[-1]['recordHash'],'branchCommit':'commit'})['sales']
+        self.assertEqual(report['passed'],1);self.assertNotEqual(report['verdict'],'VERIFIED_COMPLETE')
+        self.assertNotEqual(report['verdict'],'STAGING_ACCEPTANCE_PASSED_REQUIRES_FINAL_REVIEW')
+        self.assertEqual(report['coverageStatus'],'COMPONENT_ONLY');self.assertTrue(report['completionBlockers'])
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle=Path(tmp)/'bundle.json';out=Path(tmp)/'reports.json'
+            bundle.write_text(json.dumps({'matrix':m,'ledger':ledger,'final_review':{'status':'APPROVED','reviewer':'independent','matrixHash':m['matrixHash'],'ledgerHead':ledger[-1]['recordHash'],'branchCommit':'commit'}}))
+            result=subprocess.run([sys.executable,str(ROOT/'scripts/migration-acceptance.py'),'reports','--bundle',str(bundle),'--out',str(out)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            actual=json.loads(out.read_text());self.assertEqual(actual['reports']['sales']['verdict'],'BLOCKED')
+            self.assertIn('Completion blocked:',actual['markdown'])
+
+
+    def test_noop_and_cancelling_persistence_edits_are_not_actual_saved_changes(self):
+        p=self.module();rows=[{'ID':'row1','Key':'a','Value':1}]
+        for edits in ([{'key':{'Key':'a'},'column':'Value','value':1}],
+            [{'key':{'Key':'a'},'column':'Value','value':2},{'key':{'Key':'a'},'column':'Value','value':1}]):
+            with self.subTest(edits=edits),self.assertRaises(ValueError):p.verify_persistence(rows,rows,rows,rows,row_id='ID',key_columns=['Key'],allowed_changes=edits)
+
+    def test_isolation_inventory_cannot_omit_planned_business_inputs(self):
+        p=self.module();manifests,targets,receipts=self.bound_matrix_inputs()
+        for target in targets.values():target['inputTables']={'unrelated-helper':{'connectionId':'conn','tableIdentity':'isolated-helper-'+target['documentId']}}
+        with self.assertRaises(ValueError):p.build_acceptance_matrix(manifests,targets,receipts=receipts)
+
+    def test_complete_assigned_inventory_and_exact_integration_scope(self):
+        p=self.module();manifests,targets,receipts=self.bound_matrix_inputs()
+        matrix=p.build_acceptance_matrix(manifests,targets,receipts=receipts)
+        self.assertTrue(p.validate_production_matrix(matrix))
+        workflow='sales';features=list(targets[workflow]['inputTables']);feature=features[0]
+        for kind in ('missing','extra','elementId','pageId','documentId','version','connectionId','targetBindingHash','identityEvidenceId','duplicate-storage'):
+            changed=copy.deepcopy(targets[workflow])
+            if kind=='missing':changed['inputTables'].pop(feature)
+            elif kind=='extra':changed['inputTables']['foreign']=copy.deepcopy(changed['inputTables'][feature])
+            elif kind=='duplicate-storage':changed['inputTables'][features[1]]['tableIdentity']=changed['inputTables'][feature]['tableIdentity']
+            else:changed['inputTables'][feature][kind]=5 if kind=='version' else 'foreign' if kind!='identityEvidenceId' else None
+            with self.subTest(kind=kind),self.assertRaises(ValueError):p._bound_inputs(changed,manifests[workflow],receipts[workflow])
+        forged=copy.deepcopy(manifests[workflow]);forged['planProjection']['sharedInputArchitecture']['inputs'].pop(feature)
+        with self.assertRaises(ValueError):p._bound_inputs(targets[workflow],forged,receipts[workflow])
+        receipt=copy.deepcopy(receipts[workflow]);receipt['planHash']='f'*64
+        with self.assertRaises(ValueError):p._bound_inputs(targets[workflow],manifests[workflow],receipt)
+        changed=copy.deepcopy(matrix);changed.pop('matrixHash');changed['workflows'][workflow]['inputTables'].pop(feature);changed=p.seal_matrix(changed)
+        with self.assertRaises(ValueError):p.validate_production_matrix(changed)
+        class Adapter:
+            calls=0
+            def capture(self,request):self.calls+=1;raise RuntimeError('adapter reached after preflight')
+        adapter=Adapter();union=p._matrix_inputs(matrix)
+        scope={'synthetic':True,'connectionId':'conn','folderId':'synthetic','documentIds':[t['documentId'] for t in targets.values()],
+            'identityEvidenceId':'actual-identities','stagingInputs':union,'originalInputs':{'original':{'connectionId':'conn','tableIdentity':'original-only'}}}
+        for kind in ('missing','extra','shared-original'):
+            bad=copy.deepcopy(scope)
+            if kind=='missing':bad['stagingInputs'].pop(next(iter(union)))
+            elif kind=='extra':bad['stagingInputs']['unplanned']={'connectionId':'conn','tableIdentity':'unplanned'}
+            else:bad['originalInputs']={'original':copy.deepcopy(next(iter(union.values())))}
+            with self.subTest(kind=kind),self.assertRaises(ValueError):p.run_integration(matrix,adapter,bad,enabled=True)
+        self.assertEqual(adapter.calls,0)
+        with self.assertRaisesRegex(RuntimeError,'adapter reached'):p.run_integration(matrix,adapter,scope,enabled=True)
+        self.assertEqual(adapter.calls,1)
+
+    def test_persistence_comparison_policy_requires_an_effective_business_delta(self):
+        p=self.module();before=[{'ID':'row','Key':'a','Value':1.001}];changed=[{'ID':'row','Key':'a','Value':1.002}]
+        with self.assertRaises(ValueError):p.verify_persistence(before,changed,changed,before,row_id='ID',key_columns=['Key'],
+            allowed_changes=[{'key':{'Key':'a'},'column':'Value','value':1.002,'comparison':'money'}])
+        for value in (False,float('inf'),float('nan')):
+            invalid=[{'ID':'row','Key':'a','Value':value}]
+            with self.subTest(value=value),self.assertRaises(ValueError):p.verify_persistence(before,invalid,invalid,before,row_id='ID',key_columns=['Key'],
+                allowed_changes=[{'key':{'Key':'a'},'column':'Value','value':value}])
+        zero=[{'ID':'row','Key':'a','Value':0}]
+        self.assertTrue(p.verify_persistence(before,zero,zero,before,row_id='ID',key_columns=['Key'],
+            allowed_changes=[{'key':{'Key':'a'},'column':'Value','value':0,'comparison':'money'}]))
+        with self.assertRaises(ValueError):p.verify_persistence(before,zero,[{'ID':'row','Key':'a','Value':False}],before,row_id='ID',key_columns=['Key'],
+            allowed_changes=[{'key':{'Key':'a'},'column':'Value','value':0}])
+
     def test_append_only_chain_computes_outcome_and_rejects_stale_local_and_incomplete_captures(self):
         p=self.module();matrix=self.matrix();capture=self.capture(matrix)
         ledger=p.append_evidence([],matrix,capture)

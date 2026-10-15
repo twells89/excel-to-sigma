@@ -71,12 +71,10 @@ class PromotionTests(unittest.TestCase):
         with self.assertRaises(ValueError):p.prepare_promotion(backup,current,changed,{**review,'candidateHash':p._digest(changed)},acceptance)
     def test_full_mandatory_evidence_unlocks_exact_original_candidate_and_dryrun_only(self):
         from acceptance import build_acceptance_matrix,seal_matrix,append_evidence
-        from migration_manifest import build_manifest
-        p,current,rows,sdk,scope=self.fixture();fix=ROOT/'tests/fixtures'
-        names={'sales':'sales-pipeline','inventory':'inventory-reorder','expense':'expense-approval','forecast':'forecast-model','research':'research-model'}
-        manifests={w:build_manifest(fix/('fixture-'+n+'.xlsx')) for w,n in names.items()}
-        targets={w:{'documentId':'stage-'+w,'version':6,'url':'https://example.com/stage-'+w,'sourceStatus':'SUPPORTED','inputTables':{'input':{'connectionId':'conn','tableIdentity':'stage-'+w}}} for w in names}
-        m=build_acceptance_matrix(manifests,targets);m.pop('matrixHash')
+        from test_acceptance import AcceptanceTests
+        p,current,rows,sdk,scope=self.fixture()
+        manifests,targets,receipts=AcceptanceTests().bound_matrix_inputs()
+        m=build_acceptance_matrix(manifests,targets,receipts=receipts);m.pop('matrixHash')
         for case in m['cases']:
             case['oracle']={'origin':'independent-oracle','reviewer':'unit-test-oracle','sourceHash':m['workflows'][case['workflow']]['sourceHash'],
                 'checks':[{'key':str(i),'expected':True,'comparison':'exact'} for i in range(case['count'])]}
