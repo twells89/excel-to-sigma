@@ -952,25 +952,59 @@ def approved_business_bindings(plan, manifest, staging_receipt):
     for key, names in (("mainViewColumns", main), ("detailViewColumns", detail)):
         result[key] = [{"id": re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_"),
                         "name": name, "formula": f"[{view['name']}/{name}]"} for name in names]
+    # Resolve by source identity, never by a coincidentally matching field on
+    # the primary view. The approved graph does not own every companion sheet.
     sheet = BUSINESS_TABLES[workflow][0]
-    mapping = {}
-    for name, old in result["columns"].items():
-        if not name.startswith(sheet + "!"):
-            continue
-        field = name[len(sheet) + 1:]
-        if field in binding["columnIds"]:
-            new = {"elementId": binding["elementId"], "columnId": binding["columnIds"][field]}
+    source_nodes={sheet:view_id}
+    model=architecture.get("forecastModel") or {}
+    if workflow=="forecast":
+        ranges=model.get("sourceRanges") or []
+        if len(ranges)>=2:
+            source_nodes[ranges[0].rsplit("!",1)[0]]="actuals"
+            source_nodes[ranges[1].rsplit("!",1)[0]]="forecastLineDefinitions"
+    native={e["id"]:e for e in emitted["elements"]}
+    source_inputs={}
+    for input_feature,input_spec in architecture["inputs"].items():
+        input_target=staging_receipt["targetBindings"][input_feature]
+        input_sheet=(input_spec.get("sourceRange") or "").rsplit("!",1)
+        if len(input_sheet)==2:
+            source_inputs[input_sheet[0]]=input_target
+        for column in input_spec["columns"]:
+            source_column=column.get("sourceColumn")
+            if source_column:
+                source_inputs[source_column.rsplit("!",1)[0]]=input_target
+    columns={}; unresolved=[]
+    for source_field,old in result["columns"].items():
+        source_sheet,field=source_field.rsplit("!",1)
+        assigned=source_inputs.get(source_sheet,{})
+        new=None
+        if field in assigned.get("columnIds",{}):
+            new={"elementId":assigned["elementId"],"columnId":assigned["columnIds"][field]}
+        elif source_sheet in source_nodes:
+            node=native[source_nodes[source_sheet]]
+            column=next((c for c in node["columns"] if c["name"]==field),None)
+            if column:
+                new={"elementId":node["id"],"columnId":column["id"]}
+        if new:
+            columns[source_field]={**old,**new}
         else:
-            column = next((c for c in view["columns"] if c["name"] == field), None)
-            if column is None:
-                continue
-            new = {"elementId": view_id, "columnId": column["id"]}
-        mapping[(old["elementId"], old["columnId"])] = new
-        result["columns"][name] = {**old, **new}
-    for key in ("validationTargets", "conditionalTargets"):
-        for rule, targets in result[key].items():
-            result[key][rule] = [mapping.get((item["elementId"], item["columnId"]), item)
-                                for item in targets]
+            unresolved.append({"kind":"source-column-binding","sourceId":source_field,
+                "sourceCell":old.get("sourceCell"),
+                "reason":"approved input/native graph has no source-identity column target"})
+    result["columns"]=columns
+    result["unresolvedBindings"]=unresolved
+    result["unresolvedTargetReasons"]={}
+    for key,rules in (("validationTargets",plan["validations"]),("conditionalTargets",plan["conditionalFormats"])):
+        for rule in rules:
+            fields=rule.get("fields") or [rule["field"]]
+            resolved=[columns.get(f"{rule['sheet']}!{field.strip()}") for field in fields]
+            result[key][rule["id"]]=resolved if all(resolved) else []
+            if not all(resolved):
+                result["unresolvedTargetReasons"][rule["id"]]="source rule has no complete source-identity target in the approved native graph"
+    for chart in plan["charts"]:
+        bound=result["charts"].get(chart["id"])
+        if bound and bound["sourceElementId"] not in native:
+            del result["charts"][chart["id"]]
     return result
 
 
@@ -1292,7 +1326,7 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
                 target.update({"categoryFormula": category, "orderFormula": order_formula,
                                "seriesFormulas": series})
     ownership = f"excel-to-sigma:{workflow}:{plan['source']['sha256']}"
-    elements, unresolved, aggregate_checks = [], [] , []
+    elements, unresolved, aggregate_checks = [], copy.deepcopy(bindings.get("unresolvedBindings") or []), []
     for role in ("overview", "edit", "detail"):
         elements.append({"id": f"{workflow}-{role}-title", "kind": "text",
                          "body": f"# {workflow.title()} {role.title()}",
@@ -1357,7 +1391,7 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
                        if (target := (bindings.get("columns") or {}).get(f"{validation['sheet']}!{field}"))]
         if validation["status"] != "supported" or not targets:
             unresolved.append({"kind": "validation", "sourceId": validation["id"],
-                               "reason": "unsupported source rule" if validation["status"] != "supported" else "missing editable column binding"})
+                               "reason": "unsupported source rule" if validation["status"] != "supported" else (bindings.get("unresolvedTargetReasons", {}).get(validation["id"]) or "missing editable column binding")})
             continue
         for target in targets:
             patches[target["elementId"]]["columnUpdates"].setdefault(target["columnId"], {}).update(
@@ -1379,7 +1413,7 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
                                  or isinstance(domain["mid"], bool) or not math.isfinite(domain["mid"])))
         if rule["status"] != "supported" or not targets or invalid_midpoint:
             reason = ("native conditional-format store requires a finite numeric midpoint" if invalid_midpoint
-                      else rule.get("unresolvedReason") or ("unsupported source rule" if rule["status"] != "supported"
+                      else rule.get("unresolvedReason") or bindings.get("unresolvedTargetReasons", {}).get(rule["id"]) or ("unsupported source rule" if rule["status"] != "supported"
                                                            else "missing target column binding"))
             unresolved.append({"kind": "conditionalFormat", "sourceId": rule["id"],
                                "reason": reason, "targetBindings": copy.deepcopy(targets or []),

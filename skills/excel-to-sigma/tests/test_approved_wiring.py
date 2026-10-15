@@ -104,6 +104,64 @@ class TestApprovedWiring(unittest.TestCase):
                 with self.assertRaisesRegex(InputSyncError, 'artifact|stale'):
                     emit_workbook_wiring(altered, staging)
 
+    def test_public_expense_policy_excess_uses_scalar_clamp_and_retains_missing_policy_guard(self):
+        from native_graph_oracle import scalar
+        with tempfile.TemporaryDirectory() as directory:
+            _,manifest=self.prepare('expense',Path(directory))
+            result=emit_workbook_wiring(manifest,receipt(manifest))
+            calc=next(e for e in result['wiring']['elements'] if e['id']=='expensesWithPolicy')
+            formula=next(c['formula'] for c in calc['columns'] if c['name']=='PolicyExcess')
+            self.assertIn('Greatest(',formula)
+            self.assertNotIn('Max(',formula)
+            for category,amount,limit,expected in [('Meals',100,90,10),('Meals',80,90,0),
+                                                  ('Meals',90,90,0),(None,100,None,None)]:
+                self.assertEqual(scalar(formula,{'Policy/Category':category,'ExpenseJoin/Amount':amount,
+                                                'Policy/Per-item Limit':limit}),expected)
+            architecture=manifest['planProjection']['sharedInputArchitecture']
+            self.assertIn('Greatest(',architecture['calculations']['PolicyExcess'])
+
+    def test_public_actual_bindings_integrate_all_four_without_logical_companion_targets(self):
+        names={'forecast':'forecast-model','sales':'sales-pipeline','inventory':'inventory-reorder','expense':'expense-approval'}
+        for workflow,stem in names.items():
+            with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as directory:
+                _,manifest=self.prepare(workflow,Path(directory))
+                manifest['target']={'documentId':'doc','version':8}
+                staging=receipt(manifest)
+                graph=emit_workbook_wiring(manifest,staging)['wiring']['elements']
+                inputs=[{'id':target['elementId'],'kind':'input-table','name':
+                    manifest['planProjection']['sharedInputArchitecture']['inputs'][feature]['name'],
+                    'columns':[{'id':column_id,'name':name}for name,column_id in target['columnIds'].items()]}
+                    for feature,target in staging['targetBindings'].items()]
+                current={'schemaVersion':1,'pages':[{'id':'host','name':'Host'}],
+                         'elements':inputs+graph,'layout':'<Page id="host"></Page>'}
+                extracted=presentation.extract_presentation(FIXTURES/('fixture-'+stem+'.xlsx'))
+                from migration_gate import gate_plan_staging_source,source_issue_hash
+                _,evidence=gate_plan_staging_source({**copy.deepcopy(manifest['planProjection']),
+                    'sourceSha256':manifest['sourceHash'],'sourcePath':extracted['source']['path']},
+                    source_arg=extracted['source']['path'])
+                issues=evidence.get('issues') or []
+                staging.update(pendingSourceIssues=issues,sourceReviewStatus='PENDING_STAGING' if issues else 'NOT_REQUIRED',
+                    sourceReviewRequirements=[{'issue':issue,'issueHash':source_issue_hash(issue)}for issue in issues])
+                bindings=presentation.approved_business_bindings(extracted,manifest,staging)
+                artifact=presentation.emit_presentation(extracted,bindings,manifest,staging)
+                integrated=presentation.integrate_presentation(current,artifact)
+                by_id={e['id']:e for e in integrated['elements']}
+                for element_id,patch in artifact['elementPatches'].items():
+                    self.assertIn(element_id,by_id)
+                    ids={c['id']for c in by_id[element_id]['columns']}
+                    self.assertTrue(set(patch['columnUpdates'])<=ids)
+                    self.assertTrue(all(set(rule['columnIds'])<=ids for rule in patch['conditionalFormats']))
+                for chart in artifact['elements']:
+                    if chart['kind'].endswith('-chart'):self.assertIn(chart['source']['elementId'],by_id)
+                if workflow=='forecast':
+                    self.assertEqual(bindings['columns']['Actuals Detail!Amount']['elementId'],'actuals')
+                    self.assertNotIn('Actuals Detail!Date',bindings['columns'])
+                if workflow=='expense':
+                    self.assertEqual(bindings['columns']['Policy!Per-item Limit']['elementId'],'assigned-expensePolicy')
+                for sheet in {'sales':['Assumptions','Rep Targets'],'inventory':['Suppliers']}.get(workflow,[]):
+                    self.assertFalse(any(key.startswith(sheet+'!')for key in bindings['columns']))
+                    self.assertTrue(any(u['sourceId'].startswith(sheet+'!')for u in artifact['unresolved']))
+
     def test_forecast_public_adapter_consumes_assigned_wide_input_and_same_pnl_chain(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, manifest = self.prepare('forecast', Path(directory))

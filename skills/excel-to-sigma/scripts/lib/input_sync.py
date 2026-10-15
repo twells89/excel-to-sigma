@@ -915,7 +915,7 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
             "name": source.get("sourceElementName", "Expense Source"),
             "consumerSourceElementId": "expensesWithPolicy"}
         architecture["calculations"]["PolicyExcess"] = (
-            "If(IsNull([Per-item Limit]), Null, Max([Amount] - [Per-item Limit], 0))")
+            "If(IsNull([Per-item Limit]), Null, Greatest([Amount] - [Per-item Limit], 0))")
         architecture["acceptance"]["expense"] = (
             "edit source-derived Meals limit 90 to 400, verify all matching rows/counts, restore")
         architecture["acceptanceChecks"].append("expense-meals-limit-propagation")
@@ -1079,7 +1079,7 @@ def build_operational_input_elements(architecture, target_bindings=None):
                  {"id": "expense_recon", "name": "Recon Variance",
                   "formula": "[ExpenseJoin/Card Amount] - [ExpenseJoin/Ledger Amount]"},
                  {"id": "expense_excess", "name": "PolicyExcess",
-                  "formula": "If(IsNull([Policy/Category]), Null, Max([ExpenseJoin/Amount] - [Policy/Per-item Limit], 0))"},
+                  "formula": "If(IsNull([Policy/Category]), Null, Greatest([ExpenseJoin/Amount] - [Policy/Per-item Limit], 0))"},
                  {"id": "expense_exception", "name": "Exception",
                   "formula": ('If(IsNull([Policy/Category]), Null, '
                               'If(Abs([Recon Variance]) > 0.01, "RECON", '

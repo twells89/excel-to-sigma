@@ -211,19 +211,75 @@ assigned IDs/names/types before mutations, selects Scope plus six growth drivers
 for research, and preserves all source columns. Other primary workflows show
 all their literal input fields.
 
-Run `readbackProgram` in a fresh readonly SDK session. Capture its printed
-`source`, `contractHash`, `elementId`, and complete column observations, including
-Row ID. Each observation contains `id`, `name`, `visible`, and the nullable
-format record read with `kind()`, `decimal_places()`, `currency()`, and
-`pattern()`. Add the actual execution-context `documentId`, integer
-`documentVersion`, and a unique `readbackId` from that fresh capture; do not
-substitute code-rep GET column metadata. Then verify:
+The entire assigned set must consist of the approved `LiteralEditableColumn`
+objects with exact `type()` and name, plus exactly one `InputTableIDColumn` whose
+`kind()` is `row_id`. Both programs enforce this before any setter. The readback
+records `columnClass`, literal `type`, system `systemKind`, visibility and format.
+Post-validation runtime classes remain pending acceptance: if a REST list rule
+converts a literal to a select column, the guard stops and requires a newly
+reviewed approved schema/class mapping. It does not broadly accept selects.
+The system ID class has no documented `type()` getter, so its observation records
+`type: null`; its class and `kind()` establish its system identity.
+
+Run `readbackProgram` in a fresh readonly SDK session after a successful persisted
+execution. The controller saves the exact submitted calls and unmodified raw MCP
+results before checking metadata. SDK capture envelopes have this shape:
+
+```json
+{"request":{"workbookId":"ACTUAL_ID","documentVersion":9,"code":"EXACT_EMITTED_PROGRAM"},
+ "result":{"structuredContent":{"type":"success-no-edits","persisted":false,
+                                 "output":"COMPLETE_PRINTED_OBSERVATION"}}}
+```
+
+The execution capture submits `program` against the approved base version; its
+raw `success` result must report `persisted: true`, the actual workbook ID and a
+strictly newer integer version. The observation capture submits exactly
+`readbackProgram` in that resulting version, with a `success-no-edits` result
+and `persisted: false`. Preserve all fields from each raw tool result, not just
+this example's minimum fields. No manually added `readbackId` is accepted.
+
+A current-version capture is the controller's fresh workbook GET/context call:
+`{"request":{"workbookId":"ACTUAL_ID"},"result":{"workbookId":"ACTUAL_ID","documentVersion":9}}`.
+The result may retain the full GET response. REST columns are not display
+evidence; this capture confirms only the workbook/version context.
+
+First record the captures in the authoritative durable ledger:
+
+```bash
+python3 scripts/presentation-inputs.py checkpoint-display SOURCE.xlsx \
+  --manifest current-manifest.json --receipt current-receipt.json \
+  --execution sdk-display-execution.json --readback sdk-display-observation.json \
+  --current-version post-observation-current.json --state display-ledger.json \
+  --out display-checkpoint.json
+```
+
+Then acquire a fresh current-version capture and verify/consume that checkpoint:
 
 ```bash
 python3 scripts/presentation-inputs.py verify-display SOURCE.xlsx \
   --manifest current-manifest.json --receipt current-receipt.json \
-  --readback fresh-sdk-display-readback.json --out display-verification.json
+  --current-version fresh-current.json --state display-ledger.json \
+  --out display-verification.json
 ```
+
+These commands lock the ledger, atomically replace and fsync it before publishing
+an output. Every attempt retains raw captures and their canonical hashes, the
+contract/source/plan hashes and exact actual workbook/version. A verdict consumes
+the pending proof, including a metadata failure. Reverification, rerecording the
+same execution/observation, and older/equal versions on that workbook fail closed.
+The library's `verify_input_display` consumes its ledger argument in place;
+controllers using it directly must durably save that ledger before accepting the
+verdict. Use the CLI for the lock/persist boundary.
+
+The controller is responsible for recording authentic calls in order and making
+both current-version captures fresh. The SDK has no documented version CAS or
+signed provenance, so supplied JSON cannot authenticate itself. Keep one
+controller-owned ledger; deleting, editing, cloning or rolling it back to bypass
+consumption is outside this evidence contract. A new staged version and fresh
+persisted execution/readonly capture form a new attempt. That newer same-workbook
+checkpoint supersedes older pending captures while retaining their complete raw
+evidence and proof; the ledger is never reset for a retry. This protocol establishes
+one-use, version-bound controller evidence, not cryptographic attestation.
 
 Mismatch produces `FAILED` and a nonzero exit. Supported settings can pass while
 full source fidelity remains `PARTIAL`: research's 121 currency fields preserve
@@ -235,3 +291,12 @@ The verifier establishes SDK metadata state only. Actual visual rendering,
 source values, validation behavior, and role acceptance require separate proof.
 The SDK exposes no documented workbook-version CAS, so parent execution must
 bind the intended current context and retain the fresh readback evidence.
+
+Actual business bindings resolve companion columns through approved assigned input
+IDs or exact source-identity native nodes (for example Policy to Expense Policy,
+Actuals Detail to Actuals). Source fields absent from that graph remain explicit
+`source-column-binding`/rule entries in `unresolved`; matching names elsewhere do
+not authorize substitution. Sales stage/rep metadata, inventory suppliers, and
+unrepresented summary scopes remain acceptance work. Expense PolicyExcess uses
+scalar `Greatest(amount - limit, 0)`, retaining the missing-policy null guard;
+source blank arithmetic and cent-boundary parity require separate runtime checks.

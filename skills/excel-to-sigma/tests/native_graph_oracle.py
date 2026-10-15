@@ -39,6 +39,10 @@ def scalar(formula, row):
                 for i in range(1, len(args)-1, 2):
                     if run(args[i]) == key: return run(args[i+1])
                 return run(args[-1])
+            if node.func.id == 'IsNull': return run(args[0]) is None
+            if node.func.id == 'Greatest':
+                values=[run(arg) for arg in args]
+                return None if any(value is None for value in values) else max(values)
             if node.func.id == 'Date': return dt.date.fromisoformat(run(args[0]))
             if node.func.id == 'RoundUp':
                 number, places = (run(arg) for arg in args)

@@ -9,6 +9,9 @@ IDs and an immediate readback of those exact columns.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
+import tempfile
 import json
 import sys
 from pathlib import Path
@@ -81,14 +84,18 @@ def parse_args(argv=None):
     bindings.add_argument("--receipt", required=True)
     bindings.add_argument("--out", required=True)
 
-    for name in ("display", "verify-display"):
+    for name in ("display", "checkpoint-display", "verify-display"):
         display = commands.add_parser(name, help="emit approved SDK input display programs or verify fresh SDK observations")
         display.add_argument("source")
         display.add_argument("--manifest", required=True)
         display.add_argument("--receipt", required=True)
         display.add_argument("--feature")
-        if name == "verify-display":
-            display.add_argument("--readback", required=True)
+        if name != "display":
+            display.add_argument("--state", required=True, help="authoritative durable one-use controller ledger")
+            display.add_argument("--current-version", required=True, help="fresh controller-recorded workbook version capture")
+        if name == "checkpoint-display":
+            display.add_argument("--execution", required=True, help="raw SDK request context and execution result")
+            display.add_argument("--readback", required=True, help="raw read-only SDK request context and result")
         display.add_argument("--out", required=True)
 
     checkpoint = commands.add_parser(
@@ -158,13 +165,34 @@ def main(argv=None):
         result = approved_business_bindings(
             extract_presentation(args.source), manifest, _read(args.receipt))
         _write(args.out, result)
-    elif args.command in {"display", "verify-display"}:
-        from input_display import build_input_display, verify_input_display
+    elif args.command in {"display", "checkpoint-display", "verify-display"}:
+        from input_display import build_input_display, checkpoint_input_display, verify_input_display
         manifest = _read(args.manifest)
         validate_manifest(manifest)
         result = build_input_display(extract_presentation(args.source), manifest, _read(args.receipt), args.feature)
-        if args.command == "verify-display":
-            result = verify_input_display(result, _read(args.readback))
+        if args.command != "display":
+            state_path=Path(args.state)
+            if state_path.resolve()==Path(args.out).resolve():
+                raise ValueError("display output must not overwrite the authoritative ledger")
+            # Lock a separate inode so atomic replacement cannot allow concurrent replay.
+            with state_path.with_name(state_path.name+".lock").open("a+") as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX)
+                state=_read(state_path) if state_path.exists() else None
+                if args.command=="checkpoint-display":
+                    state=checkpoint_input_display(result,_read(args.execution),_read(args.readback),
+                                                   _read(args.current_version),state)
+                    result={"status":"PENDING_SDK_VERIFICATION","proofHash":state['attempts'][-1]['proofHash']}
+                else:
+                    result=verify_input_display(result,state,_read(args.current_version))
+                with tempfile.NamedTemporaryFile(mode="w",dir=state_path.parent,delete=False,encoding="utf-8") as saved:
+                    json.dump(state,saved,indent=2)
+                    saved.write("\n")
+                    saved.flush()
+                    os.fsync(saved.fileno())
+                os.replace(saved.name,state_path)
+                directory_fd=os.open(state_path.parent,os.O_RDONLY)
+                try:os.fsync(directory_fd)
+                finally:os.close(directory_fd)
         _write(args.out, result)
         if result.get("status") == "FAILED":
             return 1
