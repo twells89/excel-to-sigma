@@ -219,6 +219,33 @@ def dispositions_for_source(path, source):
     return candidate
 
 
+def gate_plan_staging_source(plan, *, source_arg=None, plan_path=None):
+    """Audit exact source bytes, retaining review issues for explicit test staging.
+
+    This does not accept dispositions or assert verification. Only the strict
+    source gate's audited UNRESOLVED review result may proceed to staging review;
+    missing/stale sources and every BLOCKED result still raise unchanged.
+    """
+    try:
+        source, report = gate_plan_source(plan, source_arg=source_arg, plan_path=plan_path)
+    except MigrationGateError as error:
+        report = error.report
+        if (report.get("reviewStatus") != "UNRESOLVED"
+                or report.get("status") == "BLOCKED"
+                or any(item.get("severity") == "blocker" for item in report.get("issues", []))):
+            raise
+        source = Path(report["source"])
+        report["reviewStatus"] = "PENDING_STAGING"
+    return source, report
+
+
+def source_issue_hash(issue):
+    """Identity of the complete audited review issue, including evidence scope."""
+    return hashlib.sha256(json.dumps(
+        issue, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+
+
 def gate_staging_manifest(manifest, approval):
     """Require a source/plan-bound named mapping review before staging."""
     return validate_staging_approval(manifest, approval)

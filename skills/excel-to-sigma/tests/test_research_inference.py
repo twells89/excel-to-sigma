@@ -1,4 +1,5 @@
 import importlib.util
+import copy
 import sys
 import unittest
 from pathlib import Path
@@ -83,9 +84,11 @@ class TestResearchInference(unittest.TestCase):
                 self.assertNotIn("Lead(", formula)
 
     def test_generated_target_calculation_columns_form_a_dag(self):
-        _dm, data_lines = BUILDER.build_dm(self.plan, "connection", "folder", "Research")
+        plan = copy.deepcopy(self.plan)
+        plan["targetScope"] = {"connectionId": "connection", "folderId": "folder"}
+        _dm, data_lines = BUILDER.build_dm(plan, "connection", "folder", "Research")
         workbook = BUILDER.build_wb(
-            self.plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
             "folder", "Research")
         calc = next(element for page in workbook["pages"] for element in page.get("elements", [])
                     if element.get("id") == "calc")
