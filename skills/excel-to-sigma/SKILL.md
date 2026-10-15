@@ -32,6 +32,7 @@ user-invocable: true
 - `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
 - `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
 - `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
+- `refs/presentation-migration.md` — source-bound native charts, validation, conditional formatting, semantic formats, three-view layout, ordinary business inputs, and repeat-safe full-contents integration.
 - `~/sigma-skills/sigma-workbooks/SKILL.md` + the Sigma OpenAPI — canonical workbook spec.
 
 ---
