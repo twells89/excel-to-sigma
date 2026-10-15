@@ -355,9 +355,10 @@ class TestNativeActions(unittest.TestCase):
         receipt['nativeActionBinding']=binding
         receipt['artifacts']=build_artifact_records(plan,plan['planProjection']['sharedInputArchitecture'],receipt['targetBindings'])
         result=emit_native_action_program(plan,receipt,binding,current_contents=contents)
-        self.assertIn("isinstance(c_expenseBusinessInput['Approval Status'], SingleSelectEditableColumn)",result['program'])
-        self.assertIn("c_expenseBusinessInput['Approval Status'].allowed_values()",result['program'])
-        self.assertIn("isinstance(c_expenseBusinessInput['Amount'], LiteralEditableColumn)",result['program'])
+        from native_actions import _c
+        self.assertIn('isinstance('+_c(feature,'Approval Status')+', SingleSelectEditableColumn)',result['program'])
+        self.assertIn(_c(feature,'Approval Status')+'.allowed_values()',result['program'])
+        self.assertIn('isinstance('+_c(feature,'Amount')+', LiteralEditableColumn)',result['program'])
 
     def test_emission_refuses_missing_extension_preservation_proof_and_stale_current(self):
         plan,receipt,binding,contents=self.bound_approval()
@@ -367,6 +368,24 @@ class TestNativeActions(unittest.TestCase):
         stale=copy.deepcopy(contents);stale['contents']['elements'][0]['columns'][0]['name']='other'
         with self.assertRaisesRegex(NativeActionError,'stale'):
             emit_native_action_program(plan,receipt,binding,current_contents=stale)
+
+    def test_sdk_column_type_narrowing_uses_unique_locals_for_all_effect_keys(self):
+        import ast
+        plan,staged,binding,contents=self.bound_approval()
+        program=emit_native_action_program(plan,staged,binding,current_contents=contents)['program'];tree=ast.parse(program)
+        editable=set()
+        for node in ast.walk(tree):
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='isinstance' and isinstance(node.args[1],ast.Name) and node.args[1].id in {'LiteralEditableColumn','SingleSelectEditableColumn','MultiSelectEditableColumn'}:
+                self.assertIsInstance(node.args[0],ast.Name,'SDK narrowing cannot persist on a dictionary subscript')
+                editable.add(node.args[0].id)
+            if isinstance(node,ast.Assign) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='get_column':
+                self.assertTrue(all(isinstance(t,ast.Name) for t in node.targets),'get_column must assign a unique narrowed local')
+        self.assertTrue(editable)
+        for node in ast.walk(tree):
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id in {'insert_row','update_rows'}:
+                dictionaries=[arg for arg in node.args if isinstance(arg,ast.Dict)]
+                self.assertEqual(len(dictionaries),1)
+                self.assertTrue(all(isinstance(key,ast.Name) and key.id in editable for key in dictionaries[0].keys))
 
     def test_forecast_workflows_emit_effects_and_snapshot_replacement_is_explicit(self):
         def decisions(analyses):
@@ -403,7 +422,8 @@ class TestNativeActions(unittest.TestCase):
         program=result['program'];compile(program,'forecast-candidate','exec')
         self.assertIn('navigate_to(',program)
         self.assertIn('c_liveForecast',program)
-        self.assertIn("const_text('Jul-26'), c_liveForecast['Month']",program)
+        from native_actions import _c
+        self.assertIn("const_text('Jul-26'), "+_c('liveForecast','Month'),program)
         self.assertIn('update_rows(t_forecastBusinessInput',program)
         self.assertIn('insert_row(t_savedScenarios',program)
         self.assertIn('insert_row(t_forecastSnapshots',program)

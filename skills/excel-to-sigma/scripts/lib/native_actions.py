@@ -420,7 +420,9 @@ def _conjoin(values):
 
 
 def _c(feature,name):
-    return 'c_'+feature+'['+repr(name)+']'
+    # SDK narrowing applies to local names, not repeated dictionary subscripts.
+    # UTF-8 hex is collision-free for authored names, including punctuation.
+    return 'c_'+feature+'_'+name.encode('utf-8').hex()
 
 
 def _lit(value):return f'const_text({value!r})'
@@ -495,7 +497,7 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             f'if not isinstance(h_{feature}, Page):',"    raise RuntimeError('expected assigned input page')",
             f'{variable} = h_{feature}.get_element({target["elementId"]!r})',
             f'if not isinstance({variable}, InputTable):',"    raise RuntimeError('expected ordinary input table')",
-            f'c_{feature} = {{}}']
+            ]
         spec=manifest['planProjection']['sharedInputArchitecture']['inputs'][feature]
         for name,cid in target['columnIds'].items():
             column=next(c for c in spec['columns'] if c['name']==name)
@@ -503,7 +505,8 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             v=_c(feature,name)
             lines += [f'{v} = {variable}.get_column({cid!r})',f'if not isinstance({v}, {contract["columnClass"]}):',
                       "    raise RuntimeError('expected assigned editable column class')",
-                      f'if {v}.type() != {contract["type"]!r}:',"    raise RuntimeError('assigned column type changed')"]
+                      f'if {v}.type() != {contract["type"]!r}:',"    raise RuntimeError('assigned column type changed')",
+                      f'if {v}.name() != {name!r}:',"    raise RuntimeError('assigned column name changed')"]
             if contract['columnClass']=='SingleSelectEditableColumn':
                 lines += [f'if {v}.allowed_values() != {contract["allowedValues"]!r}:',"    raise RuntimeError('source-list options changed')"]
         lines += [f'rid_{feature} = {variable}.get_column({system["id"]!r})']
@@ -521,7 +524,7 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             f'if not isinstance(h_{feature}, Page):',"    raise RuntimeError('expected projection page')",
             f't_{feature} = h_{feature}.get_element({target["elementId"]!r})',
             f'if not isinstance(t_{feature}, LevelTable):',"    raise RuntimeError('expected native live projection')",
-            f'c_{feature} = {{}}']
+            ]
         for name,cid in target['columnIds'].items():
             v=_c(feature,name)
             lines += [f'{v} = t_{feature}.get_column({cid!r})',f'if not isinstance({v}, FormulaColumn):',
