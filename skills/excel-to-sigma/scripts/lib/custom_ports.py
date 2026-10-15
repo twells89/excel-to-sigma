@@ -67,8 +67,7 @@ def emit_python_programs(model_binding, *, column_maps=None):
     maps=copy.deepcopy(column_maps or {})
     header=kernel+'\nCOLUMN_MAPS = '+repr(maps)+'\n'
     header+='''
-def read_rows(title, required):
-    frame = sigma.get_element(title)
+def read_rows(frame, title, required):
     observed = list(frame.columns)
     mapping = COLUMN_MAPS.get(title, {})
     names = {name: mapping.get(name, name) for name in required}
@@ -77,38 +76,50 @@ def read_rows(title, required):
     return [{name: row.as_dict()[key] for name, key in names.items()} for row in frame.collect()]
 
 
-def one_invocation():
-    rows = read_rows('Goal Seek Invocation', ('RequestKey','OperationId','State','Target','LowerBound',
+def one_invocation(invocation_frame):
+    rows = read_rows(invocation_frame, 'Goal Seek Invocation', ('RequestKey','OperationId','State','Target','LowerBound',
                     'UpperBound','ToleranceCents','MaxIterations','ModelBinding'))
     if len(rows) != 1 or rows[0]['RequestKey'] != 'goal-seek':
         raise PortError('INVALID_INVOCATION_ROWS')
     return rows[0]
 
 
-def read_model():
-    actuals = read_rows('Actuals', ('Line Item','Month','Section','Amount'))
-    inputs = read_rows('Forecast Inputs View', ('Line Item','Input Row ID','Method','Monthly Growth',*MONTHS))
-    definitions = read_rows('Forecast Line Definitions', ('Line Item','Section'))
+def read_model(actuals_frame, inputs_frame, definitions_frame):
+    actuals = read_rows(actuals_frame, 'Actuals', ('Line Item','Month','Section','Amount'))
+    inputs = read_rows(inputs_frame, 'Forecast Inputs View', ('Line Item','Input Row ID','Method','Monthly Growth',*MONTHS))
+    definitions = read_rows(definitions_frame, 'Forecast Line Definitions', ('Line Item','Section'))
     return actuals, inputs, definitions
 '''
     bodies={
-        'allocation': '''    request = one_invocation()
-    counts = read_rows('Task 5 Headcount Inputs', ('Department','Headcount'))
+        'allocation': '''    invocation_frame = sigma.get_element('Goal Seek Invocation')
+    request = one_invocation(invocation_frame)
+    counts_frame = sigma.get_element('Task 5 Headcount Inputs')
+    counts = read_rows(counts_frame, 'Task 5 Headcount Inputs', ('Department','Headcount'))
     by_department = keyed(counts, 'Department')
     if set(by_department) != set(DEPARTMENTS):
         raise PortError('INVALID_DEPARTMENT_KEYS')
-    assumptions = read_rows('Task 5 Allocation Assumptions', ('Key','Value'))
+    assumptions_frame = sigma.get_element('Task 5 Allocation Assumptions')
+    assumptions = read_rows(assumptions_frame, 'Task 5 Allocation Assumptions', ('Key','Value'))
     if len(assumptions) != 1 or assumptions[0]['Key'] != 'Overhead':
         raise PortError('INVALID_OVERHEAD_ROWS')
     rows = allocate_overhead([by_department[d]['Headcount'] for d in DEPARTMENTS], assumptions[0]['Value'], request['OperationId'])
 ''',
-        'goalSeek': '''    request = one_invocation()
-    actuals, inputs, definitions = read_model()
+        'goalSeek': '''    invocation_frame = sigma.get_element('Goal Seek Invocation')
+    request = one_invocation(invocation_frame)
+    actuals_frame = sigma.get_element('Actuals')
+    inputs_frame = sigma.get_element('Forecast Inputs View')
+    definitions_frame = sigma.get_element('Forecast Line Definitions')
+    actuals, inputs, definitions = read_model(actuals_frame, inputs_frame, definitions_frame)
     rows = [solve_forecast(actuals, inputs, definitions, request, expected_binding=EXPECTED_BINDING)]
 ''',
-        'applyGuard': '''    request = one_invocation()
-    actuals, inputs, definitions = read_model()
-    results = read_rows('Goal Seek Result', RESULT_COLUMNS)
+        'applyGuard': '''    invocation_frame = sigma.get_element('Goal Seek Invocation')
+    request = one_invocation(invocation_frame)
+    actuals_frame = sigma.get_element('Actuals')
+    inputs_frame = sigma.get_element('Forecast Inputs View')
+    definitions_frame = sigma.get_element('Forecast Line Definitions')
+    actuals, inputs, definitions = read_model(actuals_frame, inputs_frame, definitions_frame)
+    results_frame = sigma.get_element('Goal Seek Result')
+    results = read_rows(results_frame, 'Goal Seek Result', RESULT_COLUMNS)
     if len(results) != 1:
         raise PortError('INVALID_RESULT_ROWS')
     rows = [guard_goal_seek(actuals, inputs, definitions, request, results[0], expected_binding=EXPECTED_BINDING)]

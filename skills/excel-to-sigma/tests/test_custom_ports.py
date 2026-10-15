@@ -32,6 +32,17 @@ class CustomPortTests(unittest.TestCase):
         return self.port.solve_forecast(self.model['actuals'], self.model['inputs'],
             self.model['definitions'], {**self.request, **kwargs}, expected_binding='reviewed-model-1')
 
+    def test_warehouse_sigma_accessors_and_output_names_are_compile_time_literals(self):
+        import ast
+        for port,artifact in self.port.emit_python_programs('reviewed-model-1').items():
+            tree=ast.parse(artifact['code'])
+            for node in ast.walk(tree):
+                if not isinstance(node,ast.Call) or not isinstance(node.func,ast.Attribute) or not isinstance(node.func.value,ast.Name) or node.func.value.id!='sigma':continue
+                if node.func.attr in {'get_element','get_control_value','output'}:
+                    self.assertTrue(node.args and isinstance(node.args[0],ast.Constant) and isinstance(node.args[0].value,str),(port,ast.unparse(node)))
+            for function in [n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]:
+                self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Name) and n.func.value.id=='sigma' for n in ast.walk(function)),function.name)
+
     def test_allocation_one_based_radians_unrounded_and_not_normalized(self):
         rows=self.port.allocate_overhead([40,30,20,10],100000,'allocation-A')
         golden=[56829.41969615794,43639.46140238523,21411.20008059867,6215.987523460359]
