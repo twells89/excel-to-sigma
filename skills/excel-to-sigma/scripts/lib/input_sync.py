@@ -747,7 +747,14 @@ def emit_write_programs(seed_plan, manifest, staging_receipt, feature,
         expected_scope = {"sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
                           "feature": feature, "documentId": target["documentId"],
                           "pageId": target["pageId"], "elementId": target["elementId"]}
-        if logical["extensionSeedScope"] != expected_scope:
+        actual_scope = logical["extensionSeedScope"]
+        extension_actions = any(item.get("extensionCheckpointHash")
+                                for item in seed_plan["updates"])
+        # Legacy d19 consumed ledgers did not carry a scope. A fresh ordinary
+        # reconciliation may retain that historical ledger, but it must never
+        # turn an unscoped old creation proof into authorized extension writes.
+        if ((actual_scope is None and extension_actions)
+                or (actual_scope is not None and actual_scope != expected_scope)):
             raise InputSyncError("reconciliation extension seed scope is foreign")
     if _digest(logical) != seed_plan.get("planHash"):
         raise InputSyncError("reconciliation plan digest is stale")

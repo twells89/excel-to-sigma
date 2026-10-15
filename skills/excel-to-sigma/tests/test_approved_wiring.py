@@ -437,3 +437,17 @@ class TestApprovedWiring(unittest.TestCase):
             reconciled = plan_seed(architecture['inputs'][feature]['rows'], current, ['Key'], 'Row ID',
                                    prior_seed=written)
             self.assertEqual(reconciled['extensionSeedCheckpoints'], written['plan']['extensionSeedCheckpoints'])
+            # d19 checkpoints have a consumption ledger but no extension scope.
+            # A fresh ordinary reconciliation must remain usable after upgrade.
+            legacy = copy.deepcopy(written['plan'])
+            legacy.pop('extensionSeedScope')
+            applied = [{'Key': 'A', 'New': 10, 'Row ID': 'row'}]
+            ordinary = plan_seed(architecture['inputs'][feature]['rows'], applied,
+                                 ['Key'], 'Row ID', prior_seed=legacy)
+            self.assertEqual(emit_write_programs(ordinary, manifest, post, feature), [])
+            conflicted = plan_seed(architecture['inputs'][feature]['rows'], current,
+                                   ['Key'], 'Row ID', prior_seed=legacy)
+            self.assertTrue(conflicted['conflicts'])
+            self.assertEqual(emit_write_programs(conflicted, manifest, post, feature), [])
+            with self.assertRaisesRegex(InputSyncError, 'scope'):
+                emit_write_programs(legacy, manifest, post, feature)
