@@ -549,7 +549,7 @@ class TestInputSyncCli(unittest.TestCase):
                          "--reviewed-replacements", str(replacements),
                          "--out-plan", str(out_plan), "--out-manifest", str(manifest)])
             approval = root / "approval.json"; approval.write_text("{}")
-            with (mock.patch.object(module, "gate_plan_source",
+            with (mock.patch.object(module, "gate_plan_staging_source",
                                     return_value=(source, {"sourceSha256": "x"})),
                   mock.patch.object(module, "gate_input_staging",
                                     return_value={"status": "APPROVED_STAGING"}) as stage):

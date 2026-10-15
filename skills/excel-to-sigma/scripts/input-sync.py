@@ -25,7 +25,7 @@ from input_sync import (  # noqa: E402
     emit_write_programs,
     plan_seed,
 )
-from migration_gate import gate_plan_source  # noqa: E402
+from migration_gate import gate_plan_source, gate_plan_staging_source  # noqa: E402
 from migration_manifest import build_manifest  # noqa: E402
 
 
@@ -158,11 +158,18 @@ def main(argv=None):
         _write(args.out_manifest, manifest)
     elif args.command == "stage":
         plan = _load(args.plan)
-        _source, source_gate = gate_plan_source(
-            plan, source_arg=args.source, dispositions_path=args.review_dispositions,
-            plan_path=args.plan)
+        # An optional legacy dispositions file must still pass the strict gate;
+        # it cannot substitute for sourceReviewApproval or runtime evidence.
+        if args.review_dispositions:
+            gate_plan_source(plan, source_arg=args.source,
+                             dispositions_path=args.review_dispositions, plan_path=args.plan)
+        _source, source_gate = gate_plan_staging_source(
+            plan, source_arg=args.source, plan_path=args.plan)
+        manifest = _load(args.manifest)
+        if build_manifest(_source, plan)["planHash"] != manifest.get("planHash"):
+            raise ValueError("staging plan does not match the approved manifest planHash")
         receipt = gate_input_staging(
-            _load(args.manifest), _load(args.approval), plan, source_gate)
+            manifest, _load(args.approval), plan, source_gate)
         _write(args.out, receipt)
     elif args.command == "complete":
         receipt = gate_input_completion(

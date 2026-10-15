@@ -5,10 +5,10 @@ import json
 
 try:
     from .input_sync import build_artifact_records
-    from .migration_gate import gate_completion_manifest, gate_staging_manifest
+    from .migration_gate import gate_completion_manifest, gate_staging_manifest, source_issue_hash
 except ImportError:
     from input_sync import build_artifact_records
-    from migration_gate import gate_completion_manifest, gate_staging_manifest
+    from migration_gate import gate_completion_manifest, gate_staging_manifest, source_issue_hash
 
 
 def _architecture(value):
@@ -64,6 +64,8 @@ def gate_input_staging(manifest, approval, plan_or_architecture, source_gate_evi
     for field in ("sourceHash", "planHash", "reviewer", "mappedFeatures", "targetBindings"):
         if not approval.get(field):
             raise ValueError(f"approved staging requires {field}")
+    if not isinstance(approval["reviewer"], str) or not approval["reviewer"].strip():
+        raise ValueError("approved staging requires a named reviewer")
     _same_hashes(manifest, approval, "approval")
     if set(approval["mappedFeatures"]) != set(architecture.get("mappedFeatures") or []):
         raise ValueError("mappedFeatures must exactly match the approved architecture")
@@ -73,10 +75,19 @@ def gate_input_staging(manifest, approval, plan_or_architecture, source_gate_evi
         raise ValueError("source gate evidence sourceHash is stale")
     source_status = source_gate_evidence.get("status")
     review_status = source_gate_evidence.get("reviewStatus")
-    if source_status == "BLOCKED" or review_status == "BLOCKED":
+    issues = source_gate_evidence.get("issues") or []
+    if (source_status == "BLOCKED" or review_status == "BLOCKED"
+            or any(issue.get("severity") == "blocker" for issue in issues)):
         raise ValueError("source audit is BLOCKED")
-    if review_status not in {"NOT_REQUIRED", "DISPOSITIONED"}:
+    if review_status not in {"NOT_REQUIRED", "DISPOSITIONED", "PENDING_STAGING"}:
         raise ValueError("source audit review is unresolved")
+    if issues:
+        source_approval = approval.get("sourceReviewApproval") or {}
+        if (source_approval.get("status") != "approved_for_staging"
+                or source_approval.get("issues") != issues):
+            raise ValueError("sourceReviewApproval must explicitly approve the exact audited issue scope")
+        # A staging review never marks a source feature verified/dispositioned.
+        review_status = "PENDING_STAGING"
     artifacts = build_artifact_records(manifest, architecture, approval["targetBindings"])
     return {
         "status": "APPROVED_STAGING", "sourceHash": approval["sourceHash"],
@@ -84,6 +95,9 @@ def gate_input_staging(manifest, approval, plan_or_architecture, source_gate_evi
         "mappedFeatures": sorted(approval["mappedFeatures"]),
         "sourceStatus": source_status, "sourceReviewStatus": review_status,
         "sourceAuditEvidenceId": source_gate_evidence.get("evidenceId"),
+        "pendingSourceIssues": issues,
+        "sourceReviewRequirements": [
+            {"issue": issue, "issueHash": source_issue_hash(issue)} for issue in issues],
         "targetBindings": approval["targetBindings"], "artifacts": artifacts,
     }
 

@@ -25,7 +25,7 @@ class ManifestError(ValueError):
 _ROOT_EXCLUDED = {"source", "sourcePath", "sourceSha256", "migrationManifest",
                   "evidence", "runtimeEvidence", "execution", "executionState",
                   "verification", "targetVersions", "targetVersion", "targetBinding",
-                  "actualTarget", "runtime", "formulaCells"}
+                  "actualTarget", "runtime", "formulaCells", "sourceReviewEvidence"}
 _RECORD_RUNTIME_FIELDS = {"evidence", "runtimeEvidence", "execution", "executionState",
                           "verification", "targetVersions", "targetVersion", "targetBinding",
                           "actualTarget", "runtime"}
@@ -302,7 +302,46 @@ def validate_completion(manifest):
         if target and (evidence.get("targetVersion") != target.get("version") or
                        evidence.get("targetDocumentId") != target.get("documentId")):
             raise ManifestError(f"verification evidence target version is stale for {item['id']}")
+    _validate_source_issue_completion(manifest)
     return True
+
+
+def _validate_source_issue_completion(manifest):
+    # Import here to avoid the gate/manifest import cycle. Re-audit source bytes
+    # rather than trusting a caller-editable staging receipt's pending list.
+    try:
+        from .migration_gate import gate_plan_staging_source, source_issue_hash, MigrationGateError
+    except ImportError:
+        from migration_gate import gate_plan_staging_source, source_issue_hash, MigrationGateError
+    plan = {**manifest["planProjection"], "sourceSha256": manifest["sourceHash"]}
+    try:
+        _source, audit = gate_plan_staging_source(
+            plan, source_arg=manifest["source"]["path"])
+    except MigrationGateError as error:
+        raise ManifestError(f"source issue audit prevents completion: {error}") from error
+    issues = audit.get("issues") or []
+    records = manifest.get("sourceReviewEvidence") or []
+    if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+        raise ManifestError("source issue runtime evidence must be an array of records")
+    indexed = {record.get("issueHash"): record for record in records}
+    expected = {source_issue_hash(issue) for issue in issues}
+    if len(indexed) != len(records) or set(indexed) != expected:
+        raise ManifestError("source issue runtime evidence must exactly cover audited pending features")
+    target = manifest["target"]
+    for issue in issues:
+        record = indexed[source_issue_hash(issue)]
+        binding = record.get("targetBinding") or {}
+        expected_target = binding.get("columnId") or binding.get("checkId") or binding.get("elementId")
+        if (record.get("code") != issue["code"] or record.get("status") != "passed"
+                or not record.get("evidenceId") or not record.get("targetId")
+                or record.get("targetId") != expected_target or not binding.get("elementId")
+                or binding.get("documentId") != target["documentId"]
+                or binding.get("version") != target["version"]
+                or record.get("sourceHash") != manifest["sourceHash"]
+                or record.get("planHash") != manifest["planHash"]
+                or record.get("targetDocumentId") != target["documentId"]
+                or record.get("targetVersion") != target["version"]):
+            raise ManifestError(f"source issue runtime evidence is incomplete or stale: {issue['code']}")
 
 
 def _digest(value):
