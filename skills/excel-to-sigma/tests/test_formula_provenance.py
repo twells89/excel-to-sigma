@@ -233,14 +233,18 @@ class TestMigrationManifest(unittest.TestCase):
         assigned = copy.deepcopy(plan)
         assigned["formulaCells"] = [{
             "id": "FY results!C1",
-            "targetMapping": {"logicalFeatureId": "revenue", "workbookId": "wb-old",
-                              "elementId": "element-old"},
+            "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "revenue"},
+            "targetBinding": {"documentId": "wb-old", "elementId": "element-old"},
         }]
         reassigned = copy.deepcopy(assigned)
-        reassigned["formulaCells"][0]["targetMapping"].update(
-            {"workbookId": "wb-new", "elementId": "element-new"})
+        reassigned["formulaCells"][0]["targetBinding"].update(
+            {"documentId": "wb-new", "elementId": "element-new"})
+        self.assertEqual(build_manifest(self.path, assigned)["planHash"],
+                         build_manifest(self.path, reassigned)["planHash"])
+        logical_change = copy.deepcopy(assigned)
+        logical_change["formulaCells"][0]["targetMapping"]["logicalColumnId"] = "margin"
         self.assertNotEqual(build_manifest(self.path, assigned)["planHash"],
-                            build_manifest(self.path, reassigned)["planHash"])
+                            build_manifest(self.path, logical_change)["planHash"])
 
         for key, value in (
             ("lines", [{"row": 1, "canonical": "[c3]"}]),
@@ -272,9 +276,9 @@ class TestMigrationManifest(unittest.TestCase):
     def test_staging_review_and_completion_have_separate_evidence_contracts(self):
         plan = {"formulaCells": [
             {"id": "Audit!A1", "mappingStatus": "live",
-             "targetMapping": {"elementId": "logical-audit", "checkId": "a1"}},
+             "targetMapping": {"logicalElementId": "audit", "logicalCheckId": "a1"}},
             {"id": "FY results!C1", "mappingStatus": "live",
-             "targetMapping": {"elementId": "logical-calc", "columnId": "c1"}},
+             "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "c1"}},
         ]}
         manifest = build_manifest(self.path, plan)
         approval = {
@@ -304,13 +308,15 @@ class TestMigrationManifest(unittest.TestCase):
 
     def test_manifest_rejects_mapping_tampering_omissions_and_cached_staging(self):
         plan = {"formulaCells": [
-            {"id": "Audit!A1", "mappingStatus": "verification", "targetMapping": {"checkId": "a1"}},
-            {"id": "FY results!C1", "mappingStatus": "live", "targetMapping": {"columnId": "c1"}},
+            {"id": "Audit!A1", "mappingStatus": "verification",
+             "targetMapping": {"logicalCheckId": "a1"}},
+            {"id": "FY results!C1", "mappingStatus": "live",
+             "targetMapping": {"logicalColumnId": "c1"}},
         ]}
         manifest = build_manifest(self.path, plan)
         for mutate in (
             lambda value: value["formulaCells"][1].update(mappingStatus="cached"),
-            lambda value: value["formulaCells"][1]["targetMapping"].update(columnId="changed"),
+            lambda value: value["formulaCells"][1]["targetMapping"].update(logicalColumnId="changed"),
             lambda value: value["formulaCells"].pop(),
         ):
             changed = copy.deepcopy(manifest); mutate(changed)
@@ -324,6 +330,33 @@ class TestMigrationManifest(unittest.TestCase):
                     "owner": "Owner", "reviewItems": [i["id"] for i in cached["formulaCells"]]}
         with self.assertRaisesRegex(ManifestError, "unresolved"):
             validate_staging_approval(cached, approval)
+
+    def test_nested_runtime_state_is_excluded_but_business_fields_with_same_names_are_bound(self):
+        plan = {
+            "lines": [{"row": 1, "canonical": "[c2]", "runtimeEvidence": {"run": 1},
+                       "provenance": {"2024": {"sourceCellId": "FY results!C1",
+                                                "verification": {"run": 1}}}}],
+            "features": [{"sourceFeatureId": "feature-1", "targetBinding": {"elementId": "e1"}}],
+            "sourceInputs": [{"id": "business", "values": {"runtime": 10, "verification": 20},
+                              "timestamp": "2026-10-15T12:00:00Z"}],
+        }
+        original = build_manifest(self.path, plan)
+        runtime_change = copy.deepcopy(plan)
+        runtime_change["lines"][0]["runtimeEvidence"] = {"run": 2}
+        runtime_change["lines"][0]["provenance"]["2024"]["verification"] = {"run": 2}
+        runtime_change["features"][0]["targetBinding"] = {"elementId": "e2"}
+        self.assertEqual(original["planHash"], build_manifest(self.path, runtime_change)["planHash"])
+
+        business_change = copy.deepcopy(plan)
+        business_change["sourceInputs"][0]["values"]["runtime"] = 11
+        self.assertNotEqual(original["planHash"], build_manifest(self.path, business_change)["planHash"])
+
+    def test_ambiguous_assigned_ids_are_rejected_under_logical_target_mapping(self):
+        plan = {"formulaCells": [{"id": "FY results!C1", "mappingStatus": "live",
+                                  "targetMapping": {"logicalColumnId": "c1",
+                                                    "elementId": "server-element"}}]}
+        with self.assertRaisesRegex(ManifestError, "migration targetMapping.*targetBinding"):
+            build_manifest(self.path, plan)
 
 
 if __name__ == "__main__":

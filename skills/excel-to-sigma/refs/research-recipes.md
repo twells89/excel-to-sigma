@@ -99,6 +99,11 @@ the workbook bytes, and `planHash` binds logical formulas, source feature IDs, s
 and intended target scope. Runtime evidence, assigned target IDs and document versions do not
 change the approved plan hash. Each source formula appears once with one of `live`, `cached`,
 `unresolved`, or `verification`, plus target mapping and evidence fields kept separately.
+`targetMapping` is logical intent only and uses explicit keys such as `logicalElementId`,
+`logicalColumnId`, `logicalCheckId`, and `logicalSourceFeatureId`. Server-assigned document,
+element, column/check, and version identifiers belong only in `targetBinding` (or `actualTarget`).
+The manifest rejects assigned or ambiguous keys such as `elementId` or `columnId` when they are
+placed under `targetMapping`.
 
 Staging approval and completion are separate gates:
 

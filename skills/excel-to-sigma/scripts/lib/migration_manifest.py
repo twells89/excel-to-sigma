@@ -26,6 +26,14 @@ _ROOT_EXCLUDED = {"source", "sourcePath", "sourceSha256", "migrationManifest",
                   "evidence", "runtimeEvidence", "execution", "executionState",
                   "verification", "targetVersions", "targetVersion", "targetBinding",
                   "actualTarget", "runtime", "formulaCells"}
+_RECORD_RUNTIME_FIELDS = {"evidence", "runtimeEvidence", "execution", "executionState",
+                          "verification", "targetVersions", "targetVersion", "targetBinding",
+                          "actualTarget", "runtime"}
+_LOGICAL_TARGET_FIELDS = {"logicalElementId", "logicalColumnId", "logicalLineId",
+                          "logicalCheckId", "logicalSourceFeatureId", "year",
+                          "equivalentReference"}
+_AMBIGUOUS_TARGET_FIELDS = {"workbookId", "documentId", "elementId", "columnId", "lineId",
+                            "checkId", "sourceFeatureId", "actualColumnId", "version"}
 
 
 def _sha256(path):
@@ -41,8 +49,46 @@ def _formula_projection(formulas):
 
 
 def _plan_projection(plan):
-    return {key: value for key, value in sorted((plan or {}).items())
-            if key not in _ROOT_EXCLUDED}
+    result = {}
+    for key, value in sorted((plan or {}).items()):
+        if key in _ROOT_EXCLUDED:
+            continue
+        if key in {"lines", "features", "auditChecks"} and isinstance(value, list):
+            result[key] = [_record_projection(item) for item in value]
+        elif key == "provenance" and isinstance(value, dict):
+            result[key] = {name: _record_projection(item) for name, item in sorted(value.items())}
+        else:
+            result[key] = value
+    return result
+
+
+def _record_projection(record):
+    if not isinstance(record, dict):
+        return record
+    result = {}
+    for key, value in sorted(record.items()):
+        if key in _RECORD_RUNTIME_FIELDS:
+            continue
+        if key == "provenance" and isinstance(value, dict):
+            result[key] = {name: _record_projection(item) for name, item in sorted(value.items())}
+        else:
+            result[key] = value
+    return result
+
+
+def _validate_target_mapping(mapping, formula_id):
+    if mapping is None:
+        return
+    if not isinstance(mapping, dict):
+        raise ManifestError(f"logical targetMapping must be an object for {formula_id}")
+    misplaced = sorted(set(mapping) & _AMBIGUOUS_TARGET_FIELDS)
+    unknown = sorted(set(mapping) - _LOGICAL_TARGET_FIELDS)
+    if misplaced or unknown:
+        fields = ", ".join(sorted(set(misplaced + unknown)))
+        raise ManifestError(
+            f"migration targetMapping for {formula_id} contains ambiguous or runtime fields: "
+            f"{fields}; use logical* keys for approved intent and targetBinding for assigned IDs"
+        )
 
 
 def _plan_hash(source_hash, projection, formulas):
@@ -67,6 +113,7 @@ def build_manifest(source_path, plan=None) -> dict:
     for identity in sorted(graph.formulas):
         formula = graph.formulas[identity]
         record = plan_cells.get(identity.id, {})
+        _validate_target_mapping(record.get("targetMapping"), identity.id)
         mapping_status = record.get("mappingStatus") or ("verification" if identity.sheet == "Audit" else "unresolved")
         try:
             expression = parse_expression(formula, sheet=identity.sheet)
@@ -161,6 +208,8 @@ def validate_manifest(manifest, source_path=None):
     if any(item.get("mappingStatus") not in {"live", "cached", "unresolved", "verification"}
            for item in formulas):
         raise ManifestError("formula mappingStatus is invalid")
+    for item in formulas:
+        _validate_target_mapping(item.get("targetMapping"), item["id"])
     projection = manifest.get("planProjection")
     if not isinstance(projection, dict) or _plan_hash(source_hash, projection, formulas) != plan_hash:
         raise ManifestError("plan hash does not match canonical logical mappings")

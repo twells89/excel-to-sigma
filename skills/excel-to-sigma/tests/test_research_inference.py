@@ -43,6 +43,11 @@ class TestResearchInference(unittest.TestCase):
         self.assertEqual(self.plan["parity"], {"live": 327, "frozen": 0, "audit": 16})
         self.assertEqual(len(self.plan["migrationManifest"]["formulaCells"]), 343)
         self.assertTrue(validate_manifest(self.plan["migrationManifest"], self.fixture))
+        mappings = [item["targetMapping"] for item in accounting if item["targetMapping"]]
+        self.assertTrue(all(not ({"elementId", "columnId", "lineId", "checkId"} & set(mapping))
+                            for mapping in mappings))
+        self.assertTrue(any(mapping.get("logicalElementId") == "calc" for mapping in mappings))
+        self.assertTrue(any(mapping.get("logicalCheckId") for mapping in mappings))
 
     def test_false_row_cycle_preserves_each_cells_actual_formula_or_literal(self):
         lines = {line["row"]: line for line in self.plan["lines"]}

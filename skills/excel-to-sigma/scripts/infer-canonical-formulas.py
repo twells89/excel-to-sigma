@@ -882,7 +882,8 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
         structural_unresolved = identity in unresolved_nodes
         if identity.sheet == "Audit":
             status = "unresolved" if structural_unresolved else "verification"
-            target = {"checkId": "audit_" + identity.address.lower()}
+            target = {"logicalElementId": "audit",
+                      "logicalCheckId": "audit_" + identity.address.lower()}
             audit_checks.append({
                 "id": identity.id, "address": identity.address, "originalFormula": formula,
                 "dependencies": dependencies, "mappingStatus": status,
@@ -914,14 +915,16 @@ def _target_for_formula(identity, graph, model_sheet, axis):
     column = column_index_from_string(re.match(r"[A-Z]+", identity.address).group(0))
     row = int(re.search(r"\d+$", identity.address).group(0))
     if identity.sheet == model_sheet and column in col_to_year:
-        return {"lineId": col_id(row), "year": col_to_year[column]}
+        return {"logicalElementId": "calc", "logicalColumnId": col_id(row),
+                "year": col_to_year[column]}
     deps = graph.dependencies.get(identity, ())
     if len(deps) == 1 and deps[0].sheet == model_sheet:
         dep_column = column_index_from_string(re.match(r"[A-Z]+", deps[0].address).group(0))
         dep_row = int(re.search(r"\d+$", deps[0].address).group(0))
         if dep_column in col_to_year:
-            return {"lineId": col_id(dep_row), "year": col_to_year[dep_column], "equivalentReference": True}
-    return {"sourceFeatureId": identity.id}
+            return {"logicalElementId": "calc", "logicalColumnId": col_id(dep_row),
+                    "year": col_to_year[dep_column], "equivalentReference": True}
+    return {"logicalSourceFeatureId": identity.id}
 
 
 def _defined_name_value(workbook, name):
