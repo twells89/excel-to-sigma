@@ -8,10 +8,10 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 try:
-    from .excel_expression import UnsupportedExpression, extract_references, parse_expression
+    from .excel_expression import ExpressionError, extract_references, parse_expression
     from .formula_graph import FormulaGraph
 except ImportError:  # standalone tests/scripts that place lib directly on sys.path
-    from excel_expression import UnsupportedExpression, extract_references, parse_expression
+    from excel_expression import ExpressionError, extract_references, parse_expression
     from formula_graph import FormulaGraph
 
 
@@ -136,7 +136,7 @@ def build_manifest(source_path, plan=None) -> dict:
             named_refs = [_reference_id(ref) for ref in extract_references(expression) if ref.name]
             refs = sorted({cell.id for cell in graph.dependencies.get(identity, ())} | set(named_refs))
             parse_error = None
-        except UnsupportedExpression as error:
+        except ExpressionError as error:
             refs, parse_error = [], str(error)
         item = {
             "id": identity.id,
