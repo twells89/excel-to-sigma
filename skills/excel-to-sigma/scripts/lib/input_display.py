@@ -48,6 +48,34 @@ def currency_pattern(raw, precision):
     return f'$,.{precision}f'
 
 
+def _system_column_contract(target):
+    """Only an explicitly approved, evidenced post-REST alias can widen the route.
+
+    FormulaColumn exposes formula()/element_id(), not a documented type() or
+    system kind getter. Its row-ID identity/type comes from independent reviewed
+    evidence bound into the complete approved targetBinding.
+    """
+    alias=target.get('systemColumn')
+    if alias is None:
+        return {'name':'Row ID','columnClass':'InputTableIDColumn','type':None,
+                'systemKind':'row_id','formula':None,'elementId':target['elementId']}
+    keys={'id','name','columnClass','type','systemKind','formula','elementId','rowIdBinding'}
+    identity=alias.get('rowIdBinding') if isinstance(alias,dict) else None
+    if (not isinstance(alias,dict) or set(alias)!=keys
+            or alias['id']!='ID' or alias['name']!='ID'
+            or alias['columnClass']!='FormulaColumn' or alias['type'] is not None
+            or alias['systemKind'] is not None or alias['elementId']!=target['elementId']
+            or alias['formula']!='[New Input Table/ID]'
+            or not isinstance(identity,dict)
+            or set(identity)!={'kind','sourceColumn','valueType','evidenceHash'}
+            or identity.get('kind')!='row_id' or identity.get('sourceColumn')!='ID'
+            or identity.get('valueType')!='text'
+            or not re.fullmatch(r'[0-9a-f]{64}',str(identity.get('evidenceHash') or ''))
+            or alias['id'] in target['columnIds'].values()):
+        raise ValueError('approved system alias requires the exact observed formula/owner/ID and reviewed row-ID identity binding')
+    return copy.deepcopy(alias)
+
+
 def build_input_display(plan,manifest,receipt,feature=None):
     if manifest.get('sourceHash')!=plan['source']['sha256']:
         raise ValueError('input display source hash is stale')
@@ -56,6 +84,7 @@ def build_input_display(plan,manifest,receipt,feature=None):
     spec,target,artifact=_approved_feature(manifest,receipt,feature,require_assigned=True)
     if manifest.get('target')!={'documentId':target['documentId'],'version':target['version']}:
         raise ValueError('input display target/version binding is stale')
+    system_column=_system_column_contract(target)
     workbook=load_workbook(plan['source']['path'],data_only=False)
     try:
         records=[]
@@ -89,7 +118,7 @@ def build_input_display(plan,manifest,receipt,feature=None):
     records.sort(key=lambda c:(0,prominent.index(c['name'])) if c['name'] in prominent else (1,c['name']))
     contract={'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
               'receiptHash':_hash(receipt),'artifactHash':artifact['artifactHash'],'feature':feature,
-              'target':copy.deepcopy(target),'tableName':spec['name'],'columns':records}
+              'target':copy.deepcopy(target),'tableName':spec['name'],'columns':records,'systemColumn':system_column}
     contract_hash=_hash(contract)
     header=[f'# sourceHash={manifest["sourceHash"]}',f'# planHash={manifest["planHash"]}',
             f'# displayContractHash={contract_hash}',f'# execute only in document={target["documentId"]} version={target["version"]}',
@@ -111,8 +140,16 @@ def build_input_display(plan,manifest,receipt,feature=None):
                "if not set(approved_ids).issubset(set(observed_ids)): raise RuntimeError('missing approved input columns')",
                'system_columns = [column for column in all_columns if column.id() not in approved_ids]',
                "if len(system_columns) != 1: raise RuntimeError('expected exactly one system row ID column')",
-               "if not isinstance(system_columns[0], InputTableIDColumn): raise RuntimeError('expected system row ID column class')",
-               "if system_columns[0].kind() != 'row_id' or system_columns[0].name() != 'Row ID': raise RuntimeError('expected system row_id kind')"]
+               'system_column = system_columns[0]',
+               f"if system_column.element_id() != {target['elementId']!r}: raise RuntimeError('foreign system column owner')",
+               f"if system_column.name() != {system_column['name']!r}: raise RuntimeError('expected approved system column name')"]
+    if system_column['columnClass']=='FormulaColumn':
+        header += ["if not isinstance(system_column, FormulaColumn): raise RuntimeError('expected explicitly approved system alias class')",
+                   f"if system_column.id() != {system_column['id']!r}: raise RuntimeError('foreign system alias ID')",
+                   f"if system_column.formula() != {system_column['formula']!r}: raise RuntimeError('foreign system alias formula')"]
+    else:
+        header += ["if not isinstance(system_column, InputTableIDColumn): raise RuntimeError('expected system row ID column class')",
+                   "if system_column.kind() != 'row_id': raise RuntimeError('expected system row_id kind')"]
     program=list(header)
     program.append('table.set_visible_columns(['+', '.join(f'c{i}' for i,c in enumerate(records) if c['visible'])+'])')
     for i,c in enumerate(records):
@@ -124,18 +161,19 @@ def build_input_display(plan,manifest,receipt,feature=None):
     program.append(f"print({{'source': 'sdk-display-execution', 'contractHash': {contract_hash!r}, 'elementId': table.id()}})")
     readback=[line for line in header if not line.startswith('# execute only')]+['observations = []','for column in table.list_columns():',
         '    fmt = column.format()',
-        "    observations.append({'id': column.id(), 'name': column.name(), 'visible': column.is_visible(), 'columnClass': 'LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else 'InputTableIDColumn', 'type': column.type() if isinstance(column, LiteralEditableColumn) else None, 'systemKind': column.kind() if isinstance(column, InputTableIDColumn) else None, 'format': None if fmt is None else {'kind': fmt.kind(), 'decimals': fmt.decimal_places(), 'currency': fmt.currency(), 'pattern': fmt.pattern()}})",
+        "    observations.append({'id': column.id(), 'name': column.name(), 'visible': column.is_visible(), 'elementId': column.element_id(), 'formula': column.formula() if isinstance(column, FormulaColumn) else None, 'columnClass': 'LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else ('FormulaColumn' if isinstance(column, FormulaColumn) else 'InputTableIDColumn'), 'type': column.type() if isinstance(column, LiteralEditableColumn) else None, 'systemKind': column.kind() if isinstance(column, InputTableIDColumn) else None, 'format': None if fmt is None else {'kind': fmt.kind(), 'decimals': fmt.decimal_places(), 'currency': fmt.currency(), 'pattern': fmt.pattern()}})",
         f"print({{'source': 'sdk-column-readback', 'contractHash': {contract_hash!r}, 'elementId': table.id(), 'columns': observations}})"]
     return {**contract,'contractHash':contract_hash,'status':'PENDING_SDK_READBACK',
             'executionBinding':{'workbookId':target['documentId'],'documentVersion':target['version']},
-            'limitations':['SDK has no documented workbook-version CAS; caller must bind the execution context to this document/version and capture a fresh read-only SDK session after execution.',
+            'limitations':['SDK system aliases require explicit reviewed row-ID identity evidence in the receipt; no formula type getter or automatic alias-by-name inference is used.',
+                          'SDK has no documented workbook-version CAS; caller must bind the execution context to this document/version and capture a fresh read-only SDK session after execution.',
                           'REST code-rep exports omit input display metadata and are not display readback evidence.',
                           'Approved construction expects LiteralEditableColumn; post-validation runtime class/type remains an acceptance gate. Platform class conversion requires a newly reviewed schema, never broad class acceptance.'],
             'program':'\n'.join(program)+'\n','readbackProgram':'\n'.join(readback)+'\n'}
 
 
 def _validate_contract(display):
-    keys=('sourceHash','planHash','receiptHash','artifactHash','feature','target','tableName','columns')
+    keys=('sourceHash','planHash','receiptHash','artifactHash','feature','target','tableName','columns','systemColumn')
     if _hash({key:display[key] for key in keys})!=display.get('contractHash'):
         raise ValueError('display contract hash is stale')
 
@@ -264,7 +302,8 @@ def verify_input_display(display,state,current):
         actual=observed.get(c['id']) or {}
         for field in ('name','columnClass','type'):
             if actual.get(field)!=c[field]: mismatches.append({'columnId':c['id'],'field':field})
-        if actual.get('systemKind') is not None or actual.get('visible') is not c['visible']:
+        if (actual.get('systemKind') is not None or actual.get('visible') is not c['visible']
+                or actual.get('elementId')!=display['target']['elementId'] or actual.get('formula') is not None):
             mismatches.append({'columnId':c['id'],'field':'visibility/systemKind'})
         intended=c['format']; fmt=actual.get('format')
         if fmt is not None and not isinstance(fmt,dict):
@@ -275,9 +314,11 @@ def verify_input_display(display,state,current):
             if not matches: mismatches.append({'columnId':c['id'],'field':'format','expected':intended,'actual':fmt})
     expected={c['id'] for c in display['columns']}
     extra=[c for c in records if c.get('id') not in expected]
-    if (len(extra)!=1 or extra[0].get('name')!='Row ID' or extra[0].get('columnClass')!='InputTableIDColumn'
-            or extra[0].get('systemKind')!='row_id' or extra[0].get('type') is not None):
-        mismatches.append({'field':'complete system Row ID class/kind readback required'})
+    system=display['systemColumn']
+    fields=('name','columnClass','type','systemKind','formula','elementId')
+    if (len(extra)!=1 or any(extra[0].get(field)!=system.get(field) for field in fields)
+            or ('id' in system and extra[0].get('id')!=system['id'])):
+        mismatches.append({'field':'complete approved system ID/alias identity readback required'})
     if any(c.get('visible') is not False for c in extra):
         mismatches.append({'field':'unexpected visible columns'})
     unresolved=[{'columnId':c['id'],'sourceFormat':c['sourceFormat'],'reason':c['unresolvedReason']}

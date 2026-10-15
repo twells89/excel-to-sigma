@@ -211,15 +211,51 @@ assigned IDs/names/types before mutations, selects Scope plus six growth drivers
 for research, and preserves all source columns. Other primary workflows show
 all their literal input fields.
 
-The entire assigned set must consist of the approved `LiteralEditableColumn`
-objects with exact `type()` and name, plus exactly one `InputTableIDColumn` whose
-`kind()` is `row_id`. Both programs enforce this before any setter. The readback
-records `columnClass`, literal `type`, system `systemKind`, visibility and format.
-Post-validation runtime classes remain pending acceptance: if a REST list rule
-converts a literal to a select column, the guard stops and requires a newly
-reviewed approved schema/class mapping. It does not broadly accept selects.
-The system ID class has no documented `type()` getter, so its observation records
-`type: null`; its class and `kind()` establish its system identity.
+The entire assigned editable set must consist of the approved
+`LiteralEditableColumn` objects with exact `type()` and name. Both programs
+enforce the complete set before any setter. Exactly one extra system identity
+column is allowed. The default remains `InputTableIDColumn`, name `Row ID`,
+`kind() == row_id`, on the same element. Its documented SDK has no `type()`
+getter, so readback records `type: null` and the actual system kind.
+
+Authentic SDK observations after a REST roundtrip also expose a normalized
+system alias: `FormulaColumn`, ID/name `ID`, formula `[New Input Table/ID]`.
+That route requires an explicit independently reviewed descriptor in the
+feature's approved target binding before the receipt artifacts are generated:
+
+```json
+{"systemColumn":{
+  "id":"ID","name":"ID","columnClass":"FormulaColumn",
+  "elementId":"ACTUAL_INPUT_TABLE_ID","formula":"[New Input Table/ID]",
+  "type":null,"systemKind":null,
+  "rowIdBinding":{"kind":"row_id","sourceColumn":"ID","valueType":"text",
+                  "evidenceHash":"SHA256_OF_REVIEWED_ROW_IDENTITY_EVIDENCE"}
+}}
+```
+
+The hash must be an actual 64-character lowercase SHA256 of the independently
+reviewed row-ID identity/type evidence. The receipt hashes the complete target
+binding, including that hash, and the display contract binds the descriptor.
+Adding/changing the descriptor after approval fails. Parent review must establish
+that this exact owning table's alias preserves real server row IDs and the text
+source identity; naming a formula column `ID` does not establish that fact.
+
+This bounded adapter accepts only the observed ID/name/formula and exact owning
+`element_id()`. Apply/readback guards check all of them before setters. Formula
+text comes from documented `formula()`; FormulaColumn has neither a documented
+`type()` nor a system-kind getter. Readback therefore records `type: null` and
+`systemKind: null`, retaining the reviewed row-ID value type separately in
+`rowIdBinding`. It never invents those getters or labels their output as a
+queried type. The verifier checks exact ID/class/name/formula/owner. A missing
+descriptor, foreign owner, alternate formula, extra column or changed ID fails
+closed. The alias receives no formula, schema, source, row or value setter; only
+visibility is configured with the same approved visible-column list.
+
+Readback records class, literal type, system kind where available, owner,
+formula where available, visibility and format for the full set. Post-validation
+editable classes remain pending acceptance: if a REST list rule converts a
+literal to a select column, the guard stops for a newly reviewed schema/class
+mapping. It does not broadly accept selects.
 
 Run `readbackProgram` in a fresh readonly SDK session after a successful persisted
 execution. The controller saves the exact submitted calls and unmodified raw MCP

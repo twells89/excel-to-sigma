@@ -68,11 +68,14 @@ class TestInputDisplay(unittest.TestCase):
     def captures(self, display, columns=None):
         base=display['target']['version']
         columns=columns or [dict(id=c['id'],name=c['name'],visible=c['visible'],
-            columnClass=c['columnClass'],type=c['type'],systemKind=None,
+            columnClass=c['columnClass'],type=c['type'],systemKind=None,elementId=display['target']['elementId'],formula=None,
             format=({'kind':'number',**c['format']} if c['format'] else None)) for c in display['columns']]
-        if not any(c['id']=='system-row' for c in columns):
-            columns.append(dict(id='system-row',name='Row ID',visible=False,format=None,
-                                columnClass='InputTableIDColumn',type=None,systemKind='row_id'))
+        system=display['systemColumn']
+        system_id=system.get('id','system-row')
+        if not any(c['id']==system_id for c in columns):
+            columns.append(dict(id=system_id,name=system['name'],visible=False,format=None,
+                columnClass=system['columnClass'],type=system['type'],systemKind=system['systemKind'],
+                elementId=system['elementId'],formula=system.get('formula')))
         execution={'request':{'workbookId':'doc','documentVersion':base,'code':display['program']},
             'result':{'structuredContent':{'type':'success','persisted':True,'workbookId':'doc',
                 'documentVersion':base+1,'output':repr({'source':'sdk-display-execution',
@@ -188,12 +191,11 @@ class TestInputDisplay(unittest.TestCase):
         self.assertEqual(by_name['EPS']['format']['formatString'],'($.2f')
         self.assertTrue(artifact['formatLimitations'])
 
-    def test_generated_program_and_fresh_observation_contract_detect_metadata_noops(self):
-        from input_display import build_input_display,checkpoint_input_display,verify_input_display
-        _,plan,manifest,staging=self.prepared('research')
-        display=build_input_display(plan,manifest,staging)
+    def sdk_adapter(self,display,system=None):
         state={c['id']:{'name':c['name'],'type':c['type'],'visible':True,'format':None} for c in display['columns']}
-        state['system-row']={'name':'Row ID','visible':True,'format':None}
+        system=system or display['systemColumn']
+        system_id=system.get('id','system-row')
+        state[system_id]={**system,'visible':True,'format':None}
         class Format:
             def __init__(self,data):self.data=data
             def kind(self):return self.data.get('kind')
@@ -204,22 +206,25 @@ class TestInputDisplay(unittest.TestCase):
             def __init__(self,column_id):self.column_id=column_id
             def id(self):return self.column_id
             def name(self):return state[self.id()]['name']
-            def type(self):return state[self.id()]['type']
+            def element_id(self):return state[self.id()].get('elementId',display['target']['elementId'])
             def is_visible(self):return state[self.id()]['visible']
             def format(self):return Format(state[self.id()]['format']) if state[self.id()]['format'] else None
             def set_format(self,kind,decimals=None,currency=None):
                 state[self.id()]['format']={'kind':kind,'decimals':decimals,'currency':currency,'pattern':None}
             def set_format_pattern(self,pattern):
                 state[self.id()]['format']={'kind':'number','pattern':pattern}
-        class LiteralColumn(Column):pass
+        class LiteralColumn(Column):
+            def type(self):return state[self.id()]['type']
         class SystemColumn(Column):
             def kind(self):return state[self.id()].get('kind','row_id')
         class SelectColumn(Column):pass
+        class FormulaColumn(Column):
+            def formula(self):return state[self.id()]['formula']
         class Table:
             def name(self):return display['tableName']
             def id(self):return display['target']['elementId']
             def get_column(self,column_id):return SelectColumn(column_id) if state[column_id].get('select') else LiteralColumn(column_id)
-            def list_columns(self):return [LiteralColumn(i) if i!='system-row' else SystemColumn(i) for i in state]
+            def list_columns(self):return [LiteralColumn(i) if i!=system_id else (FormulaColumn(i) if state[i]['columnClass']=='FormulaColumn' else SystemColumn(i)) for i in state]
             def set_visible_columns(self,columns):
                 selected={c.id() for c in columns}
                 for i in state:state[i]['visible']=i in selected
@@ -235,8 +240,15 @@ class TestInputDisplay(unittest.TestCase):
         class Sigma:workbook=Workbook()
         outputs=[]
         context={'sigma':Sigma(),'Page':Page,'InputTable':Table,'LiteralEditableColumn':LiteralColumn,
-                 'InputTableIDColumn':SystemColumn,'SingleSelectEditableColumn':SelectColumn,'MultiSelectEditableColumn':SelectColumn,
+                 'FormulaColumn':FormulaColumn,'InputTableIDColumn':SystemColumn,'SingleSelectEditableColumn':SelectColumn,'MultiSelectEditableColumn':SelectColumn,
                  'print':lambda value:outputs.append(value)}
+        return context,state,outputs
+
+    def test_generated_program_and_fresh_observation_contract_detect_metadata_noops(self):
+        from input_display import build_input_display,checkpoint_input_display,verify_input_display
+        _,plan,manifest,staging=self.prepared('research')
+        display=build_input_display(plan,manifest,staging)
+        context,state,outputs=self.sdk_adapter(display)
         # Every schema guard runs before visibility/format setters.
         first=display['columns'][0]['id']
         for changes in [{'type':'boolean'},{'select':True}]:
@@ -264,6 +276,110 @@ class TestInputDisplay(unittest.TestCase):
         observation['result']['structuredContent']['output']=repr(outputs[-1])
         ledger=checkpoint_input_display(display,execution,observation,current)
         self.assertEqual(verify_input_display(display,ledger,current)['status'],'FAILED')
+
+    def approved_alias(self,manifest,staging,feature=None):
+        from input_sync import build_artifact_records
+        feature=feature or manifest['planProjection']['sharedInputArchitecture']['presentationInputFeature']
+        target=staging['targetBindings'][feature]
+        # Exact representation from authentic post-REST SDK captures; the proof
+        # hash is a test-only reviewed identity-evidence fixture.
+        target['systemColumn']={'id':'ID','name':'ID','columnClass':'FormulaColumn',
+            'elementId':target['elementId'],'formula':'[New Input Table/ID]',
+            'type':None,'systemKind':None,'rowIdBinding':{'kind':'row_id',
+                'sourceColumn':'ID','valueType':'text','evidenceHash':'a'*64}}
+        staging['artifacts']=build_artifact_records(manifest,
+            manifest['planProjection']['sharedInputArchitecture'],staging['targetBindings'])
+        return target['systemColumn']
+
+    def test_public_display_binds_reviewed_normalized_system_alias_without_schema_writes(self):
+        from input_display import build_input_display,checkpoint_input_display,verify_input_display
+        source,plan,manifest,staging=self.prepared('forecast')
+        original=build_input_display(plan,manifest,staging)
+        alias=self.approved_alias(manifest,staging)
+        # Merely seeing an ID-named formula column never widens the native route.
+        context,state,_=self.sdk_adapter(original,alias)
+        with self.assertRaises(RuntimeError):exec(original['program'],context)
+        self.assertTrue(all(c['visible'] and c['format'] is None for c in state.values()))
+        display=build_input_display(plan,manifest,staging)
+        self.assertEqual(display['sourceHash'],original['sourceHash'])
+        self.assertEqual(display['planHash'],original['planHash'])
+        self.assertNotEqual(display['contractHash'],original['contractHash'])
+        context,state,outputs=self.sdk_adapter(display)
+        for field,value in [('formula','[Foreign Table/ID]'),('formula','[New Input Table/ID] + 1'),
+                            ('elementId','foreign'),('name','Other ID')]:
+            with self.subTest(field=field,value=value):
+                before=copy.deepcopy(state['ID']);state['ID'][field]=value
+                for program in ['program','readbackProgram']:
+                    with self.assertRaises(RuntimeError):exec(display[program],context)
+                self.assertTrue(all(c['visible'] and c['format'] is None for c in state.values()))
+                state['ID']=before
+        state['foreign-id']=state.pop('ID')
+        with self.assertRaises(RuntimeError):exec(display['program'],context)
+        state['ID']=state.pop('foreign-id')
+        exec(display['program'],context)
+        self.assertFalse(state['ID']['visible'])
+        exec(display['readbackProgram'],context)
+        observed=outputs[-1]
+        system=observed['columns'][-1]
+        self.assertEqual(system['columnClass'],'FormulaColumn')
+        self.assertEqual(system['formula'],'[New Input Table/ID]')
+        self.assertIsNone(system['type'])
+        captures=self.captures(display,observed['columns'])
+        ledger=checkpoint_input_display(display,*captures)
+        self.assertEqual(verify_input_display(display,ledger,captures[2])['supportedDisplayStatus'],'PASSED')
+        for field,value in [('id','foreign'),('formula','[Foreign Table/ID]'),('elementId','foreign'),
+                            ('type','text'),('columnClass','LiteralEditableColumn')]:
+            bad=copy.deepcopy(observed['columns']);bad[-1][field]=value
+            captures=self.captures(display,bad)
+            ledger=checkpoint_input_display(display,*captures)
+            self.assertEqual(verify_input_display(display,ledger,captures[2])['status'],'FAILED')
+        with tempfile.TemporaryDirectory() as directory:
+            tmp=Path(directory)
+            for name,value in [('manifest',manifest),('receipt',staging)]:
+                (tmp/(name+'.json')).write_text(json.dumps(value))
+            checked=subprocess.run([sys.executable,str(SCRIPTS/'presentation-inputs.py'),'display',str(source),
+                '--manifest',str(tmp/'manifest.json'),'--receipt',str(tmp/'receipt.json'),
+                '--out',str(tmp/'display.json')],capture_output=True,text=True)
+            self.assertEqual(checked.returncode,0,checked.stderr)
+            self.assertEqual(json.loads((tmp/'display.json').read_text())['systemColumn'],alias)
+        for forbidden in ['set_formula','add_system_columns','add_formula_column','update_rows']:
+            self.assertNotIn(forbidden,display['program'])
+
+    def test_explicit_alias_route_executes_all_seven_approved_table_schemas(self):
+        from input_display import build_input_display,checkpoint_input_display,verify_input_display
+        features=[]
+        for workflow in ['research','forecast','sales','inventory','expense']:
+            _,plan,manifest,staging=self.prepared(workflow)
+            for feature in staging['targetBindings']:
+                with self.subTest(feature=feature):
+                    self.approved_alias(manifest,staging,feature)
+                    display=build_input_display(plan,manifest,staging,feature)
+                    context,state,outputs=self.sdk_adapter(display)
+                    exec(display['program'],context)
+                    exec(display['readbackProgram'],context)
+                    captures=self.captures(display,outputs[-1]['columns'])
+                    ledger=checkpoint_input_display(display,*captures)
+                    self.assertEqual(verify_input_display(display,ledger,captures[2])['supportedDisplayStatus'],'PASSED')
+                    self.assertEqual(state['ID']['formula'],'[New Input Table/ID]')
+                    self.assertFalse(state['ID']['visible'])
+                    features.append(feature)
+        self.assertEqual(len(features),7)
+
+    def test_alias_binding_rejects_foreign_unapproved_or_incomplete_identity_descriptor(self):
+        from input_display import build_input_display
+        from input_sync import build_artifact_records,InputSyncError
+        _,plan,manifest,staging=self.prepared('forecast')
+        self.approved_alias(manifest,staging)
+        feature=manifest['planProjection']['sharedInputArchitecture']['presentationInputFeature']
+        unapproved=copy.deepcopy(staging)
+        unapproved['targetBindings'][feature]['systemColumn']['rowIdBinding']['evidenceHash']='b'*64
+        with self.assertRaises(InputSyncError):build_input_display(plan,manifest,unapproved)
+        for field,value in [('elementId','foreign'),('id','foreign'),('formula','[Foreign/ID]'),
+                            ('type','text'),('rowIdBinding',{})]:
+            bad=copy.deepcopy(staging);bad['targetBindings'][feature]['systemColumn'][field]=value
+            bad['artifacts']=build_artifact_records(manifest,
+                manifest['planProjection']['sharedInputArchitecture'],bad['targetBindings'])
+            with self.assertRaises(ValueError):build_input_display(plan,manifest,bad)
 
     def test_supported_semantics_remain_explicit_for_partial_or_unknown_source_patterns(self):
         from input_display import source_format_intent
