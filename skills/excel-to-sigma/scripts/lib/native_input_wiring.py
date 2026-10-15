@@ -361,7 +361,9 @@ def integrate_native_wiring(current, manifest, receipt, emitted):
             raise ValueError('native wiring cannot move owned elements from foreign page placements')
     result['elements'] = [e for e in result['elements'] if e['id'] not in ids] + nodes
     result['pages'] = [p for p in result['pages'] if p['id'] != page_id] + [expected_page]
-    layout = re.sub(r"<Page\b[^>]*\bid\s*=\s*[\"']" + re.escape(page_id)
+    # Remove the one separator inserted with this owned page, preserving all
+    # surrounding foreign-layout whitespace byte for byte.
+    layout = re.sub(r"\n?<Page\b[^>]*\bid\s*=\s*[\"']" + re.escape(page_id)
                     + r"[\"'][^>]*>.*?</Page>", '', layout, flags=re.S)
     for index, node in enumerate(nodes):
         ET.SubElement(page_xml, 'Element', {'elementId': node['id'], 'gridColumn': '1 / 25',

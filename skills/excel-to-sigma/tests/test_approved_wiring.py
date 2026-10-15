@@ -139,7 +139,7 @@ class TestApprovedWiring(unittest.TestCase):
                                   {'id': column_id, 'name': name, 'type': next(c['type'] for c in
                                    plan['sharedInputArchitecture']['inputs']['inventoryBusinessInput']['columns'] if c['name']==name)}
                                   for name, column_id in staging['targetBindings']['inventoryBusinessInput']['columnIds'].items()]}],
-                'layout': '<Page id="host"></Page>'}}
+                'layout': '<Page id="host"></Page>\n \n'}}
             (tmp/'current.json').write_text(json.dumps(current))
             command = [sys.executable, str(CLI), 'wiring', '--manifest', str(tmp/'manifest.json'),
                        '--receipt', str(tmp/'receipt.json'), '--contents', str(tmp/'current.json'),
@@ -150,10 +150,12 @@ class TestApprovedWiring(unittest.TestCase):
             self.assertEqual(put['documentVersion'], 8)
             self.assertIn('inventory', {e['id'] for e in put['contents']['elements']})
             self.assertIn('elementId="inventory"', put['contents']['layout'])
+            self.assertTrue(put['contents']['layout'].startswith(current['contents']['layout'] + '\n'))
             # Feed the GET-shaped result back into the same public path: idempotent.
             (tmp/'current.json').write_text(json.dumps({'workbookId': 'doc', **put}))
             second = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(json.loads((tmp/'put.json').read_text())['contents'], put['contents'])
             # Owned native elements elsewhere cannot confer ownership on a
             # user page with the deterministic native-model page ID.
             foreign_page = copy.deepcopy(current)
