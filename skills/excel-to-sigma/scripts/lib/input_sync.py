@@ -309,7 +309,11 @@ def evaluate_expense_exception(row, policy_limit):
     if policy_limit is None:
         return {"policyExcess": None, "exception": None}
     excess = max(row["Amount"] - policy_limit, 0)
-    if abs(row["Card Amount"] - row["Ledger Amount"]) > 0.01:
+    try:
+        from .workflow_repairs import reconciliation_required
+    except ImportError:
+        from workflow_repairs import reconciliation_required
+    if reconciliation_required(row["Card Amount"], row["Ledger Amount"]):
         status = "RECON"
     elif excess > 0:
         status = "OVER LIMIT"
@@ -858,6 +862,7 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
         plan_seed(source["rows"], [], ["Setting"], "Row ID")
         architecture["inputs"]["salesSettings"] = {
             "kind": "input-table", "name": "Sales Settings", "keyColumns": ["Setting"],
+            "editMode": "published-explore", "frame": [1, 4, 24, 10],
             "connectionId": connection_id, "sourceBinding": source["sourceBinding"],
             "rows": source["rows"],
             "columns": [{"name": "Setting", "type": "text", "provenance": "source"},
@@ -897,6 +902,7 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
         plan_seed(source["rows"], [], ["Category"], "Row ID")
         architecture["inputs"]["expensePolicy"] = {
             "kind": "input-table", "name": "Expense Policy", "keyColumns": ["Category"],
+            "editMode": "published-explore", "frame": [1, 4, 24, 12],
             "connectionId": connection_id, "sourceRange": source["sourceRange"],
             "rows": source["rows"],
             "columns": [{"name": "Category", "type": "text", "provenance": "source"},
@@ -919,6 +925,11 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
         architecture["acceptance"]["expense"] = (
             "edit source-derived Meals limit 90 to 400, verify all matching rows/counts, restore")
         architecture["acceptanceChecks"].append("expense-meals-limit-propagation")
+        architecture["provenance"]["expense-cent-comparison"] = {
+            "mappingKind": "reviewed-currency-replacement", "sourcePrecision": 2,
+            "sourceComparison": "Abs(Recon Variance)>0.01",
+            "replacement": "Abs(Round(Card Amount*100,0)-Round(Ledger Amount*100,0))>1",
+            "storedAmounts": "preserved", "runtimeStatus": "PENDING_CENT_BOUNDARY_AND_NULL_UI_ACCEPTANCE"}
     if "research" in selected:
         source_inputs = list(plan.get("sourceInputs") or [])
         ids = [item.get("id") for item in source_inputs]
@@ -1082,7 +1093,7 @@ def build_operational_input_elements(architecture, target_bindings=None):
                   "formula": "If(IsNull([Policy/Category]), Null, Greatest([ExpenseJoin/Amount] - [Policy/Per-item Limit], 0))"},
                  {"id": "expense_exception", "name": "Exception",
                   "formula": ('If(IsNull([Policy/Category]), Null, '
-                              'If(Abs([Recon Variance]) > 0.01, "RECON", '
+                              'If(Abs(Round([ExpenseJoin/Card Amount] * 100, 0) - Round([ExpenseJoin/Ledger Amount] * 100, 0)) > 1, "RECON", '
                               'If([PolicyExcess] > 0, "OVER LIMIT", '
                               'If([ExpenseJoin/Receipt Status] = "Missing", "MISSING RECEIPT", '
                               'If([ExpenseJoin/Approval Status] <> "Approved", "PENDING", "CLEAR")))))')}]},

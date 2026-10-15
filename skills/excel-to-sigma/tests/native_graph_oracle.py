@@ -10,13 +10,14 @@ import math
 import operator
 import re
 import sqlite3
+from decimal import Decimal, ROUND_HALF_UP
 
 
 def scalar(formula, row):
     code = re.sub(r'\[([^\]]+)\]', lambda m: 'field(' + repr(m.group(1)) + ')', formula)
     code = re.sub(r'(?<![<>=!])=(?!=)', '==', code).replace('^', '**').replace('<>', '!=')
     ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
-           ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Eq: operator.eq,
+           ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Eq: operator.eq, ast.NotEq: operator.ne,
            ast.Lt: operator.lt, ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge}
     def run(node):
         if isinstance(node, ast.Constant): return node.value
@@ -44,6 +45,11 @@ def scalar(formula, row):
                 values=[run(arg) for arg in args]
                 return None if any(value is None for value in values) else max(values)
             if node.func.id == 'Date': return dt.date.fromisoformat(run(args[0]))
+            if node.func.id == 'Abs':
+                value=run(args[0]);return None if value is None else abs(value)
+            if node.func.id == 'Round':
+                number,places=(run(arg) for arg in args)
+                return None if number is None else float(Decimal(str(number)).quantize(Decimal(1).scaleb(-places),rounding=ROUND_HALF_UP))
             if node.func.id == 'RoundUp':
                 number, places = (run(arg) for arg in args)
                 scale = 10**places
