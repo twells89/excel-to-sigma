@@ -358,6 +358,70 @@ class TestMigrationManifest(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "migration targetMapping.*targetBinding"):
             build_manifest(self.path, plan)
 
+    def _designated_mapping_locations(self):
+        for collection in ("lines", "features", "auditChecks"):
+            yield {collection: [{}]}, (collection, 0)
+            yield {collection: [{"provenance": {"2024": {}}}]}, (
+                collection, 0, "provenance", "2024")
+        yield {"provenance": {"source": {}}}, ("provenance", "source")
+        yield {"provenance": {"source": {"provenance": {"2024": {}}}}}, (
+            "provenance", "source", "provenance", "2024")
+
+    def test_all_designated_records_reject_runtime_mappings_during_construction(self):
+        # Removing record-level mapping validation must fail for each location.
+        for plan, path in self._designated_mapping_locations():
+            record = plan
+            for key in path:
+                record = record[key]
+            for mapping in ({"elementId": "server-element"}, {"documentId": "wb"},
+                            {"assignedColumnId": "server-column"}, "not-an-object"):
+                with self.subTest(path=path, mapping=mapping):
+                    record["targetMapping"] = mapping
+                    with self.assertRaisesRegex(ManifestError, "targetMapping.*(targetBinding|object)"):
+                        build_manifest(self.path, plan)
+
+    def test_all_designated_records_reject_runtime_mappings_during_validation(self):
+        for plan, path in self._designated_mapping_locations():
+            manifest = build_manifest(self.path, plan)
+            record = manifest["planProjection"]
+            for key in path:
+                record = record[key]
+            record["targetMapping"] = {"elementId": "server-element"}
+            # Match the declared hash so rejection must enforce the mapping
+            # contract, rather than merely detecting a stale digest.
+            logical = {"sourceHash": manifest["sourceHash"],
+                       "plan": manifest["planProjection"],
+                       "formulaCells": [{key: item[key] for key in (
+                           "id", "sheet", "address", "originalFormula", "dependencies",
+                           "mappingStatus", "targetMapping", "unresolvedReason") if key in item}
+                           for item in manifest["formulaCells"]]}
+            manifest["planHash"] = hashlib.sha256(json.dumps(
+                logical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")).hexdigest()
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ManifestError, "targetMapping.*targetBinding"):
+                    validate_manifest(manifest, self.path)
+
+    def test_logical_mappings_on_all_designated_records_remain_hash_bound(self):
+        for plan, path in self._designated_mapping_locations():
+            record = plan
+            for key in path:
+                record = record[key]
+            record["targetMapping"] = {"logicalElementId": "calc", "logicalColumnId": "c1",
+                                       "logicalCheckId": "check-1"}
+            original = build_manifest(self.path, plan)
+            self.assertTrue(validate_manifest(original, self.path))
+            with self.subTest(path=path):
+                record["targetBinding"] = {"elementId": "server-element"}
+                record["actualTarget"] = {"documentId": "wb", "version": 2}
+                record["verification"] = {"runId": "run-1"}
+                self.assertEqual(original["planHash"], build_manifest(self.path, plan)["planHash"])
+                for field in ("logicalElementId", "logicalColumnId", "logicalCheckId"):
+                    previous = record["targetMapping"][field]
+                    record["targetMapping"][field] = "changed"
+                    self.assertNotEqual(original["planHash"], build_manifest(self.path, plan)["planHash"])
+                    record["targetMapping"][field] = previous
+
 
 if __name__ == "__main__":
     unittest.main()

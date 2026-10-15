@@ -65,6 +65,7 @@ def _plan_projection(plan):
 def _record_projection(record):
     if not isinstance(record, dict):
         return record
+    _validate_target_mapping(record.get("targetMapping"), record.get("id", "plan record"))
     result = {}
     for key, value in sorted(record.items()):
         if key in _RECORD_RUNTIME_FIELDS:
@@ -211,7 +212,12 @@ def validate_manifest(manifest, source_path=None):
     for item in formulas:
         _validate_target_mapping(item.get("targetMapping"), item["id"])
     projection = manifest.get("planProjection")
-    if not isinstance(projection, dict) or _plan_hash(source_hash, projection, formulas) != plan_hash:
+    if not isinstance(projection, dict):
+        raise ManifestError("plan hash does not match canonical logical mappings")
+    # Revisit designated records even when a supplied projection has a valid
+    # digest; hash integrity alone does not enforce the logical mapping schema.
+    _plan_projection(projection)
+    if _plan_hash(source_hash, projection, formulas) != plan_hash:
         raise ManifestError("plan hash does not match canonical logical mappings")
     source_path = source_path or (manifest.get("source") or {}).get("path")
     if source_path is None or not Path(source_path).is_file():
