@@ -44,6 +44,18 @@ def q(s):
     return "'" + str(s).replace("'", "''") + "'"
 
 
+def numeric_literal(value):
+    """Preserve source precision while retaining stable decimal SQL literals."""
+    text = repr(float(value))
+    if "e" not in text.lower():
+        whole, dot, fraction = text.partition(".")
+        if not dot:
+            return whole + ".000000"
+        if len(fraction) < 6:
+            return whole + "." + fraction.ljust(6, "0")
+    return text
+
+
 def env():
     e = dict(os.environ)
     if all(k in e and e[k] for k in ("SIGMA_BASE_URL", "SIGMA_CLIENT_ID", "SIGMA_CLIENT_SECRET")):
@@ -87,8 +99,9 @@ def data_sql(plan, data_lines):
     for y in years:
         cells = [str(y)]
         for ln in data_lines:
-            v = ln["typed"].get(str(y), ln["typed"].get(y))
-            cells.append("NULL" if v is None else f"{float(v):.6f}")
+            values = ln.get("literalInputs", ln.get("typed", {}))
+            v = values.get(str(y), values.get(y))
+            cells.append("NULL" if v is None else numeric_literal(v))
         rows.append("(" + ",".join(cells) + ")")
     inner = "select * from (values\n" + ",\n".join(rows) + "\n) as t(" + ", ".join(cols) + ")"
     casts = ["YR::int as YR"] + [f"{ln['col_id']}::float as {ln['col_id']}" for ln in data_lines]
@@ -143,7 +156,14 @@ def dmcol(i, alias, name):
 
 
 def build_dm(plan, conn, folder, name):
-    data_lines = [ln for ln in plan["lines"] if ln["typed"]]     # only lines with typed values
+    data_lines = [ln for ln in plan["lines"]
+                  if ln.get("literalInputs", ln.get("typed", {}))]
+    data_lines += [
+        {"col_id": item["id"], "literalInputs": item.get("values", {}),
+         "typed": item.get("values", {}), "sourceInput": True,
+         "label": item.get("sourceCellId", item["id"])}
+        for item in plan.get("sourceInputs", [])
+    ]
     data_el = {"id": "data", "kind": "table",
                "source": {"kind": "sql", "connectionId": conn, "statement": data_sql(plan, data_lines)},
                "columns": [dmcol(0, "YR", "Year")] +
@@ -179,11 +199,21 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
 
     # ---- calc: one column per line, in the same element (siblings referenced by name) ----
     calc_cols = [{"id": "yr", "name": "Year", "formula": f"[{DMP}/Year]"}]
+    for item in plan.get("sourceInputs", []):
+        calc_cols.append({"id": item["id"], "name": item["id"],
+                          "formula": f"[{DMP}/{item['id']}]"})
     merge = []
     for ln in plan["lines"]:
         cid = ln["col_id"]; merge.append(cid)
         has_data = cid in dcols
-        if ln["kind"] == "input" or not ln.get("canonical"):
+        period_formulas = ln.get("periodFormulas") or {}
+        if period_formulas:
+            f = "Null"
+            for year, expression in sorted(period_formulas.items(), key=lambda item: int(item[0]), reverse=True):
+                f = f"If([Year] = {int(year)}, {expression}, {f})"
+            if has_data:
+                f = f"Coalesce([{DMP}/{cid}], {f})"
+        elif ln["kind"] == "input" or not ln.get("canonical"):
             f = f"[{DMP}/{cid}]" if has_data else "Null"      # carried / input / quarantined
         elif has_data:
             f = f"Coalesce([{DMP}/{cid}], {ln['canonical']})"  # override wins, else compute

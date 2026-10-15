@@ -7,6 +7,11 @@ import re
 from pathlib import Path
 
 try:
+    from .migration_manifest import validate_completion, validate_staging_approval
+except ImportError:  # standalone tests/scripts that place lib directly on sys.path
+    from migration_manifest import validate_completion, validate_staging_approval
+
+try:
     from .xlsx_audit import audit_workbook
 except ImportError:  # direct import when scripts/lib itself is on sys.path
     from xlsx_audit import audit_workbook
@@ -212,3 +217,13 @@ def dispositions_for_source(path, source):
     if candidate.is_dir():
         candidate = candidate / f"{source_sha256(source)}.json"
     return candidate
+
+
+def gate_staging_manifest(manifest, approval):
+    """Require a source/plan-bound named mapping review before staging."""
+    return validate_staging_approval(manifest, approval)
+
+
+def gate_completion_manifest(manifest):
+    """Require passed evidence bound to the source, plan, and actual target version."""
+    return validate_completion(manifest)

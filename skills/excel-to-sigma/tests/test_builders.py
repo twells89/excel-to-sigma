@@ -250,6 +250,72 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertIn("0.125000", data_sql)
         self.assertNotIn("12.500000", data_sql)
 
+    def test_research_builder_uses_period_formulas_and_only_literal_overrides(self):
+        plan = research_plan()
+        line = plan["lines"][2]
+        line["typed"] = {"2024": 999.1234567890123}
+        line["literalInputs"] = {}
+        line["periodFormulas"] = {"2024": "[c8] * 2"}
+        dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        formula = next(column["formula"] for column in calc["columns"] if column["id"] == "c13")
+
+        self.assertEqual(formula, 'If([Year] = 2024, [c8] * 2, Null)')
+        self.assertNotIn("999.1234567890123", dm_spec["pages"][0]["elements"][0]["source"]["statement"])
+
+    def test_research_builder_coalesces_real_literal_years_with_period_formulas(self):
+        plan = research_plan()
+        plan["periods"] = [{"year": 2024}, {"year": 2025}]
+        line = plan["lines"][2]
+        line["literalInputs"] = {"2024": 602}
+        line["periodFormulas"] = {"2025": "[c8] + [c11]"}
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+
+        self.assertEqual(
+            next(column["formula"] for column in calc["columns"] if column["id"] == "c13"),
+            "Coalesce([Custom SQL/c13], If([Year] = 2025, [c8] + [c11], Null))",
+        )
+
+    def test_research_data_sql_preserves_source_precision(self):
+        plan = research_plan()
+        plan["lines"][0]["typed"] = {"2024": 1.23456789012345}
+
+        sql = RESEARCH.data_sql(plan, [plan["lines"][0]])
+
+        self.assertIn("1.23456789012345", sql)
+        self.assertNotIn("1.234568", sql)
+
+    def test_research_builder_exposes_source_bound_cross_sheet_input_defaults(self):
+        plan = research_plan()
+        plan["sourceInputs"] = [{
+            "id": "i_model_inputs_c2", "sourceCellId": "Model Inputs!C2",
+            "defaultValue": 0.05, "values": {"2024": 0.05}, "mappingStatus": "live",
+        }]
+        plan["lines"][2]["periodFormulas"] = {
+            "2024": "[c8] * (1 + [i_model_inputs_c2])",
+        }
+        dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        sql = dm_spec["pages"][0]["elements"][0]["source"]["statement"]
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+
+        self.assertIn("i_model_inputs_c2", sql)
+        self.assertIn("0.050000", sql)
+        self.assertEqual(
+            next(column["formula"] for column in calc["columns"]
+                 if column["id"] == "i_model_inputs_c2"),
+            "[Custom SQL/i_model_inputs_c2]",
+        )
+
     def test_forecast_cli_rejects_a_plan_without_a_resolvable_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source.xlsx"
