@@ -317,22 +317,52 @@ def integrate_native_wiring(current, manifest, receipt, emitted):
                     yield from references(item)
         if set(references(node.get('source'))) - ids - set(existing):
             raise ValueError('native wiring references missing runtime elements')
-    page_id = workflow[0] + '-native-model'
-    page = next((p for p in result['pages'] if p['id'] == page_id), None)
-    if page and not ids.intersection(existing):
-        raise ValueError('native wiring page collides without owned elements')
-    result['elements'] = [e for e in result['elements'] if e['id'] not in ids] + nodes
-    result['pages'] = [p for p in result['pages'] if p['id'] != page_id] + [
-        {'id': page_id, 'name': workflow[0].title() + ' Model', 'visibility': 'hidden'}]
     import re
     import xml.etree.ElementTree as ET
+    page_id = workflow[0] + '-native-model'
+    expected_page = {'id': page_id, 'name': workflow[0].title() + ' Model', 'visibility': 'hidden'}
+    pages = [p for p in result['pages'] if p['id'] == page_id]
     layout = result.get('layout') or ''
-    # Existing graph elements cannot retain duplicate placements on another page.
-    for element_id in ids:
-        layout = re.sub(r'<Element\b[^>]*\belementId="' + re.escape(element_id) + r'"[^>]*/>', '', layout)
-    layout = re.sub(r'<Page\b[^>]*\bid="' + re.escape(page_id) + r'"[^>]*>.*?</Page>', '', layout, flags=re.S)
+    try:
+        layout_root = ET.fromstring('<Layout>' + re.sub(r'<\?xml[^?]*\?>', '', layout) + '</Layout>')
+    except ET.ParseError as error:
+        raise ValueError('native wiring cannot establish layout ownership') from error
+    layout_pages = [p for p in layout_root.iter('Page') if p.get('id') == page_id]
     page_xml = ET.Element('Page', {'id': page_id, 'type': 'grid',
                                  'gridTemplateColumns': 'repeat(24, 1fr)', 'gridTemplateRows': 'auto'})
+    if pages:
+        # Page records have no supported description marker. Require the exact
+        # generated metadata AND its complete owned placement contract instead.
+        page = pages[0]
+        if (len(pages) != 1 or len(layout_pages) != 1
+                or set(page) - {'id', 'name', 'visibility', 'type'}
+                or any(page.get(key) != value for key, value in expected_page.items())
+                or page.get('type', 'page') != 'page'
+                or not ids.issubset(existing)
+                or layout_pages[0].attrib != page_xml.attrib):
+            raise ValueError('native wiring page collides with foreign metadata or ownership')
+        placed = list(layout_pages[0])
+        expected_placements = [
+            {'elementId': node['id'], 'gridColumn': '1 / 25',
+             'gridRow': f'{index*12+1} / {index*12+13}'} for index, node in enumerate(nodes)]
+        if (len(placed) != len(expected_placements)
+                or (layout_pages[0].text or '').strip()
+                or any(child.tag != 'Element' or child.attrib != expected
+                       or list(child) or (child.text or '').strip() or (child.tail or '').strip()
+                       for child, expected in zip(placed, expected_placements))):
+            raise ValueError('native wiring page contains foreign or unowned placements')
+        expected_page = copy.deepcopy(page)
+    elif layout_pages:
+        raise ValueError('native wiring page collides with foreign layout ownership')
+    owned_layout_page = layout_pages[0] if pages else None
+    owned_placements = set(owned_layout_page.iter()) if owned_layout_page is not None else set()
+    for placement in layout_root.iter():
+        if placement.get('elementId') in ids and placement not in owned_placements:
+            raise ValueError('native wiring cannot move owned elements from foreign page placements')
+    result['elements'] = [e for e in result['elements'] if e['id'] not in ids] + nodes
+    result['pages'] = [p for p in result['pages'] if p['id'] != page_id] + [expected_page]
+    layout = re.sub(r"<Page\b[^>]*\bid\s*=\s*[\"']" + re.escape(page_id)
+                    + r"[\"'][^>]*>.*?</Page>", '', layout, flags=re.S)
     for index, node in enumerate(nodes):
         ET.SubElement(page_xml, 'Element', {'elementId': node['id'], 'gridColumn': '1 / 25',
                                           'gridRow': f'{index*12+1} / {index*12+13}'})

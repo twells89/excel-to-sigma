@@ -61,6 +61,11 @@ class TestApprovedWiring(unittest.TestCase):
                 target = {'sales': 'salesInputBase', 'inventory': 'inventory',
                           'expense': 'expenseNumericAmountCount'}[workflow]
                 self.assertIn(target, elements)
+                self.assertEqual(manifest['planProjection']['presentationConditionalFormats'],
+                                 plan['presentationConditionalFormats'])
+                for rule in plan['presentationConditionalFormats']:
+                    if rule['sourceType']=='colorScale':
+                        self.assertIn('<colorScale>', rule['sourceRuleXml'])
                 columns = {c['name']: c for c in elements[target]['columns']}
                 self.assertTrue(expected <= columns.keys())
                 self.assertNotIn('input-table', {e['kind'] for e in elements.values()},
@@ -149,6 +154,33 @@ class TestApprovedWiring(unittest.TestCase):
             (tmp/'current.json').write_text(json.dumps({'workbookId': 'doc', **put}))
             second = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(second.returncode, 0, second.stderr)
+            # Owned native elements elsewhere cannot confer ownership on a
+            # user page with the deterministic native-model page ID.
+            foreign_page = copy.deepcopy(current)
+            owned_node = next(e for e in put['contents']['elements'] if e['id']=='inventory')
+            foreign_page['contents']['elements'] += [owned_node,
+                {'id':'foreign-widget', 'kind':'text', 'body':'User analysis'}]
+            foreign_page['contents']['pages'].append(
+                {'id':'inventory-native-model', 'name':'User Analysis'})
+            foreign_page['contents']['layout'] += (
+                '<Page id="inventory-native-model"><Element elementId="foreign-widget" '
+                'gridColumn="1 / 25" gridRow="1 / 5"/></Page>')
+            # Also reject a user placement added to an otherwise owned page.
+            polluted = {'workbookId':'doc', **copy.deepcopy(put)}
+            polluted['contents']['elements'].append(
+                {'id':'foreign-widget', 'kind':'text', 'body':'User analysis'})
+            polluted['contents']['layout'] = polluted['contents']['layout'].replace(
+                '</Page>', '<Element elementId="foreign-widget" gridColumn="1 / 25" '
+                'gridRow="13 / 17"/></Page>')
+            for unsafe in (foreign_page, polluted):
+                original = json.dumps(unsafe)
+                (tmp/'current.json').write_text(original)
+                (tmp/'put.json').write_text('do not replace existing output')
+                rejected = subprocess.run(command, capture_output=True, text=True)
+                self.assertNotEqual(rejected.returncode, 0, 'foreign page content was accepted')
+                self.assertRegex(rejected.stderr, 'foreign|ownership|collid')
+                self.assertEqual((tmp/'current.json').read_text(), original)
+                self.assertEqual((tmp/'put.json').read_text(), 'do not replace existing output')
             swapped = copy.deepcopy(current)
             swapped['contents']['elements'][0]['columns'][0]['id'] = 'foreign-column'
             (tmp/'current.json').write_text(json.dumps(swapped))

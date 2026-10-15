@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import re
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -112,9 +113,9 @@ class TestPresentationExtraction(unittest.TestCase):
         self.assertTrue(all("relativeReference" in rule for rule in rules))
         scales = [rule for rule in rules if rule["sourceType"] == "colorScale"]
         self.assertGreaterEqual(len(scales), 3)
-        self.assertTrue(all(rule["status"] == "supported" for rule in scales))
-        self.assertTrue(all(rule["emission"]["type"] == "backgroundScale" for rule in scales))
-        self.assertTrue(all(rule["emission"]["domain"]["mid"].startswith("Percentile(") for rule in scales))
+        self.assertTrue(all(rule["status"] == "unresolved" for rule in scales))
+        self.assertTrue(all(rule["emission"] is None for rule in scales))
+        self.assertTrue(all('type="percentile"' in rule["sourceRuleXml"] for rule in scales))
 
         expense = self.plans["fixture-expense-approval.xlsx"]
         status_rules = [rule for rule in expense["conditionalFormats"]
@@ -264,7 +265,7 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertEqual(charts[0]["xAxis"]["sort"]["by"], "chart_1_order")
         self.assertNotIn("cached", json.dumps(charts).lower())
 
-        self.assertEqual([page["name"] for page in artifact["pages"]], ["Overview", "Edit", "Detail"])
+        self.assertEqual([page["name"] for page in artifact["pages"]], ["Sales Overview", "Sales Edit", "Sales Detail"])
         self.assertEqual(artifact["pageRoles"], {"overview": "sales-overview", "edit": "sales-edit", "detail": "sales-detail"})
         self.assertIn("Probability", artifact["editableColumns"])
         self.assertIn("ACV", artifact["editableColumns"])
@@ -515,6 +516,58 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertTrue(audit_ids)
         self.assertTrue(audit_ids <= {u["sourceId"] for u in artifact["unresolved"] if u["kind"] == "conditionalFormat"})
         self.assertNotIn("researchCalc", artifact["elementPatches"])
+
+    def test_public_emission_omits_dynamic_midpoints_and_keeps_finite_literal_midpoint(self):
+        from openpyxl import load_workbook
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            for mode, value in (("percentile", 50), ("formula", "A1"), ("num", 2.5)):
+                workbook = load_workbook(FIXTURES / "fixture-research-model.xlsx")
+                rule = next(rule for key, rules in workbook["FY results"].conditional_formatting._cf_rules.items()
+                            for rule in rules if rule.type == "colorScale")
+                rule.colorScale.cfvo[1].type = mode
+                rule.colorScale.cfvo[1].val = value
+                source = tmp / ("fixture-research-" + mode + ".xlsx")
+                workbook.save(source)
+                command = [sys.executable, str(SCRIPTS / "build-presentation.py"), str(source),
+                           "--fixture-bindings", "--out", str(tmp / "artifact.json")]
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                artifact = json.loads((tmp / "artifact.json").read_text())
+                provenance = next(r for r in artifact["ruleProvenance"] if r["sourceType"]=="colorScale")
+                patches = [r for p in artifact["elementPatches"].values()
+                           for r in p["conditionalFormats"] if r["type"]=="backgroundScale"]
+                if mode == "num":
+                    self.assertEqual(len(patches), 2)
+                    self.assertTrue(all(r["domain"]["mid"]==2.5 for r in patches))
+                else:
+                    self.assertEqual(patches, [], 'dynamic midpoint must not be approximated or emitted')
+                    unresolved = next(r for r in artifact["unresolved"] if r["sourceId"]==provenance["id"])
+                    self.assertEqual(unresolved["kind"], "conditionalFormat")
+                    self.assertIn("midpoint", unresolved["reason"])
+                    self.assertIsNone(provenance["emission"])
+                for patch in patches:
+                    self.assertIsInstance(patch["domain"].get("mid"), (int,float))
+                if mode == "num":
+                    # Reject a legacy/API-invalid domain even if a caller marks
+                    # the extracted rule supported. This reproduces the actual
+                    # store diagnostic at the emitter boundary.
+                    legacy = presentation.extract_presentation(source)
+                    legacy_rule = next(r for r in legacy["conditionalFormats"] if r["sourceType"]=="colorScale")
+                    legacy_rule["emission"]["domain"]["mid"] = "Percentile([research_c57], 0.5)"
+                    guarded = presentation.emit_presentation(legacy, presentation.fixture_bindings(legacy), logical_fixture=True)
+                    self.assertTrue(any(u["sourceId"]==legacy_rule["id"] and "midpoint" in u["reason"]
+                                        for u in guarded["unresolved"]))
+                    self.assertFalse(any(r["type"]=="backgroundScale" for p in guarded["elementPatches"].values()
+                                         for r in p["conditionalFormats"]))
+                xml = ET.fromstring(provenance["sourceRuleXml"])
+                threshold = xml.find("colorScale/cfvo[@type='" + mode + "']")
+                self.assertIsNotNone(threshold)
+                if mode == "formula":
+                    self.assertEqual(threshold.get("val"), "A1")
+                else:
+                    self.assertEqual(float(threshold.get("val")), 50 if mode=="percentile" else 2.5)
 
     def test_forecast_manual_validation_covers_each_month_column(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-forecast-model.xlsx")

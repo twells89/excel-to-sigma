@@ -92,7 +92,11 @@ python3 scripts/presentation-inputs.py bindings source.xlsx \
 `--contents` requires `workbookId`, `documentVersion`, and the complete flat
 `contents` document. It checks assigned input names, types, and column IDs,
 preserves unrelated nodes, rejects foreign target collisions, and returns a
-version-guarded contents PUT artifact. Omitting `--contents` emits the assigned
+version-guarded contents PUT artifact. An existing native-model page must match
+the exact generated page metadata and complete owned placement contract.
+Foreign content on that page, or owned graph placements on another page, cause
+a rejection without changing contents; owned graph nodes alone never establish
+page ownership. Omitting `--contents` emits the assigned
 fragments and pending query checks. Apply only `contents` and `documentVersion`
 to the API; other artifact fields carry provenance. Refresh/restage the receipt
 after the PUT changes the version before emitting presentation bindings.
@@ -153,6 +157,15 @@ The edit-table patch keeps `Scope` and `i_model_inputs_c2` through
 `i_model_inputs_c7` visible in that order and formats the six growth assumptions
 as percentages. The remaining source inputs stay in the same physical table and
 remain available in Explore while the main edit grid stays compact.
+The native conditional-format store accepts a finite numeric literal midpoint.
+Source percentile and formula midpoints have no verified exact native mapping;
+the entire color-scale rule remains explicitly unresolved and is omitted from
+element patches. It is never replaced with a cached midpoint or approximated by
+dropping the midpoint. Full source rule XML is retained in the immutable plan's
+`presentationConditionalFormats` and the artifact's `ruleProvenance`. Finite
+literal-midpoint scales remain supported. Generated page names include the
+workflow, such as Sales Overview, Inventory Edit, and Expense Detail.
+
 Horizontal financial conditional rules retain their metric row and source year
 scope: B31:M31 targets detail `research_c31`, and B57:M57 targets
 `research_c57` on the main/detail views. Unbound Audit Status rules remain

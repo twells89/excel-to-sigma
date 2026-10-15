@@ -10,6 +10,7 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import math
 import posixpath
 import re
 import xml.etree.ElementTree as ET
@@ -423,6 +424,7 @@ def _extract_conditional_formats(workbook):
                 source_type = rule.type
                 emitted = None
                 status = "supported"
+                unresolved_reason = None
                 formula = (rule.formula or [None])[0]
                 if source_type == "colorScale":
                     scale = rule.colorScale
@@ -431,16 +433,15 @@ def _extract_conditional_formats(workbook):
                     domain = {"min": "Min([Column])", "max": "Max([Column])"}
                     if len(cfvos) == 3:
                         mid = cfvos[1]
-                        if mid.type == "percentile":
-                            domain["mid"] = f"Percentile([Column], {float(mid.val) / 100:g})"
-                        elif mid.type == "num":
+                        if mid.type == "num" and mid.val is not None and math.isfinite(float(mid.val)):
                             domain["mid"] = float(mid.val)
-                        elif mid.type == "formula":
-                            domain["mid"] = str(mid.val)
                         else:
                             status = "unresolved"
-                    emitted = {"type": "backgroundScale", "columnIds": [], "scheme": colors,
-                               "domain": domain, "order": "ascending", "nullBehavior": "asNull"}
+                            unresolved_reason = ("native conditional-format store requires a finite numeric midpoint; "
+                                                 f"source {mid.type} midpoint has no verified exact native mapping")
+                    if status == "supported":
+                        emitted = {"type": "backgroundScale", "columnIds": [], "scheme": colors,
+                                   "domain": domain, "order": "ascending", "nullBehavior": "asNull"}
                 else:
                     condition = condition_map.get(rule.operator or source_type)
                     value = rule.text if rule.text is not None else formula
@@ -466,6 +467,10 @@ def _extract_conditional_formats(workbook):
                     "relativeReference": _relative_reference(ws, sqref, formula),
                     "emission": emitted,
                 })
+                if source_type == "colorScale":
+                    result[-1]["sourceRuleXml"] = ET.tostring(rule.to_tree(), encoding="unicode")
+                if unresolved_reason:
+                    result[-1]["unresolvedReason"] = unresolved_reason
     return sorted(result, key=lambda item: (item["sheet"], item["range"], item["priority"]))
 
 
@@ -1016,6 +1021,7 @@ def build_business_input_plan(plan, architecture, reviewed_formulas=None):
         "source": plan["source"]["name"], "sourcePath": plan["source"]["path"],
         "sourceSha256": plan["source"]["sha256"], "workflow": plan["workflow"],
         "presentationExtractionHash": plan["extractionHash"],
+        "presentationConditionalFormats": copy.deepcopy(plan["conditionalFormats"]),
         "sharedInputArchitecture": copy.deepcopy(architecture),
         "formulaCells": formulas,
     }
@@ -1360,9 +1366,18 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
                        if (target := (bindings.get("columns") or {}).get(f"{rule['sheet']}!{field}"))]
         if isinstance(targets, dict):
             targets = [targets]
-        if rule["status"] != "supported" or not targets:
+        emission = rule.get("emission") or {}
+        domain = emission.get("domain") or {}
+        invalid_midpoint = (emission.get("type") in {"backgroundScale", "fontScale"} and "mid" in domain
+                            and (not isinstance(domain["mid"], (int, float))
+                                 or isinstance(domain["mid"], bool) or not math.isfinite(domain["mid"])))
+        if rule["status"] != "supported" or not targets or invalid_midpoint:
+            reason = ("native conditional-format store requires a finite numeric midpoint" if invalid_midpoint
+                      else rule.get("unresolvedReason") or ("unsupported source rule" if rule["status"] != "supported"
+                                                           else "missing target column binding"))
             unresolved.append({"kind": "conditionalFormat", "sourceId": rule["id"],
-                               "reason": "unsupported source rule" if rule["status"] != "supported" else "missing target column binding"})
+                               "reason": reason, "targetBindings": copy.deepcopy(targets or []),
+                               "periodScope": copy.deepcopy(rule.get("periodScope"))})
             continue
         for target in targets:
             emitted = copy.deepcopy(rule["emission"])
@@ -1402,7 +1417,7 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
     main = list(MAIN_COLUMNS.get(workflow, []))
     detail = list(bindings.get("sharedInputColumns") or DETAIL_COLUMNS.get(workflow, main))
     edit = list(bindings.get("prominentEditableColumns") or EDITABLE_COLUMNS.get(workflow, []))
-    pages = [{"id": f"{workflow}-{role}", "name": role.title()} for role in ("overview", "edit", "detail")]
+    pages = [{"id": f"{workflow}-{role}", "name": f"{workflow.title()} {role.title()}"} for role in ("overview", "edit", "detail")]
     business_spec = extract_business_input(plan)
     business_binding = {**(bindings.get("businessInput") or {}),
                         "planHash": bindings["planHash"],
