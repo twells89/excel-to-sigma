@@ -5,7 +5,7 @@ End-to-end on the bundled sample fixture. ~10 min; three of the steps are clicks
 ## 0. Setup
 ```bash
 cd <this skill>/scripts
-python3 -m venv .venv && .venv/bin/pip install openpyxl python-dateutil
+python3 -m venv .venv && .venv/bin/pip install -r ../../../requirements.txt
 # Sigma creds in ~/.sigma-migration/env  (SIGMA_BASE_URL / SIGMA_CLIENT_ID / SIGMA_CLIENT_SECRET)
 ```
 
@@ -23,12 +23,16 @@ This writes `chart-examples/Sales Performance.xlsx`, `Expense Planning.xlsx`,
 and `Headcount Planning.xlsx`. Each has an editable formal Table plus three
 charts that map directly to Sigma visualizations.
 
-## 2. Discover
+## 2. Audit, then discover
 ```bash
+.venv/bin/python audit-xlsx.py "Sample Forecast.xlsx" --out /tmp/forecast-audit.json
+# REVIEW_REQUIRED is expected for charts/formatting: route every issue before build.
+.venv/bin/python audit-openapi.py --out /tmp/sigma-code-rep-audit.json
 .venv/bin/python xlsx-discover.py "Sample Forecast.xlsx"
 ```
-Lists formal Tables, their grain, each chart's type/title/anchor, pivots, and a
-formula census. Confirm the fact Table + grain with the user.
+The audit is the no-silent-loss gate; discovery then lists formal Tables, their
+grain, each chart's type/title/anchor, pivots, and formulas. Confirm the fact
+Table + grain and resolve every audit issue with the user.
 
 ## 3. Extract the paste-ready seed
 ```bash
@@ -42,15 +46,24 @@ excluded — Sigma auto-populates them.)
 .venv/bin/python build-input-table-wb.py --name "Forecast Entry" --connection cb2f5180-… \
   --columns REGION:text,BRANCH:text,SUB_BRANCH:text,MONTH_DATE:datetime,CATEGORY_CODE:number,FORECAST_AMOUNT:number
 ```
-> Builds the empty input-table **structure** (API). Loading the rows is a UI step
-> (CSV paste) until the bulk-seed API lands. **Don't use `--linked` for a shippable
+> Builds the empty input-table **structure** through REST. The CLI stops there;
+> seed the resulting table through Sigma MCP Code Mode or use UI CSV paste.
+> **Don't use `--linked` for a shippable
 > table** — linked context columns don't resolve via POST ("multiple values");
-> build linked input tables in the UI. See `refs/input-tables.md`.
+> use the established UI path, or validate MCP `add_linked_input_table()`
+> end-to-end before shipping. See `refs/input-tables.md`.
 
-## 5. Load data + view  (UI — see refs/input-tables.md)
-1. Open the workbook → the input table → **paste** `forecast_input_paste.csv`.
-2. **Publish** (data commits to the warehouse only on publish).
-3. Input-table element → **Warehouse views → Create new** → copy the
+## 5. Load data + view  (MCP + UI — see refs/input-tables.md)
+
+Preferred when the Sigma MCP connector is available: `describe` and `query` the
+new input table, use `build_workbook` with `InputTable.upsert_rows()` to insert
+only missing natural keys, then re-query the table and a downstream element.
+This is a connector workflow; `build-input-table-wb.py` does not call MCP.
+
+UI fallback: open the workbook → the input table → paste
+`forecast_input_paste.csv` → **Publish**.
+
+Then use the input-table element menu → **Warehouse views → Create new** → copy the
    `database.schema.view` path.
 
 ## 6. Build the DM on the view  (API)
@@ -81,17 +94,28 @@ drive the whole build from a **model-plan JSON**:
 
 ```bash
 # dry run: local parity + emits dm_spec.json / wb_spec.json / seed CSVs to /tmp/fcst-build
-.venv/bin/python build-forecast-model.py sample-model-plan.json
+.venv/bin/python build-forecast-model.py source-bound-plan.json --source "Original Model.xlsx"
 # build live (DM + workbook with union[actuals,forecast], KPIs, Actual|Forecast pivot, trend, editable rate+manual tables)
-.venv/bin/python build-forecast-model.py --post sample-model-plan.json
+.venv/bin/python build-forecast-model.py source-bound-plan.json --source "Original Model.xlsx" --post
 ```
+
+The plan must contain the source workbook's `sourceSha256`; `sourcePath` may be
+saved in the plan instead of passing `--source`. Legacy plans without a source
+hash must be regenerated because their parity claims cannot be tied to the
+workbook being migrated. If the source audit requires review, also pass
+`--review-dispositions review.json` using the format in `refs/coverage-contract.md`.
 
 The forecast is computed (`base × (1+rate)^n`); editable rate/manual input tables
 override via `Coalesce(input, default)`, so **parity holds before any seeding**
 (verified: Revenue 6,961,218.48 · EBITDA 62,327.16 · **Net Income −135,372.84**).
-Then: paste `rate_seed.csv` / `manual_seed.csv` into the two editable tables +
-Publish to make them live; run `wb-rep push` for the designed layout (the POST
-lands auto-arranged). See `refs/forecast-recipes.md`.
+Then seed `rate_seed.csv` / `manual_seed.csv` through Sigma MCP Code Mode
+(`InputTable.upsert_rows()` after a preflight query), or paste them through the UI
+and Publish. A live regression seeded 6 rate rows and 30 manual rows through MCP,
+then changed and restored one rate and one zero-valued manual row; the P&L and
+trend recalculated and returned exactly to baseline with no duplicate keys. Run
+the generated layout and render; use the workbook refinement tooling only when
+the explicit KPI, trend, and pivot layout needs further adjustment. See
+`refs/forecast-recipes.md`.
 
 If `.xlsm`: run `macro-classify.py` first (`refs/macro-handling.md`) — surface
 FLAG/ACTION macros before building.
@@ -111,23 +135,31 @@ For a sell-side research model (line-items × YEARS, statement sections; e.g. a 
 
 # infer the two-layer plan (hard-coded grid + ONE canonical formula per derived line)
 .venv/bin/python infer-canonical-formulas.py "Sample Research Model.xlsx" \
-    --sheet="FY results" --first-row=7 --last-row=45 --out plan.json
+    --sheet="FY results" --first-row=7 --last-row=45 --out plan.json \
+    --review-dispositions review.json
 
 # build DM (data page) + workbook (computation + transpose + display pivot)
-.venv/bin/python build-research-model.py plan.json --conn <writeConn> --folder <id> --post
+.venv/bin/python build-research-model.py plan.json --conn <writeConn> --folder <id> \
+    --review-dispositions review.json --post
 ```
 
 The report shows `input / derived / ratio` counts, live-verified vs frozen formula
-cells, and resolved anchors. Verified end-to-end: the synthetic fixture round-trips
-to **100% cell parity**, and a real broker equity-research model rebuilt to **100.00% parity
-(3,263/3,263 cells), ~81% live Sigma formulas** — far simpler than a hand build (one
-column per line, not per-year `User`/`Calc`/`(1)` triplets). See `refs/research-recipes.md`.
+cells, and resolved anchors. A nonzero frozen count adds the review issue
+`CACHED_FORMULA_FALLBACK`; preserving the cached display value does not establish
+a live-formula migration. Put that code, a named owner, the implemented
+disposition, and `verified: true` in the source-bound review file. The plan stores
+`sourcePath` and `sourceSha256`; use `--source` only when the saved path moved.
+See `refs/research-recipes.md`.
 
 **A fleet of similar files** (the ~850-file case) → `batch-convert.py` fingerprints,
 maps to the chart-of-accounts (`coa.json`), converts, parity-gates, and emits a triage
-manifest (AUTO_PARITY / NEEDS_REVIEW / FAILED) + the top unmapped labels to grow the COA:
+manifest (AUTO_PARITY / NEEDS_REVIEW / BLOCKED / FAILED), full audit details, and
+the top unmapped labels to grow the COA:
 
 ```bash
 .venv/bin/python batch-convert.py /path/to/models/ --sheet="FY results" --out manifest.json
 ```
+Reviewed sources require `--review-dispositions review.json`, or a directory with
+one `<sourceSha256>.json` per reviewed workbook. `--post-review` alone never posts
+a reviewed source, and `BLOCKED` sources are never inferred or posted.
 See `refs/research-template-coa.md`.

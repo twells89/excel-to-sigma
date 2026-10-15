@@ -1,14 +1,15 @@
-"""Shape adapter for the Sigma WORKBOOK code representation
-(POST /v2/workbooks/spec, GET|PUT /v2/workbooks/{id}/spec, POST /v2/workbooks/spec/verify).
+"""Shape adapter for Sigma's workbook code representation.
 
-Verified live 2026-08-03/04: this surface nests non-metadata fields under a top-level
-`document` key and rejects the old flat body with HTTP 400 — including on /verify.
-Sigma engineering confirmed 2026-08-03 that the DATA-MODEL code-rep surface is NOT
-changing, so this adapter is workbook-only and always writes the nested shape.
-Do NOT use it on /v2/dataModels/.../spec payloads — that API ignores `document`.
+Current API (OpenAPI re-audited 2026-10):
 
-Reads stay tolerant of the legacy flat shape because flat artifacts still exist
-on disk (committed workbook snapshots, fixtures).
+* create / validate: ``POST /v2/workbooks`` with ``contents`` and optional
+  ``dryRun: true``
+* read: ``GET /v2/workbooks/{id}?includeContents=true``
+* update: ``PUT /v2/workbooks/{id}/contents``
+
+The deprecated ``/spec`` endpoints use the same inner shape under ``document``.
+Readers stay tolerant of ``contents``, ``document``, and old flat artifacts.
+This adapter is workbook-only. Data-model code representation is unchanged.
 """
 
 # Workbook elements are flat document collections; `overlays` and `panels` live
@@ -17,7 +18,7 @@ on disk (committed workbook snapshots, fixtures).
 # where it is invalid and silently dropped on write.
 DOC_KEYS = (
     "schemaVersion", "pages", "elements", "overlays", "panels",
-    "kind", "layout", "settings", "agents",
+    "kind", "layout", "settings", "agents", "automatedActions",
 )
 
 # REMOVED from the API. The workbook theme is now settings.theme.name /
@@ -75,10 +76,12 @@ def theme(spec):
 
 
 def document(response):
-    """Return the workbook document from either the nested or legacy flat shape."""
+    """Return workbook contents from current, deprecated, or flat shapes."""
     if not isinstance(response, dict):
         return {}
-    inner = response.get("document")
+    inner = response.get("contents")
+    if not isinstance(inner, dict):
+        inner = response.get("document")
     doc = inner if isinstance(inner, dict) else {
         k: v for k, v in response.items() if k in DOC_KEYS
     }
@@ -90,7 +93,9 @@ def metadata(response):
         return {}
     return {
         k: v for k, v in response.items()
-        if k != "document" and k not in DOC_KEYS and k not in LEGACY_THEME_KEYS
+        if k not in ("contents", "document")
+        and k not in DOC_KEYS
+        and k not in LEGACY_THEME_KEYS
     }
 
 
@@ -179,11 +184,23 @@ def canonicalize_layout(layout_xml):
     return re.sub(r'<(/?)GridContainer\b', r'<\1Container', layout)
 
 
-def wrap(doc, extra=None):
-    """Build a current request body with flat elements and canonical layout."""
-    out = dict(extra or {})
+def _canonical_document(doc):
+    """Flatten nested elements and canonicalize layout tags."""
     flattened = _flatten_elements(doc)
     if isinstance(flattened, dict) and "layout" in flattened:
         flattened = {**flattened, "layout": canonicalize_layout(flattened["layout"])}
-    out["document"] = flattened
+    return flattened
+
+
+def wrap_contents(doc, extra=None):
+    """Build a current request body with a ``contents`` envelope."""
+    out = dict(extra or {})
+    out["contents"] = _canonical_document(doc)
+    return out
+
+
+def wrap(doc, extra=None):
+    """Build a deprecated ``document`` envelope for legacy artifact readers."""
+    out = dict(extra or {})
+    out["document"] = _canonical_document(doc)
     return out

@@ -28,21 +28,25 @@ Excel path.
   NOT cross-element relationship refs — otherwise "Rollup cannot reference more
   than one external relation."
 
-## Workbook spec (`POST /v2/workbooks/spec`) — released document wrapper
+## Workbook contents (`POST /v2/workbooks`)
 
-> **Live-verified 2026-08:** the workbook code-rep surface nests non-metadata
-> fields under a top-level `document` key and rejects the old flat body with
-> HTTP 400 (including `/verify`). Use the vendored adapter at
-> `scripts/lib/code_rep.py`. **Data-model specs are unchanged** — do NOT wrap
+> **OpenAPI re-audited 2026-10:** `/v2/workbooks/spec` and `/spec/verify` are
+> deprecated. Create and validate through `/v2/workbooks` with a `contents`
+> envelope. **Data-model specs are unchanged** — do not wrap
 > `/v2/dataModels/.../spec`.
 
-- **Wire body for create:** top-level `name` + `folderId` (+ optional
-  `description`) outside; inside `document`: `schemaVersion`, `kind: workbook`,
+- **Wire body:** top-level `name` + `folderId` (+ optional `description` /
+  `ownerId`); inside `contents`: `schemaVersion`, `kind: workbook`,
   metadata-only `pages[]`, flat `elements[]`, and required `layout` XML.
-- Builders may still author the convenient nested `pages[].elements` draft.
-  Call `workbook_wire.wire_workbook(spec)` (which builds a stacked layout if
-  missing, then `code_rep.wrap`) **as the last write before POST**. Dry-run
-  artifacts that would be POSTed must be the wrapped shape too.
+- Builders may author nested `pages[].elements`. Call
+  `workbook_wire.wire_workbook(spec)` as the last write; it builds layout,
+  flattens elements, and returns the current `contents` body.
+- **Validate before create:** POST `workbook_wire.dry_run_request(body)` to
+  `/v2/workbooks`. Success is HTTP 200 with `dryRun: true` and warnings; there is
+  no `valid: true`. Failure is HTTP 400 with `valid: false` and errors.
+- **Read:** `GET /v2/workbooks/{id}?includeContents=true`. **Update:**
+  `PUT /v2/workbooks/{id}/contents` with `contents` and optional
+  `documentVersion`.
 - **Every page needs a string `id`** (POST fails with `each page must have a
   string "id"` otherwise). Page membership lives in `document.layout`
   (`<Page id="…"><Element elementId="…"/></Page>`), not in nested
@@ -53,8 +57,9 @@ Excel path.
   `code_rep.set_theme` — never top-level `themeName` / `themeOverrides`.
 - Every element needs a unique `id`; columns need `id` + `name` + `formula`.
 - Send `Content-Type: application/json` (or yaml). Specs round-trip as YAML on GET.
-- On readback, unwrap with `code_rep.document(resp)` / `code_rep.workbook_elements`
-  — never dig `pages[].elements` on a live GET.
+- On readback, unwrap with `code_rep.document(resp)` /
+  `code_rep.workbook_elements`; the adapter accepts current `contents`,
+  deprecated `document`, and old flat fixtures.
 - **Input-table specifics** live in `refs/input-tables.md` (write connection, empty
   source, system columns without `type`, publish gate).
 

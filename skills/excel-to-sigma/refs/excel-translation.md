@@ -17,9 +17,9 @@ formulas, 37 external links). The design held, with refinements baked in below.
 | Chart | chart element of matching `kind` | mostly 1:1; radar/waterfall need substitution |
 | Conditional formatting | `conditionalFormats[]` | clean 1:1 |
 | Slicer | `control` element | clean 1:1 |
-| Data validation (dropdown) | input-table single/multi-select, or `control` | medium |
+| Data validation (dropdown/range/file) | input-column validation or `control` | medium |
 | External links (workbook→workbook) | DM relationship / joined element | the biggest robustness win |
-| VBA / macros | out of scope | flag in Phase 0 |
+| VBA / macros | Actions, Python, stored procedures, governed sources, or external workflow | classify + runtime review |
 
 `.xlsx` is OOXML (ZIP of XML). Key members: `xl/tables/*.xml` (formal Tables),
 `xl/pivotTables/*` + `xl/pivotCache/*`, `xl/charts/*.xml`, `xl/styles.xml`
@@ -33,7 +33,8 @@ formulas, 37 external links). The design held, with refinements baked in below.
    hand in any migration anyway.
 2. **Where does the data live?** MVP assumes **inline values → Snowflake landing**
    (inline `VALUES` custom-SQL for ≤~1k rows, PUT-stage + COPY INTO for larger).
-   Power Query / ODBC / SharePoint-Online are additive paths once inline works.
+   Power Query / ODBC / SharePoint-Online are detected and routed to governed
+   warehouse/API sources, but their pipelines are not recreated automatically.
 3. **Formula breadth.** Cover the common ~30 functions (IF/IFS/SWITCH/IFERROR,
    SUM/SUMIFS/COUNTIFS/AVERAGEIFS, VLOOKUP/XLOOKUP/INDEX+MATCH, LEFT/MID/CONCAT,
    YEAR/MONTH/EOMONTH/EDATE, ROUND/ABS/MOD). Fail-loud on volatile locators
@@ -80,6 +81,8 @@ Everything from validate-spec onward is platform-agnostic.
 
 ## MVP scope
 
-`.xlsx` only; formal Tables as sources; pivots/charts from formal Tables; top ~30
-functions translated, rest flagged; inline-data → Snowflake landing; the
-input-table data-entry path from `refs/input-tables.md`.
+`.xlsx` / `.xlsm` OOXML audit; formal Tables as sources; pivots/charts from
+formal Tables; common functions translated and all others routed; inline-data →
+warehouse landing; the input-table data-entry path from `refs/input-tables.md`.
+Legacy binaries, add-ins, Power Query, and arbitrary VBA remain explicit review
+or external-workflow routes.

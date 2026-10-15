@@ -61,7 +61,8 @@ grow the COA + tune thresholds, *then* commit builds.
 
 Input-table data load / warehouse view / publish are **UI-only**. 850 *editable* models is
 untenable, so the batch default is **READ-ONLY**: the data page is inline `VALUES` in the DM
-(fully API, parity-preserving) — `--post` builds `POST /v2/dataModels/spec` + `/v2/workbooks/spec`
+(fully API, parity-preserving) — `--post` builds `POST /v2/dataModels/spec` +
+validates/creates via `POST /v2/workbooks`
 per file (~1,700 calls; throttle/retry/resume; one folder per sector; guard name collisions).
 Editable entry is **opt-in per file**, routed to the input-table hand-off, and cheap only once
 the bulk-seed API lands. Don't promise editable-at-scale today.

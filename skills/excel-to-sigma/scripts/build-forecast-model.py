@@ -16,18 +16,59 @@ Intent (plan.intent):
   read-only          → forecast baked from default rates (no input tables)
   editable | what-if → rates + manual cells are editable input tables (Coalesce override)
 """
-import sys, os, json, csv, urllib.request, urllib.parse, urllib.error
+import argparse, sys, os, json, csv, urllib.request, urllib.parse, urllib.error
 from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent / "lib"
 if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 import workbook_wire  # noqa: E402
+from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
 
 CUR = lambda p: {"kind": "number", "formatString": p["currencyFormat"]}
 PCT = lambda p: {"kind": "number", "formatString": p.get("pctFormat", ".1%")}
 DATEF = {"kind": "datetime", "formatString": "%b-%y"}
 def q(s): return "'" + str(s).replace("'", "''") + "'"
+
+
+def forecast_layout(editable):
+    """Dense four-page layout: overview, detail, editable inputs, hidden plumbing."""
+    pages = [
+        ("pnl", [
+            ("pnlHeader", 1, 25, 1, 4),
+            ("kpiRev", 1, 7, 4, 10),
+            ("kpiEbitda", 7, 13, 4, 10),
+            ("kpiNI", 13, 19, 4, 10),
+            ("kpiGM", 19, 25, 4, 10),
+            ("monthlyTrend", 1, 25, 10, 25),
+            ("pnlPivot", 1, 25, 25, 55),
+        ]),
+        ("detail", [("glTable", 1, 25, 1, 37)]),
+        ("inputs", [
+            ("assumpTable", 1, 25, 1, 13),
+            *([("rateInput", 1, 25, 13, 29), ("manualInput", 1, 25, 29, 49)] if editable else []),
+        ]),
+        ("model", [
+            ("actuals", 1, 25, 1, 13),
+            ("spineWrap", 1, 25, 13, 25),
+            ("forecast", 1, 25, 25, 37),
+            ("pnlCombined", 1, 25, 37, 49),
+        ]),
+    ]
+    blocks = []
+    for page_id, placements in pages:
+        lines = [
+            f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" '
+            f'gridTemplateRows="auto" id="{page_id}">'
+        ]
+        for element_id, col_start, col_end, row_start, row_end in placements:
+            lines.append(
+                f'  <Element elementId="{element_id}" gridColumn="{col_start} / {col_end}" '
+                f'gridRow="{row_start} / {row_end}"/>'
+            )
+        lines.append("</Page>")
+        blocks.append("\n".join(lines))
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)
 
 def env():
     e = {}
@@ -137,13 +178,13 @@ def build_wb_spec(P, dm_id, els):
     def dm(elid): return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
     elements = []
     # actuals wrap (live)
-    actuals = {"id": "actuals", "kind": "table", "name": "Actuals", "visibleAsSource": False, "source": dm("glDetail"),
+    actuals = {"id": "actuals", "kind": "table", "name": "Actuals", "source": dm("glDetail"),
         "columns": [{"id":"a_sec","name":"Section","formula":f"[{DMP}/Section]"},{"id":"a_so","name":"Section Order","formula":f"[{DMP}/Section Order]"},
                     {"id":"a_line","name":"Line Item","formula":f"[{DMP}/Line Item]"},{"id":"a_lo","name":"Line Order","formula":f"[{DMP}/Line Order]"},
                     {"id":"a_m","name":"Month","formula":f"[{DMP}/Month]"},{"id":"a_mn","name":"Month Num","formula":f"[{DMP}/Month Num]"},
                     {"id":"a_me","name":"Month End","formula":f"[{DMP}/Month End]"},{"id":"a_amt","name":"Amount","formula":f"[{DMP}/Amount]"},
                     {"id":"a_p","name":"Period","formula":'"Actual"'}]}
-    spineWrap = {"id":"spineWrap","kind":"table","name":"Forecast Spine","visibleAsSource":False,"source":dm("spine"),
+    spineWrap = {"id":"spineWrap","kind":"table","name":"Forecast Spine","source":dm("spine"),
         "columns":[{"id":f"s_{k}","name":nm,"formula":f"[{DMP}/{nm}]"} for k,nm in
                    [("sec","Section"),("so","Section Order"),("line","Line Item"),("lo","Line Order"),("m","Month"),("mn","Month Num"),("me","Month End"),("n","N"),("k","Kind"),("dr","Default Rate"),("mv","Manual Value"),("jb","June Base")]]}
     # forecast element
@@ -152,7 +193,7 @@ def build_wb_spec(P, dm_id, els):
             "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"RATE","type":"number","name":"Rate","format":PCT(P)}],"order":["LINE_ITEM","RATE"]}
         manualInput = {"id":"manualInput","kind":"input-table","name":"Manual Forecast (editable)","inputMode":"edit","source":{"kind":"empty","connectionId":conn},
             "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"MONTH","type":"text","name":"Month"},{"id":"MONTH_NUM","type":"number","name":"Month Num"},{"id":"MONTH_END","type":"datetime","name":"Month End"},{"id":"AMOUNT","type":"number","name":"Amount","format":cur}],"order":["LINE_ITEM","MONTH","AMOUNT"]}
-        forecast = {"id":"forecast","kind":"table","name":"Forecast","visibleAsSource":False,
+        forecast = {"id":"forecast","kind":"table","name":"Forecast",
             "source":{"kind":"join","name":"FJ","primarySource":{"kind":"table","elementId":"spineWrap"},
                 "joins":[{"name":"Rates","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"rateInput"},"columns":[{"left":"[Line Item]","right":"[Line Item]"}]},
                          {"name":"Manual","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"manualInput"},"columns":[{"left":"[Line Item]","right":"[Line Item]"},{"left":"[Month Num]","right":"[Month Num]"}]}]},
@@ -165,14 +206,14 @@ def build_wb_spec(P, dm_id, els):
                 {"id":"f_amt","name":"Amount","formula":'If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [June Base], [June Base] * (1 + [Eff Rate]) ^ [N])',"format":cur},
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
     else:
-        forecast = {"id":"forecast","kind":"table","name":"Forecast","visibleAsSource":False,"source":{"kind":"table","elementId":"spineWrap"},
+        forecast = {"id":"forecast","kind":"table","name":"Forecast","source":{"kind":"table","elementId":"spineWrap"},
             "columns":[{"id":"f_sec","name":"Section","formula":"[Forecast Spine/Section]"},{"id":"f_so","name":"Section Order","formula":"[Forecast Spine/Section Order]"},
                 {"id":"f_line","name":"Line Item","formula":"[Forecast Spine/Line Item]"},{"id":"f_lo","name":"Line Order","formula":"[Forecast Spine/Line Order]"},
                 {"id":"f_m","name":"Month","formula":"[Forecast Spine/Month]"},{"id":"f_mn","name":"Month Num","formula":"[Forecast Spine/Month Num]"},{"id":"f_me","name":"Month End","formula":"[Forecast Spine/Month End]"},
                 {"id":"f_amt","name":"Amount","formula":'If([Forecast Spine/Kind] = "manual", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = "flat", [Forecast Spine/June Base], [Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])',"format":cur},
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
     def m(nm): return {"outputColumnName": nm, "sourceColumns": [f"[{nm}]", f"[{nm}]"]}
-    pnlCombined = {"id":"pnlCombined","kind":"table","name":C,"visibleAsSource":False,
+    pnlCombined = {"id":"pnlCombined","kind":"table","name":C,
         "source":{"kind":"union","sources":[{"kind":"table","elementId":"actuals"},{"kind":"table","elementId":"forecast"}],
                   "matches":[m("Section"),m("Section Order"),m("Line Item"),m("Line Order"),m("Month"),m("Month Num"),m("Month End"),m("Amount"),m("Period")]},
         "columns":[{"id":"c_sec","name":"Section","formula":f"[{U}/Section]"},{"id":"c_so","name":"Section Order","formula":f"[{U}/Section Order]"},
@@ -184,33 +225,79 @@ def build_wb_spec(P, dm_id, els):
             {"id":"c_opex","name":"OpEx Amt","formula":f'If([{U}/Section] = "Operating Expenses", [{U}/Amount], 0)'},
             {"id":"c_below","name":"Below Amt","formula":f'If([{U}/Section] = "Below the Line", [{U}/Amount], 0)'}]}
     REV=f"Sum([{C}/Revenue Amt])"; COGS=f"Sum([{C}/COGS Amt])"; OPEX=f"Sum([{C}/OpEx Amt])"; BELOW=f"Sum([{C}/Below Amt])"
-    def kpi(eid,name,f,fmt): return {"id":eid,"kind":"kpi-chart","name":name,"source":{"kind":"table","elementId":"pnlCombined"},"columns":[{"id":"v","formula":f,"format":fmt}],"value":{"columnId":"v"}}
+    card_style = {"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}
+    def kpi(eid,name,f,fmt): return {"id":eid,"kind":"kpi-chart","name":name,"source":{"kind":"table","elementId":"pnlCombined"},"columns":[{"id":"v","formula":f,"format":fmt}],"value":{"columnId":"v"},"style":dict(card_style)}
     kpis=[kpi("kpiRev","Total Revenue",REV,cur),kpi("kpiEbitda","EBITDA",f"{REV} - {COGS} - {OPEX}",cur),
           kpi("kpiNI","Net Income",f"{REV} - {COGS} - {OPEX} - {BELOW}",cur),kpi("kpiGM","Gross Margin %",f"({REV} - {COGS}) / {REV}",PCT(P))]
+    kpis[0]["style"]["borderColor"] = "#2563EB"
+    header={"id":"pnlHeader","kind":"text","body":f"# {P['name']}\nMonthly actuals and forecast performance",
+        "style":{"backgroundColor":"#F8FAFC","color":"#0F172A","borderRadius":"round"}}
+    trend={"id":"monthlyTrend","kind":"line-chart","name":"Monthly Revenue, EBITDA & Net Income",
+        "source":{"kind":"table","elementId":"pnlCombined"},
+        "columns":[
+            {"id":"t_month","name":"Month","formula":f'DateTrunc("month", [{C}/Month End])',"format":DATEF},
+            {"id":"t_revenue","name":"Revenue","formula":f"Sum([{C}/Revenue Amt])","format":cur},
+            {"id":"t_ebitda","name":"EBITDA","formula":f"Sum([{C}/Revenue Amt]) - Sum([{C}/COGS Amt]) - Sum([{C}/OpEx Amt])","format":cur},
+            {"id":"t_net_income","name":"Net Income","formula":f"Sum([{C}/Revenue Amt]) - Sum([{C}/COGS Amt]) - Sum([{C}/OpEx Amt]) - Sum([{C}/Below Amt])","format":cur}],
+        "xAxis":{"columnId":"t_month","sort":{"direction":"ascending"}},
+        "yAxis":{"columnIds":["t_revenue","t_ebitda","t_net_income"],"format":{"marks":"grid","scale":{"type":"linear","zero":False}}},
+        "legend":{"position":"bottom"},"lineAreaStyle":{"interpolation":"monotone"},
+        "style":{"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}}
     pivot={"id":"pnlPivot","kind":"pivot-table","name":"P&L Statement","source":{"kind":"table","elementId":"pnlCombined"},
         "columns":[{"id":"p_sec","name":"Section","formula":f"[{C}/Section]"},{"id":"p_so","name":"Section Order","formula":f"[{C}/Section Order]"},
             {"id":"p_line","name":"Line Item","formula":f"[{C}/Line Item]"},{"id":"p_lo","name":"Line Order","formula":f"[{C}/Line Order]"},
             {"id":"p_per","name":"Period","formula":f"[{C}/Period]"},{"id":"p_m","name":"Month","formula":f"[{C}/Month End]","format":DATEF},
             {"id":"p_amt","name":"Amount","formula":f"Sum([{C}/Amount])","format":cur}],
         "values":["p_amt"],
-        "rowsBy":[{"id":"p_sec","sort":{"direction":"ascending","by":"p_so","aggregation":"min"}},{"id":"p_line","sort":{"direction":"ascending","by":"p_lo","aggregation":"min"}}],
-        "columnsBy":[{"id":"p_per","sort":{"direction":"ascending"}},{"id":"p_m","sort":{"direction":"ascending"}}]}
+        "rowsBy":[{"columnId":"p_sec","sort":{"direction":"ascending","by":"p_so","aggregation":"min"}},{"columnId":"p_line","sort":{"direction":"ascending","by":"p_lo","aggregation":"min"}}],
+        "columnsBy":[{"columnId":"p_per","sort":{"direction":"ascending"}},{"columnId":"p_m","sort":{"direction":"ascending"}}],
+        "axisTotals":[{"axisId":"grand-row-total","visibility":"hidden"}],
+        "style":{"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}}
     glTable={"id":"glTable","kind":"table","name":"GL Transaction Detail (Actuals)","source":dm("glDetail"),
         "columns":[{"id":"g1","name":"Txn Date","formula":f"[{DMP}/Txn Date]"},{"id":"g2","name":"Month","formula":f"[{DMP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{DMP}/Line Item]"},{"id":"g4","name":"Department","formula":f"[{DMP}/Department]"},{"id":"g5","name":"Vendor","formula":f"[{DMP}/Vendor]"},{"id":"g6","name":"Amount","formula":f"[{DMP}/Amount]","format":cur}]}
     assumpTable={"id":"assumpTable","kind":"table","name":"Forecast Assumptions","source":dm("assumptions"),
         "columns":[{"id":"d1","name":"Driver","formula":f"[{DMP}/Driver]"},{"id":"d2","name":"Monthly Rate","formula":f"[{DMP}/Monthly Rate]","format":PCT(P)},{"id":"d3","name":"Basis","formula":f"[{DMP}/Basis]"}]}
-    main_els=kpis+[pivot,glTable,assumpTable]
+    main_els=[header]+kpis+[trend,pivot]
+    detail_els=[glTable]
+    input_els=[assumpTable]
     hidden_els=[actuals,spineWrap,forecast,pnlCombined]
-    if editable: main_els+=[rateInput,manualInput]
-    pages=[{"id":"pnl","name":"P&L","elements":main_els},{"id":"model","name":"Model (sources)","visibility":"hidden","elements":hidden_els}]
+    if editable: input_els+=[rateInput,manualInput]
+    pages=[{"id":"pnl","name":"P&L Overview","elements":main_els},
+           {"id":"detail","name":"Detail","elements":detail_els},
+           {"id":"inputs","name":"Inputs","elements":input_els},
+           {"id":"model","name":"Model (sources)","visibility":"hidden","elements":hidden_els}]
     # Nested draft; wire_workbook flattens + wraps at the POST / dry-run boundary.
-    return {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],"pages":pages}
+    return {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],
+            "pages":pages,"layout":forecast_layout(editable)}
 
-def main():
-    args=[a for a in sys.argv[1:] if not a.startswith("-")]
-    do_post="--post" in sys.argv
-    if not args: sys.exit("usage: build-forecast-model.py [--post] <model-plan.json>")
-    P=json.load(open(args[0]))
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("plan", help="model-plan JSON")
+    parser.add_argument("--source", help="source XLSX used to produce the plan")
+    parser.add_argument("--review-dispositions", help="source-bound review dispositions JSON")
+    parser.add_argument("--post", action="store_true", help="create the data model and workbook")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    with open(args.plan, encoding="utf-8") as stream:
+        P = json.load(stream)
+    try:
+        source_path, gate_report = gate_plan_source(
+            P,
+            source_arg=args.source,
+            dispositions_path=args.review_dispositions,
+            plan_path=args.plan,
+        )
+    except MigrationGateError as error:
+        print(f"MIGRATION GATE: {error}", file=sys.stderr)
+        return error.exit_code
+    print(
+        f"MIGRATION GATE: {gate_report['status']} "
+        f"source={source_path.name} sha256={gate_report['sourceSha256']}"
+    )
+    do_post = args.post
     outdir="/tmp/fcst-build"; os.makedirs(outdir,exist_ok=True)
     # parity
     par=parity(P)
@@ -218,24 +305,29 @@ def main():
     rate_csv,man_csv=seed_csvs(P,outdir)
     print(f"seed CSVs: {rate_csv}, {man_csv}")
     dm_spec=build_dm_spec(P)
-    json.dump(dm_spec,open(f"{outdir}/dm_spec.json","w"),indent=1)
+    with open(f"{outdir}/dm_spec.json", "w", encoding="utf-8") as stream:
+        json.dump(dm_spec, stream, indent=1)
     if not do_post:
         # map ids from the local spec (ids as-authored) for a dry-run wb spec
         els={"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"}
         wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els))
-        json.dump(wb_spec,open(f"{outdir}/wb_spec.json","w"),indent=1)
+        with open(f"{outdir}/wb_spec.json", "w", encoding="utf-8") as stream:
+            json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
-        return
+        return 0
     e=env(); base=e["SIGMA_BASE_URL"]; tok=token(e)
     dm=api(base,tok,"POST","/v2/dataModels/spec",dm_spec); dm_id=dm["dataModelId"]
     print("dataModelId:",dm_id)
     full=api(base,tok,"GET",f"/v2/dataModels/{dm_id}/spec")
     els=map_dm_elements(full)
-    # Layout is the last write (assembled inside wire_workbook) before POST.
+    # Layout is the last write before the current contents API validates + creates.
     wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els))
-    wb=api(base,tok,"POST","/v2/workbooks/spec",wb_spec)
+    checked=api(base,tok,"POST","/v2/workbooks",workbook_wire.dry_run_request(wb_spec))
+    workbook_wire.assert_dry_run_success(checked)
+    wb=api(base,tok,"POST","/v2/workbooks",wb_spec)
     print("workbookId:",wb["workbookId"],"| url:",wb.get("url"))
     print("NOTE: POST uses a stacked notebook-flow layout via code_rep; refine with wb-rep push if needed.")
+    return 0
 
 if __name__=="__main__":
-    main()
+    raise SystemExit(main())

@@ -23,6 +23,9 @@ are for. The skill covers:
 3. **Data-entry half (validated)** — the formal Table forecasters edit becomes a
    Sigma **input table**; the data model re-points to read it through a
    **warehouse view**.
+4. **Fail-loud complex-workbook audit** — inventories formulas, charts, pivots,
+   validation, protection, links/connections, VBA, add-ins, and embedded
+   content; unsupported behavior receives an explicit route instead of vanishing.
 
 ```
 Excel formal Table → Sigma input table → (publish) → SIGDS_ writeback
@@ -36,6 +39,8 @@ Excel formal Table → Sigma input table → (publish) → SIGDS_ writeback
 - ✅ Read/output DM + workbook build: validated (2026-06-03).
 - ✅ Excel chart discovery and line/bar/doughnut/scatter migrations validated on
   deterministic sales, expense, and headcount fixtures.
+- ✅ Current Sigma `contents` API, dry-run validation, Actions, Python, stored
+  procedures, input validation, and automation are OpenAPI-audited in CI.
 - 🚧 Discovery + Excel-formula translation: spiked, not yet a one-shot converter.
 
 See `skills/excel-to-sigma/SKILL.md` for the full workflow and `QUICKSTART.md` for
@@ -56,6 +61,8 @@ skills/excel-to-sigma/
     make-sample-forecast.py         generate a synthetic .xlsx fixture (no customer data)
     make-chart-examples.py          generate sales/expense/headcount chart fixtures
     xlsx-discover.py                Phase 0 — inventory tables/visuals/formulas
+    audit-xlsx.py                   fail-loud workbook capability/routing manifest
+    audit-openapi.py                current Sigma code-rep drift gate
     xlsx-to-input-csv.py            Phase 1 — extract a Table to a paste-ready CSV
     build-input-table-wb.py         Phase 3 — POST the input-table workbook (API)
     build-dm-on-view.py             Phase 4 — POST the DM reading FROM the view (API)
@@ -66,7 +73,7 @@ skills/excel-to-sigma/
 - A Sigma `SIGMA_API_TOKEN` (creds in `~/.sigma-migration/env`).
 - A **write-enabled** Sigma connection for the data-entry half (input tables write
   back to a `SIGDS_` schema).
-- Python with `openpyxl` (+ `python-dateutil` for the fixture generator).
+- Python dependencies from `requirements.txt`.
 
 ## License
 

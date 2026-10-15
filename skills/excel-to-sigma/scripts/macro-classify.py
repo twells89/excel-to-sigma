@@ -8,7 +8,10 @@ Sigma target + porting status, plus a STOP-gate summary.
 Porting status:
   AUTO    — reproduced by the data/formula conversion, or safely dropped (Sigma is live)
   CONTROL — becomes controls / parameters / an editable input table
-  ACTION  — becomes a Sigma Action (button-triggered); GATED on the Actions primitive
+  ACTION  — becomes an authorable Sigma Action (button/API/writeback/navigation)
+  STORED_PROC — candidate for a call-stored-procedure action
+  PYTHON_REVIEW — candidate for a Python code element after behavior/parity review
+  DATA_REVIEW — external query/refresh must be re-sourced and verified
   FLAG    — must be reviewed by a human (external I/O or opaque imperative logic)
 
 Never silent: every macro is surfaced with a disposition. A dropped macro the user
@@ -60,19 +63,50 @@ def split_procedures(code):
 # Ordered by precedence — first matching class wins as PRIMARY; all hits reported.
 RULES = [
     ("EXTERNAL_IO", "FLAG", [
-        r"CreateObject\(\s*[\"']Outlook", r"\.Send\b", r"SendMail", r"\bShell\b",
+        r"CreateObject\(\s*[\"']Outlook", r"SendMail", r"\bShell\b",
         r"ExportAsFixedFormat", r"FileSystemObject", r"Workbooks\.Open", r"\bKill\b",
-        r"\bMkDir\b", r"MSXML2|WinHttp|ServerXMLHTTP", r"\bEnviron\(", r"Open .* For (Output|Append|Input)"],
+        r"\bMkDir\b", r"\bEnviron\(", r"Open .* For (Output|Append|Input)"],
      "Sigma scheduled export / delivery, or external API job — usually NOT 1:1",
      "Reaches outside the workbook (email / file / shell / HTTP / PDF). Review: map to "
      "Sigma scheduled delivery or an external workflow; do not auto-port."),
+
+    ("PYTHON_AUTOMATION", "PYTHON_REVIEW", [
+        r"\bRunPython\b", r"\bxlwings\b", r"\bPyXLL\b",
+        r"Application\.Run\s+[\"'][^\"']*(?:Python|PyXLL|xlwings)"],
+     "Python code element + run-python-element action",
+     "Python integration is representable, but packages, credentials, side effects, "
+     "output shape, and parity must be reviewed before emitting code."),
+
+    ("STORED_PROCEDURE", "STORED_PROC", [
+        r"\badCmdStoredProc\b", r"\.CommandType\s*=\s*(?:4|adCmdStoredProc)\b",
+        r"\.CommandText\s*=\s*[\"']\s*(?:EXEC(?:UTE)?|CALL)\s+",
+        r"[\"']\s*(?:EXEC(?:UTE)?|CALL)\s+(?:\[[^\]]+\]|[A-Za-z_])"],
+     "Sigma Action → call-stored-procedure",
+     "A warehouse procedure call can become a call-stored-procedure effect. Confirm "
+     "connection, fully-qualified path, signature, argument types, and side effects."),
+
+    ("API_CALL", "ACTION", [
+        r"MSXML2|WinHttp|ServerXMLHTTP",
+        r"\.Open\s+[\"'](?:GET|POST|PUT|PATCH|DELETE)[\"']"],
+     "Sigma Action → call-api (connector-backed)",
+     "HTTP automation may map to call-api. Confirm connector ownership, authentication, "
+     "arguments, response handling, retries, and secret boundaries."),
+
+    ("EXTERNAL_DATA_REFRESH", "DATA_REVIEW", [
+        r"\bRefreshAll\b", r"QueryTables(?:\.Add)?", r"\.QueryTable\b",
+        r"ADODB\.(?:Connection|Recordset|Command)", r"\.CommandText\b",
+        r"[\"']\s*(?:SELECT|WITH|INSERT|UPDATE|DELETE|MERGE)\b",
+        r"WorkbookConnection", r"\.Connections\s*\("],
+     "Governed warehouse/API source, data model, or stored procedure",
+     "Refresh/query code is not automatically obsolete. Recreate the source pipeline, "
+     "credentials, parameters, and refresh semantics, then verify data parity."),
 
     ("ACTION_WRITEBACK", "ACTION", [
         r"PasteSpecial\s+Paste:=xlPasteValues", r"ListRows\.Add",
         r"End\(xlUp\)[^\n]*\+\s*1"],   # nextRow = ...End(xlUp).Row + 1  → append target
      "Sigma Action → append rows to an input table (Scenarios / Snapshots)",
      "Button workflow that freezes/commits values into a history/scenario table. "
-     "Becomes an Action that inserts rows into an input table. GATED on the Actions primitive."),
+     "Becomes an Action that inserts rows into an input table."),
 
     ("WHATIF_SCENARIO", "CONTROL", [
         r"GoalSeek", r"Solver", r"Range\(\s*[\"']B\d", r"(Scenario|Assumption)",
@@ -81,26 +115,26 @@ RULES = [
      "Drives the model by changing assumption inputs (scenario swap / goal-seek). "
      "Maps to control parameters or the editable rates table; goal-seek → a what-if control."),
 
-    ("TRANSFORM_ROLLUP", "AUTO", [
+    ("TRANSFORM_ROLLUP", "PYTHON_REVIEW", [
         r"For\b.+\bTo\b", r"Cells\(\s*\w+\s*,.*\)\.Value\s*=", r"SumIf", r"WorksheetFunction"],
-     "Data model element / calc columns (result reproduced declaratively)",
-     "Loops over source rows building a summary/rollup in code. The data conversion "
-     "reproduces the RESULT declaratively; the imperative loop evaporates."),
+     "Data model formulas when proven equivalent; otherwise Python code element",
+     "Imperative transforms cannot be assumed to evaporate. Translate declaratively "
+     "when parity proves equivalence; otherwise route to reviewed Python."),
 
-    ("RECALC_REFRESH", "AUTO", [
-        r"RefreshAll", r"\.Calculate(Full)?\b", r"\.Refresh\b", r"ScreenUpdating"],
+    ("RECALC", "AUTO", [
+        r"\.Calculate(Full)?\b", r"Application\.Calculate\b", r"ScreenUpdating"],
      "None — Sigma is always live",
-     "Recalc/refresh. Obsolete in Sigma (queries are live); safe to drop."),
+     "Local calculation/screen repaint wrapper. Safe to drop after formula parity."),
 
     ("NAVIGATION", "AUTO", [
         r"\.Activate\b", r"\.Select\b", r"\.Goto\b", r"\.Visible\s*="],
      "Page navigation / element visibility (or drop)",
      "Sheet/cell navigation. Map to Sigma page navigation or drop."),
 
-    ("FORMAT_COSMETIC", "AUTO", [
+    ("FORMAT_COSMETIC", "PYTHON_REVIEW", [
         r"\.Font\b", r"\.Interior\b", r"\.Borders\b", r"AutoFit", r"\.NumberFormat\b"],
-     "Conditional formatting / element styling (or drop)",
-     "Cosmetic formatting. Map to conditional formatting / styling or drop."),
+     "Conditional formatting / element styling",
+     "Formatting may encode business meaning. Inventory and map it, then render-check."),
 ]
 
 RULES_MAP = {label: (status, target, note) for label, status, _s, target, note in RULES}
@@ -108,7 +142,10 @@ RULE_ORDER = {label: i for i, (label, *_) in enumerate(RULES)}
 # bespoke-math fallback → OPAQUE: writes cells using non-declarative math
 OPAQUE_MATH = re.compile(r"(Sin|Cos|Rnd|Sqr|Exp|Tan|Atn)\(|\bDo While\b|\bGoTo\b")
 # only EXTERNAL_IO / ACTION_WRITEBACK outrank a bespoke-math FLAG
-OPAQUE_OVERRIDABLE = {"WHATIF_SCENARIO", "TRANSFORM_ROLLUP", "NAVIGATION", "FORMAT_COSMETIC", "RECALC_REFRESH"}
+OPAQUE_OVERRIDABLE = {
+    "WHATIF_SCENARIO", "TRANSFORM_ROLLUP", "NAVIGATION",
+    "FORMAT_COSMETIC", "RECALC",
+}
 ACTION_VERB = re.compile(r"(Commit|Save|Submit|Post|Archive|Snapshot|Freeze)", re.I)
 
 def classify(name, body):
@@ -141,7 +178,15 @@ def classify(name, body):
                "Custom imperative logic, no recognized pattern. Flag for human review.", []
     return "UNKNOWN", "FLAG", "Human review", "No recognized signals; review manually.", []
 
-STATUS_ICON = {"AUTO": "✅ AUTO", "CONTROL": "🎛  CONTROL", "ACTION": "⏳ ACTION (gated)", "FLAG": "🚩 FLAG"}
+STATUS_ICON = {
+    "AUTO": "✅ AUTO",
+    "CONTROL": "🎛  CONTROL",
+    "ACTION": "⚡ ACTION",
+    "STORED_PROC": "🗄  STORED_PROC",
+    "PYTHON_REVIEW": "🐍 PYTHON_REVIEW",
+    "DATA_REVIEW": "🔌 DATA_REVIEW",
+    "FLAG": "🚩 FLAG",
+}
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
@@ -175,8 +220,12 @@ def main():
         print()
     print("=" * 64)
     print("DISPOSITION SUMMARY:", "  ".join(f"{STATUS_ICON[k].split()[0]} {k}={v}" for k, v in sorted(tally.items())))
-    gated = tally.get("ACTION", 0); flagged = tally.get("FLAG", 0)
-    if gated:   print(f"\n⏳ {gated} macro(s) need the Sigma Actions primitive — scaffold a placeholder + inventory entry now; wire when it ships.")
+    gated = sum(tally.get(status, 0) for status in
+                ("ACTION", "STORED_PROC", "PYTHON_REVIEW", "DATA_REVIEW"))
+    flagged = tally.get("FLAG", 0)
+    if gated:
+        print(f"\n⚠️  {gated} macro(s) have a Sigma route but require implementation "
+              "and runtime/parity verification before migration is complete.")
     if flagged: print(f"🚩 {flagged} macro(s) require human review — DO NOT silently drop. Surface these to the user before build.")
 
 if __name__ == "__main__":

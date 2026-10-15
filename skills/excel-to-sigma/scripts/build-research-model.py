@@ -27,13 +27,14 @@ Usage:
   build-research-model.py <plan.json> --conn <connId> --folder <folderId>
                           [--name "..."] [--post]         # default = dry-run to /tmp
 """
-import sys, os, json, urllib.request, urllib.parse, urllib.error
+import argparse, sys, os, json, urllib.request, urllib.parse, urllib.error
 from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent / "lib"
 if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 import workbook_wire  # noqa: E402
+from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
 
 OUTDIR = "/tmp/research-build"
 NUM = {"kind": "number", "formatString": "#,##0.0"}
@@ -94,10 +95,42 @@ def data_sql(plan, data_lines):
     return f"select {', '.join(casts)} from (\n{inner}\n) s"
 
 
+def display_labels(plan):
+    """Give generic research ratios a useful label, with stable identity as fallback."""
+    candidates = []
+    for index, line in enumerate(plan["lines"]):
+        label = str(line.get("label") or line["col_id"]).strip()
+        normalized = label.casefold()
+        descriptor = None
+        if "growth" in normalized and normalized.lstrip().startswith("%"):
+            descriptor = "growth"
+        elif "margin" in normalized and normalized.lstrip().startswith("%"):
+            descriptor = "margin"
+        if descriptor:
+            for prior in reversed(plan["lines"][:index]):
+                prior_label = str(prior.get("label") or prior["col_id"]).strip()
+                if prior.get("section") == line.get("section") and not prior_label.startswith("%"):
+                    label = f"{prior_label} {descriptor}"
+                    break
+        candidates.append(label)
+
+    counts = {}
+    for label in candidates:
+        counts[label.casefold()] = counts.get(label.casefold(), 0) + 1
+    result = {}
+    for line, label in zip(plan["lines"], candidates):
+        if counts[label.casefold()] > 1:
+            identity = line.get("row", line["col_id"])
+            label = f"{label} (row {identity})"
+        result[line["col_id"]] = label
+    return result
+
+
 def linedim_sql(plan):
+    labels = display_labels(plan)
     rows = []
     for ln in plan["lines"]:
-        rows.append("(" + ",".join([q(ln["col_id"]), q(ln["label"] or ln["col_id"]),
+        rows.append("(" + ",".join([q(ln["col_id"]), q(labels[ln["col_id"]]),
                                     q(ln["section"]), str(ln["sec_order"]), str(ln["line_order"]),
                                     q(ln["kind"])]) + ")")
     inner = "select * from (values\n" + ",\n".join(rows) + \
@@ -157,14 +190,14 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
         else:
             f = ln["canonical"]                                # pure derived, one formula
         calc_cols.append({"id": cid, "name": cid, "formula": f})
-    calc = {"id": "calc", "kind": "table", "name": "Calc", "visibleAsSource": False,
+    calc = {"id": "calc", "kind": "table", "name": "Calc",
             "source": dm("data"), "columns": calc_cols}
 
     # ---- long: transpose (column-to-row) all line columns -> (Year, LineId, Value) ----
     # NB: a transpose element takes NO explicit name; Sigma auto-names it "Transpose of <source>"
     # and its OWN columns must self-reference via that auto name.
     TR = "Transpose of Calc"
-    long_el = {"id": "long", "kind": "table", "visibleAsSource": False,
+    long_el = {"id": "long", "kind": "table",
                "source": {"kind": "transpose", "source": {"kind": "table", "elementId": "calc"},
                           "direction": "column-to-row", "columnsToMerge": merge,
                           "columnLabelForMergedColumns": "LineId", "columnLabelForValues": "Value"},
@@ -173,7 +206,7 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                            {"id": "l_v", "name": "Value", "formula": f"[{TR}/Value]"}]}
 
     # ---- linedim wrap (a DM leg can't sit inside a join) ----
-    dimw = {"id": "dimw", "kind": "table", "name": "Dim", "visibleAsSource": False,
+    dimw = {"id": "dimw", "kind": "table", "name": "Dim",
             "source": dm("linedim"),
             "columns": [{"id": "d_id", "name": "Line Id", "formula": f"[{DMP}/Line Id]"},
                         {"id": "d_lab", "name": "Label", "formula": f"[{DMP}/Label]"},
@@ -182,7 +215,7 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                         {"id": "d_lo", "name": "Line Order", "formula": f"[{DMP}/Line Order]"}]}
 
     # ---- labeled: long ⋈ dim on LineId ----
-    labeled = {"id": "labeled", "kind": "table", "name": "Labeled", "visibleAsSource": False,
+    labeled = {"id": "labeled", "kind": "table", "name": "Labeled",
                "source": {"kind": "join", "name": "LJ",
                           "primarySource": {"kind": "table", "elementId": "long"},
                           "joins": [{"name": "D", "joinType": "left-outer",
@@ -206,9 +239,13 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                          {"id": "pv_yr", "name": "Year", "formula": "[Labeled/Year]"},
                          {"id": "pv_v", "name": "Value", "formula": "Sum([Labeled/Value])"}],
              "values": ["pv_v"],
-             "rowsBy": [{"id": "pv_sec", "sort": {"direction": "ascending", "by": "pv_so", "aggregation": "min"}},
-                        {"id": "pv_line", "sort": {"direction": "ascending", "by": "pv_lo", "aggregation": "min"}}],
-             "columnsBy": [{"id": "pv_yr", "sort": {"direction": "ascending"}}]}
+             "rowsBy": [{"columnId": "pv_sec", "sort": {"direction": "ascending", "by": "pv_so", "aggregation": "min"}},
+                        {"columnId": "pv_line", "sort": {"direction": "ascending", "by": "pv_lo", "aggregation": "min"}}],
+             "columnsBy": [{"columnId": "pv_yr", "sort": {"direction": "ascending"}}],
+             "axisTotals": [{"axisId": "pv_sec", "visibility": "hidden"},
+                            {"axisId": "pv_yr", "visibility": "hidden"},
+                            {"axisId": "grand-row-total", "visibility": "hidden"},
+                            {"axisId": "grand-column-total", "visibility": "hidden"}]}
 
     data_tbl = {"id": "datatbl", "kind": "table", "name": "FY results — hard-coded values (data page)",
                 "source": dm("data"),
@@ -228,15 +265,40 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
 
 
 # ---------------------------------------------------------------- main
-def main():
-    a = [x for x in sys.argv[1:] if not x.startswith("--")]
-    opt = {x.split("=")[0]: (x.split("=", 1)[1] if "=" in x else True) for x in sys.argv[1:] if x.startswith("--")}
-    if not a:
-        sys.exit(__doc__)
-    plan = json.load(open(a[0]))
-    conn = opt.get("--conn"); folder = opt.get("--folder")
-    name = opt.get("--name") or (os.path.splitext(plan["source"])[0][:60] + " (auto)")
-    do_post = "--post" in opt
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("plan", help="inferred research plan JSON")
+    parser.add_argument("--conn", help="Sigma connection ID")
+    parser.add_argument("--folder", help="Sigma folder ID")
+    parser.add_argument("--name", help="workbook name")
+    parser.add_argument("--source", help="source XLSX used to produce the plan")
+    parser.add_argument("--review-dispositions", help="source-bound review dispositions JSON")
+    parser.add_argument("--post", action="store_true", help="create the data model and workbook")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    with open(args.plan, encoding="utf-8") as stream:
+        plan = json.load(stream)
+    try:
+        source_path, gate_report = gate_plan_source(
+            plan,
+            source_arg=args.source,
+            dispositions_path=args.review_dispositions,
+            plan_path=args.plan,
+        )
+    except MigrationGateError as error:
+        print(f"MIGRATION GATE: {error}", file=sys.stderr)
+        return error.exit_code
+    print(
+        f"MIGRATION GATE: {gate_report['status']} "
+        f"source={source_path.name} sha256={gate_report['sourceSha256']}"
+    )
+    conn = args.conn; folder = args.folder
+    source_name = plan.get("source") or source_path.name
+    name = args.name or (os.path.splitext(source_name)[0][:60] + " (auto)")
+    do_post = args.post
     os.makedirs(OUTDIR, exist_ok=True)
 
     s = plan["summary"]; par = plan["parity"]
@@ -249,29 +311,36 @@ def main():
     if not (conn and folder):
         print("(dry-run needs --conn and --folder to embed real ids; writing spec skeletons anyway)")
     dm_spec, data_lines = build_dm(plan, conn or "<conn>", folder or "<folder>", name)
-    json.dump(dm_spec, open(f"{OUTDIR}/dm_spec.json", "w"), indent=1)
+    with open(f"{OUTDIR}/dm_spec.json", "w", encoding="utf-8") as stream:
+        json.dump(dm_spec, stream, indent=1)
     print(f"data columns (lines with typed values): {len(data_lines)} ; total lines: {len(plan['lines'])}")
 
     if not do_post:
         wb_spec = workbook_wire.wire_workbook(
             build_wb(plan, "<dm-id>", {"data": "data", "linedim": "linedim"},
                      data_lines, folder or "<folder>", name))
-        json.dump(wb_spec, open(f"{OUTDIR}/wb_spec.json", "w"), indent=1)
+        with open(f"{OUTDIR}/wb_spec.json", "w", encoding="utf-8") as stream:
+            json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — {OUTDIR}/dm_spec.json + wb_spec.json. Re-run with --post (and --conn/--folder) to build live.")
-        return
+        return 0
 
     e = env(); base = e["SIGMA_BASE_URL"]; tok = token(e)
     dm = api(base, tok, "POST", "/v2/dataModels/spec", dm_spec); dm_id = dm["dataModelId"]
     print("dataModelId:", dm_id)
     full = api(base, tok, "GET", f"/v2/dataModels/{dm_id}/spec")
     els = map_dm(full)
-    # Layout is the last write (assembled inside wire_workbook) before POST.
+    # Layout is the last write before the current contents API validates + creates.
     wb_spec = workbook_wire.wire_workbook(
         build_wb(plan, dm_id, els, data_lines, folder, name))
-    json.dump(wb_spec, open(f"{OUTDIR}/wb_spec_live.json", "w"), indent=1)
-    wb = api(base, tok, "POST", "/v2/workbooks/spec", wb_spec)
+    with open(f"{OUTDIR}/wb_spec_live.json", "w", encoding="utf-8") as stream:
+        json.dump(wb_spec, stream, indent=1)
+    checked = api(base, tok, "POST", "/v2/workbooks",
+                  workbook_wire.dry_run_request(wb_spec))
+    workbook_wire.assert_dry_run_success(checked)
+    wb = api(base, tok, "POST", "/v2/workbooks", wb_spec)
     print("workbookId:", wb.get("workbookId"), "| url:", wb.get("url"))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

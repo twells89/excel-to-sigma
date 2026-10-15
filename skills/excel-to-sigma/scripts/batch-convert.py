@@ -10,16 +10,26 @@ chart-of-accounts (coa.json) -> parity gate -> bucket into AUTO_PARITY / NEEDS_R
 labels across the batch (which feed COA-alias growth). NO silent truncation.
 
 Default = report-only (recommended calibration mode for the first tranche): inference
-+ triage, nothing built. `--post --conn <id> --folder <id>` also builds AUTO_PARITY (and,
-with `--post-review`, NEEDS_REVIEW) files via build-research-model.py — READ-ONLY DMs
-(inline VALUES), fully API, no UI step (see refs/research-recipes.md).
++ triage, nothing built. `--post --conn <id> --folder <id>` builds only gate-cleared
+AUTO_PARITY files via build-research-model.py. Reviewed sources require source-bound,
+complete `--review-dispositions`; `--post-review` alone grants no override. DMs are
+READ-ONLY (inline VALUES), fully API, no UI step (see refs/research-recipes.md).
 
 Usage:
   batch-convert.py <file-or-dir> [<more> ...] [--sheet "FY results"]
-                   [--out manifest.json] [--post --conn <id> --folder <id> [--post-review]]
+                   [--out manifest.json] [--review-dispositions <file-or-dir>]
+                   [--post --conn <id> --folder <id>]
 """
+import argparse
 import sys, os, re, json, glob, hashlib, importlib.util
 from collections import Counter
+
+from lib.migration_gate import (
+    MigrationGateError,
+    dispositions_for_source,
+    gate_source,
+    plan_review_issues,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -31,7 +41,8 @@ def load_mod(fn, name):
 
 
 INF = load_mod("infer-canonical-formulas.py", "inf")
-COA = json.load(open(os.path.join(HERE, "coa.json")))
+with open(os.path.join(HERE, "coa.json"), encoding="utf-8") as coa_file:
+    COA = json.load(coa_file)
 
 
 def norm(s):
@@ -140,9 +151,32 @@ def pick_annual_sheet(sheets, explicit):
     return None                                          # auto-detect
 
 
-def triage(path, sheet):
+def triage(path, sheet, dispositions_path=None):
+    with open(path, "rb") as source_file:
+        short_hash = hashlib.sha1(source_file.read()).hexdigest()[:12]
     entry = {"file": os.path.basename(path),
-             "hash": hashlib.sha1(open(path, "rb").read()).hexdigest()[:12]}
+             "hash": short_hash}
+    review_path = dispositions_for_source(dispositions_path, path)
+    try:
+        audit = gate_source(path, review_path)
+    except MigrationGateError as error:
+        audit = error.report
+        entry.update(
+            bucket="BLOCKED" if error.exit_code == 2 else "NEEDS_REVIEW",
+            fingerprint_class="UNKNOWN",
+            reasons=[str(error)],
+            auditStatus=audit.get("status", "ERROR"),
+            auditIssues=audit.get("issues", []),
+            reviewStatus=audit.get("reviewStatus", "UNRESOLVED"),
+            sourceSha256=audit.get("sourceSha256"),
+        )
+        return entry, None
+    entry.update(
+        auditStatus=audit["status"],
+        auditIssues=audit["issues"],
+        reviewStatus=audit["reviewStatus"],
+        sourceSha256=audit["sourceSha256"],
+    )
     try:
         strip = strip_report(path)
         entry["stripped"] = strip
@@ -153,6 +187,41 @@ def triage(path, sheet):
         entry.update(bucket="FAILED", fingerprint_class="UNKNOWN",
                      reasons=[f"inference error: {ex}"])
         return entry, None
+    plan["sourcePath"] = os.path.realpath(os.path.abspath(path))
+    plan["sourceSha256"] = entry["sourceSha256"]
+    initial_summary = plan["summary"]
+    initial_parity = plan["parity"]
+    entry.update(
+        sheet=plan["sheet"],
+        n_periods=len(plan["periods"]),
+        periods=[period["year"] for period in plan["periods"]],
+        n_lines=len(plan["lines"]),
+        input=initial_summary.get("input", 0),
+        derived=initial_summary.get("derived", 0),
+        ratio=initial_summary.get("ratio", 0),
+        carried=initial_summary.get("carried_plug", 0),
+        needs_review=initial_summary.get("needs_review", 0),
+        live=initial_parity.get("live", 0),
+        frozen=initial_parity.get("frozen", 0),
+        anchors=list(plan["anchors"]),
+    )
+    try:
+        completed_audit = gate_source(path, review_path, plan_review_issues(plan))
+    except MigrationGateError as error:
+        completed_audit = error.report
+        entry.update(
+            bucket="NEEDS_REVIEW",
+            reasons=[str(error)],
+            auditStatus=completed_audit.get("status", "REVIEW_REQUIRED"),
+            auditIssues=completed_audit.get("issues", []),
+            reviewStatus=completed_audit.get("reviewStatus", "UNRESOLVED"),
+        )
+        return entry, None
+    entry.update(
+        auditStatus=completed_audit["status"],
+        auditIssues=completed_audit["issues"],
+        reviewStatus=completed_audit["reviewStatus"],
+    )
     mapped, unmapped = coa_map(plan)
     sc, cls, det = fingerprint(plan, entry["stripped"]["sheets"], len(mapped))
     s = plan["summary"]; par = plan["parity"]
@@ -209,18 +278,31 @@ def expand(paths):
     return [p for p in out if p.lower().endswith(".xlsx") and "~$" not in p]
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    opt = {a.split("=")[0]: (a.split("=", 1)[1] if "=" in a else True)
-           for a in sys.argv[1:] if a.startswith("--")}
-    files = expand(args)
+def _parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="+", help="XLSX files, globs, or directories")
+    parser.add_argument("--sheet")
+    parser.add_argument("--out")
+    parser.add_argument("--post", action="store_true")
+    parser.add_argument("--post-review", action="store_true",
+                        help="legacy flag; reviewed files still require --review-dispositions")
+    parser.add_argument("--review-dispositions",
+                        help="source-bound JSON file, or directory of <sourceSha256>.json files")
+    parser.add_argument("--conn")
+    parser.add_argument("--folder")
+    return parser
+
+
+def main(argv=None):
+    args = _parser().parse_args(argv)
+    files = expand(args.paths)
     if not files:
-        sys.exit(__doc__)
-    sheet = opt.get("--sheet")
-    manifest = []; plans = {}
+        _parser().error("no .xlsx files found")
+    sheet = args.sheet
+    manifest = []; plans = []
     for f in files:
-        entry, plan = triage(f, sheet)
-        manifest.append(entry); plans[entry["file"]] = plan
+        entry, plan = triage(f, sheet, args.review_dispositions)
+        manifest.append(entry); plans.append(plan)
         print(f"  [{entry['bucket']:12s}] {entry['file'][:48]:48s} "
               f"fp={entry.get('fingerprint','-')}/{entry.get('fingerprint_class','-')} "
               f"periods={entry.get('n_periods','-')} live={entry.get('live','-')} "
@@ -238,42 +320,54 @@ def main():
         for lab, n in top_unmapped.most_common(10):
             print(f"   {n:3d}  {lab}")
 
-    out = opt.get("--out")
-    if out and out is not True:
-        json.dump({"buckets": dict(buckets), "top_unmapped": top_unmapped.most_common(20),
-                   "files": manifest}, open(out, "w"), indent=1)
+    out = args.out
+    if out:
+        with open(out, "w", encoding="utf-8") as output_file:
+            json.dump({"buckets": dict(buckets), "top_unmapped": top_unmapped.most_common(20),
+                       "files": manifest}, output_file, indent=1)
         csvp = os.path.splitext(out)[0] + ".csv"
         import csv
         keys = ["file", "bucket", "fingerprint", "fingerprint_class", "n_periods", "n_lines",
                 "input", "derived", "ratio", "carried", "needs_review", "live", "frozen",
-                "n_mapped", "n_unmapped"]
+                "n_mapped", "n_unmapped", "auditStatus", "reviewStatus", "sourceSha256",
+                "auditIssues", "reasons"]
         with open(csvp, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore"); w.writeheader()
             for e in manifest:
                 w.writerow(e)
         print(f"\nmanifest: {out}  +  {csvp}")
 
-    # optional live build for AUTO_PARITY (+ NEEDS_REVIEW with --post-review)
-    if "--post" in opt:
+    # Optional live build. REVIEW_REQUIRED sources are eligible only after the gate
+    # has validated their source-bound dispositions, at which point triage can mark
+    # them AUTO_PARITY. --post-review alone never changes eligibility.
+    if args.post and any(e["bucket"] == "AUTO_PARITY" for e in manifest):
         BUILD = load_mod("build-research-model.py", "brm")
-        conn, folder = opt.get("--conn"), opt.get("--folder")
-        want = {"AUTO_PARITY"} | ({"NEEDS_REVIEW"} if "--post-review" in opt else set())
+        conn, folder = args.conn, args.folder
+        if not (conn and folder):
+            _parser().error("--post requires --conn and --folder")
         e = BUILD.env(); base = e["SIGMA_BASE_URL"]; tok = BUILD.token(e)
-        for entry in manifest:
-            if entry["bucket"] not in want:
+        for entry, plan in zip(manifest, plans):
+            if entry["bucket"] != "AUTO_PARITY":
                 continue
-            plan = plans[entry["file"]]
             name = os.path.splitext(entry["file"])[0][:56] + " (auto)"
             dl = [ln for ln in plan["lines"] if ln["typed"]]
             dm = BUILD.api(base, tok, "POST", "/v2/dataModels/spec",
                            BUILD.build_dm(plan, conn, folder, name)[0])
             full = BUILD.api(base, tok, "GET", f"/v2/dataModels/{dm['dataModelId']}/spec")
-            # Released workbook code_rep: wrap nested draft + layout last before POST.
+            # Current workbook API: wrap nested draft, validate, then create.
             wb_body = BUILD.workbook_wire.wire_workbook(
                 BUILD.build_wb(plan, dm["dataModelId"], BUILD.map_dm(full), dl, folder, name))
-            wb = BUILD.api(base, tok, "POST", "/v2/workbooks/spec", wb_body)
+            checked = BUILD.api(base, tok, "POST", "/v2/workbooks",
+                                BUILD.workbook_wire.dry_run_request(wb_body))
+            BUILD.workbook_wire.assert_dry_run_success(checked)
+            wb = BUILD.api(base, tok, "POST", "/v2/workbooks", wb_body)
             print(f"   built {entry['file']}: wb {wb.get('workbookId')}")
+    if any(entry["bucket"] == "BLOCKED" for entry in manifest):
+        return 2
+    if any(entry["bucket"] in {"NEEDS_REVIEW", "FAILED"} for entry in manifest):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
