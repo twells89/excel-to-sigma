@@ -152,6 +152,11 @@ def controlled_procedure_contract(connection_id):
             'retryPolicy':'same-operation-and-ordered-typed-fingerprint-only','productionStatus':'BLOCKED'}
 
 
+def _decimal_wire_amount(number):
+    value=Decimal(json.dumps(number,allow_nan=False))
+    return Decimal(0) if value==0 else value
+
+
 def _typed_arguments(values):
     if not isinstance(values,list) or len(values)!=5 or any(v is None for v in values):
         raise PortError('REQUIRED_ORDERED_ARGUMENTS')
@@ -160,9 +165,13 @@ def _typed_arguments(values):
     if any(c.isspace() for c in op):
         raise PortError('INVALID_OPERATION_ID')
     number=finite(amount);integer=finite(count)
-    # The reviewed 15-digit subset retains all count digits in Double/JSON. This explicit reviewed subset is narrower than SQL.
-    if (abs(number)>=1e15 or Decimal(str(amount)).as_tuple().exponent < -2 or integer<0
-            or not integer.is_integer() or integer>=1e15 or type(enabled) is not bool):
+    # Actions carry JSON numbers. Bind the exact decimal spelling emitted for
+    # that Double, not its binary .2f rendering. Decimal inputs that lose cents
+    # when converted to this wire value are outside the supported caller subset.
+    decimal_amount=Decimal(str(amount))
+    wire_amount=_decimal_wire_amount(number)
+    if (abs(number)>=1e15 or decimal_amount.as_tuple().exponent < -2 or decimal_amount!=wire_amount
+            or integer<0 or not integer.is_integer() or integer>=1e15 or type(enabled) is not bool):
         raise PortError('INVALID_TYPED_ARGUMENT')
     if not isinstance(timestamp,str) or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}',timestamp):
         raise PortError('INVALID_TIMESTAMP')
@@ -188,7 +197,7 @@ def build_procedure_action(contract, arguments, *, prior_invocation=None):
         raise PortError('EXACT_ORDERED_LOOKUP_SIGNATURE_MISMATCH')
     op,amount,count,enabled,timestamp=_typed_arguments(arguments)
     invocation={'operationId':op,'argumentFingerprint':fingerprint(arguments),'contractHash':_digest(contract),
-        'expectedScalar':f"operation_id={op}|amount={amount:.2f}|count={count}|enabled={str(enabled).lower()}|occurred_at={timestamp}"}
+        'expectedScalar':f"operation_id={op}|amount={_decimal_wire_amount(amount):.2f}|count={count}|enabled={str(enabled).lower()}|occurred_at={timestamp}"}
     if prior_invocation and prior_invocation.get('operationId')==op and prior_invocation!=invocation:
         raise PortError('OPERATION_RETRY_INPUT_MISMATCH')
     typed=[op,amount,count,enabled,timestamp+'Z']
@@ -198,7 +207,7 @@ def build_procedure_action(contract, arguments, *, prior_invocation=None):
         'arguments':[{'parameterIndex':i,'type':typ,'value':{'type':'constant','value':{'type':kind,'value':value}}}
             for i,(typ,kind,value) in enumerate(zip(ACTION_TYPES,kinds,typed))], 'name':'task5TypedEchoResult'}],
         'successToast':{'showMessage':'hidden'},'invocation':invocation,
-        'contract':copy.deepcopy(contract),'orderedArguments':copy.deepcopy(arguments)}
+        'contract':copy.deepcopy(contract),'orderedArguments':[op,amount,count,enabled,timestamp]}
 
 
 def audit_procedure_result(invocation,capture):
@@ -581,15 +590,43 @@ def prepare_goal_action_update(manifest,receipt,current,initial_proposal,binding
     prior_elements={e['id']:e for e in prior['dryRunRequest']['contents']['elements']}
     if any(elements.get(eid)!=prior_elements[eid] for eid in prior['addedElementIds']):
         raise PortError('PORT_SOURCE_OBJECT_CHANGED')
+    if len(elements)!=len(doc['elements']):raise PortError('DUPLICATE_ELEMENT_IDS')
     assigned=receipt['targetBindings']['forecastBusinessInput']
-    if binding.get('assumption',{}).get('elementId')!=assigned['elementId']:
-        raise PortError('ASSIGNED_INPUT_TARGET_REQUIRED')
+    _,invocation_assigned,_=_approved_feature(manifest,receipt,'task5Invocation',require_assigned=True)
+    expected_ids={'assumption':assigned['elementId'],
+        'invocation':prior['sourceBindings']['Goal Seek Invocation']['elementId'],
+        'inputView':prior['sourceBindings']['Forecast Inputs View']['elementId'],
+        'guard':'task5GoalSeekApplyGuard'}
+    if invocation_assigned['elementId']!=expected_ids['invocation']:
+        raise PortError('ASSIGNED_INVOCATION_TARGET_MISMATCH')
+    connection=manifest['planProjection']['customPortArchitecture']['scope']['connectionId']
+    # Warehouse get_element and action Lookup both resolve titles. Protect every
+    # original runtime source/output against compatible duplicate-title objects.
+    runtime_ids={v['elementId'] for v in prior['sourceBindings'].values()} | {
+        eid for eid in prior['addedElementIds'] if prior_elements[eid].get('kind')=='table'}
+    for eid in runtime_ids:
+        title=prior_elements[eid].get('name')
+        if not title or sum(e.get('name')==title for e in doc['elements'])!=1:
+            raise PortError('AMBIGUOUS_RUNTIME_SOURCE_TITLE')
     for role in ('invocation','assumption','guard','inputView'):
-        value=binding.get(role,{});element=elements.get(value.get('elementId'),{})
-        if not element or element.get('name')!=value.get('name'):
-            raise PortError('ACTUAL_ACTION_BINDING_MISMATCH')
-        if role in ('invocation','assumption') and element.get('kind')!='input-table':raise PortError('WRITABLE_INPUT_TARGET_REQUIRED')
+        value=binding.get(role,{})
+        eid=expected_ids[role]
+        element=elements.get(eid,{})
+        approved=prior_elements.get(eid,{})
+        kind='input-table' if role in ('invocation','assumption') else 'table'
+        if (value.get('elementId')!=eid or not approved or element!=approved
+                or value.get('name')!=approved.get('name') or element.get('kind')!=kind
+                or sum(e.get('name')==approved.get('name') for e in doc['elements'])!=1
+                or _connection_ids(element,elements)!={connection}):
+            raise PortError('APPROVED_ACTION_ROLE_IDENTITY_MISMATCH')
+        if role=='guard' and element.get('source')!={'kind':'code-output',
+                'elementId':'task5GoalSeekApplyGuardPython','output':'GoalSeekApplyGuard'}:
+            raise PortError('APPROVED_GUARD_CODE_OUTPUT_REQUIRED')
         columns={c.get('name'):c.get('id') for c in element.get('columns',[])}
+        target=invocation_assigned if role=='invocation' else assigned if role=='assumption' else None
+        if target and any(value.get('columnIds',{}).get(n)!=cid
+                for n,cid in target['columnIds'].items() if n in value.get('columnIds',{})):
+            raise PortError('ASSIGNED_ACTION_COLUMN_BINDING_MISMATCH')
         for name,cid in value.get('columnIds',{}).items():
             if columns.get(name)==cid:continue
             system=value.get('systemColumn')

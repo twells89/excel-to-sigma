@@ -133,6 +133,9 @@ model binding, input fingerprint, physical subscription row ID and prior growth.
    append per-invocation buttons. This checks the immutable initial proposal,
    current full model graph, existing code/output objects and assigned input/
    column bindings, then uses the same dry-run/fresh-version/finalize gates.
+   Each role must resolve to its exact initially approved object; guard must be
+   the genuine GoalSeekApplyGuard code-output table, invocation must match its
+   assigned input binding, and all titles/connections must remain unambiguous.
 5. Compare complete before/after input rows using `verify_goal_seek_write`. Only
    after a verified exact 12-decimal growth and all other values unchanged may the
    controller reconcile invocation State=APPLIED, AppliedOperationId/AppliedGrowth.
@@ -163,7 +166,11 @@ text, number, integer, boolean, datetime; indexes are 0..4. Null, fractional cou
 negative count, invalid date, whitespace operation and changed retry inputs reject.
 The reviewed formatting/Double-safe caller subset restricts absolute amount and
 count below `1e15`, amount to at most two decimal places; this is deliberately
-narrower than the warehouse declaration. Datetime is a supplied millisecond NTZ
+narrower than the warehouse declaration. Amount expectations are formatted from
+`Decimal(json.dumps(the_emitted_number))`, preserving the exact JSON decimal
+spelling instead of formatting a binary float. Decimal caller values that lose
+cents during conversion to the emitted JSON number are rejected. Negative zero
+is normalized to SQL numeric zero; all scalar comparisons remain exact. Datetime is a supplied millisecond NTZ
 value. The emitted Z literal requires actual coercion evidence, not an assumption.
 
 No optimistic scalar toast is emitted. Compare the actual scalar with the exact

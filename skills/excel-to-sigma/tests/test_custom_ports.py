@@ -363,7 +363,7 @@ class InputAndModelBindingTests(unittest.TestCase):
         self.assertNotIn("created.set_edit_mode({",program)
 
 class FollowupAuthoringTests(unittest.TestCase):
-    def test_followup_action_update_is_guarded_append_and_rejects_changed_model_or_foreign_action(self):
+    def setup_followup(self):
         import custom_ports as p
         self.assertTrue(hasattr(p,'prepare_goal_action_update'),'follow-up action guard is missing')
         p,m,receipt,current,sources=PortGateTests().case()
@@ -373,8 +373,18 @@ class FollowupAuthoringTests(unittest.TestCase):
         inv['columns']=[{'id':'inv-'+n,'name':n,'type':'text' if n in ('RequestKey','OperationId','State','ModelBinding') else 'number'} for n in inv_fields]
         sources['Goal Seek Invocation']['elementHash']=p._digest(inv)
         business={'id':'forecastBusinessInput','kind':'input-table','name':'Forecast Business Inputs',
-            'source':{'kind':'empty','connectionId':'conn'},'columns':[{'id':'business-'+n,'name':n,'type':'text' if n!='Monthly Growth' else 'number'} for n in ('Line Item','Input Row ID','Monthly Growth')]}
+            'source':{'kind':'empty','connectionId':'conn'},'columns':[{'id':'ID' if n=='Input Row ID' else receipt['targetBindings']['forecastBusinessInput']['columnIds'][n],
+                'name':n,'type':'text' if n!='Monthly Growth' else 'number'} for n in ('Line Item','Input Row ID','Monthly Growth')]}
         current['contents']['elements'].append(business)
+        from input_sync import build_artifact_records
+        receipt['targetBindings']['task5Invocation'].update(elementId=inv['id'],
+            columnIds={c['name']:c['id'] for c in inv['columns']})
+        # Include the two reconciliation fields present in the approved input schema.
+        for n in ('AppliedOperationId','AppliedGrowth'):
+            inv['columns'].append({'id':'inv-'+n,'name':n,'type':'text' if n=='AppliedOperationId' else 'number'})
+            receipt['targetBindings']['task5Invocation']['columnIds'][n]='inv-'+n
+        receipt['artifacts']=build_artifact_records(m,m['planProjection']['sharedInputArchitecture'],receipt['targetBindings'])
+        sources['Goal Seek Invocation']['elementHash']=p._digest(inv)
         initial=p.prepare_port_update(m,receipt,current,sources)
         created={**current,'documentVersion':9,'contents':initial['dryRunRequest']['contents']}
         model=json.loads((ROOT/'tests/fixtures/task5-controlled-model.json').read_text())
@@ -386,6 +396,10 @@ class FollowupAuthoringTests(unittest.TestCase):
             'assumption':{'elementId':business['id'],'name':business['name'],'columnIds':{c['name']:c['id'] for c in business['columns']}},
             'guard':{'elementId':guard['id'],'name':guard['name'],'columnIds':{c['name']:c['id'] for c in guard['columns']}},
             'inputView':{'elementId':'view','name':'Forecast Inputs View'}}
+        return p,m,receipt,created,initial,binding,request,model,result
+
+    def test_followup_action_update_is_guarded_append_and_rejects_changed_model_or_foreign_action(self):
+        p,m,receipt,created,initial,binding,request,model,result=self.setup_followup()
         follow=p.prepare_goal_action_update(m,receipt,created,initial,binding,request,model['actuals'],model['inputs'],model['definitions'],result)
         self.assertEqual(follow['documentVersion'],9)
         self.assertEqual(follow['dryRunRequest']['contents']['elements'][:-3],created['contents']['elements'])
@@ -396,5 +410,82 @@ class FollowupAuthoringTests(unittest.TestCase):
         changed=copy.deepcopy(created);changed['contents']['elements'][0]['source']['statement']='changed'
         with self.assertRaisesRegex(ValueError,'MODEL|source|SOURCE'):
             p.prepare_goal_action_update(m,receipt,changed,initial,{},request,model['actuals'],model['inputs'],model['definitions'],result)
+
+    def test_followup_rejects_foreign_guard_invocation_and_input_view_even_same_connection(self):
+        p,m,receipt,created,initial,binding,request,model,result=self.setup_followup()
+        for role in ('guard','invocation','inputView'):
+            for connection in ('conn','other-connection'):
+                with self.subTest(role=role,connection=connection):
+                    current=copy.deepcopy(created);bad=copy.deepcopy(binding)
+                    source=next(e for e in current['contents']['elements'] if e['id']==binding[role]['elementId'])
+                    foreign=copy.deepcopy(source)
+                    foreign.update(id='foreign'+role,name='Unreviewed '+role,
+                        source={'kind':'empty' if role=='invocation' else 'sql','connectionId':connection,
+                                **({} if role=='invocation' else {'statement':'SELECT stale guards'})})
+                    current['contents']['elements'].append(foreign)
+                    bad[role].update(elementId=foreign['id'],name=foreign['name'])
+                    with self.assertRaises(ValueError):
+                        p.prepare_goal_action_update(m,receipt,current,initial,bad,request,
+                            model['actuals'],model['inputs'],model['definitions'],result)
+
+    def test_followup_rejects_duplicate_runtime_titles_and_wrong_assigned_invocation(self):
+        p,m,receipt,created,initial,binding,request,model,result=self.setup_followup()
+        for title in ('Goal Seek Apply Guard','Goal Seek Invocation','Forecast Inputs View','Goal Seek Result','Forecast Business Inputs'):
+            with self.subTest(title=title):
+                current=copy.deepcopy(created)
+                duplicate=copy.deepcopy(next(e for e in current['contents']['elements'] if e.get('name')==title))
+                duplicate['id']='duplicate-'+duplicate['id'];current['contents']['elements'].append(duplicate)
+                with self.assertRaises(ValueError):
+                    p.prepare_goal_action_update(m,receipt,current,initial,binding,request,
+                        model['actuals'],model['inputs'],model['definitions'],result)
+        from input_sync import build_artifact_records
+        other=copy.deepcopy(receipt)
+        other['targetBindings']['task5Invocation']['elementId']='foreignInvocation'
+        other['artifacts']=build_artifact_records(m,m['planProjection']['sharedInputArchitecture'],other['targetBindings'])
+        with self.assertRaises(ValueError):
+            p.prepare_goal_action_update(m,other,created,initial,binding,request,
+                model['actuals'],model['inputs'],model['definitions'],result)
+
+class ProcedureDecimalTransportTests(unittest.TestCase):
+    def contract(self):
+        import custom_ports as p
+        contract=p.controlled_procedure_contract('conn')
+        contract.update(signature='TASK5_TYPED_ECHO(VARCHAR, NUMBER, NUMBER, BOOLEAN, TIMESTAMP_NTZ)',
+            catalogObjectId='catalog',lookupEvidenceId='lookup',callerEvidenceId='caller',
+            scalarMappingEvidenceId='scalar',datetimeEvidenceId='datetime')
+        contract['lookup']={k:contract[k] for k in ('connectionId','path','signature','returnType','overloads','defaults')}
+        contract['lookup']['parameters']=list(p.PROCEDURE_TYPES)
+        return p,contract
+
+    def test_large_accepted_amounts_expect_exact_json_decimal_cents(self):
+        p,contract=self.contract()
+        for amount in (100000000000000.1,999999999999999.1,100000000000000.12,
+                -100000000000000.1,999999999999999.9,0.01,-0.0,0,1234.56):
+            with self.subTest(amount=amount):
+                action=p.build_procedure_action(contract,['op',amount,7,True,'2026-10-15T14:30:00.000'])
+                literal=action['effects'][0]['arguments'][1]['value']['value']['value']
+                wire=json.dumps(literal,allow_nan=False)
+                decimal=Decimal(wire)
+                if decimal==0:decimal=Decimal(0)
+                expected='operation_id=op|amount='+format(decimal,'.2f')+'|count=7|enabled=true|occurred_at=2026-10-15T14:30:00.000'
+                self.assertEqual(action['invocation']['expectedScalar'],expected)
+                accepted=p.audit_procedure_result(action['invocation'],{'status':'SUCCESS','operationId':'op',
+                    'scalar':expected,'evidenceId':'actual-runtime-required'})
+                self.assertEqual(accepted['status'],'VERIFIED_COMPONENT_SUCCESS')
+                self.assertEqual(json.dumps(json.loads(wire)),wire)
+
+    def test_decimal_inputs_that_lose_cents_in_json_double_conversion_are_rejected(self):
+        p,contract=self.contract()
+        for amount in (Decimal('999999999999999.11'),Decimal('100000000000000.13'),
+                Decimal('999999999999999.99'),Decimal('1000000000000000'),Decimal('1.001')):
+            with self.subTest(amount=str(amount)),self.assertRaises(ValueError):
+                p.build_procedure_action(contract,['op',amount,7,True,'2026-10-15T14:30:00.000'])
+        # JSON-native numbers which round-trip exactly remain accepted.
+        for amount in (Decimal('1234.56'),Decimal('999999999999999.10')):
+            action=p.build_procedure_action(contract,['op',amount,7,True,'2026-10-15T14:30:00.000'])
+            literal=action['effects'][0]['arguments'][1]['value']['value']['value']
+            self.assertEqual(Decimal(json.dumps(literal)),amount)
+            reloaded=json.loads(json.dumps(action,allow_nan=False))
+            self.assertEqual(reloaded['invocation']['expectedScalar'],action['invocation']['expectedScalar'])
 
 if __name__=='__main__':unittest.main()
