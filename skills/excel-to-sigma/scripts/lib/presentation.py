@@ -425,6 +425,8 @@ def _semantic_formats(workbook):
                     semantic, emission, grain = "currency", {"kind": "number", "formatString": f",.{_precision(fmt)}f", "currencySymbol": "$"}, None
                 elif isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith("=")):
                     semantic, emission, grain = "number", {"kind": "number", "formatString": f",.{_precision(fmt)}f"}, None
+                    if str(fmt).rstrip().lower().endswith("x"):
+                        emission["suffix"] = "x"
                 else:
                     continue
                 result[f"{ws.title}!{cell.coordinate}"] = {
@@ -493,6 +495,30 @@ def _source_columns(plan):
     return columns
 
 
+def _research_view_columns(plan):
+    workbook = load_workbook(plan["source"]["path"], data_only=False, read_only=False)
+    ws = workbook["FY results"]
+    metrics = []
+    for row in range(1, ws.max_row + 1):
+        label = ws.cell(row, 1).value
+        if label in (None, "") or not any(ws.cell(row, column).value is not None for column in range(2, 14)):
+            continue
+        semantic = next((plan["semanticFormats"].get(f"FY results!{get_column_letter(column)}{row}")
+                         for column in range(2, 14)
+                         if plan["semanticFormats"].get(f"FY results!{get_column_letter(column)}{row}")), None)
+        column = {"id": f"research_c{row}", "name": str(label).strip(),
+                  "formula": f"[Calculation/c{row}]", "sourceCell": f"FY results!B{row}"}
+        if semantic:
+            column["format"] = copy.deepcopy(semantic["emission"])
+        metrics.append(column)
+    workbook.close()
+    year = {"id": "research_year", "name": "Year", "formula": "[Calculation/Year]",
+            "format": {"kind": "number", "formatString": ".0f"}}
+    by_row = {int(column["id"].split("c")[-1]): column for column in metrics}
+    main = [year] + [copy.deepcopy(by_row[row]) for row in (8, 18, 37, 57)]
+    return main, [year] + metrics
+
+
 def fixture_bindings(plan):
     """Return logical target bindings for the five synthetic acceptance fixtures.
 
@@ -531,6 +557,10 @@ def fixture_bindings(plan):
     ]
     main_view_columns = default_view(MAIN_COLUMNS.get(workflow, []))
     detail_view_columns = default_view(detail)
+    research_formats_exact = None
+    if workflow == "research":
+        main_view_columns, detail_view_columns = _research_view_columns(plan)
+        research_formats_exact = all(column.get("format") for column in detail_view_columns)
     main_ids = {column["name"]: column["id"] for column in main_view_columns}
     detail_ids = {column["name"]: column["id"] for column in detail_view_columns}
     conditional_targets = {}
@@ -570,6 +600,7 @@ def fixture_bindings(plan):
         "validationTargets": validation_targets,
         "sharedInputScope": "shared" if workflow == "research" else None,
         "sharedInputColumns": detail, "prominentEditableColumns": edit,
+        "researchMetricFormatsExact": research_formats_exact,
         "businessInput": {"pageId": f"{workflow}-edit", "connectionId": "ASSIGN_FROM_RUNTIME",
                           "folderId": "ASSIGN_FROM_RUNTIME",
                           "name": f"{workflow.title()} Business Inputs", "editMode": "published-explore",
@@ -951,7 +982,7 @@ def emit_presentation(plan, bindings):
                           else "source formula retained; target parity evidence required")}
         for item in plan["formulaProvenance"]
     ]
-    if workflow == "research":
+    if workflow == "research" and not bindings.get("researchMetricFormatsExact"):
         unresolved.append({"kind": "mixed-unit-row-format", "sourceId": "FY results-values",
                            "reason": "current column format is uniform; currency, percentage, ratio, and count rows require separate bound views or UI verification"})
     artifact = {
@@ -1079,4 +1110,3 @@ def audit_presentation_openapi(document):
     missing = [name for name, value in capabilities.items() if not value]
     return {"status": "PASS" if not missing else "DRIFT", "capabilities": capabilities,
             "missing": missing, "openapiVersion": (document.get("info") or {}).get("version")}
-

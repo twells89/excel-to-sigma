@@ -48,6 +48,17 @@ than a second formula contract. Research reuses its Task 2 shared input table an
 adds the twelve source-authored `FY results!B56:M56` equity inputs in place,
 using the stored row ID so Scope and prior edits are preserved.
 
+Research runtime bindings should source the main and detail views from `calc`
+(`Calculation`): `Year` uses `yr`, and each metric uses the authored `c<row>`
+column ID. The main view is Year, Revenue (`c8`), EBITDA (`c18`), EPS (`c37`),
+and Net debt / EBITDA (`c57`). The detail view carries every populated FY-results
+metric as a separate column. Each column takes its format from the first
+formatted source period, preserving currency precision, percentages, and the
+ratio `x` suffix. Set `researchMetricFormatsExact: true` only when those exact
+formatted metric bindings are present. A generated runtime template records all
+145 logical input IDs and source cells; replace its twelve post-extension column
+placeholders with GET/readback IDs before integration.
+
 Local extraction and schema audits do not prove runtime behavior. Completion
 still requires SDK compilation, a guarded API dry run, GET/readback inspection,
 aggregate parity queries for every chart point, and UI checks for rendering,

@@ -225,6 +225,13 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertEqual(len(artifact["editColumns"]), 6)
         self.assertEqual(len(artifact["detailColumns"]), 133)
         self.assertEqual(artifact["sharedInputScope"], "shared")
+        main = {column["name"]: column for element in artifact["elements"]
+                if element["id"] == "research-main-view" for column in element["columns"]}
+        self.assertEqual(main["Revenue"]["format"]["currencySymbol"], "$")
+        self.assertEqual(main["EPS"]["format"]["formatString"], ",.2f")
+        self.assertEqual(main["Net debt / EBITDA (x)"]["format"]["suffix"], "x")
+        self.assertFalse(any(item["kind"] == "mixed-unit-row-format"
+                             for item in artifact["unresolved"]))
         updates = artifact["elementPatches"]["research-input-existing"]["columnUpdates"]
         self.assertEqual(
             {name for name, update in updates.items() if update.get("range") == {"min": 0.0, "max": 0.25}},
