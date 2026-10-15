@@ -227,6 +227,10 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertEqual(artifact["sharedInputScope"], "shared")
         main = {column["name"]: column for element in artifact["elements"]
                 if element["id"] == "research-main-view" for column in element["columns"]}
+        detail_view = next(element for element in artifact["elements"]
+                           if element["id"] == "research-detail-view")
+        self.assertEqual(len(detail_view["columns"]), 36)
+        self.assertNotIn("Line Item", {column["name"] for column in detail_view["columns"]})
         self.assertEqual(main["Revenue"]["format"]["currencySymbol"], "$")
         self.assertEqual(main["EPS"]["format"]["formatString"], ",.2f")
         self.assertEqual(main["Net debt / EBITDA (x)"]["format"]["suffix"], "x")

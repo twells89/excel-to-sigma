@@ -501,7 +501,8 @@ def _research_view_columns(plan):
     metrics = []
     for row in range(1, ws.max_row + 1):
         label = ws.cell(row, 1).value
-        if label in (None, "") or not any(ws.cell(row, column).value is not None for column in range(2, 14)):
+        if (row < 6 or label in (None, "")
+                or not any(ws.cell(row, column).value is not None for column in range(2, 14))):
             continue
         semantic = next((plan["semanticFormats"].get(f"FY results!{get_column_letter(column)}{row}")
                          for column in range(2, 14)
