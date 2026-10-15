@@ -70,10 +70,29 @@ def emit_python_programs(model_binding, *, column_maps=None):
 def read_rows(frame, title, required):
     observed = list(frame.columns)
     mapping = COLUMN_MAPS.get(title, {})
-    names = {name: mapping.get(name, name) for name in required}
+    names = {}
+    row_keys = {}
+    for name in required:
+        bound = mapping.get(name, name)
+        if isinstance(bound, str):
+            names[name] = bound
+            row_keys[name] = bound
+        elif isinstance(bound, dict) and set(bound) == {'identifier', 'rowKey'} and all(isinstance(v, str) and v for v in bound.values()):
+            names[name] = bound['identifier']
+            row_keys[name] = bound['rowKey']
+        else:
+            raise PortError('INVALID_RUNTIME_COLUMN_BINDING')
     if len(set(names.values())) != len(names) or any(observed.count(n) != 1 for n in names.values()):
         raise PortError('RUNTIME_COLUMN_MISMATCH')
-    return [{name: row.as_dict()[key] for name, key in names.items()} for row in frame.collect()]
+    if len(set(row_keys.values())) != len(row_keys):
+        raise PortError('RUNTIME_ROW_KEY_MISMATCH')
+    rows = []
+    for row in frame.collect():
+        values = row.as_dict()
+        if any(key not in values for key in row_keys.values()):
+            raise PortError('RUNTIME_ROW_KEY_MISMATCH')
+        rows.append({name: values[key] for name, key in row_keys.items()})
+    return rows
 
 
 def one_invocation(invocation_frame):

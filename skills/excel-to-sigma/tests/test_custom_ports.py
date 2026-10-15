@@ -228,6 +228,25 @@ class ConstructionTests(unittest.TestCase):
         exec(programs['allocation']['code'],{'sigma':sigma,'session':session})
         self.assertEqual(len(output[-1][1]),1);self.assertEqual(output[-1][1][0][1],'FAILURE')
 
+    def test_runtime_column_identifier_and_collected_row_key_are_separately_explicit(self):
+        from types import SimpleNamespace
+        maps={'Goal Seek Invocation':{'RequestKey':{'identifier':'"RequestKey"','rowKey':'RequestKey'}}}
+        programs=self.module().emit_python_programs('binding',column_maps=maps)
+        # Real metadata can quote frame identifiers while Row.as_dict keys differ.
+        request={'RequestKey':'goal-seek','OperationId':'allocation','State':'PENDING','Target':1,'LowerBound':0,'UpperBound':.25,'ToleranceCents':1,'MaxIterations':64,'ModelBinding':'binding'}
+        data={'Goal Seek Invocation':[request],'Task 5 Headcount Inputs':[{'Department':d,'Headcount':h} for d,h in zip(['Eng','Sales','G&A','Support'],[40,30,20,10])],'Task 5 Allocation Assumptions':[{'Key':'Overhead','Value':100000}]}
+        class Frame:
+            def __init__(self,title):
+                self.rows=data[title];self.columns=['"RequestKey"' if title=='Goal Seek Invocation' and k=='RequestKey' else k for k in self.rows[0]]
+            def collect(self):return [SimpleNamespace(as_dict=lambda r=r:r) for r in self.rows]
+        output=[];sigma=SimpleNamespace(get_element=Frame,output=lambda name,rows:output.append(rows));session=SimpleNamespace(create_dataframe=lambda rows,schema:rows)
+        exec(programs['allocation']['code'],{'sigma':sigma,'session':session})
+        self.assertEqual(len(output[-1]),4)
+        wrong={'Goal Seek Invocation':{'RequestKey':{'identifier':'"RequestKey"','rowKey':'wrong'}}}
+        bad=self.module().emit_python_programs('binding',column_maps=wrong)
+        exec(bad['allocation']['code'],{'sigma':sigma,'session':session})
+        self.assertEqual(output[-1][0][1:3],['FAILURE','RUNTIME_ROW_KEY_MISMATCH'])
+
     def test_typed_procedure_rejects_pending_signature_bad_order_types_and_changed_retry(self):
         p=self.module();self.assertTrue(hasattr(p,'build_procedure_action'),'typed procedure mapper is missing')
         contract=p.controlled_procedure_contract('conn')
