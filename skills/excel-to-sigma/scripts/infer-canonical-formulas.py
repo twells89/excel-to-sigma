@@ -32,7 +32,8 @@ import sys, os, json, re, math
 from collections import Counter, defaultdict
 
 from lib.migration_gate import MigrationGateError, gate_source
-from lib.excel_expression import (UnsupportedExpression, emit_sigma as emit_expression_sigma, expand_range,
+from lib.excel_expression import (ExpressionError, UnsupportedExpression,
+                                  emit_sigma as emit_expression_sigma, expand_range,
                                   extract_references, parse_expression)
 from lib.formula_graph import CellIdentity, FormulaGraph
 from lib.migration_manifest import build_manifest
@@ -845,7 +846,7 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
                 try:
                     expression = parse_expression(formula, sheet=identity.sheet)
                     rendered = render_cell(identity, int(year))
-                except UnsupportedExpression as error:
+                except ExpressionError as error:
                     provenance[year] = {
                         "sourceCellId": identity.id, "kind": "formula",
                         "originalFormula": formula, "dependencies": [],
