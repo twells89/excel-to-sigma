@@ -56,9 +56,11 @@ excluded — Sigma auto-populates them.)
 ## 5. Load data + view  (MCP + UI — see refs/input-tables.md)
 
 Preferred when the Sigma MCP connector is available: `describe` and `query` the
-new input table, use `build_workbook` with `InputTable.upsert_rows()` to insert
-only missing natural keys, then re-query the table and a downstream element.
-This is a connector workflow; `build-input-table-wb.py` does not call MCP.
+new input table, then run `scripts/input-sync.py plan` with the queried rows and
+actual page/element/column IDs. Review and submit its Code Mode chunks, then
+re-query the table and a downstream element. The CLI plans and emits programs;
+it does not call MCP. Use `input-sync.py stage` before construction and
+`input-sync.py complete` only after recorded readback evidence.
 
 UI fallback: open the workbook → the input table → paste
 `forecast_input_paste.csv` → **Publish**.

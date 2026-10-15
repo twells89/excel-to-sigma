@@ -31,7 +31,7 @@ user-invocable: true
 - `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
 - `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
 - `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
-- `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The data-page + column-per-line-`Coalesce` + `transpose` + pivot recipe, canonical-formula inference, plug-cycle breaking, blank-as-zero, and the simulate-and-freeze parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
+- `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
 - `~/sigma-skills/sigma-workbooks/SKILL.md` + the Sigma OpenAPI — canonical workbook spec.
 
 ---
@@ -320,7 +320,7 @@ Live builders first validate with `POST /v2/workbooks` + `dryRun: true`, then
 create through the same endpoint. Data-model specs stay unwrapped.
 
 Confirm every element compiles and the totals tie out (parity hard gate —
-Phase 0c/0d simulate-and-freeze, Phase 2/4 section rollups, research
+Phase 0c/0d source-bound live evaluation, Phase 2/4 section rollups, research
 `batch-convert.py` AUTO_PARITY bucket). Never skip the parity comparison.
 
 ### Security: RLS / CLS
@@ -353,9 +353,13 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | scheduled/webhook automated action | ✅ limited document surface; ownership/failure review |
 | column protection / broader admin policy | ⚠️ UI/admin policy |
 
-For a REST-created empty input table, seed through Sigma MCP Code Mode when that
-connector is available; otherwise hand off CSV/clipboard import and **Publish**.
-MCP seeding is not performed by this skill's CLI scripts. In either path,
+For a REST-created empty input table, query it with the MCP companion tools, run
+`scripts/input-sync.py plan` to reconcile typed natural keys, review its emitted
+Code Mode write chunks, execute those through MCP, and query/read back again.
+The CLI plans and emits; it never pretends to query or mutate MCP itself. Use its
+`stage` and `complete` commands so shared-input construction actually consumes the
+source/plan staging gate and recorded runtime evidence. Otherwise hand off
+CSV/clipboard import and **Publish**. In either path,
 **Create warehouse view** remains an explicit UI hand-off. Linked mode remains
 live-review until an end-to-end MCP create/read/update/query regression proves
 inherited columns work.

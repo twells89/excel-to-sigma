@@ -197,6 +197,30 @@ REST-created element IDs remained valid in that regression, but Code Mode
 `get_element()` had to run against the element's current page host (`inputs`),
 not the page used by the original REST layout.
 
+### Repeatable planner and gate workflow
+
+`scripts/input-sync.py` provides the reusable local half of this protocol. It
+does not call MCP and generated programs do not invent a query method on
+`QueryableSource`:
+
+1. MCP `describe`/`query` the current host page and input table; retain the real
+   row ID, actual element/column IDs, query snapshot ID, and snapshot age.
+2. Run `input-sync.py plan --source-rows ... --current-rows ... --keys ...
+   --row-id ... --snapshot-id ... --snapshot-age-seconds ... --target ...`.
+3. Review conflicts/orphans and each generated chunk. Inserts are missing keys
+   only; updates use real row IDs only when the current value still equals the
+   last migration value. A business column named `ID` is preserved.
+4. Execute at most 2,000 rows per checkpoint, query again, and retain readback
+   evidence. Re-running after a partial write reconciles current state and emits
+   no duplicate insert for rows already present.
+
+Typed keys do not trim/case-fold/coerce strings or numbers; `0`, `"0"`, and
+null remain distinct, and null business keys are rejected. Date-only values are
+emitted at noon; datetimes retain their instant (timezone-aware values normalize
+to UTC). System columns are excluded by provenance, never a name blacklist.
+Input-table row writes have no documented compare-and-swap, so the snapshot is
+not a transaction: re-query after interruptions and before later chunks.
+
 ## The seed CSV (UI fallback)
 
 Emit only the data-entry columns, headers in `UPPER_SNAKE_CASE` matching the

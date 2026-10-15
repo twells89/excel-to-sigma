@@ -294,10 +294,21 @@ class TestWorkbookBuilders(unittest.TestCase):
 
     def test_research_builder_exposes_source_bound_cross_sheet_input_defaults(self):
         plan = research_plan()
-        plan["sourceInputs"] = [{
-            "id": "i_model_inputs_c2", "sourceCellId": "Model Inputs!C2",
-            "defaultValue": 0.05, "values": {"2024": 0.05}, "mappingStatus": "live",
-        }]
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [
+            {
+                "id": "i_model_inputs_c2", "sourceCellId": "Model Inputs!C2",
+                "sheet": "Model Inputs", "address": "C2", "defaultValue": 0.05,
+                "values": {"2024": 0.05}, "mappingStatus": "live",
+                "role": "cross_sheet_driver",
+            },
+            {
+                "id": "i_fy_results_b8", "sourceCellId": "FY results!B8",
+                "sheet": "FY results", "address": "B8", "defaultValue": 100.0,
+                "values": {"2024": 100.0}, "mappingStatus": "live",
+                "role": "source_literal",
+            },
+        ]
         plan["lines"][2]["periodFormulas"] = {
             "2024": "[c8] * (1 + [i_model_inputs_c2])",
         }
@@ -313,8 +324,19 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertEqual(
             next(column["formula"] for column in calc["columns"]
                  if column["id"] == "i_model_inputs_c2"),
-            "[Custom SQL/i_model_inputs_c2]",
+            "Coalesce([Inputs/i_model_inputs_c2], [CJ/i_model_inputs_c2])",
         )
+        self.assertIn("[i_fy_results_b8]", next(
+            column["formula"] for column in calc["columns"] if column["id"] == "c8"))
+        input_table = next(node for node in all_dicts(workbook)
+                           if node.get("id") == "researchInputs")
+        self.assertEqual(input_table["source"],
+                         {"kind": "empty", "connectionId": "write-connection"})
+        self.assertEqual(input_table["columns"][0],
+                         {"id": "SCOPE", "type": "text", "name": "Scope"})
+        self.assertNotIn("ID", [column["id"] for column in input_table["columns"]])
+        self.assertEqual(calc["source"]["joins"][0]["columns"],
+                         [{"left": "[Scope]", "right": "[Scope]"}])
 
     def test_forecast_cli_rejects_a_plan_without_a_resolvable_source(self):
         with tempfile.TemporaryDirectory() as tmp:

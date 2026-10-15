@@ -27,7 +27,7 @@ Usage:
   build-research-model.py <plan.json> --conn <connId> --folder <folderId>
                           [--name "..."] [--post]         # default = dry-run to /tmp
 """
-import argparse, sys, os, json, urllib.request, urllib.parse, urllib.error
+import argparse, sys, os, json, re, urllib.request, urllib.parse, urllib.error
 from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent / "lib"
@@ -197,31 +197,88 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
     def dm(elid):
         return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
 
+    source_inputs = list(plan.get("sourceInputs") or [])
+    target_scope = plan.get("targetScope") or {}
+    research_input = None
+    model_base = None
+    calc_source = dm("data")
+    calc_namespace = DMP
+    input_namespace = None
+    if source_inputs:
+        connection_id = target_scope.get("connectionId")
+        if not connection_id:
+            raise ValueError("editable research inputs require targetScope.connectionId in the hash-bound plan")
+        research_input = {
+            "id": "researchInputs", "kind": "input-table", "name": "Research Model Inputs",
+            "inputMode": "edit", "source": {"kind": "empty", "connectionId": connection_id},
+            "columns": [{"id": "SCOPE", "type": "text", "name": "Scope"}] + [
+                {"id": item["id"], "type": "number", "name": item["id"]}
+                for item in source_inputs
+            ],
+            "order": ["SCOPE"] + [item["id"] for item in source_inputs],
+        }
+        model_base = {
+            "id": "modelBase", "kind": "table", "name": "Research Source Values",
+            "source": dm("data"),
+            "columns": [{"id": "mb_year", "name": "Year", "formula": f"[{DMP}/Year]"},
+                        {"id": "mb_scope", "name": "Scope", "formula": '"shared"'}] + [
+                {"id": "mb_" + item["col_id"], "name": item["col_id"],
+                 "formula": f"[{DMP}/{item['col_id']}]"}
+                for item in data_lines
+            ],
+        }
+        calc_source = {
+            "kind": "join", "name": "CJ",
+            "primarySource": {"kind": "table", "elementId": "modelBase"},
+            "joins": [{
+                "name": "Inputs", "joinType": "left-outer",
+                "left": {"kind": "table", "elementId": "modelBase"},
+                "right": {"kind": "table", "elementId": "researchInputs"},
+                "columns": [{"left": "[Scope]", "right": "[Scope]"}],
+            }],
+        }
+        calc_namespace = "CJ"
+        input_namespace = "Inputs"
+
     # ---- calc: one column per line, in the same element (siblings referenced by name) ----
-    calc_cols = [{"id": "yr", "name": "Year", "formula": f"[{DMP}/Year]"}]
-    for item in plan.get("sourceInputs", []):
+    calc_cols = [{"id": "yr", "name": "Year", "formula": f"[{calc_namespace}/Year]"}]
+    for item in source_inputs:
+        base = f"[{calc_namespace}/{item['id']}]"
         calc_cols.append({"id": item["id"], "name": item["id"],
-                          "formula": f"[{DMP}/{item['id']}]"})
+                          "formula": f"Coalesce([{input_namespace}/{item['id']}], {base})"})
+
+    literal_bindings = {}
+    for item in source_inputs:
+        match = re.search(r"!([A-Z]+)(\d+)$", item.get("sourceCellId", ""))
+        if not match:
+            continue
+        row = int(match.group(2))
+        for year in (item.get("values") or {}):
+            literal_bindings[(row, str(year))] = item["id"]
     merge = []
     for ln in plan["lines"]:
         cid = ln["col_id"]; merge.append(cid)
         has_data = cid in dcols
-        period_formulas = ln.get("periodFormulas") or {}
+        period_formulas = dict(ln.get("periodFormulas") or {})
+        if source_inputs:
+            for (row, year), input_id in literal_bindings.items():
+                if row == ln.get("row"):
+                    period_formulas[year] = f"[{input_id}]"
         if period_formulas:
-            f = "Null"
+            f = f"[{calc_namespace}/{cid}]" if has_data and source_inputs else "Null"
             for year, expression in sorted(period_formulas.items(), key=lambda item: int(item[0]), reverse=True):
                 f = f"If([Year] = {int(year)}, {expression}, {f})"
-            if has_data:
+            if has_data and not source_inputs:
                 f = f"Coalesce([{DMP}/{cid}], {f})"
         elif ln["kind"] == "input" or not ln.get("canonical"):
-            f = f"[{DMP}/{cid}]" if has_data else "Null"      # carried / input / quarantined
+            f = f"[{calc_namespace}/{cid}]" if has_data else "Null"      # carried / input / quarantined
         elif has_data:
-            f = f"Coalesce([{DMP}/{cid}], {ln['canonical']})"  # override wins, else compute
+            f = f"Coalesce([{calc_namespace}/{cid}], {ln['canonical']})"  # override wins, else compute
         else:
             f = ln["canonical"]                                # pure derived, one formula
         calc_cols.append({"id": cid, "name": cid, "formula": f})
     calc = {"id": "calc", "kind": "table", "name": "Calc",
-            "source": dm("data"), "columns": calc_cols}
+            "source": calc_source, "columns": calc_cols}
 
     # ---- long: transpose (column-to-row) all line columns -> (Year, LineId, Value) ----
     # NB: a transpose element takes NO explicit name; Sigma auto-names it "Transpose of <source>"
@@ -283,11 +340,15 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                            [{"id": f"dt_{ln['col_id']}", "name": ln["label"] or ln["col_id"],
                              "formula": f"[{DMP}/{ln['col_id']}]"} for ln in data_lines[:40]]}
 
+    input_pages = ([{"id": "inputs", "name": "Model Inputs", "elements": [research_input]}]
+                   if research_input else [])
+    plumbing = [item for item in [model_base, calc, long_el, dimw, labeled] if item]
     pages = [
         {"id": "main", "name": "FY results", "elements": [pivot]},
         {"id": "datap", "name": "Data page", "elements": [data_tbl]},
+        *input_pages,
         {"id": "plumb", "name": "plumbing", "visibility": "hidden",
-         "elements": [calc, long_el, dimw, labeled]},
+         "elements": plumbing},
     ]
     # Nested draft; wire_workbook flattens + wraps at the POST / dry-run boundary.
     return {"name": name, "schemaVersion": 1, "kind": "workbook",
