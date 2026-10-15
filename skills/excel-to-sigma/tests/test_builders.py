@@ -338,6 +338,46 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertEqual(calc["source"]["joins"][0]["columns"],
                          [{"left": "[Scope]", "right": "[Scope]"}])
 
+    def test_research_source_literal_binds_only_its_actual_period_and_preserves_formulas(self):
+        plan = research_plan()
+        plan["sheet"] = "FY results"
+        plan["periods"] = [
+            {"year": 2019, "col": "B"}, {"year": 2020, "col": "C"},
+            {"year": 2021, "col": "D"}, {"year": 2022, "col": "E"},
+            {"year": 2023, "col": "F"}, {"year": 2024, "col": "G"},
+            {"year": 2025, "col": "H"},
+        ]
+        revenue = next(line for line in plan["lines"] if line["row"] == 8)
+        revenue["periodFormulas"] = {"2025": "[c8] * (1 + [i_model_inputs_c2])"}
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [
+            {
+                "id": "i_fy_results_g8", "sourceCellId": "FY results!G8",
+                "sheet": "FY results", "address": "G8", "defaultValue": 1158,
+                # Inference evaluation may carry this source value through later
+                # years; those values do not make G8 the source cell for them.
+                "values": {str(year): 1158 for year in range(2024, 2031)},
+                "mappingStatus": "live", "role": "source_literal",
+            },
+            {
+                "id": "i_model_inputs_c8", "sourceCellId": "Model Inputs!C8",
+                "sheet": "Model Inputs", "address": "C8", "defaultValue": 0.05,
+                "values": {"2025": 0.05}, "mappingStatus": "live",
+                "role": "cross_sheet_driver",
+            },
+        ]
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        formula = next(column["formula"] for column in calc["columns"] if column["id"] == "c8")
+
+        self.assertIn("If([Year] = 2024, [i_fy_results_g8]", formula)
+        self.assertIn("If([Year] = 2025, [c8] * (1 + [i_model_inputs_c2])", formula)
+        self.assertNotIn("If([Year] = 2026, [i_fy_results_g8]", formula)
+        self.assertNotIn("[i_model_inputs_c8]", formula)
+
     def test_research_input_types_match_approved_mapping_and_null_is_not_coalesced(self):
         plan = research_plan()
         plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}

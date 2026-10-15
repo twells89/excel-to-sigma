@@ -251,13 +251,17 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                                       f"[{input_namespace}/{item['id']}])")})
 
     literal_bindings = {}
+    period_by_column = {str(period.get("col")): str(period["year"])
+                        for period in plan.get("periods", [])
+                        if period.get("col") and period.get("year") is not None}
     for item in source_inputs:
-        match = re.search(r"!([A-Z]+)(\d+)$", item.get("sourceCellId", ""))
-        if not match:
+        match = re.fullmatch(r"([^!]+)!([A-Z]+)(\d+)", item.get("sourceCellId", ""))
+        if (not match or item.get("role") != "source_literal"
+                or item.get("sheet") != plan.get("sheet") or match.group(1) != plan.get("sheet")):
             continue
-        row = int(match.group(2))
-        for year in (item.get("values") or {}):
-            literal_bindings[(row, str(year))] = item["id"]
+        year = period_by_column.get(match.group(2))
+        if year is not None:
+            literal_bindings[(int(match.group(3)), year)] = item["id"]
     merge = []
     for ln in plan["lines"]:
         cid = ln["col_id"]; merge.append(cid)
@@ -266,7 +270,10 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
         if source_inputs:
             for (row, year), input_id in literal_bindings.items():
                 if row == ln.get("row"):
-                    period_formulas[year] = f"[{input_id}]"
+                    # A source literal belongs only to its actual source column's
+                    # period. Never let inference carry values replace authored
+                    # formulas from later source cells.
+                    period_formulas.setdefault(year, f"[{input_id}]")
         if period_formulas:
             f = f"[{calc_namespace}/{cid}]" if has_data and source_inputs else "Null"
             for year, expression in sorted(period_formulas.items(), key=lambda item: int(item[0]), reverse=True):
