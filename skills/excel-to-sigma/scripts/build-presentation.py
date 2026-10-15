@@ -36,6 +36,8 @@ def main(argv=None):
     parser.add_argument("--fixture-bindings", action="store_true",
                         help="use logical bindings for the five synthetic fixtures")
     parser.add_argument("--contents", help="GET-back workbook response or contents JSON")
+    parser.add_argument("--manifest", help="immutable source/plan/target migration manifest")
+    parser.add_argument("--staging-receipt", help="APPROVED_STAGING receipt bound to the manifest")
     parser.add_argument("--document-version", help="required with --contents")
     parser.add_argument("--plan-out", help="write extraction plan JSON")
     parser.add_argument("--openapi", help="current Sigma OpenAPI JSON to audit before emission")
@@ -55,7 +57,14 @@ def main(argv=None):
         bindings = fixture_bindings(plan)
     else:
         parser.error("--bindings or --fixture-bindings is required")
-    artifact = emit_presentation(plan, bindings)
+    if not args.fixture_bindings and (not args.manifest or not args.staging_receipt):
+        parser.error("actual bindings require --manifest and --staging-receipt")
+    artifact = emit_presentation(
+        plan, bindings,
+        _read(args.manifest) if args.manifest else None,
+        _read(args.staging_receipt) if args.staging_receipt else None,
+        logical_fixture=args.fixture_bindings,
+    )
 
     output = artifact
     if args.contents:

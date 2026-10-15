@@ -21,9 +21,11 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.cell import range_boundaries
 
 try:
-    from .input_sync import _sdk_literal, sigma_input_type
+    from .input_sync import _sdk_literal, emit_workbook_wiring, sigma_input_type
+    from .migration_gate import gate_plan_staging_source, source_issue_hash
 except ImportError:
-    from input_sync import _sdk_literal, sigma_input_type
+    from input_sync import _sdk_literal, emit_workbook_wiring, sigma_input_type
+    from migration_gate import gate_plan_staging_source, source_issue_hash
 
 try:
     from .input_sync import build_operational_input_elements, build_shared_input_architecture
@@ -175,6 +177,21 @@ def _unit(format_code, title=""):
     return "number"
 
 
+def _direct_reference_format(workbook, source_formulas, source_cells):
+    formats = set()
+    for formula, source_cell in zip(source_formulas, source_cells):
+        if not isinstance(formula, str):
+            return None
+        match = re.fullmatch(
+            r"=(?:(?:'((?:[^']|'')+)'|([^!]+))!)?\$?([A-Z]+)\$?(\d+)", formula)
+        if not match:
+            return None
+        sheet = match.group(1) or match.group(2) or source_cell.rsplit("!", 1)[0]
+        sheet = sheet.replace("''", "'")
+        formats.add(workbook[sheet][f"{match.group(3)}{match.group(4)}"].number_format)
+    return formats.pop() if len(formats) == 1 else None
+
+
 def _aggregation(formulas):
     kinds = set()
     for formula in formulas:
@@ -211,13 +228,17 @@ def _extract_charts(path, formulas, cached):
                 value_ref = val.text if val is not None else None
                 source_formulas = _range_values(formulas, value_ref) if value_ref else []
                 expected = _range_values(cached, value_ref) if value_ref else []
+                source_cells = _range_cells(value_ref)
+                number_format = _direct_reference_format(formulas, source_formulas, source_cells)
+                if number_format is None:
+                    number_format = fmt.text if fmt is not None else None
                 series.append({
                     "name": name, "order": order, "valueRef": value_ref,
-                    "numberFormat": fmt.text if fmt is not None else None,
-                    "unit": _unit(fmt.text if fmt is not None else None, title),
+                    "numberFormat": number_format,
+                    "unit": _unit(number_format, title),
                     "aggregation": _aggregation(source_formulas),
                     "sourceFormulas": source_formulas,
-                    "sourceFormulaCells": _range_cells(value_ref),
+                    "sourceFormulaCells": source_cells,
                     "expectedValues": expected,
                 })
             charts.append({
@@ -306,6 +327,8 @@ def _rgb(color):
         return None
     value = getattr(color, "rgb", None)
     if isinstance(value, str):
+        if len(value) == 8 and value[:2] == "00":
+            return None
         return "#" + value[-6:]
     return None
 
@@ -316,7 +339,11 @@ def _dxf_style(rule):
         return {}
     style = {}
     if getattr(dxf, "fill", None) is not None:
-        color = _rgb(getattr(dxf.fill, "fgColor", None)) or _rgb(getattr(dxf.fill, "start_color", None))
+        fill = dxf.fill
+        color = _rgb(getattr(fill, "fgColor", None))
+        if getattr(fill, "patternType", None) == "solid" and color is None:
+            color = _rgb(getattr(fill, "bgColor", None))
+        color = color or _rgb(getattr(fill, "start_color", None)) or _rgb(getattr(fill, "bgColor", None))
         if color:
             style["backgroundColor"] = color
     if getattr(dxf, "font", None) is not None:
@@ -392,6 +419,7 @@ def _extract_conditional_formats(workbook):
                 result.append({
                     "id": f"conditional-{len(result) + 1}", "sheet": ws.title,
                     "range": sqref, "field": _field_for_range(ws, sqref),
+                    "fields": _fields_for_range(ws, sqref),
                     "sourceType": source_type, "operator": rule.operator,
                     "formula": formula, "text": rule.text, "priority": rule.priority,
                     "stopIfTrue": bool(rule.stopIfTrue), "status": status,
@@ -520,6 +548,15 @@ def _research_view_columns(plan):
     return main, [year] + metrics
 
 
+def _research_metric_formats_exact(plan, bindings):
+    expected_main, expected_detail = _research_view_columns(plan)
+    keys = ("id", "name", "formula", "format")
+    normalize = lambda columns: [
+        {key: column.get(key) for key in keys} for column in (columns or [])]
+    return (normalize(bindings.get("mainViewColumns")) == normalize(expected_main)
+            and normalize(bindings.get("detailViewColumns")) == normalize(expected_detail))
+
+
 def fixture_bindings(plan):
     """Return logical target bindings for the five synthetic acceptance fixtures.
 
@@ -566,18 +603,20 @@ def fixture_bindings(plan):
     detail_ids = {column["name"]: column["id"] for column in detail_view_columns}
     conditional_targets = {}
     for rule in plan["conditionalFormats"]:
-        field = rule["field"].strip()
-        if field in main_ids:
-            conditional_targets[rule["id"]] = {"elementId": f"{workflow}-main-view",
-                                                "columnId": main_ids[field]}
-        elif field in detail_ids:
-            conditional_targets[rule["id"]] = {"elementId": f"{workflow}-detail-view",
-                                                "columnId": detail_ids[field]}
-        else:
-            conditional_targets[rule["id"]] = {
-                "elementId": source_id,
-                "columnId": re.sub(r"[^a-z0-9]+", "_", field.lower()).strip("_") or "value",
-            }
+        targets = []
+        for field in rule.get("fields") or [rule["field"]]:
+            field = field.strip()
+            bound = columns.get(f"{rule['sheet']}!{field}")
+            if bound:
+                targets.append(bound)
+            elif field in main_ids:
+                targets.append({"elementId": f"{workflow}-main-view", "columnId": main_ids[field]})
+            elif field in detail_ids:
+                targets.append({"elementId": f"{workflow}-detail-view", "columnId": detail_ids[field]})
+            else:
+                targets.append({"elementId": source_id,
+                                "columnId": re.sub(r"[^a-z0-9]+", "_", field.lower()).strip("_") or "value"})
+        conditional_targets[rule["id"]] = targets
     validation_targets = {}
     for rule in plan["validations"]:
         if workflow == "research" and rule["sheet"] == "Model Inputs" and rule["range"] == "C2:C7":
@@ -606,7 +645,8 @@ def fixture_bindings(plan):
                           "folderId": "ASSIGN_FROM_RUNTIME",
                           "name": f"{workflow.title()} Business Inputs", "editMode": "published-explore",
                           **({"elementId": "research-input-existing", "rowId": "ASSIGN_FROM_RUNTIME",
-                              "scopeColumnId": "ASSIGN_FROM_RUNTIME"} if workflow == "research" else {})},
+                              "scopeColumnId": "ASSIGN_FROM_RUNTIME", "currentColumns": []}
+                             if workflow == "research" else {})},
         "sourceHash": plan["source"]["sha256"], "planHash": "ASSIGN_HASH_BOUND_PLAN",
         "stagingReceiptHash": "ASSIGN_APPROVED_STAGING_RECEIPT_HASH",
         "documentId": "ASSIGN_FROM_RUNTIME", "documentVersion": "ASSIGN_FROM_RUNTIME",
@@ -719,12 +759,32 @@ def build_business_operational_wiring(plan, binding):
 def emit_business_input_program(spec, binding):
     """Emit an initial ordinary-input construction program; no formula cache rows."""
     if spec.get("mode") == "extend-existing":
-        for field in ("pageId", "elementId", "rowId", "scopeColumnId"):
+        for field in ("pageId", "elementId"):
             if not (binding or {}).get(field):
                 raise ValueError(f"research input extension requires {field}")
-        additional = spec["additionalColumns"]
+        current = binding.get("currentColumns")
+        if not isinstance(current, list):
+            raise ValueError("research input extension requires currentColumns readback")
+        current_by_name = {}
+        for column in current:
+            name = column.get("name") if isinstance(column, dict) else None
+            if not name or name in current_by_name:
+                raise ValueError("research currentColumns contains a missing or duplicate name")
+            current_by_name[name] = column
+        additional = []
+        for column in spec["additionalColumns"]:
+            observed = current_by_name.get(column["name"])
+            if observed is None:
+                additional.append(column)
+            elif observed.get("type") != column["type"]:
+                raise ValueError(f"research input column type conflicts: {column['name']}")
+        if not additional:
+            return {"mode": "reconcile-existing", "elementId": binding["elementId"],
+                    "sourceHash": spec["sourceHash"],
+                    "expectedEditableColumns": spec["expectedEditableColumns"],
+                    "nextStep": "stage a 146-column assigned receipt and reconcile missing values by row ID"}
         extension_hash = _digest({"sourceHash": spec["sourceHash"], "elementId": binding["elementId"],
-                                  "rowId": binding["rowId"], "additionalColumns": additional,
+                                  "currentColumns": current, "additionalColumns": additional,
                                   "planHash": binding.get("planHash"),
                                   "stagingReceiptHash": binding.get("stagingReceiptHash")})
         lines = [f"# sourceHash={spec['sourceHash']}", f"# extractionHash={spec['extractionHash']}",
@@ -737,16 +797,15 @@ def emit_business_input_program(spec, binding):
                  "if not isinstance(table, InputTable):", "    raise RuntimeError('expected existing research input table')"]
         for index, column in enumerate(additional):
             lines.append(f"n{index} = table.add_editable_column({column['name']!r}, {column['type']!r})")
-        fields = ", ".join(f"n{index}: {_sdk_literal(column['value'], column['type'])}"
-                           for index, column in enumerate(additional))
-        lines += [f"table.update_rows([({binding['rowId']!r}, {{{fields}}})])",
-                  "print('inputTableId=' + table.id())"]
+        lines += ["print('inputTableId=' + table.id())"]
         for index, column in enumerate(additional):
             lines.append(f"print({('column:' + column['name'] + '=')!r} + n{index}.id())")
         return {"mode": "extend-existing", "elementId": binding["elementId"],
                 "expectedExistingEditableColumns": spec["expectedExistingEditableColumns"],
                 "expectedEditableColumns": spec["expectedEditableColumns"],
                 "extensionHash": extension_hash, "additionalColumns": additional,
+                "preservesExistingRows": True,
+                "nextStep": "read assigned IDs, restage the 146-column receipt, then seed only missing values",
                 "program": "\n".join(lines) + "\n"}
     if binding.get("elementId"):
         return {"mode": "reconcile-existing", "elementId": binding["elementId"],
@@ -850,7 +909,61 @@ def _layout(workflow, charts, bindings):
     return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(pages)
 
 
-def emit_presentation(plan, bindings):
+def _validate_presentation_staging(plan, bindings, manifest, staging_receipt):
+    if not isinstance(manifest, dict) or not isinstance(staging_receipt, dict):
+        raise ValueError("actual presentation emission requires manifest and staging receipt")
+    if bindings.get("stagingReceiptHash") != _digest(staging_receipt):
+        raise ValueError("presentation bindings stagingReceiptHash is stale")
+    if (manifest.get("sourceHash") != plan["source"]["sha256"]
+            or bindings.get("sourceHash") != manifest.get("sourceHash")):
+        raise ValueError("presentation sourceHash is stale")
+    if bindings.get("planHash") != manifest.get("planHash"):
+        raise ValueError("presentation planHash is stale")
+    if staging_receipt.get("status") != "APPROVED_STAGING":
+        raise ValueError("presentation requires an APPROVED_STAGING receipt")
+    if (staging_receipt.get("sourceHash") != manifest.get("sourceHash")
+            or staging_receipt.get("planHash") != manifest.get("planHash")):
+        raise ValueError("presentation staging receipt is stale")
+
+    projection = copy.deepcopy(manifest.get("planProjection") or {})
+    projection["sourceSha256"] = manifest["sourceHash"]
+    projection["sourcePath"] = plan["source"]["path"]
+    _source, evidence = gate_plan_staging_source(
+        projection, source_arg=plan["source"]["path"])
+    issues = evidence.get("issues") or []
+    requirements = [{"issue": issue, "issueHash": source_issue_hash(issue)}
+                    for issue in issues]
+    if (staging_receipt.get("pendingSourceIssues") != issues
+            or staging_receipt.get("sourceReviewRequirements") != requirements):
+        raise ValueError("presentation staging receipt source review scope is stale")
+    required_status = "PENDING_STAGING" if issues else "NOT_REQUIRED"
+    if staging_receipt.get("sourceReviewStatus") != required_status:
+        raise ValueError("presentation source review status is stale")
+
+    emit_workbook_wiring(manifest, staging_receipt)
+    target = manifest.get("target") or {}
+    if (target.get("documentId") != bindings.get("documentId")
+            or target.get("version") != bindings.get("documentVersion")):
+        raise ValueError("presentation target document/version is stale")
+    candidates = [
+        (name, binding) for name, binding in (staging_receipt.get("targetBindings") or {}).items()
+        if binding.get("elementId") == bindings.get("editElementId")]
+    if len(candidates) != 1:
+        raise ValueError("presentation edit table is not uniquely owned by the approved receipt")
+    feature, target_binding = candidates[0]
+    if (target_binding.get("documentId") != bindings.get("documentId")
+            or target_binding.get("version") != bindings.get("documentVersion")):
+        raise ValueError("presentation edit table target binding is stale")
+    architecture = (manifest.get("planProjection") or {}).get("sharedInputArchitecture") or {}
+    input_spec = (architecture.get("inputs") or {}).get(feature) or {}
+    expected_columns = {column["name"] for column in input_spec.get("columns") or []}
+    if set(target_binding.get("columnIds") or {}) != expected_columns:
+        raise ValueError("presentation edit table columns are incomplete or stale")
+    return {"status": "APPROVED_STAGING", "feature": feature,
+            "receiptHash": bindings["stagingReceiptHash"]}
+
+
+def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, logical_fixture=False):
     """Emit mergeable current-code-representation fragments from explicit bindings."""
     if bindings.get("workflow") != plan.get("workflow"):
         raise ValueError("presentation bindings target a different workflow")
@@ -859,24 +972,29 @@ def emit_presentation(plan, bindings):
     for field in ("planHash", "stagingReceiptHash", "documentId", "documentVersion"):
         if not bindings.get(field):
             raise ValueError(f"presentation bindings require {field}")
+    if logical_fixture:
+        staging_gate = {"status": "LOGICAL_FIXTURE_ONLY"}
+    else:
+        staging_gate = _validate_presentation_staging(
+            plan, bindings, manifest, staging_receipt)
     workflow = plan["workflow"]
     ownership = f"excel-to-sigma:{workflow}:{plan['source']['sha256']}"
     elements, unresolved, aggregate_checks = [], [] , []
     for role in ("overview", "edit", "detail"):
         elements.append({"id": f"{workflow}-{role}-title", "kind": "text",
-                         "body": f"<!-- {ownership} -->\n# {workflow.title()} {role.title()}",
-                         "verticalAlign": "middle"})
+                         "body": f"# {workflow.title()} {role.title()}",
+                         "verticalAlign": "center"})
     for role, element_id, columns in (
             ("main", bindings["mainElementId"], bindings.get("mainViewColumns") or []),
             ("detail", bindings["detailElementId"], bindings.get("detailViewColumns") or [])):
         if not columns:
             raise ValueError(f"presentation bindings require {role}ViewColumns")
         elements.append({"id": element_id, "kind": "table", "name": f"{workflow.title()} {role.title()}",
-                         "description": ownership,
+                         "description": {"text": ownership, "visibility": "hidden"},
                          "source": {"kind": "table", "elementId": bindings["viewSourceElementId"]},
                          "columns": copy.deepcopy(columns),
                          "style": {"backgroundColor": "#FFFFFF", "borderColor": {"kind": "theme", "ref": "colors-border"},
-                                   "borderWidth": 1, "borderRadius": "round", "padding": "medium"}})
+                                   "borderWidth": 1, "borderRadius": "round"}})
     emitted_charts = []
     for chart_index, source in enumerate(plan["charts"], 1):
         binding = (bindings.get("charts") or {}).get(source["id"])
@@ -903,18 +1021,19 @@ def emit_presentation(plan, bindings):
                                          "chartTitle": source["title"], "series": series["name"],
                                          "category": category, "expected": expected,
                                          "sourceFormula": series["sourceFormulas"][point_index],
+                                         "sourceCell": series["sourceFormulaCells"][point_index],
                                          "liveFormula": formula, "unit": series["unit"],
                                          "order": point_index, "status": "pending-runtime-query"})
         order_id = f"chart_{chart_index}_order"
         columns.append({"id": order_id, "name": "Source Order", "formula": binding["orderFormula"]})
         chart = {"id": chart_id, "kind": f"{source['chartType']}-chart", "name": source["title"],
-                 "description": ownership,
+                 "description": {"text": ownership, "visibility": "hidden"},
                  "source": {"kind": "table", "elementId": binding["sourceElementId"]},
                  "columns": columns,
                  "xAxis": {"columnId": columns[0]["id"], "sort": {"direction": "ascending", "by": order_id, "aggregation": "min"}},
                  "yAxis": {"columnIds": y_ids},
                  "style": {"backgroundColor": "#FFFFFF", "borderColor": {"kind": "theme", "ref": "colors-border"},
-                           "borderWidth": 1, "borderRadius": "round", "padding": "medium"}}
+                           "borderWidth": 1, "borderRadius": "round"}}
         elements.append(chart); emitted_charts.append(chart)
 
     patches = defaultdict(lambda: {"columnUpdates": {}, "conditionalFormats": []})
@@ -934,18 +1053,23 @@ def emit_presentation(plan, bindings):
             unresolved.append({"kind": "validation-null-behavior", "sourceId": validation["id"],
                                "reason": "current input-column schema has no allowBlank field; runtime UI rejection remains required"})
     for rule in plan["conditionalFormats"]:
-        target = ((bindings.get("conditionalTargets") or {}).get(rule["id"])
-                  or (bindings.get("columns") or {}).get(f"{rule['sheet']}!{rule['field']}"))
-        if rule["status"] != "supported" or not target:
+        targets = (bindings.get("conditionalTargets") or {}).get(rule["id"])
+        if targets is None:
+            targets = [target for field in rule.get("fields") or [rule["field"]]
+                       if (target := (bindings.get("columns") or {}).get(f"{rule['sheet']}!{field}"))]
+        if isinstance(targets, dict):
+            targets = [targets]
+        if rule["status"] != "supported" or not targets:
             unresolved.append({"kind": "conditionalFormat", "sourceId": rule["id"],
                                "reason": "unsupported source rule" if rule["status"] != "supported" else "missing target column binding"})
             continue
-        emitted = copy.deepcopy(rule["emission"])
-        emitted["columnIds"] = [target["columnId"]]
-        if emitted["type"] == "backgroundScale":
-            for key, value in list(emitted["domain"].items()):
-                if isinstance(value, str): emitted["domain"][key] = value.replace("[Column]", f"[{target['columnId']}]")
-        patches[target["elementId"]]["conditionalFormats"].append((rule["priority"], emitted))
+        for target in targets:
+            emitted = copy.deepcopy(rule["emission"])
+            emitted["columnIds"] = [target["columnId"]]
+            if emitted["type"] == "backgroundScale":
+                for key, value in list(emitted["domain"].items()):
+                    if isinstance(value, str): emitted["domain"][key] = value.replace("[Column]", f"[{target['columnId']}]")
+            patches[target["elementId"]]["conditionalFormats"].append((rule["priority"], emitted))
     for patch in patches.values():
         # Sigma says later rules take precedence. Excel priority 1 wins, so emit
         # larger priorities first and priority 1 last.
@@ -973,26 +1097,42 @@ def emit_presentation(plan, bindings):
     operational_binding = {**business_binding,
                            "elementId": business_binding.get("elementId") or bindings["editElementId"]}
     operational_wiring = build_business_operational_wiring(plan, operational_binding)
-    chart_formula_cells = {cell for chart in plan["charts"] for series in chart["series"]
-                           for cell in series.get("sourceFormulaCells") or []}
+    checks_by_cell = defaultdict(list)
+    for check in aggregate_checks:
+        checks_by_cell[check["sourceCell"]].append(check["id"])
     formula_accounting = [
         {**item,
-         "targetStatus": ("mapped-live-chart-check" if item["cell"] in chart_formula_cells
-                           else "pending-runtime-parity"),
-         "verification": ("aggregateChecks" if item["cell"] in chart_formula_cells
-                          else "source formula retained; target parity evidence required")}
+         "targetStatus": ("mapped-live-chart-check" if item["cell"] in checks_by_cell
+                           else "unresolved"),
+         "targetOwnership": ({"checkIds": checks_by_cell[item["cell"]],
+                              "documentId": bindings["documentId"],
+                              "version": bindings["documentVersion"]}
+                             if item["cell"] in checks_by_cell else None),
+         "unresolvedScopeId": (None if item["cell"] in checks_by_cell
+                               else f"formula-scope-{workflow}")}
         for item in plan["formulaProvenance"]
     ]
-    if workflow == "research" and not bindings.get("researchMetricFormatsExact"):
+    deferred_formula_cells = [item["cell"] for item in formula_accounting
+                              if item["targetStatus"] == "unresolved"]
+    if deferred_formula_cells:
+        unresolved.append({"kind": "formula-scope", "sourceId": f"formula-scope-{workflow}",
+                           "sourceCells": deferred_formula_cells,
+                           "sourceCellCount": len(deferred_formula_cells),
+                           "scopeHash": _digest(deferred_formula_cells),
+                           "reason": "no target element/column ownership or executable parity check is approved"})
+    research_formats_exact = workflow != "research" or _research_metric_formats_exact(plan, bindings)
+    if workflow == "research" and not research_formats_exact:
         unresolved.append({"kind": "mixed-unit-row-format", "sourceId": "FY results-values",
                            "reason": "current column format is uniform; currency, percentage, ratio, and count rows require separate bound views or UI verification"})
     artifact = {
         "version": 1, "sourceHash": plan["source"]["sha256"], "extractionHash": plan["extractionHash"],
         "planHash": bindings["planHash"], "stagingReceiptHash": bindings["stagingReceiptHash"],
+        "stagingGate": staging_gate,
         "workflow": workflow, "pages": pages, "elements": elements,
         "ownershipMarker": ownership,
         "layout": _layout(workflow, emitted_charts, bindings),
         "pageRoles": {role: f"{workflow}-{role}" for role in ("overview", "edit", "detail")},
+        "editElementId": bindings["editElementId"],
         "referencedElementIds": sorted(set(
             [bindings["editElementId"], bindings["viewSourceElementId"]]
             + [binding["sourceElementId"] for binding in (bindings.get("charts") or {}).values()])),
@@ -1003,11 +1143,16 @@ def emit_presentation(plan, bindings):
         "principalCalculatedColumns": list(CALCULATED_COLUMNS.get(workflow, [])),
         "mainGridColumns": main, "editColumns": edit, "detailColumns": detail,
         "sharedInputScope": bindings.get("sharedInputScope"), "unresolved": unresolved,
+        "researchMetricFormatsExact": research_formats_exact if workflow == "research" else None,
         "businessInput": business_spec, "businessInputProgram": business_program,
         "businessOperationalWiring": operational_wiring,
         "restPlan": {"method": "PUT", "path": "/v2/workbooks/{workbookId}/contents",
                      "requires": ["complete current contents", "documentVersion", "runtime element/column IDs"],
                      "documentId": bindings.get("documentId"), "documentVersion": bindings.get("documentVersion")},
+    }
+    artifact["ownershipFingerprints"] = {
+        element["id"]: _digest({key: element.get(key) for key in ("id", "kind", "name", "body", "source")})
+        for element in elements
     }
     artifact["artifactHash"] = _digest({key: value for key, value in artifact.items() if key != "artifactHash"})
     return artifact
@@ -1015,13 +1160,17 @@ def emit_presentation(plan, bindings):
 
 def _series_format(series):
     unit = series.get("unit")
+    precision = _precision(series.get("numberFormat") or "")
     if unit == "currency":
-        return {"kind": "number", "formatString": ",.0f", "currencySymbol": "$"}
+        return {"kind": "number", "formatString": f",.{precision}f", "currencySymbol": "$"}
     if unit == "percentage":
-        return {"kind": "number", "formatString": ".1%"}
+        return {"kind": "number", "formatString": f".{precision}%"}
     if unit == "count":
         return {"kind": "number", "formatString": ",.0f"}
-    return {"kind": "number", "formatString": ",.2f" if unit == "ratio" else ",.0f"}
+    result = {"kind": "number", "formatString": f",.{precision}f"}
+    if str(series.get("numberFormat") or "").rstrip().lower().endswith("x"):
+        result["suffix"] = "x"
+    return result
 
 
 def integrate_presentation(contents, artifact):
@@ -1037,8 +1186,13 @@ def integrate_presentation(contents, artifact):
         raise ValueError("presentation references missing runtime elements: " + ", ".join(missing))
     marker = artifact["ownershipMarker"]
 
+    fingerprints = artifact.get("ownershipFingerprints") or {}
+
     def owned(element):
-        return element.get("description") == marker or marker in str(element.get("body") or "")
+        description = element.get("description") or {}
+        fingerprint = _digest({key: element.get(key) for key in ("id", "kind", "name", "body", "source")})
+        return (isinstance(description, dict) and description.get("text") == marker
+                or fingerprints.get(element.get("id")) == fingerprint)
 
     new_ids = [element["id"] for element in artifact["elements"]]
     collisions = set(new_ids) & set(existing_elements)
@@ -1055,6 +1209,10 @@ def integrate_presentation(contents, artifact):
     result["pages"] = [page for page in result.get("pages", []) if page.get("id") not in page_ids]
     result["pages"].extend(copy.deepcopy(artifact["pages"]))
     layout = result.get("layout", "")
+    edit_element_id = artifact.get("editElementId")
+    if edit_element_id:
+        layout = re.sub(
+            rf'<Element\b(?=[^>]*\belementId="{re.escape(edit_element_id)}")[^>]*/>\s*', "", layout)
     for page_id in page_ids:
         layout = re.sub(rf'<Page\b(?=[^>]*\bid="{re.escape(page_id)}")[^>]*>.*?</Page>\s*', "", layout,
                         flags=re.S)
@@ -1106,6 +1264,9 @@ def audit_presentation_openapi(document):
                             and has({"columnIds"}) and has({"scheme", "domain", "order", "nullBehavior"}),
         "semanticFormats": {"number", "datetime"}.issubset(literals)
                            and has({"formatString"}) and has({"currencySymbol"}),
+        "presentationTextAndDescription": {"center", "hidden", "none"}.issubset(literals)
+                                          and has({"verticalAlign"})
+                                          and has({"text", "visibility"}),
         "fullContentsUpdate": "/v2/workbooks/{workbookId}/contents" in (document.get("paths") or {}),
     }
     missing = [name for name, value in capabilities.items() if not value]

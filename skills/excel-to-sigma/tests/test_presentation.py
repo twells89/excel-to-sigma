@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import re
 import sys
 import tempfile
@@ -15,6 +16,9 @@ WORKSPACE = ROOT.parents[3]
 sys.path.insert(0, str(SCRIPTS / "lib"))
 
 import presentation  # noqa: E402
+from input_sync import (build_artifact_records, build_shared_input_architecture,
+                        include_research_line_input_literals)  # noqa: E402
+from migration_gate import gate_plan_staging_source, source_issue_hash  # noqa: E402
 
 
 FIXTURES = WORKSPACE / "outputs"
@@ -48,6 +52,12 @@ class TestPresentationExtraction(unittest.TestCase):
         self.assertEqual(
             self.plans["fixture-inventory-reorder.xlsx"]["charts"][1]["unit"], "currency")
 
+    def test_current_openapi_supports_emitted_alignment_description_and_style_contract(self):
+        audit = presentation.audit_presentation_openapi(
+            json.loads((WORKSPACE / "work" / "sigma-openapi-current.json").read_text(encoding="utf-8")))
+        self.assertEqual(audit["status"], "PASS")
+        self.assertTrue(audit["capabilities"]["presentationTextAndDescription"])
+
     def test_extracts_validation_contracts_and_exact_whole_number_list(self):
         inventory = self.plans["fixture-inventory-reorder.xlsx"]
         lead_days = next(rule for rule in inventory["validations"] if rule["range"] == "E2:E37")
@@ -74,6 +84,31 @@ class TestPresentationExtraction(unittest.TestCase):
         self.assertTrue(all(rule["status"] == "supported" for rule in scales))
         self.assertTrue(all(rule["emission"]["type"] == "backgroundScale" for rule in scales))
         self.assertTrue(all(rule["emission"]["domain"]["mid"].startswith("Percentile(") for rule in scales))
+
+        expense = self.plans["fixture-expense-approval.xlsx"]
+        status_rules = [rule for rule in expense["conditionalFormats"]
+                        if rule["range"] == "O2:O49"]
+        self.assertEqual(
+            [rule["emission"]["style"]["backgroundColor"] for rule in status_rules],
+            ["#FCE4D6", "#FFF2CC", "#E2F0D9"],
+        )
+
+    def test_chart_series_unit_follows_direct_source_reference_format(self):
+        research = self.plans["fixture-research-model.xlsx"]
+        chart = next(chart for chart in research["charts"] if chart["title"] == "EPS and leverage")
+        by_name = {series["name"]: series for series in chart["series"]}
+        self.assertEqual(by_name["EPS"]["unit"], "currency")
+        self.assertEqual(by_name["EPS"]["numberFormat"], "$0.00;($0.00);-")
+        self.assertEqual(by_name["Net debt / EBITDA"]["unit"], "ratio")
+        self.assertEqual(by_name["Net debt / EBITDA"]["numberFormat"], "0.0x")
+        artifact = presentation.emit_presentation(
+            research, presentation.fixture_bindings(research), logical_fixture=True)
+        emitted = next(element for element in artifact["elements"]
+                       if element.get("name") == "EPS and leverage")
+        columns = {column["name"]: column for column in emitted["columns"]}
+        self.assertEqual(columns["EPS"]["format"]["formatString"], ",.2f")
+        self.assertEqual(columns["Net debt / EBITDA"]["format"]["formatString"], ",.1f")
+        self.assertEqual(columns["Net debt / EBITDA"]["format"]["suffix"], "x")
 
     def test_extracts_source_precision_dates_and_all_formula_provenance(self):
         expected = {
@@ -139,19 +174,31 @@ class TestPresentationEmission(unittest.TestCase):
     def test_research_reuses_existing_shared_input_identity(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
         spec = presentation.extract_business_input(plan)
+        current = [{"name": column["name"], "type": column["type"]}
+                   for column in spec["additionalColumns"][:3]]
         program = presentation.emit_business_input_program(spec, {
             "pageId": "input-page", "elementId": "0CI0ooHYzw", "rowId": "row-1",
             "scopeColumnId": "scope-id", "planHash": "plan", "stagingReceiptHash": "receipt",
+            "currentColumns": current,
         })
         self.assertEqual(program["mode"], "extend-existing")
         self.assertEqual(program["elementId"], "0CI0ooHYzw")
         self.assertEqual(program["expectedExistingEditableColumns"], 134)
         self.assertEqual(program["expectedEditableColumns"], 146)
-        self.assertEqual(len(program["additionalColumns"]), 12)
-        self.assertEqual(program["additionalColumns"][0]["sourceCellId"], "FY results!B56")
+        self.assertEqual(len(program["additionalColumns"]), 9)
+        self.assertEqual(program["additionalColumns"][0]["sourceCellId"], "FY results!E56")
         self.assertEqual(program["additionalColumns"][-1]["sourceCellId"], "FY results!M56")
-        self.assertEqual(program["additionalColumns"][0]["name"], "i_fy_results_b56")
-        self.assertIn("table.update_rows([('row-1'", program["program"])
+        self.assertEqual(program["additionalColumns"][0]["name"], "i_fy_results_e56")
+        self.assertNotIn("update_rows", program["program"])
+
+        complete = presentation.emit_business_input_program(spec, {
+            "pageId": "input-page", "elementId": "0CI0ooHYzw", "rowId": "row-1",
+            "scopeColumnId": "scope-id", "planHash": "plan", "stagingReceiptHash": "receipt",
+            "currentColumns": [{"name": column["name"], "type": column["type"]}
+                               for column in spec["additionalColumns"]],
+        })
+        self.assertEqual(complete["mode"], "reconcile-existing")
+        self.assertNotIn("program", complete)
 
     def test_sales_and_expense_consume_reviewed_operational_wiring_builder(self):
         sales_plan = presentation.extract_presentation(FIXTURES / "fixture-sales-pipeline.xlsx")
@@ -177,7 +224,7 @@ class TestPresentationEmission(unittest.TestCase):
     def test_emits_live_charts_formats_rules_and_three_usable_pages(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-sales-pipeline.xlsx")
         bindings = presentation.fixture_bindings(plan)
-        artifact = presentation.emit_presentation(plan, bindings)
+        artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
 
         charts = [element for element in artifact["elements"] if element["kind"].endswith("-chart")]
         self.assertEqual([chart["kind"] for chart in charts], ["bar-chart", "line-chart"])
@@ -215,12 +262,71 @@ class TestPresentationEmission(unittest.TestCase):
             page_spans[page_id] = spans
         self.assertEqual(set(page_spans), {"sales-overview", "sales-edit", "sales-detail"})
 
+    def test_nonfixture_emission_rejects_unverified_hash_labels(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-sales-pipeline.xlsx")
+        bindings = presentation.fixture_bindings(plan)
+        bindings["logicalFixture"] = True  # A caller label cannot enable the fixture bypass.
+        with self.assertRaisesRegex(ValueError, "manifest and staging receipt"):
+            presentation.emit_presentation(plan, bindings)
+        with self.assertRaisesRegex(ValueError, "stagingReceiptHash"):
+            presentation.emit_presentation(
+                plan, bindings,
+                {"sourceHash": plan["source"]["sha256"], "planHash": "a" * 64},
+                {"status": "APPROVED_STAGING"},
+            )
+
+    def test_actual_emission_recomputes_approved_146_column_gate(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
+        runtime_plan = json.loads(
+            (WORKSPACE / "work" / "task2-research-runtime-plan.json").read_text(encoding="utf-8"))
+        include_research_line_input_literals(runtime_plan)
+        architecture = build_shared_input_architecture(
+            runtime_plan, connection_id="conn", folder_id="folder", workflows=["research"])
+        feature = "researchModelInputs"
+        column_ids = {column["name"]: f"id-{index}"
+                      for index, column in enumerate(architecture["inputs"][feature]["columns"])}
+        target_binding = {"documentId": "doc", "version": 7, "pageId": "inputs",
+                          "elementId": "input-live", "columnIds": column_ids}
+        manifest = {"sourceHash": plan["source"]["sha256"], "planHash": "a" * 64,
+                    "target": {"documentId": "doc", "version": 7},
+                    "planProjection": {**copy.deepcopy(runtime_plan),
+                                       "sharedInputArchitecture": architecture}}
+        _source, evidence = gate_plan_staging_source(
+            {**copy.deepcopy(runtime_plan), "sourcePath": plan["source"]["path"],
+             "sourceSha256": plan["source"]["sha256"]},
+            source_arg=plan["source"]["path"])
+        issues = evidence.get("issues") or []
+        receipt = {"status": "APPROVED_STAGING", "sourceHash": manifest["sourceHash"],
+                   "planHash": manifest["planHash"],
+                   "sourceReviewStatus": "PENDING_STAGING" if issues else "NOT_REQUIRED",
+                   "pendingSourceIssues": issues,
+                   "sourceReviewRequirements": [
+                       {"issue": issue, "issueHash": source_issue_hash(issue)} for issue in issues],
+                   "targetBindings": {feature: target_binding}}
+        receipt["artifacts"] = build_artifact_records(
+            manifest, architecture, receipt["targetBindings"])
+        bindings = presentation.fixture_bindings(plan)
+        bindings.update({"planHash": manifest["planHash"], "documentId": "doc",
+                         "documentVersion": 7, "editElementId": "input-live"})
+        bindings["businessInput"].update({
+            "elementId": "input-live",
+            "currentColumns": [{"name": column["name"], "type": column["type"]}
+                               for column in architecture["inputs"][feature]["columns"]],
+        })
+        bindings["stagingReceiptHash"] = presentation._digest(receipt)
+
+        artifact = presentation.emit_presentation(plan, bindings, manifest, receipt)
+
+        self.assertEqual(artifact["stagingGate"]["status"], "APPROVED_STAGING")
+        self.assertEqual(len(architecture["inputs"][feature]["columns"]), 146)
+        self.assertEqual(artifact["businessInputProgram"]["mode"], "reconcile-existing")
+
     def test_research_edit_view_keeps_shared_drivers_prominent_and_133_fields_in_detail(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
         bindings = presentation.fixture_bindings(plan)
         bindings["sharedInputColumns"] = [f"Source Cell {i}" for i in range(1, 134)]
         bindings["prominentEditableColumns"] = [f"Source Cell {i}" for i in range(1, 7)]
-        artifact = presentation.emit_presentation(plan, bindings)
+        artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
 
         self.assertEqual(len(artifact["editColumns"]), 6)
         self.assertEqual(len(artifact["detailColumns"]), 133)
@@ -244,19 +350,56 @@ class TestPresentationEmission(unittest.TestCase):
 
     def test_forecast_manual_validation_covers_each_month_column(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-forecast-model.xlsx")
-        artifact = presentation.emit_presentation(plan, presentation.fixture_bindings(plan))
+        artifact = presentation.emit_presentation(plan, presentation.fixture_bindings(plan), logical_fixture=True)
         updates = artifact["elementPatches"]["forecast-input"]["columnUpdates"]
         self.assertEqual(
             {name for name, update in updates.items()
              if update.get("range") == {"min": 0.0, "max": 1000000.0}},
             {"jul_26", "aug_26", "sep_26", "oct_26", "nov_26", "dec_26"},
         )
+        zero_rules = [rule for rule in artifact["elementPatches"]["forecast-input"]["conditionalFormats"]
+                      if rule["style"].get("backgroundColor") == "#FFE699"]
+        self.assertEqual({rule["columnIds"][0] for rule in zero_rules},
+                         {"jul_26", "aug_26", "sep_26", "oct_26", "nov_26", "dec_26"})
+
+    def test_schema_safe_text_descriptions_and_styles(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
+        artifact = presentation.emit_presentation(plan, presentation.fixture_bindings(plan), logical_fixture=True)
+        text = [element for element in artifact["elements"] if element["kind"] == "text"]
+        self.assertTrue(all(element["verticalAlign"] == "center" for element in text))
+        self.assertNotIn("<!--", json.dumps(text))
+        described = [element for element in artifact["elements"]
+                     if element["kind"] == "table" or element["kind"].endswith("-chart")]
+        self.assertTrue(all(element["description"]["visibility"] == "hidden" for element in described))
+        self.assertTrue(all("padding" not in element.get("style", {}) for element in described))
+
+    def test_research_metric_exactness_is_derived_from_columns(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
+        bindings = presentation.fixture_bindings(plan)
+        bindings["researchMetricFormatsExact"] = True
+        bindings["mainViewColumns"][1]["format"] = {"kind": "number", "formatString": ".1%"}
+        artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
+        self.assertFalse(artifact["researchMetricFormatsExact"])
+        self.assertTrue(any(item["kind"] == "mixed-unit-row-format"
+                            for item in artifact["unresolved"]))
+
+    def test_formula_accounting_has_owned_checks_or_explicit_unresolved_scope(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-sales-pipeline.xlsx")
+        artifact = presentation.emit_presentation(plan, presentation.fixture_bindings(plan), logical_fixture=True)
+        scopes = {item["sourceId"]: item for item in artifact["unresolved"]
+                  if item["kind"] == "formula-scope"}
+        self.assertIn("formula-scope-sales", scopes)
+        for item in artifact["formulaAccounting"]:
+            if item["targetStatus"] == "mapped-live-chart-check":
+                self.assertTrue(item["targetOwnership"]["checkIds"])
+            else:
+                self.assertEqual(item["unresolvedScopeId"], "formula-scope-sales")
 
     def test_unbound_source_chart_remains_explicitly_unresolved(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-expense-approval.xlsx")
         bindings = presentation.fixture_bindings(plan)
         bindings["charts"].pop(plan["charts"][0]["id"])
-        artifact = presentation.emit_presentation(plan, bindings)
+        artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
 
         self.assertEqual(len([e for e in artifact["elements"] if e["kind"].endswith("-chart")]), 1)
         unresolved = next(item for item in artifact["unresolved"] if item["sourceId"] == plan["charts"][0]["id"])
@@ -265,7 +408,7 @@ class TestPresentationEmission(unittest.TestCase):
     def test_full_contents_integration_applies_validation_and_rule_patches(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-inventory-reorder.xlsx")
         bindings = presentation.fixture_bindings(plan)
-        artifact = presentation.emit_presentation(plan, bindings)
+        artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
         generated_ids = {element["id"] for element in artifact["elements"]}
         element_ids = set(artifact["referencedElementIds"]) | (set(artifact["elementPatches"]) - generated_ids)
         patch_columns = {
@@ -282,7 +425,9 @@ class TestPresentationEmission(unittest.TestCase):
                  "source": {"kind": "table", "elementId": "source"}, "inputMode": "edit"}
                 for element_id in sorted(element_ids)
             ],
-            "layout": '<?xml version="1.0" encoding="utf-8"?>\n<Page id="existing"></Page>',
+            "layout": ('<?xml version="1.0" encoding="utf-8"?>\n<Page id="existing">'
+                       f'<Element elementId="{artifact["editElementId"]}" gridColumn="1 / 2" gridRow="1 / 2"/>'
+                       '</Page>'),
         }
         merged = presentation.integrate_presentation(contents, artifact)
         lead_days = next(
@@ -292,6 +437,8 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertEqual(lead_days["values"], list(range(1, 91)))
         self.assertEqual(len(merged["pages"]), 4)
         self.assertEqual(len(re.findall(r"<Page\b", merged["layout"])), 4)
+        self.assertEqual(len(re.findall(
+            rf'<Element\b[^>]*elementId="{re.escape(artifact["editElementId"])}"', merged["layout"])), 1)
 
         repeated = presentation.integrate_presentation(merged, artifact)
         self.assertEqual(len(repeated["pages"]), 4)

@@ -84,13 +84,12 @@ def _index(rows, key_columns, origin):
     return result
 
 
-def _same(left, right):
-    if (isinstance(left, (dt.date, dt.datetime)) and isinstance(right, str)
-            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", right)):
-        return _parse_datetime(left) == _parse_datetime(right)
-    if (isinstance(right, (dt.date, dt.datetime)) and isinstance(left, str)
-            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", left)):
-        return _parse_datetime(left) == _parse_datetime(right)
+def _same(left, right, column_type=None):
+    if column_type == "datetime":
+        try:
+            return _parse_datetime(left) == _parse_datetime(right)
+        except (TypeError, ValueError):
+            return False
     return _json_value(left) == _json_value(right) and type(left) is type(right)
 
 
@@ -107,7 +106,7 @@ def _prior_index(prior_seed):
 
 
 def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=None,
-              snapshot=None):
+              snapshot=None, column_types=None):
     """Plan inserts and safe row-ID updates without overwriting observed user edits."""
     source_rows = list(source_rows)
     current_rows = list(current_rows)
@@ -133,8 +132,10 @@ def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=
         if row_id is None:
             raise InputSyncError(f"current row for {token} has no real server row ID in {row_id_column!r}")
         comparable = {name: value for name, value in observed.items() if name != row_id_column}
+        types = dict(column_types or {})
         changed_columns = [name for name, value in wanted.items()
-                           if name not in key_columns and not _same(comparable.get(name), value)]
+                           if name not in key_columns
+                           and not _same(comparable.get(name), value, types.get(name))]
         if not changed_columns:
             unchanged.append({"key": key, "rowId": row_id, "source": wanted})
             records.append({"key": key, "confirmedMigrationValue": wanted,
@@ -272,6 +273,44 @@ def evaluate_expense_exception(row, policy_limit):
     else:
         status = "CLEAR"
     return {"policyExcess": excess, "exception": status}
+
+
+def include_research_line_input_literals(plan):
+    """Promote source-authored, nondependency line literals into live inputs.
+
+    The operation is deterministic and idempotent; conflicting pre-existing
+    source-input metadata fails closed.
+    """
+    existing = list(plan.get("sourceInputs") or [])
+    by_cell = {item.get("sourceCellId"): item for item in existing}
+    additions = []
+    for line in plan.get("lines") or []:
+        literal_inputs = line.get("literalInputs") or {}
+        provenance = line.get("provenance") or {}
+        if line.get("deps") or not literal_inputs or not provenance:
+            continue
+        for year, value in literal_inputs.items():
+            record = provenance.get(str(year)) or {}
+            source_cell = record.get("sourceCellId")
+            match = re.fullmatch(r"([^!]+)!([A-Z]+)(\d+)", source_cell or "")
+            if not match or int(match.group(3)) != int(line.get("row")):
+                raise InputSyncError(f"line literal provenance is incomplete: {line.get('col_id')}/{year}")
+            logical_id = f"i_{match.group(1).lower().replace(' ', '_')}_{match.group(2).lower()}{match.group(3)}"
+            candidate = {"id": logical_id, "sourceCellId": source_cell,
+                         "sheet": match.group(1), "address": f"{match.group(2)}{match.group(3)}",
+                         "defaultValue": value, "values": {str(year): value},
+                         "mappingStatus": "live", "role": "source_literal"}
+            prior = by_cell.get(source_cell)
+            if prior is not None:
+                for key in ("id", "sheet", "address", "defaultValue", "role"):
+                    if prior.get(key) != candidate[key]:
+                        raise InputSyncError(f"conflicting source input metadata: {source_cell}")
+                continue
+            by_cell[source_cell] = candidate
+            additions.append(candidate)
+    if additions:
+        plan["sourceInputs"] = existing + additions
+    return plan
 
 
 def _manifest_architecture(manifest):
@@ -495,6 +534,8 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
     unknown = set(selected) - {"sales", "expense", "research"}
     if not selected or unknown:
         raise InputSyncError("workflows must select sales, expense, and/or research")
+    if "research" in selected:
+        include_research_line_input_literals(plan)
     shared_sources = plan.get("sharedInputSources") or {}
     architecture = {
         "workflows": selected,

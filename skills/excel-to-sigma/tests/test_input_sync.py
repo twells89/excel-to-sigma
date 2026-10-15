@@ -153,11 +153,23 @@ class TestSeedPlanner(unittest.TestCase):
             [{"Setting": "AsOfDate", "AsOfDate": dt.datetime(2026, 6, 30, 12),
               "Row ID": "server-1"}],
             ["Setting"], "Row ID", prior_seed=initial,
+            column_types={"Setting": "text", "AsOfDate": "datetime"},
         )
 
         self.assertEqual(rerun["conflicts"], [])
         self.assertEqual(rerun["updates"], [])
         self.assertEqual(len(rerun["unchanged"]), 1)
+
+    def test_datetime_wire_string_normalizes_only_for_approved_datetime_column(self):
+        source = [{"Key": "A", "Value": "2026-06-30"}]
+        current = [{"Key": "A", "Value": "2026-06-30T12:00:00.000Z", "Row ID": "r1"}]
+        date_plan = plan_seed(source, current, ["Key"], "Row ID",
+                              column_types={"Key": "text", "Value": "datetime"})
+        text_plan = plan_seed(source, current, ["Key"], "Row ID",
+                              column_types={"Key": "text", "Value": "text"})
+        self.assertEqual(len(date_plan["unchanged"]), 1)
+        self.assertEqual(len(date_plan["conflicts"]), 0)
+        self.assertEqual(len(text_plan["conflicts"]), 1)
 
 
 class TestMcpPrograms(unittest.TestCase):

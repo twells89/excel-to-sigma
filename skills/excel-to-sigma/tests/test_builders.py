@@ -395,6 +395,21 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertNotIn("If([Year] = 2026, [i_fy_results_g8]", formula)
         self.assertNotIn("[i_model_inputs_c8]", formula)
 
+    def test_research_equity_literals_are_live_year_specific_inputs(self):
+        plan_path = ROOT.parents[3] / "work" / "task2-research-runtime-plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        inputs = next(node for node in all_dicts(workbook) if node.get("id") == "researchInputs")
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        equity = next(column["formula"] for column in calc["columns"] if column["id"] == "c56")
+
+        self.assertEqual(len(inputs["columns"]), 146)
+        for column in "bcdefghijklm":
+            self.assertIn(f"[i_fy_results_{column}56]", equity)
+
     def test_research_input_types_match_approved_mapping_and_null_is_not_coalesced(self):
         plan = research_plan()
         plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}

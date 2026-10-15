@@ -19,15 +19,22 @@ GET/readback discovery have supplied actual IDs:
 
 ```bash
 python3 scripts/build-presentation.py source.xlsx \
-  --bindings runtime-bindings.json --contents workbook-readback.json \
+  --bindings runtime-bindings.json \
+  --manifest migration-manifest.json \
+  --staging-receipt approved-staging-receipt.json \
+  --contents workbook-readback.json \
   --document-version 7 --openapi sigma-openapi-current.json \
   --plan-out presentation-plan.json --out workbook-put-body.json
 ```
 
-Runtime bindings must be hash-bound to the approved source, migration plan, and
-staging receipt. They provide actual page, element, and column IDs for charts,
-views, validation, formats, conditional formats, and editable business inputs.
-Logical fixture bindings are deliberately rejected when `--contents` is used.
+Actual emission recomputes the staging receipt hash and immutable input artifact
+records, audits the exact source bytes again, checks the complete pending source
+issue scope, and requires the manifest target document/version plus the assigned
+edit-table columns. Placeholder labels cannot pass this gate. Runtime bindings
+provide actual page, element, and column IDs for charts, views, validation,
+formats, conditional formats, and editable business inputs. Logical fixture
+bindings emit `LOGICAL_FIXTURE_ONLY` artifacts and are rejected with
+`--contents`.
 
 The emitted artifact creates separate overview and detail table elements so a
 single element is never moved between pages. The edit page references the
@@ -45,8 +52,12 @@ Expense consumes the reviewed Task 2 policy join for PolicyExcess and Exception.
 The artifact exposes this through `businessOperationalWiring`, produced by
 `build_shared_input_architecture` and `build_operational_input_elements` rather
 than a second formula contract. Research reuses its Task 2 shared input table and
-adds the twelve source-authored `FY results!B56:M56` equity inputs in place,
-using the stored row ID so Scope and prior edits are preserved.
+adds the twelve source-authored `FY results!B56:M56` equity inputs in place.
+The architecture contains `Scope` plus all 145 source inputs. Extension compares
+an actual column readback, creates only missing columns, and never writes rows.
+After assigned-ID readback, regenerate the 146-column receipt and use the normal
+row-ID reconciliation path to seed only missing values; this preserves Scope and
+prior user edits after a partial or complete retry.
 
 Research runtime bindings should source the main and detail views from `calc`
 (`Calculation`): `Year` uses `yr`, and each metric uses the authored `c<row>`
@@ -54,10 +65,14 @@ column ID. The main view is Year, Revenue (`c8`), EBITDA (`c18`), EPS (`c37`),
 and Net debt / EBITDA (`c57`). The detail view carries every populated FY-results
 metric as a separate column. Each column takes its format from the first
 formatted source period, preserving currency precision, percentages, and the
-ratio `x` suffix. Set `researchMetricFormatsExact: true` only when those exact
-formatted metric bindings are present. A generated runtime template records all
+ratio `x` suffix. The emitter derives format exactness by comparing the complete
+main/detail column contract; it does not trust a caller boolean. A generated runtime template records all
 145 logical input IDs and source cells; replace its twelve post-extension column
 placeholders with GET/readback IDs before integration.
+
+Every chart helper formula records target check ownership. Other source formulas
+are collected in one hash-bound unresolved scope per workflow until target
+column ownership or an executable parity check is approved.
 
 Local extraction and schema audits do not prove runtime behavior. Completion
 still requires SDK compilation, a guarded API dry run, GET/readback inspection,

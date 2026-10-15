@@ -35,7 +35,7 @@ if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 import workbook_wire  # noqa: E402
 from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
-from lib.input_sync import sigma_input_type  # noqa: E402
+from lib.input_sync import include_research_line_input_literals, sigma_input_type  # noqa: E402
 
 OUTDIR = "/tmp/research-build"
 NUM = {"kind": "number", "formatString": "#,##0.0"}
@@ -198,6 +198,7 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
     def dm(elid):
         return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
 
+    include_research_line_input_literals(plan)
     source_inputs = list(plan.get("sourceInputs") or [])
     target_scope = plan.get("targetScope") or {}
     research_input = None

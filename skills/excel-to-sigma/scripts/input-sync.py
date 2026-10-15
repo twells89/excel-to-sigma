@@ -131,6 +131,7 @@ def main(argv=None):
             spec["rows"], _load(args.current_rows), spec["keyColumns"], args.row_id,
             prior_seed=_load(args.prior_seed) if args.prior_seed else None,
             snapshot={"id": args.snapshot_id, "ageSeconds": args.snapshot_age_seconds},
+            column_types={column["name"]: column["type"] for column in spec["columns"]},
         )
         bundle = {"plan": result,
                   "programs": emit_write_programs(
