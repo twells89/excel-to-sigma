@@ -546,12 +546,19 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             artifacts.append(workflow);continue
         # A separate Prepare click is intentional: ActionVariable is ActionValue,
         # not FormulaResolvable, and same-sequence control reads are unproven.
+        # Earlier workflows may have added buttons on the operations host.
+        # Rescan before adding another control block rather than reuse a stale end.
+        lines += ['for existing in h_workflowOperations.list_elements(flat=False):',
+            '    if isinstance(existing, GridFramed):',
+            '        audit_cursor = max(audit_cursor, existing.y() + existing.height())']
         op=prefix+'_operation';ctx=prefix+'_context';key=prefix+'_key';rowid=prefix+'_row';n=prefix+'_count'
         for var,label in [(op,'operation'),(ctx,'context'),(key,'record'),(rowid,'physical-row')]:
             lines += [f'{var} = add_text_control(h_workflowOperations, value="", variable_name={ (workflow+"-"+label)!r})',
                 f'{var}.set_frame(1, audit_cursor, min(24, {var}.parent_grid_width()), 2)', 'audit_cursor = audit_cursor + 2']
         lines += [f'{n} = add_number_control(h_workflowOperations, value=0, variable_name={ (workflow+"-selection-count")!r})',
             f'{n}.set_frame(1, audit_cursor, min(24, {n}.parent_grid_width()), 2)', 'audit_cursor = audit_cursor + 2']
+        if binding['pages'][decision['page']]==binding['tables']['workflowOperations']['target']['pageId']:
+            lines += ['cursor = max(cursor, audit_cursor)']
         if workflow=='approval':
             table='expenseBusinessInput'
             view=decision.get('selectionView')

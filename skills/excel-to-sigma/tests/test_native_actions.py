@@ -483,4 +483,46 @@ class TestNativeActions(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bind_native_action_target(plan,receipt,current_contents=bad,input_readbacks=rows)
 
+    def test_action_controls_and_buttons_have_disjoint_frames_on_shared_and_separate_hosts(self):
+        import ast
+        import re
+        class Frame:
+            def __init__(self,page,y=0,height=0):self.page=page;self.top=y;self.size=height
+            def y(self):return self.top
+            def height(self):return self.size
+            def parent_grid_width(self):return 24
+            def set_frame(self,x,y,width,height):self.top=y;self.size=height
+        class Host:
+            def __init__(self):self.items=[Frame(self,30,12)]
+            def list_elements(self,flat=False):return list(self.items)
+            def add_button(self,label):
+                frame=Frame(self);self.items.append(frame);return frame
+        def control(host,**kwargs):return host.add_button('control')
+        for shared in (True,False):
+            plan,receipt,_,contents=self.bound_approval()
+            if not shared:
+                receipt['targetBindings']['workflowOperations']['pageId']='audit'
+                receipt['artifacts']=build_artifact_records(plan,plan['planProjection']['sharedInputArchitecture'],receipt['targetBindings'])
+                contents['contents']['pages'].append({'id':'audit','name':'Audit'})
+                contents['contents']['layout']=contents['contents']['layout'].replace('<Element id="workflowOperations" />','')+'<Page id="audit"><Element elementId="workflowOperations" /></Page>'
+                rows={f:{'rowIdColumn':'ID','rows':[{'ID':f+'-'+str(i),**r} for i,r in enumerate(spec['rows'])]}
+                      for f,spec in plan['planProjection']['sharedInputArchitecture']['inputs'].items()}
+                receipt['nativeActionBinding']=bind_native_action_target(plan,receipt,current_contents=contents,input_readbacks=rows)
+            program=emit_native_action_program(plan,receipt,receipt['nativeActionBinding'],current_contents=contents)['program']
+            tree=ast.parse(program[program.index('audit_cursor = 1'):]);keep=[]
+            for node in tree.body:
+                if isinstance(node,ast.For) and isinstance(node.iter,ast.Call) and isinstance(node.iter.func,ast.Attribute) and node.iter.func.attr=='list_elements':keep.append(node)
+                elif isinstance(node,ast.Assign):
+                    names=[t.id for t in node.targets if isinstance(t,ast.Name)]
+                    call=node.value if isinstance(node.value,ast.Call) else None
+                    if any(n in ('cursor','audit_cursor') for n in names) or (call and ((isinstance(call.func,ast.Name) and call.func.id in ('add_text_control','add_number_control')) or (isinstance(call.func,ast.Attribute) and call.func.attr=='add_button'))):keep.append(node)
+                elif isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='set_frame':keep.append(node)
+            workflow_host=Host();audit_host=workflow_host if shared else Host()
+            namespace={'GridFramed':Frame,'add_text_control':control,'add_number_control':control,'h_workflowOperations':audit_host}
+            for name in re.findall(r'(\w+)\.(?:add_button|list_elements)',program):namespace.setdefault(name,workflow_host)
+            exec(compile(ast.Module(body=keep,type_ignores=[]),'actual-emitted-placements','exec'),namespace)
+            for host in {workflow_host,audit_host}:
+                intervals=sorted((e.y(),e.y()+e.height()) for e in host.items)
+                self.assertTrue(all(a[1]<=b[0] for a,b in zip(intervals,intervals[1:])),(shared,intervals))
+
 if __name__=='__main__':unittest.main()
