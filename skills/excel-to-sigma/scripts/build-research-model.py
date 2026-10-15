@@ -255,13 +255,20 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                         for period in plan.get("periods", [])
                         if period.get("col") and period.get("year") is not None}
     for item in source_inputs:
-        match = re.fullmatch(r"([^!]+)!([A-Z]+)(\d+)", item.get("sourceCellId", ""))
-        if (not match or item.get("role") != "source_literal"
-                or item.get("sheet") != plan.get("sheet") or match.group(1) != plan.get("sheet")):
+        if item.get("role") != "source_literal":
             continue
+        match = re.fullmatch(r"([^!]+)!([A-Z]+)(\d+)", item.get("sourceCellId", ""))
+        if not match:
+            raise ValueError(f"source literal has invalid sourceCellId: {item.get('id')}")
+        expected_address = f"{match.group(2)}{match.group(3)}"
+        if (not plan.get("sheet") or item.get("sheet") != plan.get("sheet")
+                or match.group(1) != plan.get("sheet")
+                or item.get("address") != expected_address):
+            raise ValueError(f"source literal sheet/address metadata is inconsistent: {item.get('id')}")
         year = period_by_column.get(match.group(2))
-        if year is not None:
-            literal_bindings[(int(match.group(3)), year)] = item["id"]
+        if year is None:
+            raise ValueError(f"source literal requires period column metadata: {item.get('id')}")
+        literal_bindings[(int(match.group(3)), year)] = item["id"]
     merge = []
     for ln in plan["lines"]:
         cid = ln["col_id"]; merge.append(cid)

@@ -294,6 +294,8 @@ class TestWorkbookBuilders(unittest.TestCase):
 
     def test_research_builder_exposes_source_bound_cross_sheet_input_defaults(self):
         plan = research_plan()
+        plan["sheet"] = "FY results"
+        plan["periods"][0]["col"] = "B"
         plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
         plan["sourceInputs"] = [
             {
@@ -337,6 +339,21 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertNotIn("ID", [column["id"] for column in input_table["columns"]])
         self.assertEqual(calc["source"]["joins"][0]["columns"],
                          [{"left": "[Scope]", "right": "[Scope]"}])
+
+    def test_research_declared_source_literal_rejects_incomplete_period_metadata(self):
+        plan = research_plan()
+        plan["sheet"] = "FY results"
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [{
+            "id": "i_fy_results_b8", "sourceCellId": "FY results!B8",
+            "sheet": "FY results", "address": "B8", "defaultValue": 100.0,
+            "values": {"2024": 100.0}, "mappingStatus": "live", "role": "source_literal",
+        }]
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        with self.assertRaisesRegex(ValueError, "period column metadata"):
+            RESEARCH.build_wb(
+                plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+                "folder", "Research")
 
     def test_research_source_literal_binds_only_its_actual_period_and_preserves_formulas(self):
         plan = research_plan()
