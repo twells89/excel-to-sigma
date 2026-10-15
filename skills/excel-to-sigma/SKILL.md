@@ -85,26 +85,25 @@ read-only DM/metric builder. When unsure, ask the user how they use that sheet.
 > authored through workbook code representation has **inherited columns that don't
 > resolve** — every row shows **"multiple values"** (publish doesn't fix it;
 > re-POSTing a known-good UI-built spec reproduces the break). The linked-column
-> key-correlation is UI-only state the spec can't carry. See
+> key-correlation is state the REST spec can't carry. Sigma MCP exposes a
+> dedicated linked-input-table constructor, but validate that path separately. See
 > `refs/input-tables.md`.
 
 So, honestly, by usage pattern:
 
 | Need | API today? | How |
 |---|---|---|
-| **Edit-in-place of the migrated rows** (the common spreadsheet case) | ❌ | empty/CSV input table **structure** is API; loading the rows = UI CSV paste now, the **bulk-seed API** later |
-| **Net-new entry at a grain** (blank forecast grid) | ⚠️ partial | a linked-off-spine table's PK/grain + entry columns populate via POST, but the **dimension context columns show "multiple values"** → UX is poor; build in UI for now |
-| **Augment / annotate existing rows** (notes/flags beside live data) | ❌ via API | needs working linked columns → **UI-authored** |
+| **Edit-in-place of the migrated rows** (the common spreadsheet case) | ✅ with Sigma MCP Code Mode | create the empty input-table **structure** with REST, then pre-query and seed it through MCP `InputTable.upsert_rows()`; `update_rows()` targets returned/system row IDs. UI CSV remains the fallback. |
+| **Net-new entry at a grain** (blank forecast grid) | ⚠️ path-dependent | REST linked-off-spine creation leaves context columns as "multiple values"; UI works. MCP exposes `add_linked_input_table()`, but validate create/read/update end to end before shipping it. |
+| **Augment / annotate existing rows** (notes/flags beside live data) | ⚠️ path-dependent | needs working linked columns; use UI or a separately verified MCP linked-table build |
 
-**Bottom line today:** via API you can scaffold input-table *structure* and build
-read-only DMs; making input tables actually *show the migrated data editable*
-needs the UI (CSV paste / UI-built linked tables) until the bulk-seed API lands.
-Don't promise "editable via API" — scaffold the structure, then hand off the
-data-load/link step as a UI action (or wait for the seed API).
+REST can scaffold input-table *structure* and build read-only DMs. Sigma MCP
+Code Mode can seed and update rows in an existing empty input table; it is a
+separate connector capability and is not invoked by this skill's CLI. Working
+linked context columns and warehouse-view creation still require UI/live review.
 
-Design so the editable surfaces exist from day one; the seed API just fills the
-"edit-in-place" case later. **Don't build a read-only model and call it a
-migration.**
+Design so the editable surfaces exist from day one, and seed them through MCP or
+the UI. **Don't build a read-only model and call it a migration.**
 
 ---
 
@@ -282,23 +281,26 @@ live spec and map server-assigned element/column ids before any workbook build
 
 ## Phase 3 — Stand up the input table (`scripts/build-input-table-wb.py`)
 
-Build the **empty input-table structure via API**; load/link the data via UI for
-now (or the bulk-seed API later). See `refs/input-tables.md`.
+Build the **empty input-table structure via REST**; seed rows through Sigma MCP
+Code Mode when connected, or load them through the UI. See
+`refs/input-tables.md`.
 
 **Empty input table (API for structure).** POST an **empty input-table element** at
 the fact grain (`source: { kind: empty, connectionId: <write-conn> }`,
 `inputMode: explore`, data columns + system columns
-`ID/CREATED_AT/CREATED_BY/UPDATED_AT/UPDATED_BY`). Then UI: open the input table →
-**paste / upload** the Phase-1 CSV → **Publish** → **Warehouse views → Create
-new**. (The CSV paste is the current bridge for the bulk-seed API.)
+`ID/CREATED_AT/CREATED_BY/UPDATED_AT/UPDATED_BY`). Then either pre-query the live
+element and seed missing natural keys with MCP `InputTable.upsert_rows()`, or use
+the UI to **paste / upload** the Phase-1 CSV and **Publish**. Finally use
+**Warehouse views → Create new** in the UI.
 
 > **Do NOT auto-build linked input tables via the spec.** It looks like it works
 > (the POST succeeds, `/elements` shows the columns) but the **inherited columns
-> resolve to "multiple values"** — the linked correlation is UI-only (validated
+> resolve to "multiple values"** — the REST spec omits the linked correlation
+> state (validated
 > 2026-06-10, publish doesn't fix it). `build-input-table-wb.py --linked` only
-> scaffolds the PK/grain + entry columns; the *linked context columns must be
-> added in the UI*. If a usage pattern needs live context columns beside editable
-> cells, build that table in the UI.
+> scaffolds the PK/grain + entry columns. If a usage pattern needs live context
+> columns beside editable cells, use the established UI path or validate MCP
+> `add_linked_input_table()` create/read/update behavior end to end.
 
 ## Phase 4 — Source-swap the DM onto the view (`scripts/build-dm-on-view.py`)
 
@@ -339,9 +341,10 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | workbook create/validate/update | ✅ `POST /v2/workbooks` (`dryRun` then create), `PUT .../contents` |
 | input-table **structure** (columns/types; title, style, sort) | ✅ code representation |
 | input validation (literal/range/dynamic-list/file constraints) | ✅ code representation |
-| **linked** input table (inherited columns resolve) | ❌ UI only — spec POST yields "multiple values" (publish doesn't fix); PK/grain + entry cols populate but linked cols don't |
-| seed **records** inside workbook code representation | ❌ records are excluded; use a supported import/seed path |
-| **Publish** (commits writeback) | ⚠️ UI |
+| **linked** input table (inherited columns resolve) | ⚠️ REST spec POST yields "multiple values"; UI works; MCP `add_linked_input_table()` exists but was not validated in the 2026-10-15 empty-table seed regression |
+| seed **records inside REST workbook code representation** | ❌ records are excluded from the spec |
+| seed/update rows in an existing input table | ✅ Sigma MCP Code Mode `build_workbook` with `InputTable.upsert_rows()` / `update_rows()`; pre-query natural keys because inserts do not deduplicate them automatically |
+| **Publish** for UI edits | ⚠️ UI; MCP row writes persisted and were immediately queryable in the 2026-10-15 regression, while published-mode UI permissions remain untested |
 | **warehouse view** on the input table | ⚠️ UI only |
 | DM **source-swap** to `FROM <view>` | ✅ API (DM spec PUT/POST) |
 | read/output DM + workbook build | ✅ API |
@@ -350,9 +353,12 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | scheduled/webhook automated action | ✅ limited document surface; ownership/failure review |
 | column protection / broader admin policy | ⚠️ UI/admin policy |
 
-For an API-created empty input table, make seed/import, **Publish**, and
-**Create warehouse view** explicit hand-offs. Linked mode remains UI/live-review
-until an end-to-end create/read/query regression proves inherited columns work.
+For a REST-created empty input table, seed through Sigma MCP Code Mode when that
+connector is available; otherwise hand off CSV/clipboard import and **Publish**.
+MCP seeding is not performed by this skill's CLI scripts. In either path,
+**Create warehouse view** remains an explicit UI hand-off. Linked mode remains
+live-review until an end-to-end MCP create/read/update/query regression proves
+inherited columns work.
 
 ---
 

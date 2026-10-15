@@ -13,11 +13,14 @@ Two modes (see refs/input-tables.md):
       --key MONTH_DATE --entry-cols FORECAST_AMOUNT:number
     (--linked-cols defaults to all spine cols except --key)
 
-  EMPTY (seed starting values via UI CSV paste afterward):
+  EMPTY (structure only; seed afterward through Sigma MCP Code Mode or UI CSV):
     python build-input-table-wb.py --name "Forecast Entry" --connection <writeConn> \
       --columns REGION:text,MONTH_DATE:datetime,CATEGORY_CODE:number,FORECAST_AMOUNT:number
 
 Auth: reads ~/.sigma-migration/env (SIGMA_BASE_URL/CLIENT_ID/CLIENT_SECRET).
+This script uses REST and does not invoke MCP. For programmatic row loading,
+fetch the created element through Sigma MCP build_workbook, narrow it to
+InputTable/LiteralEditableColumn, pre-query natural keys, then call upsert_rows.
 """
 import argparse
 import json
@@ -71,13 +74,15 @@ def build_empty(args):
         cols.append({"id": name.strip(), "type": (typ or "text").strip()})
     for sc in SYSTEM_COLS[1:]:
         cols.append({"id": sc})
-    desc = "Excel→Sigma input table (empty). Paste/upload the seed CSV, publish, then create a warehouse view."
+    desc = "Excel→Sigma input table (empty). Seed through Sigma MCP Code Mode or UI CSV, then create a warehouse view."
     elements = [{
         "id": "inputTable", "kind": "input-table", "name": args.name,
         "source": {"kind": "empty", "connectionId": args.connection},
         "inputMode": "explore", "columns": cols,
     }]
-    nxt = "open the input table → paste the seed CSV → PUBLISH → Warehouse views → Create new → copy the view path."
+    nxt = ("seed rows through Sigma MCP build_workbook (pre-query natural keys), "
+           "or paste the seed CSV + PUBLISH in the UI → Warehouse views → "
+           "Create new → copy the view path.")
     return desc, elements, nxt
 
 

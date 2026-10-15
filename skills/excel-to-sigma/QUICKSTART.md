@@ -46,15 +46,24 @@ excluded — Sigma auto-populates them.)
 .venv/bin/python build-input-table-wb.py --name "Forecast Entry" --connection cb2f5180-… \
   --columns REGION:text,BRANCH:text,SUB_BRANCH:text,MONTH_DATE:datetime,CATEGORY_CODE:number,FORECAST_AMOUNT:number
 ```
-> Builds the empty input-table **structure** (API). Loading the rows is a UI step
-> (CSV paste) until the bulk-seed API lands. **Don't use `--linked` for a shippable
+> Builds the empty input-table **structure** through REST. The CLI stops there;
+> seed the resulting table through Sigma MCP Code Mode or use UI CSV paste.
+> **Don't use `--linked` for a shippable
 > table** — linked context columns don't resolve via POST ("multiple values");
-> build linked input tables in the UI. See `refs/input-tables.md`.
+> use the established UI path, or validate MCP `add_linked_input_table()`
+> end-to-end before shipping. See `refs/input-tables.md`.
 
-## 5. Load data + view  (UI — see refs/input-tables.md)
-1. Open the workbook → the input table → **paste** `forecast_input_paste.csv`.
-2. **Publish** (data commits to the warehouse only on publish).
-3. Input-table element → **Warehouse views → Create new** → copy the
+## 5. Load data + view  (MCP + UI — see refs/input-tables.md)
+
+Preferred when the Sigma MCP connector is available: `describe` and `query` the
+new input table, use `build_workbook` with `InputTable.upsert_rows()` to insert
+only missing natural keys, then re-query the table and a downstream element.
+This is a connector workflow; `build-input-table-wb.py` does not call MCP.
+
+UI fallback: open the workbook → the input table → paste
+`forecast_input_paste.csv` → **Publish**.
+
+Then use the input-table element menu → **Warehouse views → Create new** → copy the
    `database.schema.view` path.
 
 ## 6. Build the DM on the view  (API)
@@ -99,9 +108,14 @@ workbook being migrated. If the source audit requires review, also pass
 The forecast is computed (`base × (1+rate)^n`); editable rate/manual input tables
 override via `Coalesce(input, default)`, so **parity holds before any seeding**
 (verified: Revenue 6,961,218.48 · EBITDA 62,327.16 · **Net Income −135,372.84**).
-Then: paste `rate_seed.csv` / `manual_seed.csv` into the two editable tables +
-Publish to make them live; run `wb-rep push` for the designed layout (the POST
-lands auto-arranged). See `refs/forecast-recipes.md`.
+Then seed `rate_seed.csv` / `manual_seed.csv` through Sigma MCP Code Mode
+(`InputTable.upsert_rows()` after a preflight query), or paste them through the UI
+and Publish. A live regression seeded 6 rate rows and 30 manual rows through MCP,
+then changed and restored one rate and one zero-valued manual row; the P&L and
+trend recalculated and returned exactly to baseline with no duplicate keys. Run
+the generated layout and render; use the workbook refinement tooling only when
+the explicit KPI, trend, and pivot layout needs further adjustment. See
+`refs/forecast-recipes.md`.
 
 If `.xlsm`: run `macro-classify.py` first (`refs/macro-handling.md`) — surface
 FLAG/ACTION macros before building.
