@@ -268,10 +268,13 @@ def main():
             dm = BUILD.api(base, tok, "POST", "/v2/dataModels/spec",
                            BUILD.build_dm(plan, conn, folder, name)[0])
             full = BUILD.api(base, tok, "GET", f"/v2/dataModels/{dm['dataModelId']}/spec")
-            # Released workbook code_rep: wrap nested draft + layout last before POST.
+            # Current workbook API: wrap nested draft, validate, then create.
             wb_body = BUILD.workbook_wire.wire_workbook(
                 BUILD.build_wb(plan, dm["dataModelId"], BUILD.map_dm(full), dl, folder, name))
-            wb = BUILD.api(base, tok, "POST", "/v2/workbooks/spec", wb_body)
+            checked = BUILD.api(base, tok, "POST", "/v2/workbooks",
+                                BUILD.workbook_wire.dry_run_request(wb_body))
+            BUILD.workbook_wire.assert_dry_run_success(checked)
+            wb = BUILD.api(base, tok, "POST", "/v2/workbooks", wb_body)
             print(f"   built {entry['file']}: wb {wb.get('workbookId')}")
 
 

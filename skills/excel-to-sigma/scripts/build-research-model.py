@@ -265,11 +265,14 @@ def main():
     print("dataModelId:", dm_id)
     full = api(base, tok, "GET", f"/v2/dataModels/{dm_id}/spec")
     els = map_dm(full)
-    # Layout is the last write (assembled inside wire_workbook) before POST.
+    # Layout is the last write before the current contents API validates + creates.
     wb_spec = workbook_wire.wire_workbook(
         build_wb(plan, dm_id, els, data_lines, folder, name))
     json.dump(wb_spec, open(f"{OUTDIR}/wb_spec_live.json", "w"), indent=1)
-    wb = api(base, tok, "POST", "/v2/workbooks/spec", wb_spec)
+    checked = api(base, tok, "POST", "/v2/workbooks",
+                  workbook_wire.dry_run_request(wb_spec))
+    workbook_wire.assert_dry_run_success(checked)
+    wb = api(base, tok, "POST", "/v2/workbooks", wb_spec)
     print("workbookId:", wb.get("workbookId"), "| url:", wb.get("url"))
 
 

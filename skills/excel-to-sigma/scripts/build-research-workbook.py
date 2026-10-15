@@ -243,9 +243,13 @@ def main():
                                   else round(ln["typed"].get(str(y), ln["typed"].get(y)), 6) for ln in icols])
         print(f"seed CSV: {sp}")
     wb_spec = {"name": name, "schemaVersion": 1, "kind": "workbook", "folderId": folder, "pages": main_pages}
-    wb_spec = _load("lib/workbook_wire.py", "ww").wire_workbook(wb_spec) if os.path.exists(os.path.join(HERE, "lib/workbook_wire.py")) else wb_spec
+    ww = _load("lib/workbook_wire.py", "ww")
+    wb_spec = ww.wire_workbook(wb_spec)
     json.dump(wb_spec, open("/tmp/research-wb/wb.json", "w"), indent=1)
-    wb = BRM.api(base, tok, "POST", "/v2/workbooks/spec", wb_spec)
+    checked = BRM.api(base, tok, "POST", "/v2/workbooks",
+                      ww.dry_run_request(wb_spec))
+    ww.assert_dry_run_success(checked)
+    wb = BRM.api(base, tok, "POST", "/v2/workbooks", wb_spec)
     print("workbookId:", wb.get("workbookId"), "| url:", wb.get("url"))
 
 

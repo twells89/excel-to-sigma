@@ -141,15 +141,22 @@ def main():
     else:
         raise SystemExit("provide --columns (empty mode) or --spine-cols/--spine-sql + --key + --entry-cols (linked mode)")
 
-    # Nested draft → released document wrapper (code_rep). Layout is assembled
-    # as the last write inside wire_workbook before the POST body is built.
+    # Nested draft → current contents wrapper. Layout is assembled last.
     spec = {"name": args.name, "description": desc, "folderId": folder,
             "schemaVersion": 1, "kind": "workbook",
             "pages": [{"id": "entryPage", "name": args.name, "elements": elements}]}
     post_body = workbook_wire.wire_workbook(spec)
 
+    # Validate dependencies and formulas without persisting anything.
+    body = json.dumps(workbook_wire.dry_run_request(post_body)).encode()
+    req = urllib.request.Request(base + "/v2/workbooks", data=body, method="POST",
+                                 headers={"Authorization": f"Bearer {tok}",
+                                          "Content-Type": "application/json",
+                                          "Accept": "application/json"})
+    workbook_wire.assert_dry_run_success(json.load(urllib.request.urlopen(req)))
+
     body = json.dumps(post_body).encode()
-    req = urllib.request.Request(base + "/v2/workbooks/spec", data=body, method="POST",
+    req = urllib.request.Request(base + "/v2/workbooks", data=body, method="POST",
                                  headers={"Authorization": f"Bearer {tok}",
                                           "Content-Type": "application/json",
                                           "Accept": "application/json"})

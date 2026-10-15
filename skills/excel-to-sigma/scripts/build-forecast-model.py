@@ -231,9 +231,11 @@ def main():
     print("dataModelId:",dm_id)
     full=api(base,tok,"GET",f"/v2/dataModels/{dm_id}/spec")
     els=map_dm_elements(full)
-    # Layout is the last write (assembled inside wire_workbook) before POST.
+    # Layout is the last write before the current contents API validates + creates.
     wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els))
-    wb=api(base,tok,"POST","/v2/workbooks/spec",wb_spec)
+    checked=api(base,tok,"POST","/v2/workbooks",workbook_wire.dry_run_request(wb_spec))
+    workbook_wire.assert_dry_run_success(checked)
+    wb=api(base,tok,"POST","/v2/workbooks",wb_spec)
     print("workbookId:",wb["workbookId"],"| url:",wb.get("url"))
     print("NOTE: POST uses a stacked notebook-flow layout via code_rep; refine with wb-rep push if needed.")
 
