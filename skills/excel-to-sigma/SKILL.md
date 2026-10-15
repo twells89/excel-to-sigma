@@ -361,7 +361,9 @@ approved manifest/receipt. After querying assigned IDs, re-stage those bindings
 and run `plan` to reconcile typed natural keys. Review its Code Mode chunks,
 execute through MCP, and query/read back again. The CLI never queries or mutates
 MCP itself. `complete` requires all workflow-specific target, checkpoint,
-edit/restore, unique-key, and persistence evidence. Otherwise hand off
+edit/restore, persistence, and table evidence. Each table readback must report
+the exact approved row count and typed `naturalKeys`; missing, extra, or
+same-count substituted keys block completion. Otherwise hand off
 CSV/clipboard import and **Publish**. In either path,
 **Create warehouse view** remains an explicit UI hand-off. Linked mode remains
 live-review until an end-to-end MCP create/read/update/query regression proves

@@ -416,7 +416,10 @@ class TestInputOrchestration(unittest.TestCase):
                                        "persistenceReadbackId": "p-" + name,
                                        "rows": len(spec["rows"]),
                                        "distinct": len(spec["rows"]),
-                                       "keyColumns": spec["keyColumns"]}
+                                       "keyColumns": spec["keyColumns"],
+                                       "naturalKeys": [
+                                           {key: row[key] for key in spec["keyColumns"]}
+                                           for row in spec["rows"]]}
                                for name, spec in architecture["inputs"].items()},
                     "checkpointBindings": [
                         {"checkpointId": "chunk-" + name, "feature": name,
@@ -441,6 +444,24 @@ class TestInputOrchestration(unittest.TestCase):
         swapped["targetBindings"]["salesSettings"]["elementId"] = "other"
         with self.assertRaisesRegex(ValueError, "target bindings"):
             gate_input_completion(manifest, receipt, swapped)
+
+        incomplete = copy.deepcopy(evidence)
+        incomplete["tables"]["expensePolicy"].update({
+            "rows": 1, "distinct": 1,
+            "naturalKeys": [{"Category": "Airfare"}],
+        })
+        with self.assertRaisesRegex(ValueError, "approved row count"):
+            gate_input_completion(manifest, receipt, incomplete)
+
+        wrong_keys = copy.deepcopy(evidence)
+        wrong_keys["tables"]["expensePolicy"]["naturalKeys"] = [
+            {"Category": "Wrong " + str(index)} for index in range(6)]
+        with self.assertRaisesRegex(ValueError, "natural keys"):
+            gate_input_completion(manifest, receipt, wrong_keys)
+
+        expense = evidence["tables"]["expensePolicy"]
+        self.assertEqual(expense["rows"], 6)
+        self.assertEqual(len(expense["naturalKeys"]), 6)
 
 
 class TestTypedWorkbookExtraction(unittest.TestCase):

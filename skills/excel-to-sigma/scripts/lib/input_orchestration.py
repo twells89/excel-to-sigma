@@ -1,6 +1,8 @@
 """Source/plan/target-bound gates for shared-input staging and completion."""
 from __future__ import annotations
 
+import json
+
 try:
     from .input_sync import build_artifact_records
     from .migration_gate import gate_completion_manifest, gate_staging_manifest
@@ -23,6 +25,36 @@ def _same_hashes(manifest, value, label):
         raise ValueError(f"{label} sourceHash is stale")
     if value.get("planHash") != manifest.get("planHash"):
         raise ValueError(f"{label} planHash is stale")
+
+
+def _typed_natural_keys(rows, key_columns, label):
+    if not isinstance(rows, list):
+        raise ValueError(f"{label} natural keys are required")
+    expected_fields = set(key_columns)
+    tokens = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != expected_fields:
+            raise ValueError(f"{label} natural keys do not match approved key columns")
+        key = []
+        for column in key_columns:
+            value = row[column]
+            if value is None:
+                raise ValueError(f"{label} natural keys cannot contain null")
+            if isinstance(value, bool):
+                value_type = "bool"
+            elif isinstance(value, int):
+                value_type = "int"
+            elif isinstance(value, float):
+                value_type = "float"
+            elif isinstance(value, str):
+                value_type = "str"
+            else:
+                raise ValueError(f"{label} natural keys contain an unsupported value")
+            key.append({"type": value_type, "value": value})
+        tokens.append(json.dumps(key, sort_keys=True, separators=(",", ":")))
+    if len(tokens) != len(set(tokens)):
+        raise ValueError(f"{label} natural keys contain duplicates")
+    return set(tokens)
 
 
 def gate_input_staging(manifest, approval, plan_or_architecture, source_gate_evidence):
@@ -109,9 +141,19 @@ def gate_input_completion(manifest, staging_receipt, runtime_evidence):
                 raise ValueError(f"runtime table evidence for {name} requires {field}")
         if item.get("keyColumns") != spec.get("keyColumns"):
             raise ValueError(f"runtime key columns are stale for {name}")
-        if (not isinstance(item.get("rows"), int) or item["rows"] < 1
-                or item.get("distinct") != item["rows"]):
-            raise ValueError(f"runtime evidence contains duplicate or empty business keys for {name}")
+        expected_count = len(spec.get("rows") or [])
+        if (expected_count < 1 or type(item.get("rows")) is not int
+                or type(item.get("distinct")) is not int
+                or item["rows"] != expected_count or item["distinct"] != expected_count):
+            raise ValueError(f"runtime evidence does not match approved row count for {name}")
+        key_columns = spec["keyColumns"]
+        expected_keys = _typed_natural_keys(
+            [{key: row[key] for key in key_columns} for row in spec["rows"]],
+            key_columns, f"approved {name}")
+        actual_keys = _typed_natural_keys(
+            item.get("naturalKeys"), key_columns, f"runtime {name}")
+        if actual_keys != expected_keys:
+            raise ValueError(f"runtime natural keys do not match approved rows for {name}")
 
     checkpoints = runtime_evidence.get("checkpointBindings")
     if not isinstance(checkpoints, list) or not checkpoints:
