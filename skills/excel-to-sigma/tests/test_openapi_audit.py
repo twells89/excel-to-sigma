@@ -13,6 +13,39 @@ from openapi_audit import audit_openapi, resolve_ref  # noqa: E402
 
 
 def fixture_spec():
+    pivot_axis = {
+        "type": "array",
+        "items": {
+            "allOf": [
+                {
+                    "type": "object",
+                    "required": ["columnId"],
+                    "properties": {"columnId": {"type": "string"}},
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "sort": {
+                            "allOf": [
+                                {
+                                    "type": "object",
+                                    "required": ["direction"],
+                                    "properties": {"direction": {"enum": ["ascending", "descending"]}},
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "by": {"type": "string"},
+                                        "aggregation": {"enum": ["sum", "min", "max"]},
+                                    },
+                                },
+                            ]
+                        }
+                    },
+                },
+            ]
+        },
+    }
     contents = {
         "type": "object",
         "required": ["schemaVersion", "kind", "pages", "elements", "layout"],
@@ -49,6 +82,9 @@ def fixture_spec():
                                 "code": {},
                                 "connectionId": {},
                                 "output": {},
+                                "rowsBy": pivot_axis,
+                                "columnsBy": pivot_axis,
+                                "values": {"type": "array", "items": {"type": "string"}},
                             }
                         },
                     ]
@@ -159,6 +195,29 @@ class TestOpenApiAudit(unittest.TestCase):
         ]
         report = audit_openapi(spec)
         self.assertIn("actions", report["missing"])
+
+    def test_pivot_axis_requires_column_id(self):
+        spec = fixture_spec()
+        axis = spec["components"]["schemas"]["Contents"]["properties"]["elements"]["items"]["oneOf"][1]["properties"]["rowsBy"]
+        column = axis["items"]["allOf"][0]
+        column["required"] = ["id"]
+        column["properties"] = {"id": {"type": "string"}}
+
+        report = audit_openapi(spec)
+
+        self.assertEqual(report["status"], "DRIFT")
+        self.assertIn("pivotAxes", report["missing"])
+
+    def test_pivot_sort_requires_by_and_aggregation_shape(self):
+        spec = fixture_spec()
+        axis = spec["components"]["schemas"]["Contents"]["properties"]["elements"]["items"]["oneOf"][1]["properties"]["rowsBy"]
+        sort_properties = axis["items"]["allOf"][1]["properties"]["sort"]["allOf"][1]["properties"]
+        sort_properties["columnId"] = sort_properties.pop("by")
+
+        report = audit_openapi(spec)
+
+        self.assertEqual(report["status"], "DRIFT")
+        self.assertIn("pivotAxes", report["missing"])
 
     def test_json_pointer_decoding(self):
         document = {"components": {"schemas": {"A/B": {"value~name": 1}}}}

@@ -20,7 +20,9 @@ Usage:
         [--editable | --editable-sheet "Annuals"]  # input tables (paste); default = SQL/loaded
         [--raw-label "Raw data"] [--post]           # default dry-run to /tmp
 """
+import argparse
 import sys, os, json, csv, re, importlib.util, warnings
+from lib.migration_gate import MigrationGateError, gate_source, plan_review_issues
 warnings.filterwarnings("ignore")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -160,19 +162,38 @@ def wb_elements(pre, plan, dm_id, data_el_id, dim_el_id, data_lines, title, edit
     return {"model": model, "raw": raw}
 
 
-def main():
+def _parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("workbook")
+    parser.add_argument("--conn", default="<conn>")
+    parser.add_argument("--folder", default="<folder>")
+    parser.add_argument("--name")
+    parser.add_argument("--sheets")
+    parser.add_argument("--editable", action="store_true")
+    parser.add_argument("--editable-sheet")
+    parser.add_argument("--raw-label", default="Raw data")
+    parser.add_argument("--post", action="store_true")
+    parser.add_argument("--review-dispositions")
+    return parser
+
+
+def main(argv=None):
     global CONN, RAW_LABEL
-    a = [x for x in sys.argv[1:] if not x.startswith("--")]
-    opt = {x.split("=")[0]: (x.split("=", 1)[1] if "=" in x else True) for x in sys.argv[1:] if x.startswith("--")}
-    if not a:
-        sys.exit(__doc__)
-    path = a[0]; CONN = opt.get("--conn", "<conn>"); folder = opt.get("--folder", "<folder>")
-    RAW_LABEL = opt.get("--raw-label", "Raw data")       # name of the raw-data element per sheet
-    name = opt.get("--name") or (os.path.splitext(os.path.basename(path))[0][:50] + " (auto)")
-    do_post = "--post" in opt
+    args = _parser().parse_args(argv)
+    path = args.workbook
+    CONN = args.conn
+    folder = args.folder
+    RAW_LABEL = args.raw_label       # name of the raw-data element per sheet
+    name = args.name or (os.path.splitext(os.path.basename(path))[0][:50] + " (auto)")
+    do_post = args.post
+    try:
+        gate_source(path, args.review_dispositions)
+    except MigrationGateError as error:
+        print(f"MIGRATION GATE: {error}", file=sys.stderr)
+        return error.exit_code
     wf, wv = INF.load(path)
-    if opt.get("--sheets"):
-        sheets = [s.strip() for s in opt["--sheets"].split(",")]
+    if args.sheets:
+        sheets = [s.strip() for s in args.sheets.split(",")]
     else:                                                # auto: sheets with a detectable financial table
         sheets = []
         for ws in wf.worksheets:
@@ -203,6 +224,19 @@ def main():
     if not dm_data:
         sys.exit("no convertible tables found")
 
+    derived_issues = []
+    seen_issue_codes = set()
+    for info in dm_els.values():
+        for issue in plan_review_issues(info["plan"]):
+            if issue["code"] not in seen_issue_codes:
+                derived_issues.append(issue)
+                seen_issue_codes.add(issue["code"])
+    try:
+        gate_source(path, args.review_dispositions, derived_issues)
+    except MigrationGateError as error:
+        print(f"MIGRATION GATE: {error}", file=sys.stderr)
+        return error.exit_code
+
     dm_spec = {"name": name + " — Model", "schemaVersion": 1, "folderId": folder,
                "pages": [{"id": "m", "name": "Model", "elements": dm_data}]}
     os.makedirs("/tmp/research-wb", exist_ok=True)
@@ -210,15 +244,15 @@ def main():
     print(f"DM: {len(dm_data)} data elements across {len(pages)} pages")
     if not do_post:
         print("DRY RUN — /tmp/research-wb/dm.json written. Re-run with --post --conn --folder to build.")
-        return
+        return 0
 
     e = BRM.env(); base = e["SIGMA_BASE_URL"]; tok = BRM.token(e)
     dm = BRM.api(base, tok, "POST", "/v2/dataModels/spec", dm_spec); dm_id = dm["dataModelId"]
     print("dataModelId:", dm_id)
     full = BRM.api(base, tok, "GET", f"/v2/dataModels/{dm_id}/spec")
     id_by_cols = {frozenset(c["name"] for c in el["columns"]): el["id"] for el in full["pages"][0]["elements"]}
-    all_edit = "--editable" in opt                               # every sheet -> editable input table
-    edit_sheet = opt.get("--editable-sheet")                     # or just one named sheet's primary table
+    all_edit = args.editable                               # every sheet -> editable input table
+    edit_sheet = args.editable_sheet                     # or just one named sheet's primary table
     main_pages, seeds = [], []
     for sheet, pres in pages:
         elems = []
@@ -251,7 +285,8 @@ def main():
     ww.assert_dry_run_success(checked)
     wb = BRM.api(base, tok, "POST", "/v2/workbooks", wb_spec)
     print("workbookId:", wb.get("workbookId"), "| url:", wb.get("url"))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -15,6 +15,23 @@ import workbook_wire  # noqa: E402
 
 
 class TestWorkbookWire(unittest.TestCase):
+    def test_stack_layout_gives_pivots_room_and_keeps_following_tiles_nonoverlapping(self):
+        layout = workbook_wire.stack_layout([
+            {"id": "main", "elements": [
+                {"id": "pivot", "kind": "pivot-table"},
+                {"id": "detail", "kind": "table"},
+            ]},
+            {"id": "hidden", "elements": [
+                {"id": "source1", "kind": "table"},
+                {"id": "source2", "kind": "table"},
+            ]},
+        ])
+
+        self.assertIn('elementId="pivot" gridColumn="1 / 25" gridRow="1 / 51"', layout)
+        self.assertIn('elementId="detail" gridColumn="1 / 25" gridRow="51 / 63"', layout)
+        self.assertIn('elementId="source1" gridColumn="1 / 25" gridRow="1 / 13"', layout)
+        self.assertIn('elementId="source2" gridColumn="1 / 25" gridRow="13 / 25"', layout)
+
     def test_wire_wraps_contents_and_flattens_elements(self):
         draft = {
             "name": "Forecast Entry",

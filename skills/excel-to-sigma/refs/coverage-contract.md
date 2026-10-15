@@ -22,6 +22,34 @@ python scripts/audit-openapi.py --out sigma-code-rep-audit.json
 for `BLOCKED`. `--allow-review` is for inventory/CI smoke only; it must not be
 used to declare a customer migration complete.
 
+The whole-workbook migration paths (`infer-canonical-formulas.py`,
+`batch-convert.py`, `build-research-workbook.py`, and the source-bound forecast
+and research plan builders) enforce the audit again. `REVIEW_REQUIRED` can
+proceed only with `--review-dispositions <file.json>` containing:
+
+```json
+{
+  "sourceSha256": "<SHA256 of the exact source workbook>",
+  "issues": [
+    {
+      "code": "DATA_VALIDATION_PRESENT",
+      "owner": "Named owner",
+      "disposition": "Implemented list validation and tested valid/invalid input",
+      "verified": true
+    }
+  ]
+}
+```
+
+The record must cover every reported code with nonempty `owner` and
+`disposition` and literal `verified: true`. A missing, stale, or tampered source
+fails the gate. `BLOCKED` is never overrideable. Inferred plans also require
+`sourcePath` (or CLI `--source`) and `sourceSha256`; the bytes must still match.
+Research plans add `CACHED_FORMULA_FALLBACK` when any formula cell is frozen to
+an Excel cached value, and `INFERENCE_REVIEW_REQUIRED` when inferred lines remain
+unresolved. These need explicit dispositions and must not be described as full
+live-formula migration.
+
 ## Coverage
 
 | Excel surface | Route | Completion gate |
@@ -48,7 +76,7 @@ used to declare a customer migration complete.
 
 A migration is not complete until:
 
-- all audit issues have an owner and disposition;
+- all audit and inference issues have a source-bound owner, disposition, and verified result;
 - all workbook creates pass `POST /v2/workbooks` with `dryRun: true`;
 - server-assigned data-model ids are read back before workbook wiring;
 - editable inputs work in the intended draft/published mode;

@@ -23,10 +23,15 @@ human report. Read-only; never writes to the source workbook.
 
 Usage:
   infer-canonical-formulas.py <file.xlsx> [--sheet "FY results"] [--out plan.json]
-                              [--first-row N] [--last-row N] [--quiet]
+                              [--first-row N] [--last-row N]
+                              [--review-dispositions review.json] [--quiet]
 """
+import argparse
+import hashlib
 import sys, os, json, re, math
 from collections import Counter, defaultdict
+
+from lib.migration_gate import MigrationGateError, gate_source
 
 try:
     import openpyxl
@@ -612,6 +617,9 @@ def simulate_and_freeze(plan_lines, rows, axis, cached):
 
 # ------------------------------------------------------------------ main inference
 def infer(path, sheet=None, first_row=None, last_row=None, axis_override=None, header_row=None):
+    source_path = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    with open(source_path, "rb") as source_file:
+        source_digest = hashlib.sha256(source_file.read()).hexdigest()
     wb_f, wb_v = load(path)
     ws_f = pick_sheet(wb_f, wb_v, sheet)
     ws_v = wb_v[ws_f.title]
@@ -743,7 +751,8 @@ def infer(path, sheet=None, first_row=None, last_row=None, axis_override=None, h
                 expected.append({"anchor": nm, "col_id": a["col_id"], "year": col_year[c],
                                  "value": round(v, 4)})
     plan = dict(
-        source=os.path.basename(path), sheet=ws_f.title,
+        source=os.path.basename(path), sourcePath=source_path, sourceSha256=source_digest,
+        sheet=ws_f.title,
         periods=[{"year": y, "col": get_column_letter(c)} for c, y in axis],
         lines=plan_lines,
         anchors=anchors,
@@ -878,21 +887,35 @@ def report(plan):
             shown += 1
 
 
-def main():
-    a = [x for x in sys.argv[1:] if not x.startswith("--")]
-    opt = {x.split("=")[0]: (x.split("=", 1)[1] if "=" in x else True) for x in sys.argv[1:] if x.startswith("--")}
-    if not a:
-        sys.exit(__doc__)
-    plan = infer(a[0], sheet=opt.get("--sheet"),
-                 first_row=int(opt["--first-row"]) if "--first-row" in opt else None,
-                 last_row=int(opt["--last-row"]) if "--last-row" in opt else None)
-    if "--quiet" not in opt:
+def _parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("workbook")
+    parser.add_argument("--sheet")
+    parser.add_argument("--out")
+    parser.add_argument("--first-row", type=int)
+    parser.add_argument("--last-row", type=int)
+    parser.add_argument("--review-dispositions")
+    parser.add_argument("--quiet", action="store_true")
+    return parser
+
+
+def main(argv=None):
+    args = _parser().parse_args(argv)
+    try:
+        gate_source(args.workbook, args.review_dispositions)
+    except MigrationGateError as error:
+        print(f"MIGRATION GATE: {error}", file=sys.stderr)
+        return error.exit_code
+    plan = infer(args.workbook, sheet=args.sheet,
+                 first_row=args.first_row, last_row=args.last_row)
+    if not args.quiet:
         report(plan)
-    out = opt.get("--out")
-    if out and out is not True:
-        json.dump(plan, open(out, "w"), indent=1)
-        print(f"\nplan written: {out}")
+    if args.out:
+        with open(args.out, "w") as output_file:
+            json.dump(plan, output_file, indent=1)
+        print(f"\nplan written: {args.out}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

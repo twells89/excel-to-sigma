@@ -106,6 +106,48 @@ def _contents_schema(document, create_schema):
     return {}
 
 
+def _property_schema(document, root, name):
+    for node in walk_resolved(document, root):
+        if not isinstance(node, dict):
+            continue
+        properties = node.get("properties")
+        if isinstance(properties, dict) and isinstance(properties.get(name), dict):
+            return properties[name]
+    return {}
+
+
+def _pivot_axes_supported(document, contents_schema):
+    for node in walk_resolved(document, contents_schema):
+        if not isinstance(node, dict):
+            continue
+        properties = node.get("properties")
+        if not isinstance(properties, dict) or not {"rowsBy", "columnsBy"}.issubset(properties):
+            continue
+        axes_ok = True
+        for axis_name in ("rowsBy", "columnsBy"):
+            axis = properties[axis_name]
+            items = axis.get("items") if isinstance(axis, dict) else None
+            if not isinstance(items, dict):
+                axes_ok = False
+                break
+            item_properties = _property_names(document, items)
+            item_required = _required_names(document, items)
+            sort = _property_schema(document, items, "sort")
+            sort_properties = _property_names(document, sort)
+            sort_required = _required_names(document, sort)
+            if not (
+                "columnId" in item_properties
+                and "columnId" in item_required
+                and {"direction", "by", "aggregation"}.issubset(sort_properties)
+                and "direction" in sort_required
+            ):
+                axes_ok = False
+                break
+        if axes_ok:
+            return True
+    return False
+
+
 def audit_openapi(document):
     paths = document.get("paths") or {}
     create = (paths.get("/v2/workbooks") or {}).get("post") or {}
@@ -182,6 +224,7 @@ def audit_openapi(document):
             {"pivot-table", "bar-chart", "line-chart", "scatter-chart", "control"}
             .issubset(contents_literals)
         ),
+        "pivotAxes": _pivot_axes_supported(document, contents_schema),
     }
     missing = [name for name, present in capabilities.items() if not present]
     return {

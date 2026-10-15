@@ -24,10 +24,15 @@ import code_rep  # noqa: E402
 
 GRID_COLS = 24
 DEFAULT_ROW_HEIGHT = 12
+DEFAULT_PIVOT_ROW_HEIGHT = 50
 CREATE_METADATA_KEYS = ("name", "folderId", "description", "ownerId")
 
 
-def stack_layout(pages, row_height: int = DEFAULT_ROW_HEIGHT) -> str:
+def stack_layout(
+    pages,
+    row_height: int = DEFAULT_ROW_HEIGHT,
+    pivot_row_height: int = DEFAULT_PIVOT_ROW_HEIGHT,
+) -> str:
     """One full-width stacked tile per element, page order preserved."""
     blocks = []
     for page in pages or []:
@@ -41,7 +46,8 @@ def stack_layout(pages, row_height: int = DEFAULT_ROW_HEIGHT) -> str:
         ]
         cursor = 1
         for el in els:
-            end = cursor + row_height
+            height = pivot_row_height if el.get("kind") == "pivot-table" else row_height
+            end = cursor + height
             lines.append(
                 f'  <Element elementId="{el["id"]}" '
                 f'gridColumn="1 / {GRID_COLS + 1}" gridRow="{cursor} / {end}"/>'

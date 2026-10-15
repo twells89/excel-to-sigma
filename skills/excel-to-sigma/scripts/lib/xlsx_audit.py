@@ -13,6 +13,9 @@ from collections import Counter
 from pathlib import Path
 
 import openpyxl
+from openpyxl.formula import Tokenizer
+from openpyxl.formula.tokenizer import TokenizerError
+from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
 SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm"}
 VOLATILE_FUNCTIONS = {
@@ -30,8 +33,156 @@ KNOWN_FUNCTIONS = {
     "SUMPRODUCT", "TEXT", "TEXTJOIN", "TIME", "TRIM", "UNIQUE", "UPPER", "VALUE",
     "VLOOKUP", "WEEKDAY", "XLOOKUP", "XMATCH", "YEAR",
 }
-FUNCTION_RE = re.compile(r"(?<![A-Z0-9_.])(?:_xlfn\.)?([A-Z][A-Z0-9_.]*)\s*\(", re.I)
+DYNAMIC_FUNCTIONS = {
+    "CHOOSECOLS", "CHOOSEROWS", "DROP", "EXPAND", "FILTER", "HSTACK",
+    "RANDARRAY", "SEQUENCE", "SORT", "SORTBY", "TAKE", "TOCOL", "TOROW",
+    "UNIQUE", "VSTACK", "WRAPCOLS", "WRAPROWS",
+}
 EXTERNAL_REF_RE = re.compile(r"\[[^\]]+\.(?:xlsx|xlsm|xlsb|xls)\]", re.I)
+INDEXED_EXTERNAL_REF_RE = re.compile(r"\[\d+\][^!]*!", re.I)
+ERROR_LITERAL_RE = re.compile(
+    r"#(?:N/A|DIV/0!|GETTING_DATA|[A-Z][A-Z0-9_.]*(?:!|\?))",
+    re.I,
+)
+
+
+def _formula_code(expression):
+    """Mask literals, quoted identifiers, and bracketed references in place.
+
+    Apostrophes inside structured references escape the following character;
+    they do not open a quoted sheet identifier. Keeping the original offsets
+    lets the tokenizer normalization remove only actual spill operators.
+    """
+    result = []
+    quote = None
+    bracket_depth = 0
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if quote:
+            if char == quote:
+                if index + 1 < len(expression) and expression[index + 1] == quote:
+                    result.extend((" ", " "))
+                    index += 2
+                    continue
+                quote = None
+            result.append(" ")
+        elif bracket_depth:
+            if char == "'" and index + 1 < len(expression):
+                result.extend((" ", " "))
+                index += 2
+                continue
+            if char == "[":
+                bracket_depth += 1
+            elif char == "]":
+                bracket_depth -= 1
+            result.append(" ")
+        elif char in {"'", '"'}:
+            quote = char
+            result.append(" ")
+        elif char == "[":
+            bracket_depth = 1
+            result.append(" ")
+        else:
+            result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def _has_spill_reference(expression):
+    """Return whether code contains Excel's postfix spill operator."""
+    return "#" in ERROR_LITERAL_RE.sub("", _formula_code(expression))
+
+
+def _without_spill_operators(expression):
+    """Blank postfix spill operators so openpyxl's legacy tokenizer can parse."""
+    code = ERROR_LITERAL_RE.sub(
+        lambda match: " " * len(match.group()), _formula_code(expression),
+    )
+    return "".join(
+        " " if code[index] == "#" else char
+        for index, char in enumerate(expression)
+    )
+
+
+def _formula_tokens(expression):
+    formula = expression if expression.startswith("=") else f"={expression}"
+    formula = ERROR_LITERAL_RE.sub("0", formula)
+    formula = _without_spill_operators(formula)
+    try:
+        return Tokenizer(formula).items
+    except TokenizerError:
+        return None
+
+
+def _function_name(token_value):
+    parts = token_value.rstrip("(").split(".")
+    while parts and parts[0].lower() in {"_xlfn", "_xlws"}:
+        parts.pop(0)
+    return ".".join(parts).upper()
+
+
+def _is_external_range(range_operand):
+    return "!" in range_operand and bool(
+        EXTERNAL_REF_RE.search(range_operand)
+        or INDEXED_EXTERNAL_REF_RE.search(range_operand)
+    )
+
+
+def _analyze_expression(expression):
+    tokens = _formula_tokens(expression)
+    tokenization_failed = tokens is None
+    tokens = tokens or []
+    functions = [
+        _function_name(token.value)
+        for token in tokens
+        if token.type == "FUNC" and token.subtype == "OPEN"
+    ]
+    if not tokens:
+        # The legacy tokenizer rejects some valid structured-reference escapes.
+        # Inventory functions from masked code even when it cannot emit tokens.
+        functions = [
+            _function_name(match.group(1))
+            for match in re.finditer(
+                r"(?<![\w.])([A-Z_][A-Z0-9_.]*)\s*\(",
+                _formula_code(expression),
+                re.I,
+            )
+        ]
+    range_operands = [
+        token.value
+        for token in tokens
+        if token.type == "OPERAND" and token.subtype == "RANGE"
+    ]
+    error_code = _formula_code(expression)
+    return {
+        "tokenizationFailed": tokenization_failed,
+        "functions": functions,
+        "rangeOperands": range_operands,
+        "external": any(_is_external_range(item) for item in range_operands),
+        "dynamic": bool(set(functions) & DYNAMIC_FUNCTIONS)
+        or _has_spill_reference(expression),
+        "errors": ERROR_LITERAL_RE.findall(error_code),
+    }
+
+
+def _formula_text(value):
+    if isinstance(value, ArrayFormula):
+        return value.text or ""
+    if isinstance(value, str) and value.startswith("="):
+        return value
+    return None
+
+
+def _truthy_ooxml_flag(value):
+    return value is True or value == 1 or value == "1"
+
+
+def _defined_name_type(item):
+    try:
+        return item.type
+    except TokenizerError:
+        return "FORMULA"
 
 
 def _issue(code, message, route, evidence=None, severity="review"):
@@ -85,8 +236,17 @@ def _workbook_inventory(path):
     )
     functions = Counter()
     formulas = []
+    formula_expressions = []
+    array_formula_cells = []
+    data_table_formula_cells = []
     external_formula_cells = []
     dynamic_formula_cells = []
+    formula_error_cells = []
+    unparsed_formula_cells = []
+    external_defined_names = []
+    dynamic_defined_names = []
+    formula_error_defined_names = []
+    unparsed_defined_names = []
     tables = []
     charts = []
     validations = 0
@@ -119,24 +279,109 @@ def _workbook_inventory(path):
                 if cell.comment is not None:
                     comments += 1
                 value = cell.value
-                if not isinstance(value, str) or not value.startswith("="):
+                cell_name = f"{ws.title}!{cell.coordinate}"
+                if isinstance(value, DataTableFormula):
+                    formulas.append(cell_name)
+                    data_table_formula_cells.append({
+                        "cell": cell_name,
+                        "ref": value.ref,
+                        "twoVariable": _truthy_ooxml_flag(value.dt2D),
+                        "rowInput": value.r1,
+                        "columnInput": value.r2,
+                    })
                     continue
-                formulas.append(f"{ws.title}!{cell.coordinate}")
-                functions.update(match.group(1).upper() for match in FUNCTION_RE.finditer(value))
-                if EXTERNAL_REF_RE.search(value):
-                    external_formula_cells.append(f"{ws.title}!{cell.coordinate}")
-                if "#" in value or any(token in value.upper() for token in
-                                       ("_XLFN.FILTER(", "_XLFN.UNIQUE(", "_XLFN.SORT(",
-                                        "_XLFN.SEQUENCE(", "FILTER(", "UNIQUE(", "SORT(")):
-                    dynamic_formula_cells.append(f"{ws.title}!{cell.coordinate}")
+                if cell.data_type == "e":
+                    formula_error_cells.append(cell_name)
+                    continue
+                expression = _formula_text(value)
+                if expression is None:
+                    continue
+                formulas.append(cell_name)
+                if isinstance(value, ArrayFormula):
+                    array_formula_cells.append({
+                        "cell": cell_name,
+                        "ref": value.ref,
+                    })
+                analysis = _analyze_expression(expression)
+                formula_expressions.append(
+                    (ws.title, cell_name, analysis["rangeOperands"])
+                )
+                functions.update(analysis["functions"])
+                if analysis["tokenizationFailed"]:
+                    unparsed_formula_cells.append(cell_name)
+                if analysis["external"]:
+                    external_formula_cells.append(cell_name)
+                if analysis["dynamic"]:
+                    dynamic_formula_cells.append(cell_name)
+                if analysis["errors"]:
+                    formula_error_cells.append(cell_name)
 
     defined_names = []
-    for item in wb.defined_names.values():
-        defined_names.append({
+    global_defined_names = {}
+    local_defined_names = {}
+    scoped_defined_names = [(item, None) for item in wb.defined_names.values()]
+    for ws in wb.worksheets:
+        scoped_defined_names.extend(
+            (item, ws.title) for item in ws.defined_names.values()
+        )
+    for item, worksheet_scope in scoped_defined_names:
+        local_sheet_id = getattr(item, "localSheetId", None)
+        if worksheet_scope is not None:
+            scope = worksheet_scope
+            label = f"{scope}!{item.name}"
+        elif local_sheet_id is None:
+            scope = "workbook"
+            label = item.name
+        elif 0 <= local_sheet_id < len(wb.worksheets):
+            scope = wb.worksheets[local_sheet_id].title
+            label = f"{scope}!{item.name}"
+        else:
+            scope = f"worksheet-index-{local_sheet_id}"
+            label = f"{scope}!{item.name}"
+        expression = getattr(item, "attr_text", None) or ""
+        analysis = _analyze_expression(expression)
+        functions.update(analysis["functions"])
+        if analysis["tokenizationFailed"]:
+            unparsed_defined_names.append(label)
+        if analysis["external"]:
+            external_defined_names.append(label)
+        if analysis["dynamic"]:
+            dynamic_defined_names.append(label)
+        if analysis["errors"]:
+            formula_error_defined_names.append(label)
+        inventory_item = {
             "name": item.name,
-            "type": getattr(item, "type", None),
+            "type": _defined_name_type(item),
             "hidden": bool(getattr(item, "hidden", False)),
-        })
+            "scope": scope,
+            "attrText": expression,
+            "referencedBy": [],
+        }
+        defined_names.append(inventory_item)
+        name_key = item.name.casefold()
+        if scope == "workbook":
+            global_defined_names[name_key] = inventory_item
+        else:
+            local_defined_names[(scope.casefold(), name_key)] = inventory_item
+
+    for sheet_name, cell_name, range_operands in formula_expressions:
+        for range_operand in range_operands:
+            reference = range_operand.lstrip("@")
+            target = None
+            if "!" in reference:
+                qualifier, name = reference.rsplit("!", 1)
+                if "[" not in qualifier:
+                    qualifier = qualifier.strip("'").replace("''", "'")
+                    target = local_defined_names.get(
+                        (qualifier.casefold(), name.casefold())
+                    )
+            else:
+                name_key = reference.casefold()
+                target = local_defined_names.get(
+                    (sheet_name.casefold(), name_key)
+                ) or global_defined_names.get(name_key)
+            if target is not None and cell_name not in target["referencedBy"]:
+                target["referencedBy"].append(cell_name)
 
     workbook_protected = bool(
         getattr(wb.security, "lockStructure", False)
@@ -150,6 +395,8 @@ def _workbook_inventory(path):
         ],
         "tables": tables,
         "formulaCells": len(formulas),
+        "arrayFormulaCells": array_formula_cells,
+        "dataTableFormulaCells": data_table_formula_cells,
         "functions": dict(sorted(functions.items())),
         "charts": charts,
         "pivotTables": pivots,
@@ -160,8 +407,14 @@ def _workbook_inventory(path):
         "workbookProtected": workbook_protected,
         "comments": comments,
         "images": images,
-        "externalFormulaCells": external_formula_cells[:25],
-        "dynamicFormulaCells": dynamic_formula_cells[:25],
+        "externalFormulaCells": external_formula_cells,
+        "dynamicFormulaCells": dynamic_formula_cells,
+        "formulaErrorCells": formula_error_cells,
+        "unparsedFormulaCells": unparsed_formula_cells,
+        "externalDefinedNames": external_defined_names,
+        "dynamicDefinedNames": dynamic_defined_names,
+        "formulaErrorDefinedNames": formula_error_defined_names,
+        "unparsedDefinedNames": unparsed_defined_names,
     }
 
 
@@ -206,19 +459,67 @@ def audit_workbook(path):
             "formula-review-or-python",
             volatile,
         ))
-    if workbook["externalFormulaCells"] or package["externalLinks"]:
+    if workbook["unparsedFormulaCells"] or workbook["unparsedDefinedNames"]:
+        evidence = list(workbook["unparsedFormulaCells"])
+        evidence.extend(
+            f"defined-name:{name}" for name in workbook["unparsedDefinedNames"]
+        )
+        issues.append(_issue(
+            "UNPARSED_FORMULAS",
+            "Formula syntax unsupported by the audit tokenizer requires review; "
+            "recovered function names do not establish complete reference coverage.",
+            "formula-review-or-python",
+            evidence,
+        ))
+    if (workbook["externalFormulaCells"] or workbook["externalDefinedNames"]
+            or package["externalLinks"]):
+        evidence = list(workbook["externalFormulaCells"])
+        evidence.extend(
+            f"defined-name:{name}" for name in workbook["externalDefinedNames"]
+        )
+        if not evidence:
+            evidence.append(f"{package['externalLinks']} OOXML link part(s)")
         issues.append(_issue(
             "EXTERNAL_WORKBOOK_LINKS",
             "External workbook references must be landed as governed Sigma sources.",
             "source-mapping-review",
-            workbook["externalFormulaCells"] or [f"{package['externalLinks']} OOXML link part(s)"],
+            evidence,
         ))
-    if workbook["dynamicFormulaCells"]:
+    if workbook["dynamicFormulaCells"] or workbook["dynamicDefinedNames"]:
+        evidence = list(workbook["dynamicFormulaCells"])
+        evidence.extend(
+            f"defined-name:{name}" for name in workbook["dynamicDefinedNames"]
+        )
         issues.append(_issue(
             "DYNAMIC_ARRAY_FORMULAS",
             "Spill formulas require a grain-aware table or Python translation.",
             "formula-review-or-python",
-            workbook["dynamicFormulaCells"],
+            evidence,
+        ))
+    if workbook["formulaErrorCells"] or workbook["formulaErrorDefinedNames"]:
+        evidence = list(workbook["formulaErrorCells"])
+        evidence.extend(
+            f"defined-name:{name}" for name in workbook["formulaErrorDefinedNames"]
+        )
+        issues.append(_issue(
+            "FORMULA_ERRORS",
+            "Formula error literals require correction or an explicit business disposition.",
+            "formula-review-or-python",
+            evidence,
+        ))
+    if workbook["arrayFormulaCells"]:
+        issues.append(_issue(
+            "ARRAY_FORMULAS_PRESENT",
+            "Array formula ranges require an explicit translation and parity check.",
+            "array-formula-migration-review",
+            [item["cell"] for item in workbook["arrayFormulaCells"]],
+        ))
+    if workbook["dataTableFormulaCells"]:
+        issues.append(_issue(
+            "WHAT_IF_DATA_TABLES_PRESENT",
+            "What-if data tables require explicit input and scenario-model mapping.",
+            "what-if-analysis-review",
+            [item["cell"] for item in workbook["dataTableFormulaCells"]],
         ))
     if package["connections"] or package["queryTables"] or package["powerQuery"]:
         issues.append(_issue(

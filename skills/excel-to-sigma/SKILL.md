@@ -147,6 +147,31 @@ python scripts/audit-openapi.py --out sigma-code-rep-audit.json
 for inventory/CI smoke, never for declaring a migration complete. Then run
 `scripts/xlsx-discover.py` for the model/grain-specific report.
 
+The whole-workbook Excel migration entrypoints—standalone canonical inference,
+batch conversion, the direct research-workbook builder, and the source-bound
+forecast/research plan builders—re-run this audit against the source bytes.
+For `REVIEW_REQUIRED`, pass `--review-dispositions review.json`; the only accepted
+format is source-bound and issue-specific:
+
+```json
+{
+  "sourceSha256": "<64 lowercase hex characters>",
+  "issues": [
+    {
+      "code": "CHARTS_PRESENT",
+      "owner": "Named migration owner",
+      "disposition": "Implemented as Sigma chart and render-checked",
+      "verified": true
+    }
+  ]
+}
+```
+
+Every reported issue code needs a nonempty owner and disposition plus
+`verified: true`. The hash must match the workbook currently being converted;
+copying a review record to a changed workbook fails. A disposition never
+overrides `BLOCKED`.
+
 Walk the `.xlsx` (OOXML = a ZIP of XML; `openpyxl` reads it). Produce an inventory:
 
 - **Formal Tables** (`xl/tables/*.xml`) — name, sheet, range, columns. These are
@@ -202,18 +227,31 @@ ranges) routes to the **research archetype**, NOT the FP&A forecast path:
 
 ```bash
 python scripts/infer-canonical-formulas.py <file.xlsx> --sheet="FY results" \
-       --first-row=7 --last-row=<end> --out plan.json     # per-file inference + parity gate
-python scripts/build-research-model.py plan.json --conn <writeConn> --folder <id> [--post]
+       --first-row=7 --last-row=<end> --out plan.json \
+       [--review-dispositions review.json]
+python scripts/build-research-model.py plan.json --conn <writeConn> --folder <id> \
+       [--review-dispositions review.json] [--post]
 ```
 
-`infer-canonical-formulas.py` extracts the hard-coded grid + one canonical formula per derived
-line, breaks plug-cycles, and simulates-and-freezes to guarantee **displayed parity = 100%**.
-`build-research-model.py` posts the DM (data page) + workbook (computation + transpose + pivot).
+The standalone inference CLI runs the source gate before parsing formulas; use the same
+source-bound review file for inference and build. `infer-canonical-formulas.py` then extracts
+the hard-coded grid + one canonical formula per derived line, records the absolute source
+path and SHA256, breaks plug-cycles, and identifies
+formula cells that need a cached-value fallback. Cached fallbacks can preserve displayed
+values, but they are not a completed live-formula migration: any nonzero `parity.frozen`
+adds `CACHED_FORMULA_FALLBACK` and requires its own source-bound disposition.
+`build-research-model.py` verifies the saved source identity and gate before it writes local
+specs or authenticates, then posts the DM (data page) + workbook (computation + transpose + pivot).
+Use `--source <file.xlsx>` when a plan moved and its saved path no longer resolves; the
+file must still match the plan's `sourceSha256`.
 
 **For a fleet of similar files off one template** (the ~850-file case), use
 `scripts/batch-convert.py` — it fingerprints, maps each file's line items to a canonical
 chart-of-accounts (`refs/research-template-coa.md` + `coa.json`), converts, parity-gates, and
-emits a **triage manifest** (AUTO_PARITY / NEEDS_REVIEW / FAILED) with no silent truncation.
+emits a **triage manifest** (AUTO_PARITY / NEEDS_REVIEW / BLOCKED / FAILED), including
+the full audit status/issues and source SHA256, with no silent truncation. `--post-review`
+does not bypass the gate; reviewed files need `--review-dispositions` (a JSON file for one
+source or a directory containing `<sourceSha256>.json` for a batch).
 Read `refs/research-template-coa.md` first. Everything else (a cell-drawn P&L with a data tab,
 SUMIFS actuals, driver growth) stays on the FP&A path below.
 

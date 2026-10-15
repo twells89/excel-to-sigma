@@ -85,10 +85,16 @@ drive the whole build from a **model-plan JSON**:
 
 ```bash
 # dry run: local parity + emits dm_spec.json / wb_spec.json / seed CSVs to /tmp/fcst-build
-.venv/bin/python build-forecast-model.py sample-model-plan.json
+.venv/bin/python build-forecast-model.py source-bound-plan.json --source "Original Model.xlsx"
 # build live (DM + workbook with union[actuals,forecast], KPIs, Actual|Forecast pivot, trend, editable rate+manual tables)
-.venv/bin/python build-forecast-model.py --post sample-model-plan.json
+.venv/bin/python build-forecast-model.py source-bound-plan.json --source "Original Model.xlsx" --post
 ```
+
+The plan must contain the source workbook's `sourceSha256`; `sourcePath` may be
+saved in the plan instead of passing `--source`. Legacy plans without a source
+hash must be regenerated because their parity claims cannot be tied to the
+workbook being migrated. If the source audit requires review, also pass
+`--review-dispositions review.json` using the format in `refs/coverage-contract.md`.
 
 The forecast is computed (`base × (1+rate)^n`); editable rate/manual input tables
 override via `Coalesce(input, default)`, so **parity holds before any seeding**
@@ -115,23 +121,31 @@ For a sell-side research model (line-items × YEARS, statement sections; e.g. a 
 
 # infer the two-layer plan (hard-coded grid + ONE canonical formula per derived line)
 .venv/bin/python infer-canonical-formulas.py "Sample Research Model.xlsx" \
-    --sheet="FY results" --first-row=7 --last-row=45 --out plan.json
+    --sheet="FY results" --first-row=7 --last-row=45 --out plan.json \
+    --review-dispositions review.json
 
 # build DM (data page) + workbook (computation + transpose + display pivot)
-.venv/bin/python build-research-model.py plan.json --conn <writeConn> --folder <id> --post
+.venv/bin/python build-research-model.py plan.json --conn <writeConn> --folder <id> \
+    --review-dispositions review.json --post
 ```
 
 The report shows `input / derived / ratio` counts, live-verified vs frozen formula
-cells, and resolved anchors. Verified end-to-end: the synthetic fixture round-trips
-to **100% cell parity**, and a real broker equity-research model rebuilt to **100.00% parity
-(3,263/3,263 cells), ~81% live Sigma formulas** — far simpler than a hand build (one
-column per line, not per-year `User`/`Calc`/`(1)` triplets). See `refs/research-recipes.md`.
+cells, and resolved anchors. A nonzero frozen count adds the review issue
+`CACHED_FORMULA_FALLBACK`; preserving the cached display value does not establish
+a live-formula migration. Put that code, a named owner, the implemented
+disposition, and `verified: true` in the source-bound review file. The plan stores
+`sourcePath` and `sourceSha256`; use `--source` only when the saved path moved.
+See `refs/research-recipes.md`.
 
 **A fleet of similar files** (the ~850-file case) → `batch-convert.py` fingerprints,
 maps to the chart-of-accounts (`coa.json`), converts, parity-gates, and emits a triage
-manifest (AUTO_PARITY / NEEDS_REVIEW / FAILED) + the top unmapped labels to grow the COA:
+manifest (AUTO_PARITY / NEEDS_REVIEW / BLOCKED / FAILED), full audit details, and
+the top unmapped labels to grow the COA:
 
 ```bash
 .venv/bin/python batch-convert.py /path/to/models/ --sheet="FY results" --out manifest.json
 ```
+Reviewed sources require `--review-dispositions review.json`, or a directory with
+one `<sourceSha256>.json` per reviewed workbook. `--post-review` alone never posts
+a reviewed source, and `BLOCKED` sources are never inferred or posted.
 See `refs/research-template-coa.md`.
