@@ -43,7 +43,7 @@ def _sha256(path):
 
 def _formula_projection(formulas):
     keys = ("id", "sheet", "address", "originalFormula", "dependencies",
-            "mappingStatus", "targetMapping", "unresolvedReason")
+            "mappingStatus", "targetMapping", "unresolvedReason", "reviewedReplacement")
     return [{key: item.get(key) for key in keys if key in item}
             for item in sorted(formulas, key=lambda value: value.get("id", ""))]
 
@@ -92,6 +92,21 @@ def _validate_target_mapping(mapping, formula_id):
         )
 
 
+def _valid_reviewed_replacement(record, original_formula):
+    replacement = record.get("reviewedReplacement")
+    return (
+        record.get("mappingStatus") == "live"
+        and isinstance(record.get("targetMapping"), dict)
+        and isinstance(replacement, dict)
+        and replacement.get("originalFormula") == original_formula
+        and isinstance(replacement.get("replacementFormula"), str)
+        and bool(replacement["replacementFormula"].strip())
+        and isinstance(replacement.get("reviewer"), str)
+        and bool(replacement["reviewer"].strip())
+        and replacement.get("reviewStatus") == "approved"
+    )
+
+
 def _plan_hash(source_hash, projection, formulas):
     logical = {"sourceHash": source_hash, "plan": projection,
                "formulaCells": _formula_projection(formulas)}
@@ -134,13 +149,17 @@ def build_manifest(source_path, plan=None) -> dict:
             "evidence": list(record.get("evidence") or []),
             "verification": record.get("verification"),
         }
+        if record.get("reviewedReplacement") is not None:
+            item["reviewedReplacement"] = record["reviewedReplacement"]
         cached_value = cached[identity.sheet][identity.address].value
         if record.get("mappingStatus") == "cached":
             item["cachedFallback"] = cached_value
-        if parse_error:
+        if parse_error and not _valid_reviewed_replacement(record, formula):
             item["mappingStatus"] = "unresolved"
             item["unresolvedReason"] = parse_error
-        if parse_error:
+        if parse_error and _valid_reviewed_replacement(record, formula):
+            item["dependencies"] = list(record.get("dependencies") or [])
+        elif parse_error:
             pass
         elif identity in cycle_members:
             item["mappingStatus"] = "unresolved"

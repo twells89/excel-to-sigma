@@ -94,7 +94,8 @@ def _prior_index(prior_seed):
         return result
     for record in prior_seed.get("seedRecords", []):
         key = record.get("key")
-        if isinstance(key, list) and isinstance(record.get("lastMigrationValue"), dict):
+        if isinstance(key, list) and any(isinstance(record.get(field), dict) for field in (
+                "confirmedMigrationValue", "pendingMigrationValue", "lastMigrationValue")):
             result[_key_token(key)] = record
     return result
 
@@ -116,7 +117,10 @@ def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=
         if token not in current:
             entry = {"key": key, "source": wanted}
             inserts.append(entry)
-            records.append({"key": key, "lastMigrationValue": wanted})
+            prior = previous.get(token) or {}
+            records.append({"key": key,
+                            "confirmedMigrationValue": prior.get("confirmedMigrationValue"),
+                            "pendingMigrationValue": wanted})
             continue
         _current_key, observed = current[token]
         row_id = observed.get(row_id_column)
@@ -127,26 +131,39 @@ def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=
                            if name not in key_columns and not _same(comparable.get(name), value)]
         if not changed_columns:
             unchanged.append({"key": key, "rowId": row_id, "source": wanted})
-            records.append({"key": key, "lastMigrationValue": wanted})
+            records.append({"key": key, "confirmedMigrationValue": wanted,
+                            "pendingMigrationValue": None})
             continue
 
-        last = (previous.get(token) or {}).get("lastMigrationValue")
+        prior = previous.get(token) or {}
+        confirmed = prior.get("confirmedMigrationValue")
+        pending = prior.get("pendingMigrationValue")
+        legacy = prior.get("lastMigrationValue")
+        if confirmed is None and isinstance(legacy, dict):
+            confirmed = legacy
+        if isinstance(pending, dict) and all(
+                name in comparable and _same(comparable[name], value)
+                for name, value in pending.items()):
+            confirmed = pending
         safe, conflicting = {}, []
         for name in changed_columns:
-            if isinstance(last, dict) and name in last and _same(comparable.get(name), last[name]):
+            if (isinstance(confirmed, dict) and name in confirmed
+                    and _same(comparable.get(name), confirmed[name])):
                 safe[name] = wanted[name]
             else:
                 conflicting.append(name)
         if conflicting:
             conflicts.append({"key": key, "rowId": row_id, "columns": conflicting,
                               "source": wanted, "current": comparable,
-                              "lastMigrationValue": last})
-            records.append({"key": key, "lastMigrationValue": last or wanted})
+                              "confirmedMigrationValue": confirmed})
+            records.append({"key": key, "confirmedMigrationValue": confirmed,
+                            "pendingMigrationValue": pending})
         else:
             updates.append({"key": key, "rowId": row_id, "changes": safe,
                             "source": wanted, "current": comparable,
-                            "lastMigrationValue": last})
-            records.append({"key": key, "lastMigrationValue": wanted})
+                            "confirmedMigrationValue": confirmed})
+            records.append({"key": key, "confirmedMigrationValue": confirmed,
+                            "pendingMigrationValue": wanted})
 
     for token in sorted(set(current) - set(source)):
         key, row = current[token]
@@ -213,6 +230,137 @@ def _validate_spec(spec):
         raise InputSyncError("system columns cannot be seeded as editable columns")
 
 
+def sigma_input_type(value):
+    """Map a typed source literal to the ordinary input-table type vocabulary."""
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (dt.date, dt.datetime)):
+        return "datetime"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "text"
+
+
+def evaluate_timing_status(stage, close_date, as_of_date):
+    """Reference behavior for the emitted day-grain sales calculation."""
+    if stage in {"Closed Won", "Closed Lost"}:
+        return "Closed"
+    close_day = _parse_datetime(close_date).date()
+    as_of_day = _parse_datetime(as_of_date).date()
+    return "Slipped" if close_day < as_of_day else "Open"
+
+
+def evaluate_expense_exception(row, policy_limit):
+    """Reference behavior for the joined policy exception calculation."""
+    if policy_limit is None:
+        return {"policyExcess": None, "exception": None}
+    excess = max(row["Amount"] - policy_limit, 0)
+    if abs(row["Card Amount"] - row["Ledger Amount"]) > 0.01:
+        status = "RECON"
+    elif excess > 0:
+        status = "OVER LIMIT"
+    elif row["Receipt Status"] == "Missing":
+        status = "MISSING RECEIPT"
+    elif row["Approval Status"] != "Approved":
+        status = "PENDING"
+    else:
+        status = "CLEAR"
+    return {"policyExcess": excess, "exception": status}
+
+
+def _manifest_architecture(manifest):
+    projection = manifest.get("planProjection") or {}
+    architecture = projection.get("sharedInputArchitecture")
+    if not isinstance(architecture, dict) or not isinstance(architecture.get("inputs"), dict):
+        raise InputSyncError("manifest does not contain hash-bound sharedInputArchitecture")
+    return architecture
+
+
+def _construction_spec(input_spec, binding):
+    return {
+        "pageId": binding.get("pageId"),
+        "connectionId": input_spec.get("connectionId"),
+        "name": input_spec.get("name"),
+        "columns": input_spec.get("columns"),
+        "writebackSchemaId": input_spec.get("writebackSchemaId"),
+        "editMode": input_spec.get("editMode", "draft"),
+        "frame": input_spec.get("frame", [1, 1, 24, 12]),
+    }
+
+
+def build_artifact_records(manifest, architecture, target_bindings):
+    """Hash every approved feature's exact schema, seed rows, and target binding."""
+    if architecture != _manifest_architecture(manifest):
+        raise InputSyncError("architecture is not the immutable manifest architecture")
+    inputs = architecture["inputs"]
+    if set(target_bindings or {}) != set(inputs):
+        raise InputSyncError("target bindings must exactly cover approved input tables")
+    artifacts = {}
+    wiring = build_operational_input_elements(architecture)
+    wiring_hash = _digest(wiring)
+    for feature in sorted(inputs):
+        binding = target_bindings[feature]
+        for field in ("documentId", "version", "pageId"):
+            if binding.get(field) is None or binding.get(field) == "":
+                raise InputSyncError(f"target binding for {feature} requires {field}")
+        spec = _construction_spec(inputs[feature], binding)
+        _validate_spec(spec)
+        material = {
+            "sourceHash": manifest.get("sourceHash"),
+            "planHash": manifest.get("planHash"),
+            "feature": feature,
+            "constructionSpec": spec,
+            "seedRows": inputs[feature].get("rows") or [],
+            "targetBinding": binding,
+            "workbookWiringHash": wiring_hash,
+        }
+        artifacts[feature] = {
+            "feature": feature,
+            "specHash": _digest(spec),
+            "seedHash": _digest(material["seedRows"]),
+            "targetBindingHash": _digest(binding),
+            "workbookWiringHash": wiring_hash,
+            "artifactHash": _digest(material),
+        }
+    return artifacts
+
+
+def _approved_feature(manifest, receipt, feature, *, require_assigned=False):
+    if receipt.get("status") != "APPROVED_STAGING":
+        raise InputSyncError("input artifact requires an APPROVED_STAGING receipt")
+    if (receipt.get("sourceHash") != manifest.get("sourceHash")
+            or receipt.get("planHash") != manifest.get("planHash")):
+        raise InputSyncError("approved staging receipt is stale")
+    architecture = _manifest_architecture(manifest)
+    if feature not in architecture["inputs"]:
+        raise InputSyncError(f"feature is not approved: {feature}")
+    bindings = receipt.get("targetBindings") or {}
+    expected = build_artifact_records(manifest, architecture, bindings)
+    if receipt.get("artifacts") != expected:
+        raise InputSyncError("approved artifact binding does not match manifest architecture")
+    binding = bindings[feature]
+    if require_assigned:
+        for field in ("elementId", "columnIds"):
+            if not binding.get(field):
+                raise InputSyncError(f"approved target binding for {feature} requires {field}")
+        expected_columns = {column["name"] for column in architecture["inputs"][feature]["columns"]}
+        if set(binding["columnIds"]) != expected_columns:
+            raise InputSyncError("approved column IDs do not exactly cover the input schema")
+    return architecture["inputs"][feature], binding, expected[feature]
+
+
+def emit_workbook_wiring(manifest, staging_receipt):
+    """Return approved REST-native join fragments bound to the artifact receipt."""
+    architecture = _manifest_architecture(manifest)
+    for feature in architecture["inputs"]:
+        _approved_feature(manifest, staging_receipt, feature)
+    return {
+        "sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+        "artifacts": staging_receipt["artifacts"],
+        "wiring": build_operational_input_elements(architecture),
+    }
+
+
 def _row_expression(row, variables, types):
     fields = []
     for name, variable in variables.items():
@@ -221,15 +369,20 @@ def _row_expression(row, variables, types):
     return "{" + ", ".join(fields) + "}"
 
 
-def emit_construction_program(spec, seed_rows, *, source_hash, plan_hash):
-    """Emit a restricted-dialect program that creates one independent input table."""
+def emit_construction_program(manifest, staging_receipt, feature):
+    """Emit construction only from an immutable manifest and approved artifact receipt."""
+    input_spec, binding, artifact = _approved_feature(manifest, staging_receipt, feature)
+    spec = _construction_spec(input_spec, binding)
+    seed_rows = input_spec.get("rows") or []
     _validate_spec(spec)
     if len(seed_rows) > MAX_BATCH_ROWS:
         raise InputSyncError("construction seed exceeds 2000 rows; create first, then emit checkpointed write chunks")
     columns = spec["columns"]
     types = {column["name"]: column["type"] for column in columns}
     lines = [
-        f"# sourceHash={source_hash}", f"# planHash={plan_hash}",
+        f"# sourceHash={manifest['sourceHash']}", f"# planHash={manifest['planHash']}",
+        f"# artifactHash={artifact['artifactHash']}", f"# feature={feature}",
+        f"# targetDocumentId={binding['documentId']}", f"# targetVersion={binding['version']}",
         f"host = sigma.workbook.get_page({spec['pageId']!r})",
         "if not isinstance(host, Page):", "    raise RuntimeError('expected current page host')",
     ]
@@ -268,13 +421,13 @@ def emit_construction_program(spec, seed_rows, *, source_hash, plan_hash):
     return "\n".join(lines) + "\n"
 
 
-def emit_write_programs(seed_plan, target, max_batch_rows=MAX_BATCH_ROWS):
-    """Emit checkpointed update/insert programs using assigned server IDs."""
+def emit_write_programs(seed_plan, manifest, staging_receipt, feature,
+                        max_batch_rows=MAX_BATCH_ROWS):
+    """Emit writes bound to the manifest, approved artifact, and assigned target IDs."""
     if not 1 <= max_batch_rows <= MAX_BATCH_ROWS:
         raise InputSyncError("max_batch_rows must be between 1 and 2000")
-    for key in ("pageId", "elementId", "columnIds"):
-        if not target.get(key):
-            raise InputSyncError(f"target requires {key}")
+    _input_spec, target, artifact = _approved_feature(
+        manifest, staging_receipt, feature, require_assigned=True)
     actions = [("update", item) for item in seed_plan.get("updates", [])]
     actions += [("insert", item) for item in seed_plan.get("inserts", [])]
     columns = dict(target["columnIds"])
@@ -285,9 +438,17 @@ def emit_write_programs(seed_plan, target, max_batch_rows=MAX_BATCH_ROWS):
         chunk_index = offset // max_batch_rows
         checkpoint = _digest({"sourceHash": seed_plan["sourceHash"],
                               "planHash": seed_plan["planHash"],
+                              "approvedSourceHash": manifest["sourceHash"],
+                              "approvedPlanHash": manifest["planHash"],
+                              "artifactHash": artifact["artifactHash"],
                               "target": target, "chunkIndex": chunk_index,
                               "actions": chunk})
-        lines = [f"# sourceHash={seed_plan['sourceHash']}", f"# planHash={seed_plan['planHash']}",
+        lines = [f"# sourceHash={manifest['sourceHash']}", f"# planHash={manifest['planHash']}",
+                 f"# reconciliationSourceHash={seed_plan['sourceHash']}",
+                 f"# reconciliationPlanHash={seed_plan['planHash']}",
+                 f"# artifactHash={artifact['artifactHash']}", f"# feature={feature}",
+                 f"# targetDocumentId={target['documentId']}",
+                 f"# targetVersion={target['version']}",
                  f"# checkpointId={checkpoint}",
                  f"host = sigma.workbook.get_page({target['pageId']!r})",
                  "if not isinstance(host, Page):", "    raise RuntimeError('expected current page host')",
@@ -312,95 +473,242 @@ def emit_write_programs(seed_plan, target, max_batch_rows=MAX_BATCH_ROWS):
             lines.append("])")
         lines.append(f"print({'checkpointId=' + checkpoint!r})")
         programs.append({"chunkIndex": chunk_index, "checkpointId": checkpoint,
-                         "actionCount": len(chunk), "program": "\n".join(lines) + "\n"})
+                         "artifactHash": artifact["artifactHash"], "feature": feature,
+                         "targetBinding": target, "actionCount": len(chunk),
+                         "program": "\n".join(lines) + "\n"})
     return programs
 
 
-def build_shared_input_architecture(plan, *, connection_id, folder_id):
-    """Return the approved logical shared-input architecture before manifest hashing."""
+def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows):
+    """Build only the selected source workbook's hash-bound input architecture."""
     if not connection_id or not folder_id:
         raise InputSyncError("connection_id and folder_id are required target scope")
-    policy_rows = [
-        {"Category": "Airfare", "Per-item Limit": 1200, "Receipt Threshold": 25, "Policy Owner": "Travel"},
-        {"Category": "Lodging", "Per-item Limit": 350, "Receipt Threshold": 25, "Policy Owner": "Travel"},
-        {"Category": "Meals", "Per-item Limit": 90, "Receipt Threshold": 25, "Policy Owner": "Finance"},
-        {"Category": "Ground Transport", "Per-item Limit": 180, "Receipt Threshold": 25, "Policy Owner": "Finance"},
-        {"Category": "Software", "Per-item Limit": 500, "Receipt Threshold": 0, "Policy Owner": "Finance"},
-        {"Category": "Supplies", "Per-item Limit": 250, "Receipt Threshold": 25, "Policy Owner": "Finance"},
-    ]
-    source_inputs = list(plan.get("sourceInputs") or [])
-    bindings = {item["id"]: item["sourceCellId"] for item in source_inputs}
-    def input_type(value):
-        if isinstance(value, bool):
-            return "boolean"
-        if isinstance(value, (int, float)):
-            return "number"
-        if isinstance(value, (dt.date, dt.datetime)):
-            return "datetime"
-        return "text"
-    research_rows = [{"Scope": "shared", **{
-        item["id"]: item.get("defaultValue") for item in source_inputs
-    }}]
-    mapped = ["sales-as-of-date", "sales-timing-status-quoting-repair",
-              "expense-policy", "research-model-inputs", "research-literal-overrides"]
-    return {
+    if isinstance(workflows, str):
+        workflows = [workflows]
+    selected = list(dict.fromkeys(workflows or []))
+    unknown = set(selected) - {"sales", "expense", "research"}
+    if not selected or unknown:
+        raise InputSyncError("workflows must select sales, expense, and/or research")
+    shared_sources = plan.get("sharedInputSources") or {}
+    architecture = {
+        "workflows": selected,
         "targetScope": {"connectionId": connection_id, "folderId": folder_id},
-        "mappedFeatures": mapped,
-        "inputs": {
-            "salesSettings": {
-                "kind": "input-table", "name": "Sales Settings", "keyColumns": ["Setting"],
-                "connectionId": connection_id,
-                "sourceBinding": "Assumptions!F2",
-                "rows": [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30"}],
-                "columns": [{"name": "Setting", "type": "text", "provenance": "source"},
-                            {"name": "AsOfDate", "type": "datetime", "provenance": "source"}],
-            },
-            "expensePolicy": {
-                "kind": "input-table", "name": "Expense Policy", "keyColumns": ["Category"],
-                "connectionId": connection_id,
-                "sourceRange": "Expense Policy!A2:D7", "rows": policy_rows,
-                "columns": [
-                    {"name": "Category", "type": "text", "provenance": "source"},
-                    {"name": "Per-item Limit", "type": "number", "provenance": "source"},
-                    {"name": "Receipt Threshold", "type": "number", "provenance": "source"},
-                    {"name": "Policy Owner", "type": "text", "provenance": "source"},
-                ],
-                "unknownCategoryBehavior": "explicit-null-error",
-                "duplicateOrMissingKeyBehavior": "block-before-join",
-            },
-            "researchModelInputs": {
-                "kind": "input-table", "name": "Research Model Inputs", "keyColumns": ["Scope"],
-                "connectionId": connection_id,
-                "rows": research_rows, "editableColumnBindings": list(bindings),
-                "columns": [{"name": "Scope", "type": "text", "provenance": "migration"}] + [
-                    {"name": item["id"], "type": input_type(item.get("defaultValue")),
-                     "provenance": item["sourceCellId"]}
-                    for item in source_inputs
-                ],
-                "sourceCellBindings": bindings, "joinGrain": ["Scope"],
-                "excludedFromGrouping": ["Row ID", "Created At", "Created By", "Updated At", "Updated By"],
-            },
-        },
-        "joins": {
-            "sales": {"type": "left_outer", "key": "constant setting scope", "cardinality": "many-to-one"},
-            "expense": {"type": "left_outer", "key": "Category", "cardinality": "many-to-one"},
-            "research": {"type": "left_outer", "key": "constant Scope", "cardinality": "many-to-one"},
-        },
-        "calculations": {
-            "TimingStatus": 'If([Stage] = "Closed Won" or [Stage] = "Closed Lost", "Closed", If(DateTrunc("day", [Close Date]) < [AsOfDate], "Slipped", "Open"))',
-            "PolicyExcess": "If(IsNull([Per-item Limit]), Null, Max([Amount] - [Per-item Limit], 0))",
-        },
-        "provenance": {
-            "referenceQuotingRepair": {
-                "source": "Pipeline Timing Status formulas contain C2<\\'Assumptions\\'!$F$2",
-                "replacement": "reviewed day-grain shared AsOfDate join",
-                "status": "reviewed-replacement-required",
-            }
-        },
-        "acceptance": {
-            "sales": "edit 2026-06-30 to 2026-07-01, verify boundary rows, restore",
-            "expense": "edit Meals 90 to 400, verify all matching rows/counts, restore",
-            "research": "edit growth and literal-year overrides, verify downstream years, restore",
-            "persistence": "reopen/refresh and query unique key counts after each restore",
-        },
+        "mappedFeatures": [], "featureToInput": {}, "inputs": {}, "joins": {},
+        "workbookWiring": {}, "calculations": {}, "provenance": {},
+        "acceptance": {"persistence": "reopen/refresh and query unique key counts after each restore"},
+        "acceptanceChecks": [],
     }
+    if "sales" in selected:
+        source = shared_sources.get("salesSettings") or {}
+        if (source.get("sourceBinding") != "Assumptions!F2"
+                or not isinstance(source.get("rows"), list) or len(source["rows"]) != 1):
+            raise InputSyncError("sales plan requires validated Assumptions!F2 sharedInputSources")
+        if (source["rows"][0].get("Setting") != "AsOfDate"
+                or source["rows"][0].get("AsOfDate") is None):
+            raise InputSyncError("sales source row must bind AsOfDate to Assumptions!F2")
+        plan_seed(source["rows"], [], ["Setting"], "Row ID")
+        architecture["inputs"]["salesSettings"] = {
+            "kind": "input-table", "name": "Sales Settings", "keyColumns": ["Setting"],
+            "connectionId": connection_id, "sourceBinding": source["sourceBinding"],
+            "rows": source["rows"],
+            "columns": [{"name": "Setting", "type": "text", "provenance": "source"},
+                        {"name": "AsOfDate", "type": "datetime", "provenance": "source"}],
+        }
+        architecture["mappedFeatures"] += ["sales-as-of-date", "sales-timing-status-day-grain"]
+        architecture["featureToInput"].update({
+            "sales-as-of-date": "salesSettings",
+            "sales-timing-status-day-grain": "salesSettings",
+        })
+        architecture["joins"]["sales"] = {
+            "type": "left_outer", "key": "constant setting scope", "cardinality": "many-to-one"}
+        architecture["workbookWiring"]["salesSource"] = {
+            "elementId": source.get("sourceElementId", "salesSource"),
+            "name": source.get("sourceElementName", "Sales Source"),
+            "consumerSourceElementId": "salesWithSettings"}
+        architecture["calculations"]["TimingStatus"] = (
+            'If([Stage] = "Closed Won" or [Stage] = "Closed Lost", "Closed", '
+            'If(DateTrunc("day", [Close Date]) < DateTrunc("day", [AsOfDate]), '
+            '"Slipped", "Open"))')
+        architecture["provenance"]["dayGrainTimingDecision"] = {
+            "source": '=IF(H2="Closed Won","Closed",IF(H2="Closed Lost","Closed",IF(C2<\'Assumptions\'!$F$2,"Slipped","Open")))',
+            "replacement": "compare DateTrunc day for both Close Date and shared AsOfDate",
+            "status": "reviewed-equivalence"}
+        architecture["acceptance"]["sales"] = (
+            "edit source-derived AsOfDate from 2026-06-30 to 2026-07-01, verify boundary rows, restore")
+        architecture["acceptanceChecks"].append("sales-as-of-date-boundary")
+    if "expense" in selected:
+        source = shared_sources.get("expensePolicy") or {}
+        if (source.get("sourceRange") != "Policy!A1:D7"
+                or not isinstance(source.get("rows"), list) or not source["rows"]):
+            raise InputSyncError("expense plan requires validated Policy!A1:D7 sharedInputSources")
+        expected_policy_columns = {
+            "Category", "Per-item Limit", "Receipt Threshold", "Policy Owner"}
+        if any(set(row) != expected_policy_columns for row in source["rows"]):
+            raise InputSyncError("expense policy rows must preserve all Policy!A1:D7 columns")
+        plan_seed(source["rows"], [], ["Category"], "Row ID")
+        architecture["inputs"]["expensePolicy"] = {
+            "kind": "input-table", "name": "Expense Policy", "keyColumns": ["Category"],
+            "connectionId": connection_id, "sourceRange": source["sourceRange"],
+            "rows": source["rows"],
+            "columns": [{"name": "Category", "type": "text", "provenance": "source"},
+                        {"name": "Per-item Limit", "type": "number", "provenance": "source"},
+                        {"name": "Receipt Threshold", "type": "number", "provenance": "source"},
+                        {"name": "Policy Owner", "type": "text", "provenance": "source"}],
+            "unknownCategoryBehavior": "explicit-null-error",
+            "duplicateOrMissingKeyBehavior": "block-before-join",
+        }
+        architecture["mappedFeatures"].append("expense-policy")
+        architecture["featureToInput"]["expense-policy"] = "expensePolicy"
+        architecture["joins"]["expense"] = {
+            "type": "left_outer", "key": "Category", "cardinality": "many-to-one"}
+        architecture["workbookWiring"]["expenseSource"] = {
+            "elementId": source.get("sourceElementId", "expenseSource"),
+            "name": source.get("sourceElementName", "Expense Source"),
+            "consumerSourceElementId": "expensesWithPolicy"}
+        architecture["calculations"]["PolicyExcess"] = (
+            "If(IsNull([Per-item Limit]), Null, Max([Amount] - [Per-item Limit], 0))")
+        architecture["acceptance"]["expense"] = (
+            "edit source-derived Meals limit 90 to 400, verify all matching rows/counts, restore")
+        architecture["acceptanceChecks"].append("expense-meals-limit-propagation")
+    if "research" in selected:
+        source_inputs = list(plan.get("sourceInputs") or [])
+        ids = [item.get("id") for item in source_inputs]
+        cells = [item.get("sourceCellId") for item in source_inputs]
+        if (any(not value for value in ids + cells) or len(set(ids)) != len(ids)
+                or len(set(cells)) != len(cells)):
+            raise InputSyncError("research sourceInputs require unique ids and sourceCellIds")
+        bindings = {item["id"]: item["sourceCellId"] for item in source_inputs}
+        architecture["inputs"]["researchModelInputs"] = {
+            "kind": "input-table", "name": "Research Model Inputs", "keyColumns": ["Scope"],
+            "connectionId": connection_id,
+            "rows": [{"Scope": "shared", **{
+                item["id"]: item.get("defaultValue") for item in source_inputs}}],
+            "editableColumnBindings": list(bindings),
+            "columns": [{"name": "Scope", "type": "text", "provenance": "migration"}] + [
+                {"name": item["id"], "type": sigma_input_type(item.get("defaultValue")),
+                 "provenance": item["sourceCellId"]} for item in source_inputs],
+            "sourceCellBindings": bindings, "joinGrain": ["Scope"],
+            "excludedFromGrouping": ["Row ID", "Created At", "Created By", "Updated At", "Updated By"],
+        }
+        architecture["mappedFeatures"] += ["research-model-inputs", "research-literal-overrides"]
+        architecture["featureToInput"].update({
+            "research-model-inputs": "researchModelInputs",
+            "research-literal-overrides": "researchModelInputs"})
+        architecture["joins"]["research"] = {
+            "type": "left_outer", "key": "constant Scope", "cardinality": "many-to-one"}
+        architecture["acceptance"]["research"] = (
+            "edit growth and literal-year overrides, verify downstream years, restore")
+        architecture["acceptanceChecks"] += [
+            "research-growth-propagation", "research-literal-override-propagation"]
+    return architecture
+
+
+def _rest_columns(spec, prefix):
+    return [{"id": f"{prefix}_{index}", "name": column["name"], "type": column["type"]}
+            for index, column in enumerate(spec["columns"])]
+
+
+def build_operational_input_elements(architecture):
+    """Build executable ordinary inputs and native join/calculation fragments."""
+    inputs = architecture.get("inputs") or {}
+    connection = (architecture.get("targetScope") or {}).get("connectionId")
+    wiring = architecture.get("workbookWiring") or {}
+    if not connection:
+        raise InputSyncError("approved target connection is required")
+    elements, consumers, validations = [], {}, {}
+    if "salesSettings" in inputs:
+        spec = inputs["salesSettings"]
+        source = wiring.get("salesSource") or {}
+        if not source.get("elementId") or not source.get("name"):
+            raise InputSyncError("approved sales source wiring is required")
+        elements.extend([
+            {"id": "salesSettings", "kind": "input-table", "name": spec["name"],
+             "inputMode": "edit", "source": {"kind": "empty", "connectionId": connection},
+             "columns": _rest_columns(spec, "sales_setting")},
+            {"id": "salesInputBase", "kind": "table", "name": "Sales Input Base",
+             "source": {"kind": "table", "elementId": source["elementId"]},
+             "columns": [
+                 {"id": "sales_" + str(index), "name": name,
+                  "formula": f"[{source['name']}/{source_name}]"}
+                 for index, (name, source_name) in enumerate([
+                     ("Opportunity ID", "Opportunity ID"), ("Created Date", "Created Date"),
+                     ("Close Date", "Expected Close"), ("Account", "Account"),
+                     ("Region", "Region"), ("Segment", "Segment"), ("Rep", "Rep"),
+                     ("Stage", "Stage"), ("Probability", "Probability"), ("ACV", "ACV"),
+                     ("Forecast Category", "Forecast Category"),
+                     ("Weighted ACV", "Weighted ACV"), ("Cycle Days", "Cycle Days")])
+             ] + [
+                 {"id": "sales_setting", "name": "Setting", "formula": '"AsOfDate"'}]},
+            {"id": "salesWithSettings", "kind": "table", "name": "Sales With Settings",
+             "source": {"kind": "join", "name": "SalesJoin",
+                        "primarySource": {"kind": "table", "elementId": "salesInputBase"},
+                        "joins": [{"name": "Settings", "joinType": "left-outer",
+                                   "left": {"kind": "table", "elementId": "salesInputBase"},
+                                   "right": {"kind": "table", "elementId": "salesSettings"},
+                                   "columns": [{"left": "[Setting]", "right": "[Setting]"}]}]},
+             "columns": [
+                 {"id": "sales_join_" + str(index), "name": name,
+                  "formula": f"[SalesJoin/{name}]"}
+                 for index, name in enumerate([
+                     "Opportunity ID", "Created Date", "Close Date", "Account", "Region",
+                     "Segment", "Rep", "Stage", "Probability", "ACV", "Forecast Category",
+                     "Weighted ACV", "Cycle Days"])
+             ] + [
+                 {"id": "sales_join_asof", "name": "AsOfDate", "formula": "[Settings/AsOfDate]"},
+                 {"id": "sales_timing", "name": "TimingStatus",
+                  "formula": architecture["calculations"]["TimingStatus"].replace(
+                      "[AsOfDate]", "[Settings/AsOfDate]")}]},
+        ])
+        consumers["sales"] = source["consumerSourceElementId"]
+        validations["salesSettings"] = {"uniqueKeys": ["Setting"]}
+    if "expensePolicy" in inputs:
+        spec = inputs["expensePolicy"]
+        source = wiring.get("expenseSource") or {}
+        if not source.get("elementId") or not source.get("name"):
+            raise InputSyncError("approved expense source wiring is required")
+        elements.extend([
+            {"id": "expensePolicy", "kind": "input-table", "name": spec["name"],
+             "inputMode": "edit", "source": {"kind": "empty", "connectionId": connection},
+             "columns": _rest_columns(spec, "expense_policy")},
+            {"id": "expenseInputBase", "kind": "table", "name": "Expense Input Base",
+             "source": {"kind": "table", "elementId": source["elementId"]},
+             "columns": [
+                 {"id": "expense_" + str(index), "name": name,
+                  "formula": f"[{source['name']}/{name}]"}
+                 for index, name in enumerate([
+                     "Expense ID", "Date", "Employee", "Department", "Category", "Vendor",
+                     "Amount", "Receipt Status", "Approval Status", "Card Amount", "Ledger Amount"])]},
+            {"id": "expensesWithPolicy", "kind": "table", "name": "Expenses With Policy",
+             "source": {"kind": "join", "name": "ExpenseJoin",
+                        "primarySource": {"kind": "table", "elementId": "expenseInputBase"},
+                        "joins": [{"name": "Policy", "joinType": "left-outer",
+                                   "left": {"kind": "table", "elementId": "expenseInputBase"},
+                                   "right": {"kind": "table", "elementId": "expensePolicy"},
+                                   "columns": [{"left": "[Category]", "right": "[Category]"}]}]},
+             "columns": [
+                 {"id": "expense_join_" + str(index), "name": name,
+                  "formula": f"[ExpenseJoin/{name}]"}
+                 for index, name in enumerate([
+                     "Expense ID", "Date", "Employee", "Department", "Category", "Vendor",
+                     "Amount", "Receipt Status", "Approval Status", "Card Amount", "Ledger Amount"])
+             ] + [
+                 {"id": "expense_join_limit", "name": "Per-item Limit", "formula": "[Policy/Per-item Limit]"},
+                 {"id": "expense_join_receipt", "name": "Receipt Threshold", "formula": "[Policy/Receipt Threshold]"},
+                 {"id": "expense_join_owner", "name": "Policy Owner", "formula": "[Policy/Policy Owner]"},
+                 {"id": "expense_policy_status", "name": "PolicyMatchStatus",
+                  "formula": 'If(IsNull([Policy/Category]), "ERROR: missing policy", "Matched")'},
+                 {"id": "expense_recon", "name": "Recon Variance",
+                  "formula": "[ExpenseJoin/Card Amount] - [ExpenseJoin/Ledger Amount]"},
+                 {"id": "expense_excess", "name": "PolicyExcess",
+                  "formula": "If(IsNull([Policy/Category]), Null, Max([ExpenseJoin/Amount] - [Policy/Per-item Limit], 0))"},
+                 {"id": "expense_exception", "name": "Exception",
+                  "formula": ('If(IsNull([Policy/Category]), Null, '
+                              'If(Abs([Recon Variance]) > 0.01, "RECON", '
+                              'If([PolicyExcess] > 0, "OVER LIMIT", '
+                              'If([ExpenseJoin/Receipt Status] = "Missing", "MISSING RECEIPT", '
+                              'If([ExpenseJoin/Approval Status] <> "Approved", "PENDING", "CLEAR")))))')}]},
+        ])
+        consumers["expense"] = source["consumerSourceElementId"]
+        validations["expensePolicy"] = {"uniqueKeys": ["Category"]}
+    return {"elements": elements, "consumerSources": consumers,
+            "preJoinValidation": validations}

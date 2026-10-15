@@ -35,6 +35,7 @@ if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 import workbook_wire  # noqa: E402
 from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
+from lib.input_sync import sigma_input_type  # noqa: E402
 
 OUTDIR = "/tmp/research-build"
 NUM = {"kind": "number", "formatString": "#,##0.0"}
@@ -212,7 +213,8 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
             "id": "researchInputs", "kind": "input-table", "name": "Research Model Inputs",
             "inputMode": "edit", "source": {"kind": "empty", "connectionId": connection_id},
             "columns": [{"id": "SCOPE", "type": "text", "name": "Scope"}] + [
-                {"id": item["id"], "type": "number", "name": item["id"]}
+                {"id": item["id"], "type": sigma_input_type(item.get("defaultValue")),
+                 "name": item["id"]}
                 for item in source_inputs
             ],
             "order": ["SCOPE"] + [item["id"] for item in source_inputs],
@@ -245,7 +247,8 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
     for item in source_inputs:
         base = f"[{calc_namespace}/{item['id']}]"
         calc_cols.append({"id": item["id"], "name": item["id"],
-                          "formula": f"Coalesce([{input_namespace}/{item['id']}], {base})"})
+                          "formula": (f"If(IsNull([{input_namespace}/Scope]), {base}, "
+                                      f"[{input_namespace}/{item['id']}])")})
 
     literal_bindings = {}
     for item in source_inputs:

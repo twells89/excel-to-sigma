@@ -117,10 +117,17 @@ Staging approval and completion are separate gates:
    overrides a source blocker, cached fallback, unresolved formula, or missing completion evidence.
 
 For shared inputs, first put `targetScope` (connection/folder) and
-`sharedInputArchitecture` into the plan and rebuild the manifest; command-line IDs supplied later
-cannot inherit an old approval. `scripts/input-sync.py stage` calls the manifest staging gate and
-also requires a named reviewer plus the exact mapped feature set. Its construction and write
-programs use ordinary input tables. Query current rows outside Code Mode, plan inserts/row-ID
-updates, execute, then read back and checkpoint. `scripts/input-sync.py complete` accepts only
-recorded runtime evidence and calls the completion gate. There is no compare-and-swap between
-query and write, so re-query after any interruption and surface concurrent edits as conflicts.
+`sharedInputArchitecture` into the plan with `architecture --workflow research`
+and rebuild the manifest; a research source does not inherit sales or expense
+features. Command-line IDs supplied later cannot inherit an old approval.
+`scripts/input-sync.py stage --plan <architecture-output-plan>` re-runs the
+source audit, calls the manifest staging gate, and requires a named reviewer,
+the exact feature set, and reviewed target bindings. `emit-create`,
+`emit-wiring`, and `plan` accept only that manifest/receipt pair; arbitrary
+caller hashes, seed rows, or targets cannot be substituted. Query current rows
+outside Code Mode, plan inserts/row-ID updates, execute, then read back and
+checkpoint. An existing shared row is selected by its non-null `Scope`; an
+intentional null input remains null rather than coalescing to the historical
+literal. `complete` requires every approved table, mapped feature, checkpoint,
+edit/restore check, unique-key count, and persistence readback for the exact
+document/version. There is no compare-and-swap, so re-query after interruption.

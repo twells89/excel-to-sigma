@@ -354,11 +354,14 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | column protection / broader admin policy | ⚠️ UI/admin policy |
 
 For a REST-created empty input table, query it with the MCP companion tools, run
-`scripts/input-sync.py plan` to reconcile typed natural keys, review its emitted
-Code Mode write chunks, execute those through MCP, and query/read back again.
-The CLI plans and emits; it never pretends to query or mutate MCP itself. Use its
-`stage` and `complete` commands so shared-input construction actually consumes the
-source/plan staging gate and recorded runtime evidence. Otherwise hand off
+`scripts/input-sync.py architecture --workflow ...` for the one source workflow,
+then `stage` with the output plan, exact source, review dispositions, named
+approval, and target bindings. Emit construction/native joins only from the
+approved manifest/receipt. After querying assigned IDs, re-stage those bindings
+and run `plan` to reconcile typed natural keys. Review its Code Mode chunks,
+execute through MCP, and query/read back again. The CLI never queries or mutates
+MCP itself. `complete` requires all workflow-specific target, checkpoint,
+edit/restore, unique-key, and persistence evidence. Otherwise hand off
 CSV/clipboard import and **Publish**. In either path,
 **Create warehouse view** remains an explicit UI hand-off. Linked mode remains
 live-review until an end-to-end MCP create/read/update/query regression proves

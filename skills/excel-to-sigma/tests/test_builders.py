@@ -324,7 +324,7 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertEqual(
             next(column["formula"] for column in calc["columns"]
                  if column["id"] == "i_model_inputs_c2"),
-            "Coalesce([Inputs/i_model_inputs_c2], [CJ/i_model_inputs_c2])",
+            "If(IsNull([Inputs/Scope]), [CJ/i_model_inputs_c2], [Inputs/i_model_inputs_c2])",
         )
         self.assertIn("[i_fy_results_b8]", next(
             column["formula"] for column in calc["columns"] if column["id"] == "c8"))
@@ -337,6 +337,27 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertNotIn("ID", [column["id"] for column in input_table["columns"]])
         self.assertEqual(calc["source"]["joins"][0]["columns"],
                          [{"left": "[Scope]", "right": "[Scope]"}])
+
+    def test_research_input_types_match_approved_mapping_and_null_is_not_coalesced(self):
+        plan = research_plan()
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [
+            {"id": "n", "sourceCellId": "Inputs!A1", "defaultValue": None, "values": {}},
+            {"id": "b", "sourceCellId": "Inputs!A2", "defaultValue": True, "values": {}},
+            {"id": "t", "sourceCellId": "Inputs!A3", "defaultValue": "label", "values": {}},
+        ]
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        input_table = next(node for node in all_dicts(workbook)
+                           if node.get("id") == "researchInputs")
+        self.assertEqual([c["type"] for c in input_table["columns"]],
+                         ["text", "text", "boolean", "text"])
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        formula = next(c["formula"] for c in calc["columns"] if c["id"] == "n")
+        self.assertIn("IsNull([Inputs/Scope])", formula)
+        self.assertNotIn("Coalesce", formula)
 
     def test_forecast_cli_rejects_a_plan_without_a_resolvable_source(self):
         with tempfile.TemporaryDirectory() as tmp:

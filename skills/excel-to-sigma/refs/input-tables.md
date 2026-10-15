@@ -203,16 +203,29 @@ not the page used by the original REST layout.
 does not call MCP and generated programs do not invent a query method on
 `QueryableSource`:
 
-1. MCP `describe`/`query` the current host page and input table; retain the real
-   row ID, actual element/column IDs, query snapshot ID, and snapshot age.
-2. Run `input-sync.py plan --source-rows ... --current-rows ... --keys ...
-   --row-id ... --snapshot-id ... --snapshot-age-seconds ... --target ...`.
-3. Review conflicts/orphans and each generated chunk. Inserts are missing keys
+1. Run `input-sync.py architecture --workflow <sales|expense|research> ...`.
+   The plan must contain validated source-derived input rows for that workflow;
+   a research manifest never bundles sales or expense evidence. Rebuild the
+   manifest whenever workflow, connection, folder, source rows, or reviewed
+   formula replacements change.
+2. Run `input-sync.py stage --manifest ... --plan ... --source ... --approval
+   ...`. This re-runs the real source audit, rejects `BLOCKED` or unresolved
+   review, and binds each construction seed plus target page/document/version
+   to an immutable artifact hash.
+3. Emit reviewed construction and native-join artifacts with `emit-create` and
+   `emit-wiring`. MCP `describe`/`query` the created input table; retain the real
+   row ID, assigned element/column IDs, query snapshot ID, and snapshot age.
+4. Re-stage the assigned target bindings, then run `input-sync.py plan
+   --manifest ... --receipt ... --feature ... --current-rows ... --row-id ...
+   --snapshot-id ... --snapshot-age-seconds ...`.
+5. Review conflicts/orphans and each generated chunk. Inserts are missing keys
    only; updates use real row IDs only when the current value still equals the
    last migration value. A business column named `ID` is preserved.
-4. Execute at most 2,000 rows per checkpoint, query again, and retain readback
+6. Execute at most 2,000 rows per checkpoint, query again, and retain readback
    evidence. Re-running after a partial write reconciles current state and emits
-   no duplicate insert for rows already present.
+   no duplicate insert for rows already present. Confirmed migration baselines
+   advance only after queried readback; planned but unexecuted update chunks stay
+   pending and remain safely resumable.
 
 Typed keys do not trim/case-fold/coerce strings or numbers; `0`, `"0"`, and
 null remain distinct, and null business keys are rejected. Date-only values are
