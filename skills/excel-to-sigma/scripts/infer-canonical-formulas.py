@@ -32,6 +32,10 @@ import sys, os, json, re, math
 from collections import Counter, defaultdict
 
 from lib.migration_gate import MigrationGateError, gate_source
+from lib.excel_expression import (UnsupportedExpression, emit_sigma as emit_expression_sigma, expand_range,
+                                  extract_references, parse_expression)
+from lib.formula_graph import CellIdentity, FormulaGraph
+from lib.migration_manifest import build_manifest
 
 try:
     import openpyxl
@@ -456,7 +460,7 @@ _ALLOWED_FUNCS = ("If", "Coalesce", "Lag", "Lead", "Sum", "Min", "Max", "Round",
 def _safe_sigma(s):
     """True iff the formula uses only constructs we can build (refs, arithmetic, allowed
     funcs). Anything else (& concat, text, unknown functions) -> carry as cached data."""
-    t = re.sub(r"\[c\d+\]", " ", s)                          # column refs
+    t = re.sub(r"\[(?:c\d+|Year)\]", " ", s)                 # column / period refs
     for fn in _ALLOWED_FUNCS:
         t = re.sub(rf"\b{fn}\(", " ", t)
     t = re.sub(r"[0-9]+(\.[0-9]+)?", " ", t)                 # numbers
@@ -760,7 +764,186 @@ def infer(path, sheet=None, first_row=None, last_row=None, axis_override=None, h
         summary=dict(stats),
         parity=dict(live=parity_live, frozen=parity_frozen),
     )
+    _add_cell_provenance(plan, wb_f, wb_v, ws_f, rows, axis)
+    wb_f.close(); wb_v.close()
+    plan["migrationManifest"] = build_manifest(source_path, plan)
     return plan
+
+
+def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axis):
+    """Replace row-level guesses with per-period formula/literal provenance."""
+    year_cols = [column for column, _ in axis]
+    col_year = dict(axis)
+    positions = {column: index for index, column in enumerate(year_cols)}
+    inputs = {}
+    lines = {line["row"]: line for line in plan["lines"]}
+    graph = FormulaGraph.from_workbook(workbook)
+    cycle_members = {cell for component in graph.cycles() for cell in component}
+
+    def source_input(identity, year, role="source_literal"):
+        source_id = identity.id
+        value = graph.literals[identity]
+        input_id = "i_" + _slug(identity.sheet) + "_" + identity.address.lower()
+        sheet, address = identity.sheet, identity.address
+        record = inputs.setdefault(source_id, {
+            "id": input_id, "sourceCellId": source_id, "sheet": sheet, "address": address,
+            "defaultValue": value, "values": {}, "mappingStatus": "live", "role": role,
+        })
+        if isinstance(value, (int, float)):
+            record["values"][str(year)] = value
+        return f"[{input_id}]"
+
+    unresolved_nodes = graph.unresolved_formula_nodes()
+
+    def render_cell(identity, year, stack=()):
+        if identity in unresolved_nodes or identity in stack:
+            raise UnsupportedExpression(f"unresolved dependency {identity.id}")
+        if identity in graph.literals:
+            role = ("cross_sheet_driver" if identity.sheet == "Model Inputs"
+                    else "source_literal")
+            return source_input(identity, year, role)
+        formula = graph.formulas.get(identity)
+        if formula is None:
+            raise UnsupportedExpression(f"missing source reference {identity.id}")
+        expression = parse_expression(formula, sheet=identity.sheet)
+
+        def render_reference(reference):
+            if reference.name:
+                target = graph.names.get(reference.name)
+                if target is None:
+                    raise UnsupportedExpression(f"unresolved defined name {reference.name}")
+            else:
+                target = CellIdentity(reference.sheet, reference.address)
+            return f"({render_cell(target, year, stack + (identity,))})" if target in graph.formulas \
+                else render_cell(target, year, stack + (identity,))
+
+        def render_range(value):
+            return "(" + " + ".join(render_reference(reference)
+                                      for reference in expand_range(value)) + ")"
+        return emit_expression_sigma(expression, render_reference, render_range)
+
+    for row, row_data in rows.items():
+        line = lines[row]
+        literal_inputs, period_formulas, provenance = {}, {}, {}
+        dependencies = set()
+        for column in year_cols:
+            kind, literal, formula, _cached = row_data["cells"][column]
+            year = str(col_year[column])
+            if kind == "LITERAL" and isinstance(literal, (int, float)):
+                literal_inputs[year] = literal
+                provenance[year] = {"sourceCellId": f"{model_sheet.title}!{get_column_letter(column)}{row}",
+                                    "kind": "literal", "mappingStatus": "live"}
+            elif kind == "FORMULA":
+                identity = CellIdentity(model_sheet.title, f"{get_column_letter(column)}{row}")
+                if identity in cycle_members:
+                    provenance[year] = {
+                        "sourceCellId": identity.id, "kind": "formula",
+                        "originalFormula": formula, "dependencies": [],
+                        "mappingStatus": "unresolved", "reason": "true cell dependency cycle",
+                    }
+                    continue
+                try:
+                    expression = parse_expression(formula, sheet=identity.sheet)
+                    rendered = render_cell(identity, int(year))
+                except UnsupportedExpression as error:
+                    provenance[year] = {
+                        "sourceCellId": identity.id, "kind": "formula",
+                        "originalFormula": formula, "dependencies": [],
+                        "mappingStatus": "unresolved", "reason": str(error),
+                    }
+                    continue
+                refs = [_reference_id(reference) for reference in extract_references(expression)]
+                dependencies.update(refs)
+                period_formulas[year] = rendered
+                provenance[year] = {
+                    "sourceCellId": f"{model_sheet.title}!{get_column_letter(column)}{row}",
+                    "kind": "formula", "originalFormula": formula,
+                    "dependencies": refs, "mappingStatus": "live",
+                }
+        line["literalInputs"] = literal_inputs
+        line["typed"] = dict(literal_inputs)
+        line["periodFormulas"] = period_formulas
+        line["provenance"] = provenance
+        line["deps"] = sorted(dependencies)
+        if period_formulas:
+            line["kind"] = "ratio" if _looks_ratio(next(iter(period_formulas.values())), line["label"]) else "derived"
+            line["canonical"] = Counter(period_formulas.values()).most_common(1)[0][0]
+            line["reasons"] = [reason for reason in line.get("reasons", [])
+                               if not reason.startswith("plug-cycle") and "carried" not in reason]
+            line["status"] = "OK"
+        else:
+            line["kind"] = "input"
+            line["canonical"] = None
+
+    computed = graph.evaluate()
+    formula_cells, audit_checks = [], []
+    for identity, formula in sorted(graph.formulas.items()):
+        dependencies = [cell.id for cell in graph.dependencies.get(identity, ())]
+        structural_unresolved = identity in unresolved_nodes
+        if identity.sheet == "Audit":
+            status = "unresolved" if structural_unresolved else "verification"
+            target = {"logicalElementId": "audit",
+                      "logicalCheckId": "audit_" + identity.address.lower()}
+            audit_checks.append({
+                "id": identity.id, "address": identity.address, "originalFormula": formula,
+                "dependencies": dependencies, "mappingStatus": status,
+                "computedValue": computed.get(identity),
+                "expectedValue": cached_workbook[identity.sheet][identity.address].value,
+                "targetMapping": target,
+            })
+        else:
+            status = "unresolved" if structural_unresolved else "live"
+            target = _target_for_formula(identity, graph, model_sheet.title, axis)
+        formula_cells.append({
+            "id": identity.id, "originalFormula": formula, "dependencies": dependencies,
+            "mappingStatus": status, "targetMapping": target, "evidence": [],
+        })
+    plan["sourceInputs"] = sorted(inputs.values(), key=lambda item: item["sourceCellId"])
+    plan["formulaCells"] = formula_cells
+    plan["auditChecks"] = audit_checks
+    plan["cycles"] = [[cell.id for cell in component] for component in graph.cycles()]
+    plan["parity"] = {
+        "live": sum(item["mappingStatus"] == "live" for item in formula_cells),
+        "frozen": sum(item["mappingStatus"] == "cached" for item in formula_cells),
+        "audit": len(audit_checks),
+    }
+    plan["summary"] = dict(Counter(line["kind"] for line in plan["lines"]), needs_review=0)
+
+
+def _target_for_formula(identity, graph, model_sheet, axis):
+    col_to_year = dict(axis)
+    column = column_index_from_string(re.match(r"[A-Z]+", identity.address).group(0))
+    row = int(re.search(r"\d+$", identity.address).group(0))
+    if identity.sheet == model_sheet and column in col_to_year:
+        return {"logicalElementId": "calc", "logicalColumnId": col_id(row),
+                "year": col_to_year[column]}
+    deps = graph.dependencies.get(identity, ())
+    if len(deps) == 1 and deps[0].sheet == model_sheet:
+        dep_column = column_index_from_string(re.match(r"[A-Z]+", deps[0].address).group(0))
+        dep_row = int(re.search(r"\d+$", deps[0].address).group(0))
+        if dep_column in col_to_year:
+            return {"logicalElementId": "calc", "logicalColumnId": col_id(dep_row),
+                    "year": col_to_year[dep_column], "equivalentReference": True}
+    return {"logicalSourceFeatureId": identity.id}
+
+
+def _defined_name_value(workbook, name):
+    definition = workbook.defined_names.get(name)
+    if definition is None:
+        return None
+    destinations = list(definition.destinations)
+    if len(destinations) != 1:
+        return None
+    sheet, address = destinations[0]
+    return workbook[sheet][address].value
+
+
+def _reference_id(reference):
+    return f"name:{reference.name}" if reference.name else f"{reference.sheet}!{reference.address}"
+
+
+def _slug(value):
+    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
 
 
 def _looks_ratio(key, label):

@@ -84,3 +84,34 @@ line for all years** and stayed small. That is the whole lesson.
 Export the `long` element to CSV and compare every `(c<row>, year)` to the Excel cached grid
 (`data_only=True`) within €0.01 / 0.1%. Target: 0 wrong, 0 blank-where-Excel-has-a-value. Also
 confirm the result is far smaller than a hand build (one column per line, not per-year triplets).
+
+## Formula provenance and staging protocol
+
+Current inference records formulas at source-cell and period grain before coalescing rows. The
+plan keeps `periodFormulas`, `literalInputs`, and per-period `provenance` separately. Cross-sheet
+literal drivers become source-bound `sourceInputs`; cached formula results never become literal
+overrides. A shared parsed expression drives reference extraction, scalar parity evaluation, and
+Sigma emission. The cell graph, rather than a row graph, decides cycles, so opposite formulas in
+different years do not create a false cycle.
+
+`migrationManifest` is the handoff contract for a later MCP orchestrator. Its `sourceHash` binds
+the workbook bytes, and `planHash` binds logical formulas, source feature IDs, source input values,
+and intended target scope. Runtime evidence, assigned target IDs and document versions do not
+change the approved plan hash. Each source formula appears once with one of `live`, `cached`,
+`unresolved`, or `verification`, plus target mapping and evidence fields kept separately.
+`targetMapping` is logical intent only and uses explicit keys such as `logicalElementId`,
+`logicalColumnId`, `logicalCheckId`, and `logicalSourceFeatureId`. Server-assigned document,
+element, column/check, and version identifiers belong only in `targetBinding` (or `actualTarget`).
+The manifest rejects assigned or ambiguous keys such as `elementId` or `columnId` when they are
+placed under `targetMapping`.
+
+Staging approval and completion are separate gates:
+
+1. Before staging, call `gate_staging_manifest(manifest, approval)`. The approval must bind the
+   source and plan hashes, name an owner, and explicitly list every mapped review item. It does
+   not claim target verification.
+2. After the target exists, attach passed verification evidence to every formula/check. Each
+   record binds the source cell, source hash, plan hash, actual target ID, target document ID and
+   document version, then call `gate_completion_manifest(manifest)`.
+3. Source audit `BLOCKED` and existing `--post` behavior remain unchanged. Staging approval never
+   overrides a source blocker, cached fallback, unresolved formula, or missing completion evidence.
