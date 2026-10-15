@@ -5,7 +5,7 @@ End-to-end on the bundled sample fixture. ~10 min; three of the steps are clicks
 ## 0. Setup
 ```bash
 cd <this skill>/scripts
-python3 -m venv .venv && .venv/bin/pip install openpyxl python-dateutil
+python3 -m venv .venv && .venv/bin/pip install -r ../../../requirements.txt
 # Sigma creds in ~/.sigma-migration/env  (SIGMA_BASE_URL / SIGMA_CLIENT_ID / SIGMA_CLIENT_SECRET)
 ```
 
@@ -23,12 +23,16 @@ This writes `chart-examples/Sales Performance.xlsx`, `Expense Planning.xlsx`,
 and `Headcount Planning.xlsx`. Each has an editable formal Table plus three
 charts that map directly to Sigma visualizations.
 
-## 2. Discover
+## 2. Audit, then discover
 ```bash
+.venv/bin/python audit-xlsx.py "Sample Forecast.xlsx" --out /tmp/forecast-audit.json
+# REVIEW_REQUIRED is expected for charts/formatting: route every issue before build.
+.venv/bin/python audit-openapi.py --out /tmp/sigma-code-rep-audit.json
 .venv/bin/python xlsx-discover.py "Sample Forecast.xlsx"
 ```
-Lists formal Tables, their grain, each chart's type/title/anchor, pivots, and a
-formula census. Confirm the fact Table + grain with the user.
+The audit is the no-silent-loss gate; discovery then lists formal Tables, their
+grain, each chart's type/title/anchor, pivots, and formulas. Confirm the fact
+Table + grain and resolve every audit issue with the user.
 
 ## 3. Extract the paste-ready seed
 ```bash

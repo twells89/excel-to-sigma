@@ -19,12 +19,15 @@ user-invocable: true
 > parity** on a representative 540-row forecast model. The read/output half (DM +
 > workbook from a landed seed) was validated earlier (2026-06-03). The discovery
 > + formula-translation layer is designed and spiked, not yet a one-shot
-> converter — see `refs/excel-translation.md`.
+> converter. Complex-workbook support means **inventory + explicit routing +
+> parity**, not a promise that arbitrary Excel programs convert automatically.
 
 **Read ALL of the following before replying or taking any action:**
+- `refs/coverage-contract.md` — the fail-loud contract and hard completion gates for complex workbooks.
+- `refs/code-rep-capabilities.md` — current workbook `contents` API, Actions, Python, stored procedures, validations, and automation.
 - `refs/input-tables.md` — the validated input-table workflow + the API-vs-UI split. **This is the crown jewel of the skill: the source-swap goes through a warehouse view, NOT a direct DM source binding.**
 - `refs/excel-translation.md` — the translation surface, the formal-Table-only MVP rule, and what "formula translation" actually means here (grain selection, not business logic).
-- `refs/sigma-build-gotchas.md` — the hard-won Sigma spec rules (SQL element formula prefix, DM POST envelope, released workbook document wrapper, element-name/ID reassignment, publish gate).
+- `refs/sigma-build-gotchas.md` — the hard-won Sigma spec rules (SQL element formula prefix, DM POST envelope, current workbook `contents` lifecycle, element-name/ID reassignment, publish gate).
 - `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
 - `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
 - `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
@@ -79,7 +82,7 @@ read-only DM/metric builder. When unsure, ask the user how they use that sheet.
 > **Hard-won correction.** Earlier drafts claimed linked input tables were the
 > "powerful path, fully API, no seed." **That was wrong — validated only by
 > structure (`/elements`), never by querying the data.** A linked input table
-> authored via `POST /v2/workbooks/spec` has **inherited columns that don't
+> authored through workbook code representation has **inherited columns that don't
 > resolve** — every row shows **"multiple values"** (publish doesn't fix it;
 > re-POSTing a known-good UI-built spec reproduces the break). The linked-column
 > key-correlation is UI-only state the spec can't carry. See
@@ -120,8 +123,8 @@ back to a `SIGDS_` schema). Confirm via `GET /v2/connections` → `writeAccess: 
 Verified write connection on tj-wells-1989: `cb2f5180-…` (Snowflake ymb68310).
 
 ### Python
-`scripts/` use `openpyxl` (+ `python-dateutil` for the fixture generator). Install
-into a venv: `python3 -m venv .venv && .venv/bin/pip install openpyxl python-dateutil`.
+Install the pinned dependencies from the plugin root:
+`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 
 ### Optional: `snow` CLI
 Used only to look up the **full path** of a Sigma-created warehouse view
@@ -130,7 +133,19 @@ Used only to look up the **full path** of a Sigma-created warehouse view
 
 ---
 
-## Phase 0 — Discover the workbook (`scripts/xlsx-discover.py`)
+## Phase 0 — Audit, then discover
+
+The capability audit is a hard gate before conversion:
+
+```bash
+python scripts/audit-xlsx.py <file.xlsx|file.xlsm> --out migration-audit.json
+python scripts/audit-openapi.py --out sigma-code-rep-audit.json
+```
+
+`AUTO` can proceed. `REVIEW_REQUIRED` must have every issue routed and verified;
+`BLOCKED` cannot proceed until its blocker is removed. `--allow-review` is only
+for inventory/CI smoke, never for declaring a migration complete. Then run
+`scripts/xlsx-discover.py` for the model/grain-specific report.
 
 Walk the `.xlsx` (OOXML = a ZIP of XML; `openpyxl` reads it). Produce an inventory:
 
@@ -156,12 +171,11 @@ python scripts/macro-classify.py <file.xlsm>          # report
 python scripts/macro-classify.py --json <file.xlsm>   # contract for build steps
 ```
 
-Each procedure is classified (olevba-extracted VBA) and routed: **AUTO** (covered
-by the data/formula conversion or safely dropped), **CONTROL** (controls / editable
-assumptions table), **ACTION** (Sigma Action — *gated on the Actions primitive*;
-scaffold a placeholder + inventory entry now), or **FLAG** (external I/O / opaque —
-human review). **Surface the FLAG and ACTION items to the user and get
-acknowledgement before build.** Never silently omit a macro.
+Each procedure is classified (olevba-extracted VBA) and routed: **AUTO**,
+**CONTROL**, **ACTION**, **STORED_PROC**, **PYTHON_REVIEW**, **DATA_REVIEW**, or
+**FLAG**. Actions, Python, and stored procedures are now code-representable, but
+still require implementation plus live side-effect/parity checks. Surface every
+non-AUTO record before build. Never silently omit a macro.
 
 ### Phase 0c — Model map & intent (for "report drawn in cells" / planning models)
 
@@ -260,10 +274,10 @@ as Phase 2.
 Build the dashboard pages (Forecast Summary pivot + KPIs, trend charts) per
 `~/sigma-skills/sigma-workbooks`, sourced from the DM. Builders author a nested
 `pages[].elements` draft; **`scripts/lib/workbook_wire.py` assembles layout XML
-as the last write**, then wraps via `code_rep` into the released
-`{ name, folderId, document: { schemaVersion, kind, pages, elements, layout } }`
-body before `POST /v2/workbooks/spec`. Do **not** POST a flat pre-document
-workbook body (the live API returns HTTP 400). Data-model specs stay unwrapped.
+as the last write**, then wraps via `code_rep` into
+`{ name, folderId, contents: { schemaVersion, kind, pages, elements, layout } }`.
+Live builders first validate with `POST /v2/workbooks` + `dryRun: true`, then
+create through the same endpoint. Data-model specs stay unwrapped.
 
 Confirm every element compiles and the totals tie out (parity hard gate —
 Phase 0c/0d simulate-and-freeze, Phase 2/4 section rollups, research
@@ -280,22 +294,27 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 
 ---
 
-## Scriptability matrix (verified vs. live OpenAPI + connections; input-table re-verified 2026-06-10)
+## Scriptability matrix (OpenAPI re-audited 2026-10)
 
 | Step | Path |
 |---|---|
-| input-table **structure** (columns/types; title `name`, `tableStyle`, `sort` round-trip) | ✅ API (workbook spec) |
+| workbook create/validate/update | ✅ `POST /v2/workbooks` (`dryRun` then create), `PUT .../contents` |
+| input-table **structure** (columns/types; title, style, sort) | ✅ code representation |
+| input validation (literal/range/dynamic-list/file constraints) | ✅ code representation |
 | **linked** input table (inherited columns resolve) | ❌ UI only — spec POST yields "multiple values" (publish doesn't fix); PK/grain + entry cols populate but linked cols don't |
-| seed **data** load into an empty/CSV table (CSV upload / paste) | ⚠️ UI now — no REST endpoint; bulk-seed API in progress |
+| seed **records** inside workbook code representation | ❌ records are excluded; use a supported import/seed path |
 | **Publish** (commits writeback) | ⚠️ UI |
 | **warehouse view** on the input table | ⚠️ UI only |
 | DM **source-swap** to `FROM <view>` | ✅ API (DM spec PUT/POST) |
 | read/output DM + workbook build | ✅ API |
-| data validation / column protection / data-entry permission | ⚠️ UI (linked dimension columns are auto-locked) |
+| API/writeback/navigation/stored-procedure actions | ✅ code representation; runtime-test every effect |
+| Python computation | ✅ `code` + `code-output`; package/runtime + parity gate |
+| scheduled/webhook automated action | ✅ limited document surface; ownership/failure review |
+| column protection / broader admin policy | ⚠️ UI/admin policy |
 
-With **linked mode** the only mandatory UI steps are **Publish** and **Create
-warehouse view** — everything else, including the grain, is scripted. Bake those
-two into the run as explicit "do this, then tell me the view path" hand-offs.
+For an API-created empty input table, make seed/import, **Publish**, and
+**Create warehouse view** explicit hand-offs. Linked mode remains UI/live-review
+until an end-to-end create/read/query regression proves inherited columns work.
 
 ---
 
@@ -304,13 +323,13 @@ two into the run as explicit "do this, then tell me the view path" hand-offs.
 - One-shot `.xlsx` → finished migration. Phase 0–1 (discovery + formula
   translation) is spiked, not a hardened converter. The data-entry path (Phase
   3–4) is fully validated.
-- Power Query / ODBC / SharePoint-Online sources — MVP assumes inline data +
-  Snowflake landing (the other source paths are additive; see
-  `refs/excel-translation.md`).
+- Power Query / ODBC / SharePoint-Online source pipelines are detected and
+  routed, but not automatically recreated. Land them as governed warehouse or
+  connector sources and verify refresh/data parity.
 - `.xlsm` / VBA / macros — **detected + classified + routed** (Phase 0b,
-  `scripts/macro-classify.py` + `refs/macro-handling.md`); never *executed*.
-  Write-back macros (`ACTION`) are gated on the forthcoming Sigma Actions
-  primitive — scaffolded as placeholders + inventory until it ships.
+  `scripts/macro-classify.py` + `refs/macro-handling.md`); never blindly
+  executed. Representable routes include Actions, Python, and stored procedures,
+  but each still needs implementation and live verification.
 
 See `refs/excel-translation.md` for the full converter-build design and the
 ~60–70% pipeline reuse from `tableau-to-sigma`.

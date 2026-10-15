@@ -33,17 +33,18 @@ Workbook charts / metrics  (unchanged — display names identical)
 
 ## The API-vs-UI split (the single most important fact)
 
-Verified against the live Sigma OpenAPI and `/v2/connections` on 2026-06-08:
+OpenAPI re-audited 2026-10; linked behavior retains the 2026-06 live warning:
 
 | Step | Path | Notes |
 |---|---|---|
-| input-table **structure** | ✅ API — `POST /v2/workbooks/spec` | columns, types; titles (`name`) + `tableStyle`/`sort` round-trip. Validation/protection are UI. |
-| **linked** input table (inherited columns resolve) | ❌ **UI only** | spec POST yields inherited columns that show **"multiple values"** (publish doesn't fix; verified 2026-06-10). PK/grain + entry cols populate, but the linked correlation is UI-only state. See "Linked input tables" below. |
+| input-table **structure** | ✅ code rep — `POST /v2/workbooks` | columns, types, title, style, sort; validate first with `dryRun:true`. |
+| literal/range/dynamic-list/file **validation** | ✅ code rep | `values`, `valuesFrom`, inclusive `range`, and file constraints. Custom Excel validation formulas still need review. |
+| **linked** input table (inherited columns resolve) | ❌ **UI/live-review** | code creation historically yielded inherited columns showing **"multiple values"** (publish did not fix; verified 2026-06-10). Schema acceptance is not runtime proof. |
 | seed **data** load into an empty/CSV table | ⚠️ **UI now** | CSV upload / clipboard paste; no REST endpoint (only `*/materialization*`, unrelated). **Bulk-seed API in progress.** |
 | **Publish** | ⚠️ UI | data commits to the warehouse only on publish |
 | **warehouse view** | ⚠️ **UI only** | input-table element → Warehouse views → Create new |
 | DM **source-swap** | ✅ API — `POST`/`PUT /v2/dataModels/spec` | `SELECT … FROM <view>` |
-| **"Editable in published version"** data-entry permission | ⚠️ **UI only** | The input-table element spec carries ONLY `id/kind/source/inputMode/columns` — there is NO permission field (verified 2026-06-09 against WANDA's viewer-editable input tables; none expose it). Default = editable in draft only. To let viewers edit in the published workbook: input table → **"Editable in" → Editable in published version – Explore / all users** → **Publish**. Still a Sigma Beta feature. `inputMode` ('explore'/'view') is a separate, unrelated element setting. |
+| data-entry mode | ✅ code rep | required `inputMode`: `edit` (draft editors), `explore` (published explore/edit), or `view` (published view/explore/edit). Test sharing and write permission live. |
 
 So a converter auto-builds the input-table **structure** and the **DM-on-view**,
 and hands the user three explicit clicks in between. Don't try to script the
@@ -59,7 +60,7 @@ swaps between *registered sources*, not to an ad-hoc input-table view.)
   source:
     kind: empty
     connectionId: cb2f5180-…    # MUST be a write-enabled connection (writeAccess: true)
-  inputMode: explore            # 'explore' = editable; 'view' also seen on WANDA
+  inputMode: explore            # published Explore/Edit users can enter data
   tableStyle: { preset: presentation }   # optional — tableStyle + sort round-trip too
   columns:
     - id: REGION                # data-entry columns: give a `type`
@@ -78,21 +79,21 @@ swaps between *registered sources*, not to an ad-hoc input-table view.)
 ```
 
 - A write-enabled connection is required (`GET /v2/connections` → `writeAccess: true`).
-- Column types: `text`, `number`, `datetime`, `checkbox` (and single/multi-select
-  via data validation, configured in UI).
+- Column types: `text`, `number`, `datetime`, `checkbox`, `multi-select`, `file`.
+- Data-entry columns may author literal `values`, `valuesFrom`, inclusive
+  numeric/datetime `range`, file limits/types, and pill styling.
 - The system columns (`ID` = Row ID; `CREATED_*`/`UPDATED_*` = row edit history)
   auto-populate. **Exclude them from the seed CSV.**
 - **Titles & customizations now round-trip**: the element `name` is the visible
-  title; `tableStyle` and `sort` persist in the spec too (treat like a `table`
-  element). (Data validation / column protection / data-entry permission remain
-  UI — see the matrix above.)
+  title; `tableStyle` and `sort` persist too (treat like a `table` element).
+  Column protection and broader admin policy remain UI/admin concerns.
 
 ## Linked input tables — UI-authored only (spec POST does NOT work)
 
 > **⚠️ CORRECTION (2026-06-10). An earlier version of this file called linked
 > input tables "the powerful path, API-authorable." That was wrong** — it was
 > validated only by structure (`/elements`), never by querying the data. When you
-> author a linked input table via `POST /v2/workbooks/spec`, the **inherited
+> author a linked input table through workbook code representation, the **inherited
 > columns don't resolve: every row shows "multiple values."** Publishing does not
 > fix it, and re-POSTing a known-good UI-built linked table verbatim reproduces the
 > break. The linked-column key-correlation is UI-only server state the spec can't
@@ -195,11 +196,11 @@ snow sql -c default --format json -q \
 5. **SIGDS_ tables aren't directly queryable** and must not be modified — always
    go through the warehouse view.
 
-## Going further: governance for the forecaster experience (UI)
+## Going further: governance for the forecaster experience
 
-Once the structure exists, configure in the workbook UI:
-- **Data validation** — turn `CATEGORY_CODE` into a single-select against the
-  category list so forecasters pick, not type.
+Author supported validation in code representation (for example `valuesFrom`
+to turn `CATEGORY_CODE` into a governed list), then verify it live. Use UI/admin
+policy for the remaining governance:
 - **Column protection** — lock the dimension keys + system columns so only
   `FORECAST_AMOUNT` is editable.
-- **Data entry permissions** — who can write.
+- **Sharing and connection write permissions** — who can open and write.
