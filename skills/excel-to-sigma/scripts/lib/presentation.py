@@ -84,6 +84,12 @@ NS = {
 }
 
 
+try:
+    from .input_display import currency_pattern, source_format_intent, build_input_display
+except ImportError:
+    from input_display import currency_pattern, source_format_intent, build_input_display
+
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
@@ -495,7 +501,7 @@ def _semantic_formats(workbook):
                 elif "%" in fmt:
                     semantic, emission, grain = "percentage", {"kind": "number", "formatString": f".{_precision(fmt)}%"}, None
                 elif "$" in fmt:
-                    semantic, emission, grain = "currency", {"kind": "number", "formatString": f",.{_precision(fmt)}f", "currencySymbol": "$"}, None
+                    semantic, emission, grain = "currency", {"kind": "number", "formatString": currency_pattern(fmt, _precision(fmt)), "currencySymbol": "$"}, None
                 elif isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith("=")):
                     semantic, emission, grain = "number", {"kind": "number", "formatString": f",.{_precision(fmt)}f"}, None
                     if str(fmt).rstrip().lower().endswith("x"):
@@ -1392,9 +1398,9 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
         patch["conditionalFormats"] = [item for _priority, item in sorted(
             patch["conditionalFormats"], key=lambda pair: pair[0], reverse=True)]
 
-    # Table/input-table column display formats are applied from the first body
-    # cell of each source table column. The source format record remains in the
-    # extraction for exact precision/date-grain audit.
+    # Build ordinary-table format requests from the source body cell. Physical
+    # input display metadata is configured separately through the SDK below;
+    # code-rep exports do not establish its persistence.
     for _source_field, target in (bindings.get("columns") or {}).items():
         semantic = plan["semanticFormats"].get(target.get("sourceCell"))
         if semantic:
@@ -1414,6 +1420,24 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
             if name in prominent[1:]:
                 update["format"] = {"kind": "number", "formatString": ".1%"}
 
+    input_display = None
+    if not logical_fixture:
+        input_display = build_input_display(plan, manifest, staging_receipt, staging_gate["feature"])
+        assigned_inputs = {binding.get("elementId") for binding in staging_receipt["targetBindings"].values()}
+        for element_id in assigned_inputs:
+            for update in patches.get(element_id, {}).get("columnUpdates", {}).values():
+                update.pop("hidden", None)
+                update.pop("format", None)
+    format_limitations = {}
+    for source_cell, semantic in plan["semanticFormats"].items():
+        if semantic["semantic"] != "currency":
+            continue
+        _, fidelity, reason = source_format_intent(semantic["sourceFormat"], "number")
+        if fidelity != "EXACT":
+            key = semantic["sourceFormat"]
+            entry = format_limitations.setdefault(key, {"sourceFormat": key, "fidelity": fidelity,
+                                                        "reason": reason, "sourceCells": []})
+            entry["sourceCells"].append(source_cell)
     main = list(MAIN_COLUMNS.get(workflow, []))
     detail = list(bindings.get("sharedInputColumns") or DETAIL_COLUMNS.get(workflow, main))
     edit = list(bindings.get("prominentEditableColumns") or EDITABLE_COLUMNS.get(workflow, []))
@@ -1480,6 +1504,10 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
         "mainGridColumns": main, "editColumns": edit, "detailColumns": detail,
         "sharedInputScope": bindings.get("sharedInputScope"), "unresolved": unresolved,
         "researchMetricFormatsExact": research_formats_exact if workflow == "research" else None,
+        "researchMetricFormatsExactScope": "configured semantic units/precision only; not persisted readback or full Excel section fidelity",
+        "inputDisplay": input_display,
+        "displayVerificationStatus": "PENDING_RUNTIME_READBACK",
+        "formatLimitations": list(format_limitations.values()),
         "businessInput": business_spec, "businessInputProgram": business_program,
         "businessOperationalWiring": operational_wiring,
         "restPlan": {"method": "PUT", "path": "/v2/workbooks/{workbookId}/contents",
@@ -1498,7 +1526,7 @@ def _series_format(series):
     unit = series.get("unit")
     precision = _precision(series.get("numberFormat") or "")
     if unit == "currency":
-        return {"kind": "number", "formatString": f",.{precision}f", "currencySymbol": "$"}
+        return {"kind": "number", "formatString": currency_pattern(series.get("numberFormat") or "", precision), "currencySymbol": "$"}
     if unit == "percentage":
         return {"kind": "number", "formatString": f".{precision}%"}
     if unit == "count":

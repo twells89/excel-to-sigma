@@ -181,3 +181,57 @@ aggregate parity queries for every chart point, and UI checks for rendering,
 editing, ordering, rule precedence, and blank rejection. `allowBlank=false`
 remains explicit unresolved evidence because the current input-column schema
 does not expose that setting.
+
+### Physical input display configuration and readback
+
+The workbook code-rep exporter omits persisted input-column visibility and
+formats. Their presence in a REST request, or absence in a later GET, is not
+input display evidence. Actual presentation artifacts remove those input-column
+REST fields, retain validation ranges, and expose `inputDisplay` with
+`PENDING_SDK_READBACK` status. Ordinary readonly currency formats use a raw d3
+`$` marker; `currencySymbol` metadata alone is insufficient to render currency.
+
+After the guarded REST PUT, capture the latest version/page/assigned IDs and
+bind/restage the approved manifest/receipt. Then emit the metadata-only SDK pass:
+
+```bash
+python3 scripts/presentation-inputs.py display SOURCE.xlsx \
+  --manifest current-manifest.json --receipt current-receipt.json \
+  --out display.json
+```
+
+The default feature is the workflow's primary input (all five are supported);
+`--feature` selects another approved input. Source formats without an exact
+binding remain explicitly unresolved. The artifact includes `executionBinding`
+with the exact workbook/version, the `program`, and a separate readonly
+`readbackProgram`. Bind the SDK execution context to that workbook/version and
+review/execute the program. It invokes only documented visibility/format
+setters: no row, value, schema, filter, or validation writes. It checks the
+assigned IDs/names/types before mutations, selects Scope plus six growth drivers
+for research, and preserves all source columns. Other primary workflows show
+all their literal input fields.
+
+Run `readbackProgram` in a fresh readonly SDK session. Capture its printed
+`source`, `contractHash`, `elementId`, and complete column observations, including
+Row ID. Each observation contains `id`, `name`, `visible`, and the nullable
+format record read with `kind()`, `decimal_places()`, `currency()`, and
+`pattern()`. Add the actual execution-context `documentId`, integer
+`documentVersion`, and a unique `readbackId` from that fresh capture; do not
+substitute code-rep GET column metadata. Then verify:
+
+```bash
+python3 scripts/presentation-inputs.py verify-display SOURCE.xlsx \
+  --manifest current-manifest.json --receipt current-receipt.json \
+  --readback fresh-sdk-display-readback.json --out display-verification.json
+```
+
+Mismatch produces `FAILED` and a nonzero exit. Supported settings can pass while
+full source fidelity remains `PARTIAL`: research's 121 currency fields preserve
+currency/grouping/precision/negative parentheses, but Excel's separate
+zero-as-dash/accounting sections have no exact d3 equivalent. Original Excel
+formats and the unresolved reason remain in the contract; unsupported patterns
+are not silently applied. Raw percentage patterns preserve source grouping.
+The verifier establishes SDK metadata state only. Actual visual rendering,
+source values, validation behavior, and role acceptance require separate proof.
+The SDK exposes no documented workbook-version CAS, so parent execution must
+bind the intended current context and retain the fresh readback evidence.

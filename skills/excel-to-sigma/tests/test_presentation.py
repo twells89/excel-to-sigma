@@ -138,7 +138,7 @@ class TestPresentationExtraction(unittest.TestCase):
         emitted = next(element for element in artifact["elements"]
                        if element.get("name") == "EPS and leverage")
         columns = {column["name"]: column for column in emitted["columns"]}
-        self.assertEqual(columns["EPS"]["format"]["formatString"], ",.2f")
+        self.assertEqual(columns["EPS"]["format"]["formatString"], "($.2f")
         self.assertEqual(columns["Net debt / EBITDA"]["format"]["formatString"], ",.1f")
         self.assertEqual(columns["Net debt / EBITDA"]["format"]["suffix"], "x")
 
@@ -345,6 +345,11 @@ class TestPresentationEmission(unittest.TestCase):
                                for column in architecture["inputs"][feature]["columns"]],
         })
         bindings["stagingReceiptHash"] = presentation._digest(receipt)
+        for rule in plan["validations"]:
+            if rule["sheet"] == "Model Inputs":
+                bindings["validationTargets"][rule["id"]] = [
+                    {"elementId": "input-live", "columnId": column_ids[f"i_model_inputs_c{row}"]}
+                    for row in range(2, 8)]
 
         artifact = presentation.emit_presentation(plan, bindings, manifest, receipt)
 
@@ -352,12 +357,14 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertEqual(len(architecture["inputs"][feature]["columns"]), 146)
         self.assertEqual(artifact["businessInputProgram"]["mode"], "reconcile-existing")
         updates = artifact["elementPatches"]["input-live"]["columnUpdates"]
-        visible = {name for name, column_id in column_ids.items()
-                   if updates[column_id]["hidden"] is False}
+        self.assertTrue(all("hidden" not in update and "format" not in update for update in updates.values()))
+        self.assertEqual(updates[column_ids["i_model_inputs_c2"]]["range"], {"min":0.0,"max":0.25})
+        display = artifact["inputDisplay"]
+        visible = {column["name"] for column in display["columns"] if column["visible"]}
         self.assertEqual(visible, {"Scope", *(f"i_model_inputs_c{row}" for row in range(2, 8))})
-        self.assertTrue(all(
-            updates[column_ids[f"i_model_inputs_c{row}"]]["format"]["formatString"] == ".1%"
-            for row in range(2, 8)))
+        self.assertEqual(display["status"], "PENDING_SDK_READBACK")
+        self.assertTrue(all(column["format"] == {"pattern":".1%"}
+                            for column in display["columns"] if column["name"] in visible-{"Scope"}))
 
     def test_business_input_architecture_covers_primary_inputs_for_all_five_workflows(self):
         research_plan = research_runtime_plan()
@@ -470,7 +477,7 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertEqual(len(detail_view["columns"]), 36)
         self.assertNotIn("Line Item", {column["name"] for column in detail_view["columns"]})
         self.assertEqual(main["Revenue"]["format"]["currencySymbol"], "$")
-        self.assertEqual(main["EPS"]["format"]["formatString"], ",.2f")
+        self.assertEqual(main["EPS"]["format"]["formatString"], "($.2f")
         self.assertEqual(main["Net debt / EBITDA (x)"]["format"]["suffix"], "x")
         self.assertFalse(any(item["kind"] == "mixed-unit-row-format"
                              for item in artifact["unresolved"]))

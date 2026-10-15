@@ -81,6 +81,16 @@ def parse_args(argv=None):
     bindings.add_argument("--receipt", required=True)
     bindings.add_argument("--out", required=True)
 
+    for name in ("display", "verify-display"):
+        display = commands.add_parser(name, help="emit approved SDK input display programs or verify fresh SDK observations")
+        display.add_argument("source")
+        display.add_argument("--manifest", required=True)
+        display.add_argument("--receipt", required=True)
+        display.add_argument("--feature")
+        if name == "verify-display":
+            display.add_argument("--readback", required=True)
+        display.add_argument("--out", required=True)
+
     checkpoint = commands.add_parser(
         "checkpoint-extension", help="bind created IDs to the exact post-extension readback")
     checkpoint.add_argument("--extension-plan", required=True)
@@ -148,6 +158,16 @@ def main(argv=None):
         result = approved_business_bindings(
             extract_presentation(args.source), manifest, _read(args.receipt))
         _write(args.out, result)
+    elif args.command in {"display", "verify-display"}:
+        from input_display import build_input_display, verify_input_display
+        manifest = _read(args.manifest)
+        validate_manifest(manifest)
+        result = build_input_display(extract_presentation(args.source), manifest, _read(args.receipt), args.feature)
+        if args.command == "verify-display":
+            result = verify_input_display(result, _read(args.readback))
+        _write(args.out, result)
+        if result.get("status") == "FAILED":
+            return 1
     elif args.command == "checkpoint-extension":
         proof = checkpoint_input_extension(
             _read(args.extension_plan), _read(args.created_columns),
