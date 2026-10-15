@@ -395,15 +395,23 @@ class TestPresentationEmission(unittest.TestCase):
             logical = presentation.build_business_input_plan(extracted, architecture)
             manifest = build_manifest(extracted["source"]["path"], logical)
             unresolved = [item for item in manifest["formulaCells"]
-                          if item["mappingStatus"] == "unresolved"]
+                          if item["id"] in manifest["unsupported"]]
             if unresolved:
-                reviewed = [{"id": item["id"], "mappingStatus": "live",
-                             "targetMapping": {"logicalCheckId": f"reviewed-{item['id']}"},
-                             "reviewedReplacement": {
-                                 "originalFormula": item["originalFormula"],
-                                 "replacementFormula": "0", "reviewer": "Fixture Reviewer",
-                                 "reviewStatus": "approved"}}
-                            for item in unresolved]
+                reviewed = []
+                for item in unresolved:
+                    mapping = architecture["formulaTargets"][item["id"]]
+                    graph = architecture["nativeWiring"]
+                    if "logicalElementId" in mapping:
+                        element_id, column_id = mapping["logicalElementId"], mapping["logicalColumnId"]
+                    else:
+                        check = next(c for c in graph["checks"] if c["logicalCheckId"] == mapping["logicalCheckId"])
+                        element_id, column_id = check["elementId"], check["columnId"]
+                    formula = next(c["formula"] for e in graph["elements"] if e["id"] == element_id
+                                   for c in e["columns"] if c["id"] == column_id)
+                    reviewed.append({"id": item["id"], "mappingStatus": "live", "targetMapping": mapping,
+                                     "reviewedReplacement": {"originalFormula": item["originalFormula"],
+                                      "replacementFormula": formula, "reviewer": "Fixture Reviewer",
+                                      "reviewStatus": "approved"}})
                 logical = presentation.build_business_input_plan(
                     extracted, architecture, reviewed)
                 manifest = build_manifest(extracted["source"]["path"], logical)
@@ -490,6 +498,23 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertTrue(formulas)
         self.assertTrue(all("[Calculation/" not in formula for formula in formulas))
         self.assertTrue(any("[Calc/c8]" in formula for formula in formulas))
+
+    def test_research_horizontal_rules_bind_metric_rows_and_audit_stays_unresolved(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
+        rules = {r["range"]: r for r in plan["conditionalFormats"] if r["sheet"] == "FY results"}
+        self.assertEqual(rules["B31:M31"]["fields"], ["Net income"])
+        self.assertEqual(rules["B57:M57"]["fields"], ["Net debt / EBITDA (x)"])
+        self.assertEqual(rules["B31:M31"]["periodScope"]["values"], list(range(2019, 2031)))
+        bindings = presentation.fixture_bindings(plan)
+        self.assertEqual(bindings["conditionalTargets"][rules["B31:M31"]["id"]], [
+            {"elementId": "research-detail-view", "columnId": "research_c31"}])
+        self.assertEqual({t["elementId"] for t in bindings["conditionalTargets"][rules["B57:M57"]["id"]]},
+                         {"research-main-view", "research-detail-view"})
+        artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
+        audit_ids = {r["id"] for r in plan["conditionalFormats"] if r["sheet"] == "Audit"}
+        self.assertTrue(audit_ids)
+        self.assertTrue(audit_ids <= {u["sourceId"] for u in artifact["unresolved"] if u["kind"] == "conditionalFormat"})
+        self.assertNotIn("researchCalc", artifact["elementPatches"])
 
     def test_forecast_manual_validation_covers_each_month_column(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-forecast-model.xlsx")

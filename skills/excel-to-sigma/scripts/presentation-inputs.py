@@ -19,12 +19,15 @@ sys.path.insert(0, str(LIB))
 from input_sync import (  # noqa: E402
     checkpoint_input_extension,
     emit_write_programs,
+    emit_workbook_wiring,
+    normalize_seed_plan,
     plan_extension_seed,
 )
 from migration_manifest import build_manifest, validate_manifest  # noqa: E402
 from presentation import (  # noqa: E402
     build_business_input_architecture,
     build_business_input_plan,
+    approved_business_bindings,
     emit_approved_business_input_program,
     extract_presentation,
 )
@@ -66,6 +69,18 @@ def parse_args(argv=None):
     emit.add_argument("--current-columns")
     emit.add_argument("--out", required=True)
 
+    wiring = commands.add_parser("wiring", help="emit assigned native calculations or a guarded contents PUT")
+    wiring.add_argument("--manifest", required=True)
+    wiring.add_argument("--receipt", required=True)
+    wiring.add_argument("--contents", help="current GET-back response including workbookId and documentVersion")
+    wiring.add_argument("--out", required=True)
+
+    bindings = commands.add_parser("bindings", help="resolve business presentation bindings from assigned inputs")
+    bindings.add_argument("source")
+    bindings.add_argument("--manifest", required=True)
+    bindings.add_argument("--receipt", required=True)
+    bindings.add_argument("--out", required=True)
+
     checkpoint = commands.add_parser(
         "checkpoint-extension", help="bind created IDs to the exact post-extension readback")
     checkpoint.add_argument("--extension-plan", required=True)
@@ -97,7 +112,11 @@ def main(argv=None):
             extracted, connection_id=args.connection, folder_id=args.folder,
             research_plan=_read(args.research_plan) if args.research_plan else None)
         reviewed_payload = _read(args.reviewed_formulas) if args.reviewed_formulas else {}
-        reviewed = reviewed_payload.get("formulaCells", reviewed_payload if isinstance(reviewed_payload, list) else [])
+        if (isinstance(reviewed_payload, dict) and "sourceHash" in reviewed_payload
+                and reviewed_payload["sourceHash"] != extracted["source"]["sha256"]):
+            raise ValueError("reviewed formula payload source hash is stale")
+        reviewed = (reviewed_payload if isinstance(reviewed_payload, list)
+                    else reviewed_payload.get("formulaCells", []))
         plan = build_business_input_plan(extracted, architecture, reviewed)
         manifest = build_manifest(args.source, plan)
         _write(args.out_plan, plan)
@@ -109,9 +128,25 @@ def main(argv=None):
                               "version": args.document_version}
         _write(args.out, manifest)
     elif args.command == "emit":
+        manifest = _read(args.manifest)
+        validate_manifest(manifest)
         result = emit_approved_business_input_program(
-            _read(args.manifest), _read(args.receipt), args.feature,
+            manifest, _read(args.receipt), args.feature,
             current_columns=_read(args.current_columns) if args.current_columns else None)
+        _write(args.out, result)
+    elif args.command == "wiring":
+        manifest, receipt = _read(args.manifest), _read(args.receipt)
+        validate_manifest(manifest)
+        result = emit_workbook_wiring(manifest, receipt)
+        if args.contents:
+            from native_input_wiring import integrate_native_wiring
+            result = integrate_native_wiring(_read(args.contents), manifest, receipt, result)
+        _write(args.out, result)
+    elif args.command == "bindings":
+        manifest = _read(args.manifest)
+        validate_manifest(manifest)
+        result = approved_business_bindings(
+            extract_presentation(args.source), manifest, _read(args.receipt))
         _write(args.out, result)
     elif args.command == "checkpoint-extension":
         proof = checkpoint_input_extension(
@@ -124,7 +159,7 @@ def main(argv=None):
         spec = manifest["planProjection"]["sharedInputArchitecture"]["inputs"][feature]
         result = plan_extension_seed(
             spec["rows"], _read(args.current_rows), spec["keyColumns"], args.row_id,
-            prior_seed=_read(args.prior_seed), manifest=manifest,
+            prior_seed=normalize_seed_plan(_read(args.prior_seed)), manifest=manifest,
             staging_receipt=receipt, feature=feature,
             extension_proof=_read(args.extension_proof),
             snapshot={"id": args.snapshot_id, "ageSeconds": args.snapshot_age_seconds},

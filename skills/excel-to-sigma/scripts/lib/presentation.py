@@ -284,10 +284,33 @@ def _field_for_range(ws, cell_range):
 
 def _fields_for_range(ws, cell_range):
     min_col, _min_row, max_col, _max_row = range_boundaries(str(cell_range).split()[0])
-    if max_col == min_col:
+    for table in ws.tables.values():
+        c1, r1, c2, r2 = range_boundaries(table.ref)
+        if c1 <= min_col <= max_col <= c2 and r1 < _min_row <= _max_row <= r2:
+            return [str(ws.cell(r1, column).value) for column in range(min_col, max_col + 1)]
+    if max_col == min_col or _min_row == _max_row:
         return [_field_for_range(ws, cell_range)]
     return [_field_for_range(ws, f"{get_column_letter(column)}{_min_row}:{get_column_letter(column)}{_max_row}")
             for column in range(min_col, max_col + 1)]
+
+
+def _horizontal_period_scope(ws, cell_range):
+    c1, r1, c2, r2 = range_boundaries(str(cell_range).split()[0])
+    if r1 != r2 or c1 == c2:
+        return None
+    for table in ws.tables.values():
+        tc1, tr1, tc2, tr2 = range_boundaries(table.ref)
+        if tc1 <= c1 <= c2 <= tc2 and tr1 < r1 <= tr2:
+            return None
+    # Financial grids identify periods on a Line Item header row, rather than
+    # from nearby data values in the preceding metric row.
+    for row in range(r1 - 1, 0, -1):
+        if str(ws.cell(row, 1).value).strip() == "Line Item":
+            values = [ws.cell(row, column).value for column in range(c1, c2 + 1)]
+            if all(isinstance(value, int) and 1900 <= value <= 2200 for value in values):
+                return {"sourceRow": r1, "headerRow": row, "values": values,
+                        "columns": [get_column_letter(column) for column in range(c1, c2 + 1)]}
+    return None
 
 
 def _list_values(formula):
@@ -436,6 +459,7 @@ def _extract_conditional_formats(workbook):
                     "id": f"conditional-{len(result) + 1}", "sheet": ws.title,
                     "range": sqref, "field": _field_for_range(ws, sqref),
                     "fields": _fields_for_range(ws, sqref),
+                    "periodScope": _horizontal_period_scope(ws, sqref),
                     "sourceType": source_type, "operator": rule.operator,
                     "formula": formula, "text": rule.text, "priority": rule.priority,
                     "stopIfTrue": bool(rule.stopIfTrue), "status": status,
@@ -635,6 +659,20 @@ def fixture_bindings(plan):
     conditional_targets = {}
     for rule in plan["conditionalFormats"]:
         targets = []
+        if workflow == "research" and rule["sheet"] == "FY results" and rule.get("periodScope"):
+            scope = rule["periodScope"]
+            # Both financial views contain exactly the source B:M period span.
+            # A partial horizontal range needs an explicit year predicate.
+            if scope["columns"] == list("BCDEFGHIJKLM"):
+                column_id = f"research_c{scope['sourceRow']}"
+                for role, view_columns in (("main", main_view_columns), ("detail", detail_view_columns)):
+                    if column_id in {c["id"] for c in view_columns}:
+                        targets.append({"elementId": f"research-{role}-view", "columnId": column_id})
+            conditional_targets[rule["id"]] = targets
+            continue
+        if workflow == "research" and rule["sheet"] == "Audit":
+            conditional_targets[rule["id"]] = []
+            continue
         for field in rule.get("fields") or [rule["field"]]:
             field = field.strip()
             bound = columns.get(f"{rule['sheet']}!{field}")
@@ -838,11 +876,91 @@ def build_business_input_architecture(plan, *, connection_id, folder_id, researc
         architecture["provenance"][mapped] = {
             "sourceHash": plan["source"]["sha256"],
             "extractionHash": plan["extractionHash"], "sourceRange": extracted["sourceRange"]}
+    if workflow != "research":
+        try:
+            from .native_input_wiring import extract_forecast_model, business_native_wiring
+        except ImportError:
+            from native_input_wiring import extract_forecast_model, business_native_wiring
+        if workflow == "forecast":
+            architecture["forecastModel"] = extract_forecast_model(
+                plan["source"]["path"], architecture["inputs"][feature])
+        architecture["nativeWiring"] = business_native_wiring(
+            architecture, workflow, extracted, build_operational_input_elements(architecture))
+        architecture["formulaTargets"] = {}
+        if workflow == "inventory":
+            for column in extracted["derivedColumns"]:
+                for cell in column["sourceCells"]:
+                    architecture["formulaTargets"][cell] = {
+                        "logicalElementId": "inventory",
+                        "logicalColumnId": re.sub(r"[^a-z0-9]+", "_", column["name"].lower()).strip("_")}
+        elif workflow == "expense":
+            architecture["formulaTargets"]["Dashboard!B5"] = {
+                "logicalCheckId": "expense-numeric-amount-count"}
     architecture["inputs"][feature]["editMode"] = "published-explore"
     architecture["inputs"][feature].setdefault("frame", [1, 4, 24, 24])
     architecture["presentationInputFeature"] = feature
     architecture["presentationSourceHash"] = plan["source"]["sha256"]
     return _manifest_value(architecture)
+
+
+def approved_business_bindings(plan, manifest, staging_receipt):
+    """Resolve native business presentation targets from the assigned receipt.
+
+    Research keeps its separate existing-Calc binding interface. No logical
+    input IDs or placeholder column IDs escape this adapter.
+    """
+    workflow = plan["workflow"]
+    if workflow == "research":
+        raise ValueError("research requires its existing calculationSource runtime bindings")
+    architecture = manifest.get("planProjection", {}).get("sharedInputArchitecture", {})
+    if (architecture.get("presentationSourceHash") != plan["source"]["sha256"]
+            or manifest.get("sourceHash") != plan["source"]["sha256"]):
+        raise ValueError("presentation binding source is stale")
+    emitted = emit_workbook_wiring(manifest, staging_receipt)["wiring"]
+    feature = architecture["presentationInputFeature"]
+    spec = architecture["inputs"][feature]
+    binding = staging_receipt["targetBindings"][feature]
+    if set(binding.get("columnIds") or {}) != {c["name"] for c in spec["columns"]}:
+        raise ValueError("presentation binding requires complete assigned input columns")
+    target = manifest.get("target") or {}
+    if target != {"documentId": binding["documentId"], "version": binding["version"]}:
+        raise ValueError("presentation binding target/version is stale")
+    result = fixture_bindings(plan)
+    result.update({"planHash": manifest["planHash"], "stagingReceiptHash": _digest(staging_receipt),
+                   "documentId": binding["documentId"], "documentVersion": binding["version"],
+                   "editElementId": binding["elementId"]})
+    result["businessInput"].update(binding)
+    result["businessInput"]["currentColumns"] = [
+        {"name": c["name"], "type": c["type"], "id": binding["columnIds"][c["name"]]}
+        for c in spec["columns"]]
+    view_id = "forecastInputsView" if workflow == "forecast" else emitted["consumerSources"][workflow]
+    view = next(e for e in emitted["elements"] if e["id"] == view_id)
+    result["viewSourceElementId"] = view_id
+    main = [c["name"] for c in spec["columns"]] if workflow == "forecast" else MAIN_COLUMNS[workflow]
+    detail = main + ["Section", "Section Order", "Line Order", "Owner"] if workflow == "forecast" else DETAIL_COLUMNS[workflow]
+    for key, names in (("mainViewColumns", main), ("detailViewColumns", detail)):
+        result[key] = [{"id": re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_"),
+                        "name": name, "formula": f"[{view['name']}/{name}]"} for name in names]
+    sheet = BUSINESS_TABLES[workflow][0]
+    mapping = {}
+    for name, old in result["columns"].items():
+        if not name.startswith(sheet + "!"):
+            continue
+        field = name[len(sheet) + 1:]
+        if field in binding["columnIds"]:
+            new = {"elementId": binding["elementId"], "columnId": binding["columnIds"][field]}
+        else:
+            column = next((c for c in view["columns"] if c["name"] == field), None)
+            if column is None:
+                continue
+            new = {"elementId": view_id, "columnId": column["id"]}
+        mapping[(old["elementId"], old["columnId"])] = new
+        result["columns"][name] = {**old, **new}
+    for key in ("validationTargets", "conditionalTargets"):
+        for rule, targets in result[key].items():
+            result[key][rule] = [mapping.get((item["elementId"], item["columnId"]), item)
+                                for item in targets]
+    return result
 
 
 def build_business_input_plan(plan, architecture, reviewed_formulas=None):
@@ -871,6 +989,22 @@ def build_business_input_plan(plan, architecture, reviewed_formulas=None):
                     or not str(approved.get("replacementFormula") or "").strip()
                     or not isinstance(replacement.get("targetMapping"), dict)):
                 raise ValueError(f"reviewed formula replacement is incomplete: {item['cell']}")
+            expected_target = (architecture.get("formulaTargets") or {}).get(item["cell"])
+            if expected_target != replacement["targetMapping"]:
+                raise ValueError(f"reviewed formula target is not emitted/owned: {item['cell']}")
+            graph = architecture.get("nativeWiring") or {}
+            if "logicalElementId" in expected_target:
+                emitted_formula = next((c["formula"] for e in graph.get("elements", [])
+                    if e["id"] == expected_target["logicalElementId"] for c in e["columns"]
+                    if c["id"] == expected_target["logicalColumnId"]), None)
+            else:
+                check = next((check for check in graph.get("checks", [])
+                    if check["logicalCheckId"] == expected_target["logicalCheckId"]), {})
+                emitted_formula = next((c["formula"] for e in graph.get("elements", [])
+                    if e["id"] == check.get("elementId") for c in e["columns"]
+                    if c["id"] == check.get("columnId")), None)
+            if emitted_formula != approved["replacementFormula"]:
+                raise ValueError(f"reviewed replacement differs from emitted native target: {item['cell']}")
             record.update(copy.deepcopy(replacement))
             record.update({"id": item["cell"], "sheet": sheet, "address": address,
                            "originalFormula": item["formula"]})
@@ -1026,10 +1160,16 @@ def emit_approved_business_input_program(manifest, staging_receipt, feature, *,
         raise ValueError("feature is not the approved presentation input")
     target = (staging_receipt.get("targetBindings") or {}).get(feature) or {}
     if not target.get("elementId"):
-        return {"mode": "construct-approved", "feature": feature,
-                "program": emit_construction_program(manifest, staging_receipt, feature)}
+        program = emit_construction_program(manifest, staging_receipt, feature)
+        result = {"mode": "construct-approved", "feature": feature, "program": program}
+        if architecture.get("nativeWiring") is not None:
+            result["wiringTemplate"] = build_operational_input_elements(architecture)
+            result["nextStep"] = "read assigned input IDs, restage exact bindings, emit wiring; merge with guarded contents PUT"
+        return result
     extension = plan_input_extension(
         manifest, staging_receipt, feature, current_columns)
+    if architecture.get("nativeWiring") is not None:
+        extension["workbookWiring"] = emit_workbook_wiring(manifest, staging_receipt)
     return extension
 
 

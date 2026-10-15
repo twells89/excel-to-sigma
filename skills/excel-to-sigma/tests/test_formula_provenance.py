@@ -185,8 +185,6 @@ class TestFormulaGraph(unittest.TestCase):
     def test_fixture_graph_evaluates_all_display_and_audit_formulas(self):
         fixture = ROOT / "tests" / "fixtures" / "fixture-research-model.xlsx"
         expected_path = ROOT / "tests" / "fixtures" / "fixture-research-expected.json"
-        if not fixture.exists() or not expected_path.exists():
-            self.skipTest("research fixture not installed")
         expected = json.loads(expected_path.read_text(encoding="utf-8"))
         from openpyxl import load_workbook
         wb = load_workbook(fixture, data_only=False)

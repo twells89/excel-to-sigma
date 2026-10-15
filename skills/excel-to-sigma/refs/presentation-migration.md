@@ -45,10 +45,13 @@ than being recreated.
 
 Forecast, sales, inventory, and expense inputs are constructed as ordinary
 input tables in published Explore edit mode. Only source-authored literals are seeded;
-derived columns stay live. Sales adds live weighted-value and cycle-day columns,
-then consumes the reviewed Task 2 AsOfDate join for TimingStatus. Inventory
-adds its availability, reorder-point, days-cover, `ROUNDUP`, and status chain.
-Expense consumes the reviewed Task 2 policy join for PolicyExcess and Exception.
+derived columns live on native downstream calculation tables owned by the same
+immutable architecture. Sales calculates weighted value and cycle days on
+`salesInputBase`, then consumes the reviewed Task 2 AsOfDate join. Inventory
+owns its availability, reorder-point, days-cover, `ROUNDUP`, and status chain on
+`inventory`. Expense consumes the reviewed Task 2 policy join and owns the
+numeric-Amount count check on `expenseNumericAmountCount`. Companion settings
+and policy inputs are constructed separately, never duplicated by the wiring.
 The artifact exposes this through `businessOperationalWiring`, produced by
 `build_shared_input_architecture` and `build_operational_input_elements` rather
 than a second formula contract. Research reuses its Task 2 shared input table and
@@ -73,6 +76,44 @@ python3 scripts/presentation-inputs.py emit --manifest input-manifest.json \
   --feature forecastBusinessInput --out construction.json
 ```
 
+After construction, read the assigned input/column IDs and restage those exact
+bindings. The assigned native graph can then be emitted or merged into a complete
+GET-back response without manual formula repair:
+
+```bash
+python3 scripts/presentation-inputs.py wiring --manifest input-manifest.json \
+  --receipt assigned-receipt.json --contents current-get-response.json \
+  --out native-wiring-put.json
+python3 scripts/presentation-inputs.py bindings source.xlsx \
+  --manifest input-manifest.json --receipt assigned-receipt.json \
+  --out presentation-bindings.json
+```
+
+`--contents` requires `workbookId`, `documentVersion`, and the complete flat
+`contents` document. It checks assigned input names, types, and column IDs,
+preserves unrelated nodes, rejects foreign target collisions, and returns a
+version-guarded contents PUT artifact. Omitting `--contents` emits the assigned
+fragments and pending query checks. Apply only `contents` and `documentVersion`
+to the API; other artifact fields carry provenance. Refresh/restage the receipt
+after the PUT changes the version before emitting presentation bindings.
+
+The forecast graph joins the assigned wide input to `spineWrap` by Line Item.
+`Method`, `Monthly Growth`, and each source month column feed `forecast` and
+`pnlCombined`; there are no separate rate/manual inputs. Actual amounts are
+source literals, and the last-actual base is aggregated by SQL at query time.
+`forecastInputsView` joins the same wide row to source line metadata for the
+editing/detail presentation. The library forecast builder also accepts
+`approved_inputs={"manifest": manifest, "receipt": receipt}` for composing a
+workbook draft around this graph in the existing document; its default create
+CLI retains the legacy contract.
+
+Unsupported-root review mappings must name an actual emitted target and match
+its exact native formula. Inventory uses `logicalElementId=inventory` and
+`logicalColumnId=reorder_qty`; expense uses
+`logicalCheckId=expense-numeric-amount-count`, which owns the native numeric
+Amount count KPI column. These are pending review/runtime targets, not approval
+or parity evidence.
+
 Before the presentation PUT, run `presentation-inputs.py bind-target` with the
 latest GET/readback document ID and version. Re-run it after a research column
 extension changes the version, then approve the assigned post-extension
@@ -88,11 +129,15 @@ A non-null field is retained as a user edit. The checkpoint cannot be replayed,
 and a partial retry emits only columns still absent from the latest approved
 binding. Unsupported source formulas require explicit reviewed replacements via
 `prepare --reviewed-formulas`; they are never silently promoted.
-Persist the returned seed plan before attempting its writes. It records the
-checkpoint hash as consumed, so an interrupted write cannot later reuse the
-creation proof after a field is cleared back to null; losing that plan leaves
-the field conservatively conflicted rather than authorizing a fabricated null
-baseline.
+Persist the entire returned `{plan, programs}` file before attempting its
+writes and supply that file (or its canonical nested plan) as the next
+`--prior-seed`. The public and library boundaries normalize this exact envelope,
+reject ambiguous/foreign shapes, and carry checkpoint consumption through later
+normal reconciliation. New writes remain pending until an actual matching
+readback confirms them; no null baseline is fabricated. Always retain the latest
+persisted ledger: deliberately rolling back local state cannot prove that a
+creation proof was previously consumed. The writer checks the approved seed-row
+hash, reconciliation digest, action source values, and extension target scope.
 
 Research runtime bindings should source the main and detail views from `calc`
 (`Calc`): `Year` uses `yr`, and each metric uses the authored `c<row>`
@@ -108,6 +153,10 @@ The edit-table patch keeps `Scope` and `i_model_inputs_c2` through
 `i_model_inputs_c7` visible in that order and formats the six growth assumptions
 as percentages. The remaining source inputs stay in the same physical table and
 remain available in Explore while the main edit grid stays compact.
+Horizontal financial conditional rules retain their metric row and source year
+scope: B31:M31 targets detail `research_c31`, and B57:M57 targets
+`research_c57` on the main/detail views. Unbound Audit Status rules remain
+explicitly unresolved; no calculation/status field is invented.
 
 Every chart helper formula records target check ownership. Other source formulas
 are collected in one hash-bound unresolved scope per workflow until target

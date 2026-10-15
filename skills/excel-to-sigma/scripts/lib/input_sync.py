@@ -94,6 +94,45 @@ def _same(left, right, column_type=None):
     return _json_value(left) == _json_value(right) and type(left) is type(right)
 
 
+def normalize_seed_plan(prior_seed):
+    """Accept a canonical plan or the exact public {plan, programs} envelope.
+
+    Never interpret an unrecognized persisted object as an empty baseline.
+    """
+    if prior_seed is None:
+        return None
+    if not isinstance(prior_seed, dict):
+        raise InputSyncError("prior seed must be a canonical seed plan")
+    if "plan" in prior_seed or "programs" in prior_seed:
+        if set(prior_seed) != {"plan", "programs"} or not isinstance(prior_seed["programs"], list):
+            raise InputSyncError("ambiguous prior seed wrapper")
+        prior_seed = prior_seed["plan"]
+    if (not isinstance(prior_seed, dict)
+            or not isinstance(prior_seed.get("seedRecords"), list)
+            or not isinstance(prior_seed.get("keyColumns"), list)
+            or not prior_seed["keyColumns"] or not prior_seed.get("rowIdColumn")
+            or "plan" in prior_seed or "programs" in prior_seed):
+        raise InputSyncError("prior seed is not a canonical seed plan")
+    allowed = {"sourceHash", "planHash", "keyColumns", "rowIdColumn", "inserts", "updates",
+               "conflicts", "unchanged", "orphans", "snapshot", "seedRecords", "limitations",
+               "extensionSeedCheckpoints", "extensionSeedScope"}
+    if set(prior_seed) - allowed:
+        raise InputSyncError("prior seed has foreign fields")
+    for record in prior_seed["seedRecords"]:
+        if (not isinstance(record, dict) or not isinstance(record.get("key"), list)
+                or not any(field in record for field in (
+                    "confirmedMigrationValue", "pendingMigrationValue", "lastMigrationValue"))):
+            raise InputSyncError("invalid prior seed record")
+        for field in ("confirmedMigrationValue", "pendingMigrationValue", "lastMigrationValue"):
+            if record.get(field) is not None and not isinstance(record[field], dict):
+                raise InputSyncError("invalid prior seed baseline")
+    ledger = prior_seed.get("extensionSeedCheckpoints", [])
+    if (not isinstance(ledger, list) or any(not isinstance(item, str) or not item for item in ledger)
+            or len(ledger) != len(set(ledger))):
+        raise InputSyncError("invalid extension checkpoint ledger")
+    return prior_seed
+
+
 def _prior_index(prior_seed):
     result = {}
     if not prior_seed:
@@ -109,6 +148,10 @@ def _prior_index(prior_seed):
 def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=None,
               snapshot=None, column_types=None):
     """Plan inserts and safe row-ID updates without overwriting observed user edits."""
+    prior_seed = normalize_seed_plan(prior_seed)
+    if prior_seed is not None and (prior_seed["keyColumns"] != list(key_columns)
+                                   or prior_seed["rowIdColumn"] != row_id_column):
+        raise InputSyncError("prior seed key/row-ID scope is foreign")
     source_rows = list(source_rows)
     current_rows = list(current_rows)
     if not key_columns or not all(isinstance(column, str) and column for column in key_columns):
@@ -181,6 +224,9 @@ def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=
     logical = {"sourceHash": source_hash, "keyColumns": list(key_columns),
                "rowIdColumn": row_id_column, "inserts": inserts, "updates": updates,
                "conflicts": conflicts, "unchanged": unchanged, "orphans": orphans}
+    if prior_seed and prior_seed.get("extensionSeedCheckpoints"):
+        logical["extensionSeedCheckpoints"] = list(prior_seed["extensionSeedCheckpoints"])
+        logical["extensionSeedScope"] = copy.deepcopy(prior_seed.get("extensionSeedScope"))
     return {**logical, "planHash": _digest(logical), "snapshot": dict(snapshot or {}),
             "seedRecords": records,
             "limitations": [
@@ -385,6 +431,10 @@ def _approved_feature(manifest, receipt, feature, *, require_assigned=False):
     if receipt.get("artifacts") != expected:
         raise InputSyncError("approved artifact binding does not match manifest architecture")
     binding = bindings[feature]
+    target = manifest.get("target")
+    if target and (target.get("documentId") != binding.get("documentId")
+                   or target.get("version") != binding.get("version")):
+        raise InputSyncError("approved target document/version is stale")
     if require_assigned:
         for field in ("elementId", "columnIds"):
             if not binding.get(field):
@@ -496,8 +546,17 @@ def plan_extension_seed(source_rows, current_rows, key_columns, row_id_column, *
                         prior_seed, manifest, staging_receipt, feature,
                         extension_proof, snapshot=None, column_types=None):
     """Authorize a first seed only for checkpointed, newly-created null fields."""
+    prior_seed = normalize_seed_plan(prior_seed)
     input_spec, target, _artifact = _approved_feature(
         manifest, staging_receipt, feature, require_assigned=True)
+    source_rows, current_rows = list(source_rows), list(current_rows)
+    if _digest(source_rows) != _artifact["seedHash"] or list(key_columns) != input_spec["keyColumns"]:
+        raise InputSyncError("extension seed source rows/key scope differ from approved source")
+    seed_scope = {"sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+                  "feature": feature, "documentId": target["documentId"],
+                  "pageId": target["pageId"], "elementId": target["elementId"]}
+    if (prior_seed or {}).get("extensionSeedScope") not in (None, seed_scope):
+        raise InputSyncError("prior extension seed scope is foreign")
     proof = dict(extension_proof or {})
     checkpoint_hash = proof.pop("checkpointHash", None)
     if not checkpoint_hash or checkpoint_hash != _digest(proof):
@@ -539,7 +598,10 @@ def plan_extension_seed(source_rows, current_rows, key_columns, row_id_column, *
             proof_item = readback_columns[name]
             if proof_item.get("columnId") != column_id:
                 raise InputSyncError("extension checkpoint readback column ID is stale")
-            if proof_item.get("value") is None and observed.get(name) is None:
+            if name not in observed:
+                raise InputSyncError("extension seed current readback omits a created column")
+            if (proof_item.get("value") is None and observed[name] is None
+                    and not _same(wanted[name], observed[name], (column_types or {}).get(name))):
                 safe[name] = wanted[name]
         if safe:
             authorized_by_token[token] = set(safe)
@@ -561,6 +623,16 @@ def plan_extension_seed(source_rows, current_rows, key_columns, row_id_column, *
             conflicts.append({**conflict, "columns": remaining})
     existing_updates = [update for update in result["updates"]
                         if not set(update["changes"]) & set(created)]
+    for record in result["seedRecords"]:
+        token = _key_token(record["key"])
+        names = authorized_by_token.get(token)
+        if names:
+            wanted = source_index[token][1]
+            pending = dict(record.get("pendingMigrationValue")
+                           or record.get("confirmedMigrationValue") or {})
+            pending.update({name: wanted[name] for name in names})
+            pending.update({name: wanted[name] for name in key_columns})
+            record["pendingMigrationValue"] = pending
     result["updates"] = existing_updates + authorized_updates
     result["conflicts"] = conflicts
     result["extensionSeedCheckpoints"] = list(
@@ -569,10 +641,12 @@ def plan_extension_seed(source_rows, current_rows, key_columns, row_id_column, *
     # caller persists this plan first, so an interrupted write cannot authorize
     # the same first-seed proof against a later null readback.
     result["extensionSeedCheckpoints"].append(checkpoint_hash)
+    result["extensionSeedScope"] = seed_scope
     logical = {key: result[key] for key in (
         "sourceHash", "keyColumns", "rowIdColumn", "inserts", "updates",
         "conflicts", "unchanged", "orphans")}
     logical["extensionSeedCheckpoints"] = result["extensionSeedCheckpoints"]
+    logical["extensionSeedScope"] = seed_scope
     result["planHash"] = _digest(logical)
     return result
 
@@ -657,6 +731,43 @@ def emit_write_programs(seed_plan, manifest, staging_receipt, feature,
         raise InputSyncError("max_batch_rows must be between 1 and 2000")
     input_spec, target, artifact = _approved_feature(
         manifest, staging_receipt, feature, require_assigned=True)
+    seed_plan = normalize_seed_plan(seed_plan)
+    if seed_plan["sourceHash"] != artifact["seedHash"]:
+        raise InputSyncError("reconciliation source rows differ from approved seed rows")
+    if seed_plan["keyColumns"] != input_spec["keyColumns"]:
+        raise InputSyncError("reconciliation key scope differs from approved seed schema")
+    logical_keys = ("sourceHash", "keyColumns", "rowIdColumn", "inserts", "updates",
+                    "conflicts", "unchanged", "orphans")
+    if any(key not in seed_plan for key in logical_keys):
+        raise InputSyncError("reconciliation plan is incomplete")
+    logical = {key: seed_plan[key] for key in logical_keys}
+    if seed_plan.get("extensionSeedCheckpoints"):
+        logical["extensionSeedCheckpoints"] = seed_plan["extensionSeedCheckpoints"]
+        logical["extensionSeedScope"] = seed_plan.get("extensionSeedScope")
+        expected_scope = {"sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+                          "feature": feature, "documentId": target["documentId"],
+                          "pageId": target["pageId"], "elementId": target["elementId"]}
+        if logical["extensionSeedScope"] != expected_scope:
+            raise InputSyncError("reconciliation extension seed scope is foreign")
+    if _digest(logical) != seed_plan.get("planHash"):
+        raise InputSyncError("reconciliation plan digest is stale")
+    approved_rows = _index(input_spec.get("rows") or [], input_spec["keyColumns"], "approved")
+    action_keys = set()
+    for action in seed_plan["updates"] + seed_plan["inserts"]:
+        token = _key_token(action.get("key"))
+        if token not in approved_rows or token in action_keys:
+            raise InputSyncError("reconciliation action has a foreign or duplicate source key")
+        action_keys.add(token)
+        wanted = approved_rows[token][1]
+        if _digest(action.get("source")) != _digest(wanted):
+            raise InputSyncError("reconciliation action source differs from approved rows")
+        if "changes" in action:
+            if action.get("rowId") is None or not isinstance(action["changes"], dict):
+                raise InputSyncError("reconciliation update requires an observed row ID and changes")
+            if any(name in input_spec["keyColumns"] or name not in wanted
+                   or _digest(value) != _digest(wanted[name])
+                   for name, value in action["changes"].items()):
+                raise InputSyncError("reconciliation changes differ from approved source values")
     actions = [("update", item) for item in seed_plan.get("updates", [])]
     actions += [("insert", item) for item in seed_plan.get("inserts", [])]
     columns = dict(target["columnIds"])
@@ -841,6 +952,24 @@ def _rest_columns(spec, prefix):
 
 def build_operational_input_elements(architecture, target_bindings=None):
     """Build executable ordinary inputs and native join/calculation fragments."""
+    if architecture.get("nativeWiring") is not None:
+        def resolve(value):
+            if isinstance(value, dict):
+                return {key: resolve(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [resolve(item) for item in value]
+            if isinstance(value, str) and value.startswith("@input:"):
+                feature = value[len("@input:"):]
+                if feature not in architecture["inputs"]:
+                    raise InputSyncError("native wiring references a foreign input")
+                if target_bindings is None:
+                    return value
+                binding = target_bindings.get(feature) or {}
+                if not binding.get("elementId"):
+                    raise InputSyncError(f"assigned target binding required for {feature}")
+                return binding["elementId"]
+            return value
+        return resolve(architecture["nativeWiring"])
     inputs = architecture.get("inputs") or {}
     connection = (architecture.get("targetScope") or {}).get("connectionId")
     wiring = architecture.get("workbookWiring") or {}
