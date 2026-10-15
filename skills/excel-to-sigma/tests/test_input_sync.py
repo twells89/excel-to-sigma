@@ -145,6 +145,20 @@ class TestSeedPlanner(unittest.TestCase):
         self.assertEqual(plan["orphans"][0]["rowId"], "r-old")
         self.assertNotIn("deletes", plan)
 
+    def test_date_only_seed_matches_datetime_readback(self):
+        source = [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30"}]
+        initial = plan_seed(source, [], ["Setting"], "Row ID")
+        rerun = plan_seed(
+            source,
+            [{"Setting": "AsOfDate", "AsOfDate": dt.datetime(2026, 6, 30, 12),
+              "Row ID": "server-1"}],
+            ["Setting"], "Row ID", prior_seed=initial,
+        )
+
+        self.assertEqual(rerun["conflicts"], [])
+        self.assertEqual(rerun["updates"], [])
+        self.assertEqual(len(rerun["unchanged"]), 1)
+
 
 class TestMcpPrograms(unittest.TestCase):
     def setUp(self):
@@ -221,6 +235,28 @@ class TestMcpPrograms(unittest.TestCase):
         self.assertIn("datetime(2026, 6, 30, 8, 45, 12)", programs[0]["program"])
         self.assertEqual([item["chunkIndex"] for item in programs], [0, 1])
         self.assertTrue(all(item["checkpointId"] for item in programs))
+
+    def test_write_program_uses_approved_schema_types(self):
+        spec = self.architecture["inputs"]["salesSettings"]
+        seed = plan_seed(spec["rows"], [], spec["keyColumns"], "Row ID")
+        binding = {
+            "documentId": "doc-1", "version": 7, "pageId": "page-1",
+            "elementId": "sales-settings",
+            "columnIds": {"Setting": "setting", "AsOfDate": "as-of-date"},
+        }
+        bindings = {**self.bindings, "salesSettings": binding}
+        receipt = {
+            **self.receipt,
+            "targetBindings": bindings,
+            "artifacts": build_artifact_records(
+                self.manifest, self.architecture, bindings),
+        }
+
+        program = emit_write_programs(
+            seed, self.manifest, receipt, "salesSettings")[0]["program"]
+
+        self.assertIn("datetime(2026, 6, 30, 12)", program)
+        self.assertNotIn("'2026-06-30'", program)
 
 
 class TestSharedArchitecture(unittest.TestCase):

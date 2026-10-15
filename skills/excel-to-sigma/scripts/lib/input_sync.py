@@ -85,6 +85,12 @@ def _index(rows, key_columns, origin):
 
 
 def _same(left, right):
+    if (isinstance(left, (dt.date, dt.datetime)) and isinstance(right, str)
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", right)):
+        return _parse_datetime(left) == _parse_datetime(right)
+    if (isinstance(right, (dt.date, dt.datetime)) and isinstance(left, str)
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", left)):
+        return _parse_datetime(left) == _parse_datetime(right)
     return _json_value(left) == _json_value(right) and type(left) is type(right)
 
 
@@ -426,12 +432,12 @@ def emit_write_programs(seed_plan, manifest, staging_receipt, feature,
     """Emit writes bound to the manifest, approved artifact, and assigned target IDs."""
     if not 1 <= max_batch_rows <= MAX_BATCH_ROWS:
         raise InputSyncError("max_batch_rows must be between 1 and 2000")
-    _input_spec, target, artifact = _approved_feature(
+    input_spec, target, artifact = _approved_feature(
         manifest, staging_receipt, feature, require_assigned=True)
     actions = [("update", item) for item in seed_plan.get("updates", [])]
     actions += [("insert", item) for item in seed_plan.get("inserts", [])]
     columns = dict(target["columnIds"])
-    types = dict(target.get("columnTypes") or {})
+    types = {column["name"]: column["type"] for column in input_spec["columns"]}
     programs = []
     for offset in range(0, len(actions), max_batch_rows):
         chunk = actions[offset:offset + max_batch_rows]

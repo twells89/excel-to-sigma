@@ -294,6 +294,8 @@ class TestWorkbookBuilders(unittest.TestCase):
 
     def test_research_builder_exposes_source_bound_cross_sheet_input_defaults(self):
         plan = research_plan()
+        plan["sheet"] = "FY results"
+        plan["periods"] = [{"year": 2024, "col": "B"}, {"year": 2025, "col": "C"}]
         plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
         plan["sourceInputs"] = [
             {
@@ -305,10 +307,13 @@ class TestWorkbookBuilders(unittest.TestCase):
             {
                 "id": "i_fy_results_b8", "sourceCellId": "FY results!B8",
                 "sheet": "FY results", "address": "B8", "defaultValue": 100.0,
-                "values": {"2024": 100.0}, "mappingStatus": "live",
+                "values": {"2025": 100.0}, "mappingStatus": "live",
                 "role": "source_literal",
             },
         ]
+        plan["lines"][0]["periodFormulas"] = {
+            "2025": "[i_model_inputs_c2]",
+        }
         plan["lines"][2]["periodFormulas"] = {
             "2024": "[c8] * (1 + [i_model_inputs_c2])",
         }
@@ -326,8 +331,10 @@ class TestWorkbookBuilders(unittest.TestCase):
                  if column["id"] == "i_model_inputs_c2"),
             "If(IsNull([Inputs/Scope]), [CJ/i_model_inputs_c2], [Inputs/i_model_inputs_c2])",
         )
-        self.assertIn("[i_fy_results_b8]", next(
-            column["formula"] for column in calc["columns"] if column["id"] == "c8"))
+        revenue_formula = next(
+            column["formula"] for column in calc["columns"] if column["id"] == "c8")
+        self.assertIn("If([Year] = 2024, [i_fy_results_b8]", revenue_formula)
+        self.assertIn("If([Year] = 2025, [i_model_inputs_c2]", revenue_formula)
         input_table = next(node for node in all_dicts(workbook)
                            if node.get("id") == "researchInputs")
         self.assertEqual(input_table["source"],

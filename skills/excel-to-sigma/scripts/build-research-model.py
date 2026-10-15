@@ -250,14 +250,16 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                           "formula": (f"If(IsNull([{input_namespace}/Scope]), {base}, "
                                       f"[{input_namespace}/{item['id']}])")})
 
+    period_years = {period.get("col"): str(period["year"])
+                    for period in plan.get("periods", []) if period.get("col")}
     literal_bindings = {}
     for item in source_inputs:
-        match = re.search(r"!([A-Z]+)(\d+)$", item.get("sourceCellId", ""))
-        if not match:
+        match = re.fullmatch(r"\$?([A-Z]+)\$?(\d+)", item.get("address", ""))
+        if item.get("sheet") != plan.get("sheet") or not match:
             continue
-        row = int(match.group(2))
-        for year in (item.get("values") or {}):
-            literal_bindings[(row, str(year))] = item["id"]
+        year = period_years.get(match.group(1))
+        if year:
+            literal_bindings[(int(match.group(2)), year)] = item["id"]
     merge = []
     for ln in plan["lines"]:
         cid = ln["col_id"]; merge.append(cid)
