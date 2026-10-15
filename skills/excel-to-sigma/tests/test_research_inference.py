@@ -18,6 +18,10 @@ def load_inference():
 
 
 INFERENCE = load_inference()
+_builder_spec = importlib.util.spec_from_file_location("research_builder_for_dag",
+                                                       SCRIPTS / "build-research-model.py")
+BUILDER = importlib.util.module_from_spec(_builder_spec)
+_builder_spec.loader.exec_module(BUILDER)
 from migration_manifest import validate_manifest  # noqa: E402
 
 
@@ -49,7 +53,8 @@ class TestResearchInference(unittest.TestCase):
 
     def test_cross_sheet_drivers_are_source_bound_inputs_and_year_formulas_stay_live(self):
         inputs = self.plan["sourceInputs"]
-        self.assertEqual([item["sourceCellId"] for item in inputs],
+        drivers = [item for item in inputs if item["role"] == "cross_sheet_driver"]
+        self.assertEqual([item["sourceCellId"] for item in drivers],
                          [f"Model Inputs!C{row}" for row in range(2, 8)])
         revenue = next(line for line in self.plan["lines"] if line["row"] == 8)
         self.assertEqual(set(revenue["periodFormulas"]),
@@ -58,12 +63,44 @@ class TestResearchInference(unittest.TestCase):
 
     def test_period_offsets_sum_percent_and_precision_render_as_live_formulas(self):
         lines = {line["row"]: line for line in self.plan["lines"]}
-        self.assertEqual(lines[9]["periodFormulas"]["2020"], "[c8] / Lag([c8], 1, [Year]) - 1")
-        self.assertEqual(lines[16]["periodFormulas"]["2025"],
-                         "Lag([c16], 1, [Year]) * (104.5 * 0.01)")
-        self.assertEqual(lines[63]["periodFormulas"]["2019"], "Sum(([c61] + [c62]))")
-        self.assertEqual(lines[64]["periodFormulas"]["2019"], "[c63] / [c31]")
+        self.assertEqual(lines[9]["periodFormulas"]["2020"],
+                         "[i_fy_results_c8] / [i_fy_results_b8] - 1")
+        self.assertNotIn("[c", lines[16]["periodFormulas"]["2025"])
+        self.assertNotIn("[c", lines[63]["periodFormulas"]["2019"])
+        self.assertNotIn("[c", lines[64]["periodFormulas"]["2019"])
         self.assertTrue(INFERENCE._safe_sigma("Lag([c8], 1, [Year])"))
+
+    def test_emitted_period_formulas_are_a_static_dag_without_self_or_sibling_refs(self):
+        for line in self.plan["lines"]:
+            for formula in (line.get("periodFormulas") or {}).values():
+                self.assertNotRegex(formula, r"\[c\d+\]")
+                self.assertNotIn("Lag(", formula)
+                self.assertNotIn("Lead(", formula)
+
+    def test_generated_target_calculation_columns_form_a_dag(self):
+        _dm, data_lines = BUILDER.build_dm(self.plan, "connection", "folder", "Research")
+        workbook = BUILDER.build_wb(
+            self.plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        calc = next(element for page in workbook["pages"] for element in page.get("elements", [])
+                    if element.get("id") == "calc")
+        calc_ids = {column["id"] for column in calc["columns"]}
+        edges = {column["id"]: set(__import__("re").findall(r"\[([^]/]+)\]", column["formula"])) & calc_ids
+                 for column in calc["columns"]}
+        self.assertTrue(all(node not in deps for node, deps in edges.items()))
+        self.assertFalse(edges["c11"] & {"c13"})
+        self.assertFalse(edges["c13"] & {"c11"})
+        visiting, visited = set(), set()
+        def visit(node):
+            self.assertNotIn(node, visiting, f"generated target cycle at {node}")
+            if node in visited:
+                return
+            visiting.add(node)
+            for dependency in edges[node]:
+                visit(dependency)
+            visiting.remove(node); visited.add(node)
+        for node in edges:
+            visit(node)
 
     def test_audit_formulas_are_computed_verification_checks(self):
         checks = self.plan["auditChecks"]

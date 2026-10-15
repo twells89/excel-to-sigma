@@ -22,12 +22,10 @@ class ManifestError(ValueError):
     pass
 
 
-_RUNTIME_CONTAINERS = {
-    "evidence", "runtimeEvidence", "execution", "executionState", "verification",
-    "targetVersions", "targetVersion", "targetBinding", "actualTarget", "runtime",
-}
-_ASSIGNED_TARGET_FIELDS = {"workbookId", "elementId", "documentId", "actualColumnId", "version"}
-_ROOT_SOURCE_METADATA = {"source", "sourcePath", "sourceSha256", "migrationManifest"}
+_ROOT_EXCLUDED = {"source", "sourcePath", "sourceSha256", "migrationManifest",
+                  "evidence", "runtimeEvidence", "execution", "executionState",
+                  "verification", "targetVersions", "targetVersion", "targetBinding",
+                  "actualTarget", "runtime", "formulaCells"}
 
 
 def _sha256(path):
@@ -35,23 +33,21 @@ def _sha256(path):
         return hashlib.sha256(stream.read()).hexdigest()
 
 
-def _logical(value, *, parent=None):
-    if isinstance(value, dict):
-        return {
-            key: _logical(item, parent=key)
-            for key, item in sorted(value.items())
-            if key not in _RUNTIME_CONTAINERS
-            and not (parent == "targetMapping" and key in _ASSIGNED_TARGET_FIELDS)
-        }
-    if isinstance(value, list):
-        return [_logical(item, parent=parent) for item in value]
-    return value
+def _formula_projection(formulas):
+    keys = ("id", "sheet", "address", "originalFormula", "dependencies",
+            "mappingStatus", "targetMapping", "unresolvedReason")
+    return [{key: item.get(key) for key in keys if key in item}
+            for item in sorted(formulas, key=lambda value: value.get("id", ""))]
 
 
-def _plan_hash(source_hash, plan):
-    plan = plan or {}
-    projected = {key: value for key, value in plan.items() if key not in _ROOT_SOURCE_METADATA}
-    logical = {"sourceHash": source_hash, "plan": _logical(projected)}
+def _plan_projection(plan):
+    return {key: value for key, value in sorted((plan or {}).items())
+            if key not in _ROOT_EXCLUDED}
+
+
+def _plan_hash(source_hash, projection, formulas):
+    logical = {"sourceHash": source_hash, "plan": projection,
+               "formulaCells": _formula_projection(formulas)}
     encoded = json.dumps(logical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -65,6 +61,7 @@ def build_manifest(source_path, plan=None) -> dict:
     cached = load_workbook(source, data_only=True, read_only=False)
     graph = FormulaGraph.from_workbook(workbook)
     cycle_members = {cell for component in graph.cycles() for cell in component}
+    unresolved_nodes = graph.unresolved_formula_nodes()
     plan_cells = _plan_cell_index(plan or {})
     formulas = []
     for identity in sorted(graph.formulas):
@@ -95,12 +92,14 @@ def build_manifest(source_path, plan=None) -> dict:
         if parse_error:
             item["mappingStatus"] = "unresolved"
             item["unresolvedReason"] = parse_error
-        if identity in cycle_members:
+        if parse_error:
+            pass
+        elif identity in cycle_members:
             item["mappingStatus"] = "unresolved"
             item["unresolvedReason"] = "true cell dependency cycle"
-        elif identity in graph.unresolved_references:
+        elif identity in unresolved_nodes:
             item["mappingStatus"] = "unresolved"
-            item["unresolvedReason"] = "missing source reference"
+            item["unresolvedReason"] = "missing or transitively unresolved source reference"
         formulas.append(item)
     literals = []
     for identity in sorted(graph.literals):
@@ -113,7 +112,8 @@ def build_manifest(source_path, plan=None) -> dict:
         "manifestVersion": MANIFEST_VERSION,
         "source": {"name": source.name, "path": str(source), "sha256": source_hash},
         "sourceHash": source_hash,
-        "planHash": _plan_hash(source_hash, plan),
+        "planProjection": _plan_projection(plan),
+        "planHash": _plan_hash(source_hash, _plan_projection(plan), formulas),
         "formulaCells": formulas,
         "literalInputs": literals,
         "cycles": [[cell.id for cell in component] for component in graph.cycles()],
@@ -161,8 +161,21 @@ def validate_manifest(manifest, source_path=None):
     if any(item.get("mappingStatus") not in {"live", "cached", "unresolved", "verification"}
            for item in formulas):
         raise ManifestError("formula mappingStatus is invalid")
-    if source_path is not None and _sha256(source_path) != source_hash:
+    projection = manifest.get("planProjection")
+    if not isinstance(projection, dict) or _plan_hash(source_hash, projection, formulas) != plan_hash:
+        raise ManifestError("plan hash does not match canonical logical mappings")
+    source_path = source_path or (manifest.get("source") or {}).get("path")
+    if source_path is None or not Path(source_path).is_file():
+        raise ManifestError("source workbook is required to validate formula completeness")
+    if _sha256(source_path) != source_hash:
         raise ManifestError("source hash does not match manifest")
+    workbook = load_workbook(source_path, data_only=False, read_only=False)
+    graph = FormulaGraph.from_workbook(workbook)
+    workbook.close()
+    actual = {cell.id: formula for cell, formula in graph.formulas.items()}
+    recorded = {item["id"]: item.get("originalFormula") for item in formulas}
+    if recorded != actual:
+        raise ManifestError("manifest formula records are incomplete or stale")
     return True
 
 
@@ -174,13 +187,12 @@ def validate_staging_approval(manifest, approval):
         raise ManifestError("staging approval is stale")
     if not str(approval.get("owner") or "").strip():
         raise ManifestError("staging approval requires a named owner")
-    mapped = {item["id"] for item in manifest["formulaCells"]
-              if item["mappingStatus"] != "unresolved"}
+    mapped = {item["id"] for item in manifest["formulaCells"]}
     reviewed = approval.get("reviewItems")
     if not isinstance(reviewed, list) or set(reviewed) != mapped:
         raise ManifestError("staging approval must explicitly list every mapped review item")
     unresolved = [item["id"] for item in manifest["formulaCells"]
-                  if item["mappingStatus"] == "unresolved"]
+                  if item["mappingStatus"] in {"unresolved", "cached"}]
     if unresolved:
         raise ManifestError("staging approval cannot include unresolved formula mappings")
     return True
@@ -195,16 +207,20 @@ def validate_completion(manifest):
         if item.get("mappingStatus") in {"cached", "unresolved"}:
             raise ManifestError(f"formula is not completion-ready: {item['id']}")
         evidence = item.get("verification") or {}
-        mapping = item.get("targetMapping") or {}
+        binding = item.get("targetBinding") or item.get("actualTarget") or {}
         if evidence.get("status") != "passed" or not evidence.get("evidenceId"):
             raise ManifestError(f"verification evidence missing for {item['id']}")
         if evidence.get("sourceCellId") != item["id"]:
             raise ManifestError(f"verification evidence source binding is stale for {item['id']}")
         if not evidence.get("targetId"):
             raise ManifestError(f"verification evidence target binding is missing for {item['id']}")
-        expected_target = mapping.get("columnId") or mapping.get("lineId") or mapping.get("checkId")
-        if expected_target and evidence.get("targetId") != expected_target:
+        expected_target = (binding.get("columnId") or binding.get("elementId")
+                           or binding.get("checkId"))
+        if not expected_target or evidence.get("targetId") != expected_target:
             raise ManifestError(f"verification evidence target binding is stale for {item['id']}")
+        if (not binding.get("elementId") or binding.get("documentId") != target.get("documentId")
+                or binding.get("version") != target.get("version")):
+            raise ManifestError(f"actual target binding is incomplete or stale for {item['id']}")
         if evidence.get("sourceHash") != manifest["sourceHash"]:
             raise ManifestError(f"verification evidence source hash is stale for {item['id']}")
         if evidence.get("planHash") != manifest["planHash"]:

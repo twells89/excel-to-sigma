@@ -144,6 +144,24 @@ class TestFormulaGraph(unittest.TestCase):
                          (CellIdentity("Inputs", "A1"),))
         self.assertEqual(graph.evaluate()[CellIdentity("Model", "A1")], 25)
 
+    def test_unknown_names_and_transitive_consumers_are_unresolved(self):
+        wb = Workbook(); ws = wb.active; ws.title = "Model"
+        ws["A1"] = "=MissingName+1"; ws["B1"] = "=A1*2"
+        graph = FormulaGraph.from_workbook(wb)
+        self.assertEqual(graph.unresolved_names[CellIdentity("Model", "A1")],
+                         ("MissingName",))
+        self.assertEqual(graph.unresolved_formula_nodes(),
+                         {CellIdentity("Model", "A1"), CellIdentity("Model", "B1")})
+
+    def test_cross_sheet_computed_reference_remains_a_formula_dependency(self):
+        wb = Workbook(); model = wb.active; model.title = "Model"
+        inputs = wb.create_sheet("Inputs")
+        inputs["A1"] = 5; inputs["A2"] = "=A1*2"; model["A1"] = "=Inputs!A2+1"
+        graph = FormulaGraph.from_workbook(wb)
+        self.assertEqual(graph.dependencies[CellIdentity("Model", "A1")],
+                         (CellIdentity("Inputs", "A2"),))
+        self.assertEqual(graph.evaluate()[CellIdentity("Model", "A1")], 11)
+
     def test_fixture_graph_evaluates_all_display_and_audit_formulas(self):
         fixture = ROOT / "tests" / "fixtures" / "fixture-research-model.xlsx"
         expected_path = ROOT / "tests" / "fixtures" / "fixture-research-expected.json"
@@ -221,8 +239,8 @@ class TestMigrationManifest(unittest.TestCase):
         reassigned = copy.deepcopy(assigned)
         reassigned["formulaCells"][0]["targetMapping"].update(
             {"workbookId": "wb-new", "elementId": "element-new"})
-        self.assertEqual(build_manifest(self.path, assigned)["planHash"],
-                         build_manifest(self.path, reassigned)["planHash"])
+        self.assertNotEqual(build_manifest(self.path, assigned)["planHash"],
+                            build_manifest(self.path, reassigned)["planHash"])
 
         for key, value in (
             ("lines", [{"row": 1, "canonical": "[c3]"}]),
@@ -252,10 +270,13 @@ class TestMigrationManifest(unittest.TestCase):
         self.assertIn("unsupported", item["unresolvedReason"])
 
     def test_staging_review_and_completion_have_separate_evidence_contracts(self):
-        manifest = build_manifest(self.path)
-        for item in manifest["formulaCells"]:
-            item["mappingStatus"] = "live"
-            item["targetMapping"] = {"columnId": item["id"].replace("!", "_")}
+        plan = {"formulaCells": [
+            {"id": "Audit!A1", "mappingStatus": "live",
+             "targetMapping": {"elementId": "logical-audit", "checkId": "a1"}},
+            {"id": "FY results!C1", "mappingStatus": "live",
+             "targetMapping": {"elementId": "logical-calc", "columnId": "c1"}},
+        ]}
+        manifest = build_manifest(self.path, plan)
         approval = {
             "sourceHash": manifest["sourceHash"],
             "planHash": manifest["planHash"],
@@ -269,13 +290,40 @@ class TestMigrationManifest(unittest.TestCase):
             validate_completion(manifest)
 
         for item in manifest["formulaCells"]:
+            item["targetBinding"] = {
+                "documentId": "wb-1", "elementId": "server-element", "version": 7,
+                "columnId": "server_" + item["id"].replace("!", "_"),
+            }
             item["verification"] = {
                 "status": "passed", "sourceCellId": item["id"],
-                "targetId": item["targetMapping"]["columnId"], "evidenceId": "run-1",
+                "targetId": item["targetBinding"]["columnId"], "evidenceId": "run-1",
                 "sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
                 "targetDocumentId": "wb-1", "targetVersion": 7,
             }
         self.assertTrue(validate_completion(manifest))
+
+    def test_manifest_rejects_mapping_tampering_omissions_and_cached_staging(self):
+        plan = {"formulaCells": [
+            {"id": "Audit!A1", "mappingStatus": "verification", "targetMapping": {"checkId": "a1"}},
+            {"id": "FY results!C1", "mappingStatus": "live", "targetMapping": {"columnId": "c1"}},
+        ]}
+        manifest = build_manifest(self.path, plan)
+        for mutate in (
+            lambda value: value["formulaCells"][1].update(mappingStatus="cached"),
+            lambda value: value["formulaCells"][1]["targetMapping"].update(columnId="changed"),
+            lambda value: value["formulaCells"].pop(),
+        ):
+            changed = copy.deepcopy(manifest); mutate(changed)
+            with self.assertRaises(ManifestError):
+                validate_manifest(changed)
+
+        cached_plan = copy.deepcopy(plan)
+        cached_plan["formulaCells"][1]["mappingStatus"] = "cached"
+        cached = build_manifest(self.path, cached_plan)
+        approval = {"sourceHash": cached["sourceHash"], "planHash": cached["planHash"],
+                    "owner": "Owner", "reviewItems": [i["id"] for i in cached["formulaCells"]]}
+        with self.assertRaisesRegex(ManifestError, "unresolved"):
+            validate_staging_approval(cached, approval)
 
 
 if __name__ == "__main__":

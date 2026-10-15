@@ -22,13 +22,15 @@ class CellIdentity:
 
 
 class FormulaGraph:
-    def __init__(self, formulas, literals, dependencies, unresolved, unsupported, names=None):
+    def __init__(self, formulas, literals, dependencies, unresolved, unsupported, names=None,
+                 unresolved_names=None):
         self.formulas = formulas
         self.literals = literals
         self.dependencies = dependencies
         self.unresolved_references = unresolved
         self.unsupported_formulas = unsupported
         self.names = names or {}
+        self.unresolved_names = unresolved_names or {}
 
     @classmethod
     def from_workbook(cls, workbook):
@@ -45,7 +47,7 @@ class FormulaGraph:
                         literals[identity] = cell.value
         existing = set(formulas) | set(literals)
         names = _defined_names(workbook)
-        dependencies, unresolved, unsupported = {}, {}, {}
+        dependencies, unresolved, unsupported, unresolved_names = {}, {}, {}, {}
         for identity, formula in formulas.items():
             try:
                 expression = parse_expression(formula, sheet=identity.sheet)
@@ -54,9 +56,13 @@ class FormulaGraph:
                 unsupported[identity] = str(error)
                 refs = ()
             deps = set()
+            missing_names = set()
             for ref in refs:
-                if ref.name and ref.name in names:
-                    deps.add(names[ref.name])
+                if ref.name:
+                    if ref.name in names:
+                        deps.add(names[ref.name])
+                    else:
+                        missing_names.add(ref.name)
                 elif ref.sheet and ref.address:
                     deps.add(CellIdentity(ref.sheet, ref.address))
             deps = tuple(sorted(deps))
@@ -64,7 +70,24 @@ class FormulaGraph:
             missing = tuple(dep for dep in deps if dep not in existing)
             if missing:
                 unresolved[identity] = missing
-        return cls(formulas, literals, dependencies, unresolved, unsupported, names)
+            if missing_names:
+                unresolved_names[identity] = tuple(sorted(missing_names))
+        return cls(formulas, literals, dependencies, unresolved, unsupported, names,
+                   unresolved_names)
+
+    def unresolved_formula_nodes(self):
+        """Return directly and transitively unresolved formula cells."""
+        result = (set(self.unresolved_references) | set(self.unresolved_names)
+                  | set(self.unsupported_formulas)
+                  | {cell for component in self.cycles() for cell in component})
+        changed = True
+        while changed:
+            changed = False
+            for node, deps in self.dependencies.items():
+                if node not in result and any(dep in result for dep in deps):
+                    result.add(node)
+                    changed = True
+        return result
 
     def cycles(self):
         formula_nodes = set(self.formulas)

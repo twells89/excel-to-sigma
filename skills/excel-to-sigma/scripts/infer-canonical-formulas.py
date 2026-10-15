@@ -780,48 +780,47 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
     graph = FormulaGraph.from_workbook(workbook)
     cycle_members = {cell for component in graph.cycles() for cell in component}
 
-    def source_input(reference, year):
-        if reference.name:
-            source_id = f"name:{reference.name}"
-            value = _defined_name_value(workbook, reference.name)
-            input_id = "i_name_" + _slug(reference.name)
-            sheet, address = None, None
-        else:
-            source_id = f"{reference.sheet}!{reference.address}"
-            value = workbook[reference.sheet][reference.address].value
-            input_id = "i_" + _slug(reference.sheet) + "_" + reference.address.lower()
-            sheet, address = reference.sheet, reference.address
+    def source_input(identity, year, role="source_literal"):
+        source_id = identity.id
+        value = graph.literals[identity]
+        input_id = "i_" + _slug(identity.sheet) + "_" + identity.address.lower()
+        sheet, address = identity.sheet, identity.address
         record = inputs.setdefault(source_id, {
             "id": input_id, "sourceCellId": source_id, "sheet": sheet, "address": address,
-            "defaultValue": value, "values": {}, "mappingStatus": "live",
+            "defaultValue": value, "values": {}, "mappingStatus": "live", "role": role,
         })
         if isinstance(value, (int, float)):
             record["values"][str(year)] = value
         return f"[{input_id}]"
 
-    def render_formula(formula, column, year):
-        expression = parse_expression(formula, sheet=model_sheet.title)
-        current_position = positions[column]
+    unresolved_nodes = graph.unresolved_formula_nodes()
+
+    def render_cell(identity, year, stack=()):
+        if identity in unresolved_nodes or identity in stack:
+            raise UnsupportedExpression(f"unresolved dependency {identity.id}")
+        if identity in graph.literals:
+            role = ("cross_sheet_driver" if identity.sheet == "Model Inputs"
+                    else "source_literal")
+            return source_input(identity, year, role)
+        formula = graph.formulas.get(identity)
+        if formula is None:
+            raise UnsupportedExpression(f"missing source reference {identity.id}")
+        expression = parse_expression(formula, sheet=identity.sheet)
 
         def render_reference(reference):
-            if reference.name or reference.sheet != model_sheet.title:
-                return source_input(reference, year)
-            ref_column = column_index_from_string(re.match(r"[A-Z]+", reference.address).group(0))
-            ref_row = int(re.search(r"\d+$", reference.address).group(0))
-            if ref_column not in positions or ref_row not in lines:
-                return source_input(reference, year)
-            offset = positions[ref_column] - current_position
-            base = f"[c{ref_row}]"
-            if offset < 0:
-                return f"Lag({base}, {-offset}, [Year])"
-            if offset > 0:
-                return f"Lead({base}, {offset}, [Year])"
-            return base
+            if reference.name:
+                target = graph.names.get(reference.name)
+                if target is None:
+                    raise UnsupportedExpression(f"unresolved defined name {reference.name}")
+            else:
+                target = CellIdentity(reference.sheet, reference.address)
+            return f"({render_cell(target, year, stack + (identity,))})" if target in graph.formulas \
+                else render_cell(target, year, stack + (identity,))
 
         def render_range(value):
             return "(" + " + ".join(render_reference(reference)
                                       for reference in expand_range(value)) + ")"
-        return expression, emit_expression_sigma(expression, render_reference, render_range)
+        return emit_expression_sigma(expression, render_reference, render_range)
 
     for row, row_data in rows.items():
         line = lines[row]
@@ -844,7 +843,8 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
                     }
                     continue
                 try:
-                    expression, rendered = render_formula(formula, column, int(year))
+                    expression = parse_expression(formula, sheet=identity.sheet)
+                    rendered = render_cell(identity, int(year))
                 except UnsupportedExpression as error:
                     provenance[year] = {
                         "sourceCellId": identity.id, "kind": "formula",
@@ -879,9 +879,7 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
     formula_cells, audit_checks = [], []
     for identity, formula in sorted(graph.formulas.items()):
         dependencies = [cell.id for cell in graph.dependencies.get(identity, ())]
-        structural_unresolved = (identity in cycle_members
-                                 or identity in graph.unsupported_formulas
-                                 or identity in graph.unresolved_references)
+        structural_unresolved = identity in unresolved_nodes
         if identity.sheet == "Audit":
             status = "unresolved" if structural_unresolved else "verification"
             target = {"checkId": "audit_" + identity.address.lower()}
