@@ -61,8 +61,12 @@ def _zip_inventory(path):
         "queryTables": sum("/querytables/" in name for name in lowered),
         "powerQuery": any_path("/queries/", "datamashup"),
         "pivotParts": sum("/pivottables/" in name for name in lowered),
-        "slicerParts": sum("/slicers/", "/slicercaches/"),
-        "timelineParts": sum("/timelines/", "/timelinecaches/"),
+        "slicerParts": sum(
+            "/slicers/" in name or "/slicercaches/" in name for name in lowered
+        ),
+        "timelineParts": sum(
+            "/timelines/" in name or "/timelinecaches/" in name for name in lowered
+        ),
         "activeXParts": sum("/activex/" in name for name in lowered),
         "embeddedObjects": sum("/embeddings/" in name for name in lowered),
         "customXmlParts": sum(name.startswith("customxml/") and name.endswith(".xml")
