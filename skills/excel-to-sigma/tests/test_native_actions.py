@@ -118,6 +118,9 @@ class TestNativeActions(unittest.TestCase):
         proof=checkpoint_action_schema(extension,created,result_version=9,before=rows['expenseBusinessInput'],
             after={'rowIdColumn':'ID','rows':after,'readbackId':'read','elementId':'expenseBusinessInput','version':9})
         self.assertEqual(proof['preservedRowCount'],48)
+        self.assertEqual(proof['preservedValueCount'],528)
+        self.assertEqual(len(proof['originalEditableColumns']),11)
+        self.assertEqual(len(proof['preservationReadbacks']['before']['rows'][0]),12)
         after[0]['Amount']=0
         with self.assertRaisesRegex(NativeActionError,'preserv'):
             checkpoint_action_schema(extension,created,result_version=9,before=rows['expenseBusinessInput'],
@@ -129,6 +132,95 @@ class TestNativeActions(unittest.TestCase):
         proc=copy.deepcopy(analyses[1]['procedures'][0]);proc['writes'][0]['row']=2
         with self.assertRaisesRegex(NativeActionError,'selected-record'):
             _contract('approval',proc,{'target':'expenseBusinessInput'})
+
+    def test_approval_rejects_hidden_helper_side_effects_and_unmodeled_mutation(self):
+        from native_actions import _contract
+        cases=[('DeleteAudit targetRow', 'Sub DeleteAudit(r As Long)\nCells(r, 10).Value = "Deleted"\nEnd Sub\n'),
+            ('MissingHelper targetRow',''),
+            ('result = DeleteAudit(targetRow)', 'Function DeleteAudit(r As Long) As Boolean\nCells(r, 10).Value = "Deleted"\nDeleteAudit = True\nEnd Function\n'),
+            ('Range("A1").ClearContents',''),('newRow.Range(1, 10).Value = "Deleted"',''),
+            ('result = MissingFunction','')]
+        for statement,helper in cases:
+            with self.subTest(statement=statement),tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/'approval.bas'
+                path.write_text(APPROVAL.replace('End Sub',statement+'\nEnd Sub')+helper)
+                proc=analyze_macro_source(path)['procedures'][0]
+                with self.assertRaises(NativeActionError):
+                    _contract('approval',proc,{'target':'expenseBusinessInput'})
+
+    def test_approval_write_worksheet_must_resolve_to_guarded_expense_register(self):
+        from native_actions import _contract
+        for owner,allowed in [('',True),('ActiveSheet.',True),
+                             ('Sheets("Expense Register").',True),
+                             ('Worksheets("Expense Register").',True),
+                             ('Sheets("Other").',False),('ws.',False),
+                             ('OtherWorkbook.Sheets("Expense Register").',False)]:
+            with self.subTest(owner=owner),tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/'approval.bas'
+                path.write_text(APPROVAL.replace('Cells(targetRow',owner+'Cells(targetRow'))
+                proc=analyze_macro_source(path)['procedures'][0]
+                if allowed:_contract('approval',proc,{'target':'expenseBusinessInput'})
+                else:
+                    with self.assertRaises(NativeActionError):
+                        _contract('approval',proc,{'target':'expenseBusinessInput'})
+
+    def test_plan_preparation_rejects_narrow_expense_snapshot_for_each_original_field(self):
+        plan,contents,readbacks,analyses=self.setup_case()
+        base=self.base_manifest;schema=base['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns']
+        for column in schema:
+            with self.subTest(omitted=column['name']):
+                narrow=copy.deepcopy(readbacks)
+                for row in narrow['expenseBusinessInput']['rows']:row.pop(column['name'])
+                with self.assertRaisesRegex(NativeActionError,'complete|schema|field'):
+                    build_native_action_plan(workbook_source=base['source']['path'],base_manifest=base,
+                        base_receipt=staging(base),presentation_bindings={'pages':{'expense-edit':'host'}},
+                        current_contents=contents,input_readbacks=narrow,macro_analyses=analyses,
+                        decisions=plan['planProjection']['nativeActionArchitecture']['reviewedDecisions'])
+
+    def test_extension_checkpoint_rejects_narrow_before_or_after_even_with_matching_hash(self):
+        plan,_,rows,_=self.setup_case();schema=plan['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns']
+        extension=emit_action_schema(plan,staging(plan,partial=True),'expenseBusinessInput',
+            current_columns=[{'id':'c'+str(i),**c} for i,c in enumerate(schema[:11])])
+        created={c['name']:'new'+str(i) for i,c in enumerate(schema[-3:])}
+        before=rows['expenseBusinessInput'];after=copy.deepcopy(before)
+        after.update(readbackId='read',elementId='expenseBusinessInput',version=9)
+        for row in after['rows']:row.update({c['name']:None for c in schema[-3:]})
+        for column in schema[:11]:
+            for side in ['before','after','both']:
+                with self.subTest(omitted=column['name'],side=side):
+                    old,new,ext=copy.deepcopy(before),copy.deepcopy(after),copy.deepcopy(extension)
+                    if side in ['before','both']:
+                        for row in old['rows']:row.pop(column['name'])
+                        ext['requiredBeforeHash']=_digest(old)
+                    if side in ['after','both']:
+                        for row in new['rows']:row.pop(column['name'])
+                    with self.assertRaisesRegex(NativeActionError,'complete|schema|field|preserv'):
+                        checkpoint_action_schema(ext,created,result_version=9,before=old,after=new)
+
+    def test_action_binding_and_emitter_reject_narrow_preservation_evidence(self):
+        plan,receipt,binding,contents=self.bound_approval()
+        _,_,readbacks,_=self.setup_case()
+        for row in readbacks['expenseBusinessInput']['rows']:
+            row.update({c['name']:None for c in plan['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns'][-3:]})
+            row.pop('Amount')
+        readbacks['workflowOperations']={'rowIdColumn':'ID','rows':[]}
+        with self.assertRaisesRegex(NativeActionError,'complete|schema|field'):
+            bind_native_action_target(plan,receipt,current_contents=contents,input_readbacks=readbacks)
+        incomplete_binding=copy.deepcopy(binding)
+        snapshot=incomplete_binding['tables']['expenseBusinessInput']['inputReadback']
+        for row in snapshot['rows']:row.pop('Amount')
+        incomplete_binding['tables']['expenseBusinessInput']['readbackHash']=_digest(snapshot)
+        incomplete_binding['bindingHash']=_digest({k:v for k,v in incomplete_binding.items() if k!='bindingHash'})
+        incomplete_receipt=copy.deepcopy(receipt);incomplete_receipt['nativeActionBinding']=incomplete_binding
+        with self.assertRaisesRegex(NativeActionError,'complete|schema|field'):
+            emit_native_action_program(plan,incomplete_receipt,incomplete_binding,current_contents=contents)
+        bad=copy.deepcopy(receipt);proof=bad['nativeActionSchemaProofs']['expenseBusinessInput']
+        # A legacy proof that merely claims 48 rows cannot authorize emission.
+        for key in ['originalEditableColumns','preservationReadbacks','preservedValueCount']:
+            proof.pop(key,None)
+        proof['preservationHash']=_digest({k:v for k,v in proof.items() if k!='preservationHash'})
+        with self.assertRaisesRegex(NativeActionError,'preserv|schema|complete'):
+            emit_native_action_program(plan,bad,binding,current_contents=contents)
 
     def test_binding_rejects_wrong_document_missing_layout_and_ambiguous_ids(self):
         plan,contents,rows,_=self.setup_case();receipt=staging(plan)
@@ -195,6 +287,7 @@ class TestNativeActions(unittest.TestCase):
     def test_readback_never_reports_success_for_zero_write_wrong_row_or_partial_failure(self):
         expected={'workflow':'approval','operationId':'op-A','rowIdColumn':'ID','keyColumn':'Expense ID',
             'selectedRowId':'physical-2','selectedBusinessKey':'EXP-2','context':'expense-edit',
+            'approvedAt':'2026-10-15T12:00:00Z',
             'sourceHash':'a'*64,'planHash':'b'*64,'writeFields':['Approval Status','ApprovedAt',
             'Last Approval Operation ID','Applied Approval Operation IDs']}
         row={'ID':'physical-2','Expense ID':'EXP-2','Approval Status':'Pending','ApprovedAt':None,
@@ -315,6 +408,32 @@ class TestNativeActions(unittest.TestCase):
         for bad in ({**capture,'after':[row,row]}, {**capture,'after':[{**row,'lineA/Jul':13}]},
                     {**capture,'writeOutcome':'failed'}):
             self.assertEqual(audit_native_action_readback(expected,bad)['status'],'FAILED')
+
+    def test_new_approval_timestamp_requires_typed_expectation_or_controller_window(self):
+        import datetime as dt
+        expected={'workflow':'approval','operationId':'fresh','rowIdColumn':'ID','keyColumn':'Expense ID',
+            'selectedRowId':'physical','selectedBusinessKey':'E','context':'expense-edit',
+            'writeFields':['Approval Status','ApprovedAt','Last Approval Operation ID','Applied Approval Operation IDs']}
+        old={'ID':'physical','Expense ID':'E','Approval Status':'Approved','ApprovedAt':'2000-01-01T00:00:00Z',
+            'Last Approval Operation ID':'old','Applied Approval Operation IDs':'|old|'}
+        capture={'context':'expense-edit','selectionCount':1,'before':[old],
+            'after':[{**old,'Last Approval Operation ID':'fresh','Applied Approval Operation IDs':'|old||fresh|'}],
+            'writeOutcome':'confirmed','operationId':'fresh','evidenceId':'read',
+            'executionWindow':{'startedAt':'2026-10-15T12:00:00Z','completedAt':'2026-10-15T12:00:02Z'}}
+        self.assertEqual(audit_native_action_readback(expected,capture)['status'],'FAILED')
+        for value in ['not-a-timestamp',1,True,{},'2026-10-15','2026-10-15T12:00:01',
+                      '2026-10-15T11:59:59Z','2026-10-15T12:00:03Z']:
+            with self.subTest(timestamp=value):
+                capture['after'][0]['ApprovedAt']=value
+                self.assertEqual(audit_native_action_readback(expected,capture)['status'],'FAILED')
+        for value in ['2026-10-15T12:00:01Z',dt.datetime(2026,10,15,12,0,1,tzinfo=dt.timezone.utc)]:
+            capture['after'][0]['ApprovedAt']=value
+            self.assertEqual(audit_native_action_readback(expected,capture)['status'],'PASSED_COMPONENT_READBACK')
+        capture.pop('executionWindow')
+        self.assertEqual(audit_native_action_readback(expected,capture)['status'],'FAILED')
+        exact={**expected,'approvedAt':'2026-10-15T12:00:01Z'}
+        self.assertEqual(audit_native_action_readback(exact,capture)['status'],'PASSED_COMPONENT_READBACK')
+        self.assertEqual(audit_native_action_readback({**exact,'approvedAt':'2026-10-15T12:00:02Z'},capture)['status'],'FAILED')
 
     def test_old_retry_preserves_timestamp_and_intent_but_new_intent_can_change_it(self):
         expected={'workflow':'approval','operationId':'old','rowIdColumn':'ID','keyColumn':'Expense ID',

@@ -141,6 +141,39 @@ class TestMacroBehavior(unittest.TestCase):
         self.assertEqual(parent["disposition"]["operation"], "append")
         self.assertEqual(len(parent["helperDefinitions"]), 2)
 
+    def test_argument_bearing_helpers_expand_transitively_or_remain_missing(self):
+        present=self.write_module('Sub Parent()\nDeleteAudit targetRow\nEnd Sub\n'
+            'Sub DeleteAudit(r As Long)\nCall WriteAudit(r)\nEnd Sub\n'
+            'Sub WriteAudit(r As Long)\nCells(r, 10).Value = "Deleted"\nEnd Sub\n')
+        parent=analyze_macro_source(present)['procedures'][0]
+        self.assertEqual([c['name'] for c in parent['calls']],['DeleteAudit'])
+        self.assertEqual(parent['writes'][0]['column'],10)
+        self.assertEqual(len(parent['helperDefinitions']),2)
+        missing=self.write_module('Sub Parent()\nMissingHelper targetRow\nEnd Sub\n')
+        parent=analyze_macro_source(missing)['procedures'][0]
+        self.assertIn('MissingHelper',[d.get('name') for d in parent['unresolvedDependencies']])
+        self.assertEqual(parent['disposition']['status'],'UNRESOLVED')
+
+    def test_function_expression_helpers_are_not_silently_discarded(self):
+        path=self.write_module('Sub Parent()\nDim result As Boolean\nresult = DeleteAudit(targetRow)\nEnd Sub\n'
+            'Function DeleteAudit(r As Long) As Boolean\nCells(r, 10).Value = "Deleted"\nDeleteAudit = True\nEnd Function\n')
+        parent=analyze_macro_source(path)['procedures'][0]
+        self.assertEqual([c['name'] for c in parent['calls']],['DeleteAudit'])
+        self.assertEqual(parent['writes'][0]['column'],10)
+        missing=self.write_module('Sub Parent()\nresult = MissingFunction(targetRow)\nEnd Sub\n')
+        parent=analyze_macro_source(missing)['procedures'][0]
+        self.assertIn('MissingFunction',[d.get('name') for d in parent['unresolvedDependencies']])
+
+    def test_unmodeled_mutations_and_member_calls_are_unresolved(self):
+        for statement in ['Range("A1").ClearContents', 'Rows(2).Delete',
+                          'Range("A1").Value = 3', 'Cells(2, 10) = "Deleted"',
+                          'AuditModule.DeleteAudit targetRow']:
+            with self.subTest(statement=statement):
+                path=self.write_module('Sub Parent()\n'+statement+'\nEnd Sub\n')
+                proc=analyze_macro_source(path)['procedures'][0]
+                self.assertTrue(proc['unresolvedDependencies'])
+                self.assertEqual(proc['disposition']['status'],'UNRESOLVED')
+
     def test_forged_behavior_facts_fail_source_validation(self):
         path = self.write_module('Sub Work()\nApplication.Calculate\nEnd Sub\n')
         analysis = analyze_macro_source(path)

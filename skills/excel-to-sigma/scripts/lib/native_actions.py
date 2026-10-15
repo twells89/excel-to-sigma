@@ -8,6 +8,7 @@ is reported. Ordinary input tables provide no concurrent uniqueness guarantee.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -72,6 +73,48 @@ def _rows(readback, key):
     return {r[rid]:r for r in rows}
 
 
+def _complete_input_readback(readback, columns, *, row_ids=None, row_id_column=None):
+    """Require every editable field and the physical ID, never a narrow SELECT."""
+    names=[c['name'] for c in columns]
+    if len(set(names))!=len(names):raise NativeActionError('preservation schema has duplicate fields')
+    if not isinstance(readback,dict):raise NativeActionError('complete input schema readback is required')
+    rid=readback.get('rowIdColumn')
+    if not rid or rid in names or (row_id_column is not None and rid!=row_id_column):
+        raise NativeActionError('complete input schema requires the approved physical ID field')
+    rows=readback.get('rows')
+    if not isinstance(rows,list) or any(not isinstance(r,dict) or set(r)!=set(names)|{rid} for r in rows):
+        raise NativeActionError('complete input schema requires every original editable field plus physical ID')
+    indexed=_rows(readback,None)
+    if row_ids is not None and set(indexed)!=set(row_ids):
+        raise NativeActionError('preservation requires exact original physical row ID coverage')
+    return indexed
+
+
+def _preservation_contract(manifest, feature):
+    architecture=_architecture(manifest)
+    contract=architecture.get('baseInputSchemas',{}).get(feature)
+    if (not isinstance(contract,dict) or not isinstance(contract.get('columns'),list)
+            or not contract.get('rowIdColumn') or not isinstance(contract.get('rowIds'),list)):
+        raise NativeActionError('complete original schema preservation contract is required')
+    spec=manifest['planProjection']['sharedInputArchitecture']['inputs'][feature]
+    if (feature=='expenseBusinessInput' and (contract['columns']!=spec['columns'][:-3]
+            or len(contract['columns'])!=11 or len(contract['rowIds'])!=48)):
+        raise NativeActionError('expense preservation must bind all 11 original fields and 48 IDs')
+    return contract
+
+
+def _check_preservation(before, after, contract, additions):
+    columns=contract['columns'];rid=contract['rowIdColumn'];ids=contract['rowIds']
+    old=_complete_input_readback(before,columns,row_ids=ids,row_id_column=rid)
+    new=_complete_input_readback(after,columns+additions,row_ids=ids,row_id_column=rid)
+    for key,row in old.items():
+        if any(new[key][name]!=value for name,value in row.items()):
+            raise NativeActionError('extension did not preserve original field values')
+        if any(new[key][c['name']] is not None for c in additions):
+            raise NativeActionError('extension did not preserve all-null added fields')
+    return len(old),len(old)*len(columns)
+
+
 def _spec(template,name,fields):
     return {**{k:copy.deepcopy(template[k]) for k in ('connectionId','writebackSchemaId','editMode','frame') if k in template},
             'name':name,'keyColumns':['Operation ID'] if name!='Workflow Operations' else [],
@@ -91,6 +134,8 @@ def _procedure(analyses,decision):
 
 def _contract(workflow,proc,decision):
     """Narrow body facts plus explicit reviewed mappings authorize each route."""
+    if proc.get('unresolvedDependencies') or proc.get('externalSideEffects'):
+        raise NativeActionError('unresolved source call/mutation cannot authorize a native contract')
     writes=proc['writes'];body=proc['sourceBody']
     if workflow=='approval':
         if (not proc['selectedRecord'] or len(writes)!=2
@@ -100,6 +145,12 @@ def _contract(workflow,proc,decision):
                 or {g['kind'] for g in proc['guards']}!={'minimum-row','active-sheet'}
                 or not any(re.fullmatch(r'ActiveSheet\.Name\s*<>\s*"Expense Register"',g['condition'],re.I) for g in proc['guards'])):
             raise NativeActionError('approval body is not the reviewed selected-record update')
+        for write in writes:
+            # A partial suffix match is not a worksheet ownership proof.
+            target=write['target']
+            expected=r'(?:ActiveSheet\.|(?:Sheets|Worksheets)\(\s*"Expense Register"\s*\)\.)?Cells\(\s*'+re.escape(proc['selectedRecord']['variable'])+r'\s*,\s*'+str(write['column'])+r'\s*\)'
+            if not re.fullmatch(expected,target,re.I):
+                raise NativeActionError('approval write worksheet must resolve to guarded Expense Register')
         if decision.get('target')!='expenseBusinessInput':raise NativeActionError('approval target must be expenseBusinessInput')
     elif workflow=='navigation':
         if proc['disposition']['operation']!='navigate' or writes:
@@ -144,7 +195,12 @@ def build_native_action_plan(*,workbook_source,base_manifest,base_receipt,presen
                              current_contents,input_readbacks,macro_analyses,decisions):
     validate_manifest(base_manifest,workbook_source)
     shared=copy.deepcopy(base_manifest['planProjection']['sharedInputArchitecture'])
+    original_schemas={}
     for feature,spec in shared['inputs'].items():
+        if feature=='expenseBusinessInput':
+            complete=_complete_input_readback(input_readbacks.get(feature),spec['columns'])
+            original_schemas[feature]={'columns':copy.deepcopy(spec['columns']),
+                'rowIdColumn':input_readbacks[feature]['rowIdColumn'],'rowIds':sorted(complete)}
         _approved_feature(base_manifest,base_receipt,feature,require_assigned=True)
         key=(spec.get('keyColumns') or [None])[0]
         _rows(input_readbacks.get(feature),key)
@@ -211,6 +267,7 @@ def build_native_action_plan(*,workbook_source,base_manifest,base_receipt,presen
         'stagingReceiptHash':_digest(base_receipt),'target':base_manifest['target']},
         'sourceModules':copy.deepcopy(macro_analyses),'sourcePresentation':copy.deepcopy(presentation_bindings),
         'baseInputReadbackHashes':{k:_digest(v) for k,v in input_readbacks.items()},
+        'baseInputSchemas':original_schemas,
         'workflows':workflows,'reviewedDecisions':copy.deepcopy(decisions),'unresolved':unresolved,
         'limitations':LIMITS,'productionStatus':'BLOCKED'}
     projection=copy.deepcopy(base_manifest['planProjection'])
@@ -239,6 +296,8 @@ def emit_action_schema(manifest,receipt,feature,*,current_columns=None):
         extension=plan_input_extension(manifest,receipt,feature,current_columns)
         extension['preservationRequired']=True
         extension['requiredBeforeHash']=_architecture(manifest)['baseInputReadbackHashes'].get(feature)
+        extension['preservationContract']=copy.deepcopy(_preservation_contract(manifest,feature))
+        extension['preservationContractHash']=_digest(extension['preservationContract'])
         return extension
     _approved_feature(manifest,receipt,feature)
     return {'feature':feature,'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
@@ -249,19 +308,19 @@ def checkpoint_action_schema(extension,created_columns,*,result_version,before,a
     """Additive columns are accepted only with unchanged existing values and IDs."""
     if _digest(before)!=extension.get('requiredBeforeHash'):
         raise NativeActionError('extension preservation baseline differs from reviewed source readback')
-    rid=before.get('rowIdColumn')
-    if rid!=after.get('rowIdColumn'):raise NativeActionError('preservation requires the same physical ID column')
-    old=_rows(before,None);new=_rows(after,None)
-    if set(old)!=set(new):raise NativeActionError('extension did not preserve original row IDs')
-    added={c['name'] for c in extension['missingColumns']}
-    for key,row in old.items():
-        if any(new[key].get(n)!=v for n,v in row.items()) or any(new[key].get(n) is not None for n in added):
-            raise NativeActionError('extension did not preserve original values/all-null additions')
-        if set(new[key])!=set(row)|added:raise NativeActionError('extension has foreign or missing fields')
+    contract=extension.get('preservationContract')
+    if not isinstance(contract,dict) or extension.get('preservationContractHash')!=_digest(contract):
+        raise NativeActionError('complete original schema preservation contract is missing or stale')
+    preserved_rows,preserved_values=_check_preservation(before,after,contract,extension['missingColumns'])
+    new=_rows(after,None)
     readback={k:after[k] for k in ('readbackId','elementId','version')}
     readback['columns']={n:{'columnId':cid,'values':[r[n] for r in new.values()]} for n,cid in created_columns.items()}
     proof=checkpoint_input_extension(extension,created_columns,result_version=result_version,readback=readback)
-    proof.update(preservedRowCount=len(old),beforeHash=_digest(before),afterHash=_digest(after))
+    proof.update(preservedRowCount=preserved_rows,preservedValueCount=preserved_values,
+        originalEditableColumns=copy.deepcopy(contract['columns']),
+        preservationContract=copy.deepcopy(contract),
+        preservationReadbacks={'before':copy.deepcopy(before),'after':copy.deepcopy(after)},
+        beforeHash=_digest(before),afterHash=_digest(after))
     proof['preservationHash']=_digest({k:v for k,v in proof.items() if k!='preservationHash'})
     return proof
 
@@ -300,10 +359,16 @@ def bind_native_action_target(manifest,receipt,*,current_contents,input_readback
                 raise NativeActionError('assigned editable column identity/type is stale')
         readback=input_readbacks.get(feature);key=(spec.get('keyColumns') or [None])[0]
         _rows(readback,key)
+        if feature=='expenseBusinessInput' and 'approval' in architecture['workflows']:
+            contract=_preservation_contract(manifest,feature)
+            _complete_input_readback(readback,spec['columns'],row_ids=contract['rowIds'],
+                row_id_column=contract['rowIdColumn'])
         system=_system_column_contract(target)
         system['id']=system.get('id') or readback['rowIdColumn']
         tables[feature]={'target':copy.deepcopy(target),'systemColumn':system,'readbackHash':_digest(readback),
             'identities':[{'rowId':r[readback['rowIdColumn']], 'key':{k:r[k] for k in spec.get('keyColumns') or []}} for r in readback['rows']]}
+    if 'expenseBusinessInput' in tables:
+        tables['expenseBusinessInput']['inputReadback']=copy.deepcopy(input_readbacks['expenseBusinessInput'])
     reads={}
     for feature,target in architecture['sourcePresentation'].get('readTargets',{}).items():
         if not re.fullmatch('[A-Za-z_][A-Za-z_0-9]*',feature) or feature in tables:
@@ -377,6 +442,21 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
                 or proof.get('resultVersion',-1)>manifest['target']['version']
                 or proof.get('preservationHash')!=_digest({k:v for k,v in proof.items() if k!='preservationHash'})):
             raise NativeActionError('expense action requires checkpointed extension preservation proof')
+        contract=_preservation_contract(manifest,'expenseBusinessInput')
+        snapshots=proof.get('preservationReadbacks') or {}
+        if (proof.get('originalEditableColumns')!=contract['columns']
+                or proof.get('preservationContract')!=contract
+                or proof.get('preservedValueCount')!=528
+                or _digest(snapshots.get('before'))!=proof.get('beforeHash')
+                or _digest(snapshots.get('after'))!=proof.get('afterHash')):
+            raise NativeActionError('expense preservation evidence omits complete original schema/readbacks')
+        _check_preservation(snapshots.get('before'),snapshots.get('after'),contract,APPROVAL_COLUMNS)
+        table=binding['tables']['expenseBusinessInput']
+        bound_readback=table.get('inputReadback')
+        _complete_input_readback(bound_readback,manifest['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns'],
+            row_ids=contract['rowIds'],row_id_column=contract['rowIdColumn'])
+        if _digest(bound_readback)!=table['readbackHash']:
+            raise NativeActionError('bound complete expense schema readback is stale')
         columns=binding['tables']['expenseBusinessInput']['target']['columnIds']
         if proof.get('createdColumns')!={c['name']:columns[c['name']] for c in APPROVAL_COLUMNS}:
             raise NativeActionError('expense extension assigned columns are stale')
@@ -615,6 +695,35 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
         'failed/partial write','concurrent retries','before/after row and values','no optimistic success toast']}
 
 
+def _timestamp(value):
+    """Accept an aware timestamp object or ISO timestamp with an explicit zone."""
+    if isinstance(value,str):
+        try:value=dt.datetime.fromisoformat(value.replace('Z','+00:00'))
+        except ValueError:return None
+    if not isinstance(value,dt.datetime) or value.tzinfo is None:
+        return None
+    try:
+        if value.utcoffset() is None:return None
+        return value.astimezone(dt.timezone.utc)
+    except (ValueError,OverflowError):return None
+
+
+def _approval_timestamp_matches(value,expected,capture):
+    observed=_timestamp(value)
+    if observed is None:return False
+    explicit='approvedAt' in expected
+    window=capture.get('executionWindow')
+    if not explicit and window is None:return False
+    if explicit:
+        wanted=_timestamp(expected['approvedAt'])
+        if wanted is None or observed!=wanted:return False
+    if window is not None:
+        if not isinstance(window,dict):return False
+        start=_timestamp(window.get('startedAt'));end=_timestamp(window.get('completedAt'))
+        if start is None or end is None or not start<=observed<=end:return False
+    return True
+
+
 def audit_native_action_readback(expected,capture):
     """Audit controller-captured rows, not a simulator of an assumed Sigma write."""
     failures=[];workflow=expected.get('workflow');op=expected.get('operationId')
@@ -636,7 +745,7 @@ def audit_native_action_readback(expected,capture):
             if token in (old.get('Applied Approval Operation IDs') or ''):
                 if new!=old:failures.append('retry changed previously applied approval')
             else:
-                if (new.get('Approval Status')!='Approved' or not new.get('ApprovedAt')
+                if (new.get('Approval Status')!='Approved' or not _approval_timestamp_matches(new.get('ApprovedAt'),expected,capture)
                         or new.get('Last Approval Operation ID')!=op
                         or new.get('Applied Approval Operation IDs')!=(old.get('Applied Approval Operation IDs') or '')+token):
                     failures.append('approval write not confirmed atomically')

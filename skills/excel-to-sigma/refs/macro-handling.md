@@ -181,3 +181,25 @@ readback as a `readTargets` entry. Approval may use `selectionView` plus
 `selectionRowIdColumn`; the view must be on the action page and every physical-ID /
 Expense-ID pair must resolve to the actual expense input. Direct input selection
 is accepted only when that input itself belongs to the action page.
+
+After the first Task 4 review, preservation contracts additionally bind all original
+editable field definitions and physical row IDs into the manifest/extension plan.
+Before/after snapshots must contain exactly those fields plus the ID (and exactly
+the three added fields after extension). The proof carries complete snapshots and
+`preservedValueCount=528`; emission rechecks the complete snapshots and assigned
+14-field input readback. Legacy narrow-snapshot plans/proofs must be regenerated.
+
+The static analyzer inventories argument-bearing helper calls and calls in
+expressions, expands their definitions, and leaves unsupported executable,
+mutation, member-call and undeclared-expression forms unresolved. This bounded
+subset is not a complete VBA interpreter. Approval write qualifications must
+resolve to the guarded Expense Register worksheet; unknown/foreign ownership is
+not authorized by a reviewed body hash.
+
+For a new approval operation, `audit-readback` requires a timezone-aware
+`expected.approvedAt` value or a controller-captured `capture.executionWindow`
+with timezone-aware `startedAt` and `completedAt`. The observed ApprovedAt must
+match the exact expectation or fall within those bounds (both if supplied).
+Naive dates/times, invalid values and retained stale timestamps fail. A retry of
+an operation already in durable history still requires exact row/timestamp
+preservation and does not write a fresh timestamp.

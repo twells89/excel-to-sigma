@@ -155,15 +155,87 @@ def _first_cell(sheet: str, address: str) -> str:
     return f"{sheet}!{address.split(':', 1)[0].replace('$', '')}"
 
 
-def _analyze_body(executable: str) -> dict:
-    calls = [{"name": match.group(1)} for match in _code_matches(_CALL, executable)]
-    # A stand-alone identifier is also a VBA Sub invocation. Member calls,
-    # declarations, labels and assignments are deliberately excluded here.
-    keywords = {"end", "else", "next", "exit", "option", "return", "wend"}
+def _statement_inventory(executable, procedure_names=()):
+    """Inventory the bounded VBA subset; unknown executable forms fail closed.
+
+    This is static analysis, not a complete VBA parser. In particular a named
+    module hash cannot authorize statements this subset does not understand.
+    """
+    builtins = {'sheets','worksheets','range','cells','rows','columns','inputbox',
+                'msgbox','now','array','sin','cos','rnd','sqr','exp','tan','atn',
+                'environ','createobject','cstr','cdbl','clng','cint','len','abs',
+                'isnull','isempty','isnumeric'}
+    locals_ = set()
+    for match in re.finditer(r'\bDim\s+([^\r\n]+)', executable, re.I):
+        for declaration in match[1].split(','):
+            name=re.match(r'\s*([A-Za-z_]\w*)', declaration)
+            if name:locals_.add(name[1].lower())
+    signature=_PROC.search(executable)
+    if signature:
+        params=signature['signature'].split('(',1)[1].rsplit(')',1)[0]
+        for part in params.split(','):
+            match=re.match(r'\s*(?:(?:ByVal|ByRef|Optional|ParamArray)\s+)*([A-Za-z_]\w*)',part,re.I)
+            if match:locals_.add(match[1].lower())
+    calls=[];unresolved=[]
+    def call(name):
+        if name.lower() not in builtins|locals_ and name.lower() not in {c['name'].lower() for c in calls}:
+            calls.append({'name':name})
+    # Split colons outside strings so a second executable statement cannot hide.
     for line in executable.splitlines():
-        bare = re.fullmatch(r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*", line)
-        if bare and bare[1].lower() not in keywords:
-            calls.append({"name": bare[1]})
+        masked=_mask_strings(line)
+        boundaries=[m.start() for m in re.finditer(':',masked) if not masked[m.start()+1:].startswith('=')]
+        starts=[0]+[i+1 for i in boundaries];ends=boundaries+[len(line)]
+        for start,end in zip(starts,ends):
+            statement=line[start:end].strip();tokens=_mask_strings(statement)
+            if not statement or _PROC.match(statement) or re.fullmatch(r'End\s+(Sub|Function)',statement,re.I):
+                continue
+            if re.match(r'^(Dim|Const|Option)\b',statement,re.I):continue
+            if re.fullmatch(r'If\s+.+\s+Then\s+Exit\s+Sub',statement,re.I):continue
+            # Calls in expressions have ordinary function syntax. A property or
+            # module-qualified call is not inferred to be an unqualified helper.
+            for match in re.finditer(r'(?<![\w.])([A-Za-z_]\w*)\s*\(',tokens):
+                call(match[1])
+            explicit=re.fullmatch(r'Call\s+([A-Za-z_]\w*)(?:\s*\(.*\)|\s+.*)?',statement,re.I)
+            if explicit:
+                call(explicit[1]);continue
+            bare=re.fullmatch(r'([A-Za-z_]\w*)(?:\s+(?![=])(.+))?',statement)
+            if bare and bare[1].lower() not in {'end','select','case','for','next','if','else','set','exit','with','on'}:
+                if bare[1].lower() in {'msgbox','inputbox'}:continue
+                call(bare[1]);continue
+            # Plain assignments may call helpers on the RHS, but have no own
+            # workbook mutation. Unknown member/implicit Range assignments do.
+            assignment=re.fullmatch(r'(?:Set\s+)?([A-Za-z_]\w*)\s*=\s*(.+)',statement,re.I)
+            if assignment:
+                rhs=assignment[2]
+                permitted=locals_|builtins|{c['name'].lower() for c in calls}|{p.lower() for p in procedure_names}|{
+                    'true','false','nothing','null','and','or','not','mod','thisworkbook',
+                    'application','activecell','activesheet','xlup','xlpastevalues','vbinformation'}
+                unknown=[m[1] for m in re.finditer(r'(?<![\w.])([A-Za-z_]\w*)',_mask_strings(rhs))
+                         if m[1].lower() not in permitted]
+                if unknown:
+                    unresolved.append({'kind':'unmodeled-expression-identifier','names':unknown,
+                        'reason':'undeclared value may be an implicit function/property call'})
+                for name in procedure_names:
+                    if re.search(r'(?<![\w.])'+re.escape(name)+r'\b',_mask_strings(rhs),re.I):call(name)
+                if not re.search(r'\.([A-Za-z_]\w*)\s*\(',_mask_strings(rhs)) or re.search(
+                        r'\.(?:Range|Cells|End|ListObjects)\s*\(',rhs,re.I):
+                    continue
+            if _CELL_WRITE.fullmatch(statement) or _RANGE_WRITE.fullmatch(statement):continue
+            if re.fullmatch(r'[A-Za-z_]\w*\.Range\(\s*1\s*,\s*\d+\s*\)\.Value\s*=.+',statement,re.I):continue
+            if re.fullmatch(r'Application\.(?:CalculateFull|Calculate)',statement,re.I):continue
+            if re.fullmatch(r'Application\.(?:CutCopyMode|ScreenUpdating)\s*=\s*(True|False)',statement,re.I):continue
+            if re.fullmatch(r'(?:Sheets|Worksheets)\("[^"]+"\)(?:\.Range\("[^"]+"\))?\.(Activate|Select)',statement,re.I):continue
+            if re.fullmatch(r'Select\s+Case\s+[A-Za-z_]\w*|Case\s+"[^"]+"|End\s+Select',statement,re.I):continue
+            if re.fullmatch(r'[A-Za-z_]\w*\.Copy',statement,re.I):continue
+            if re.fullmatch(r'[A-Za-z_]\w*\.Cells\([^\r\n]+\)\.PasteSpecial\s+Paste:=xlPasteValues',statement,re.I):continue
+            if re.fullmatch(r'(?:[A-Za-z_]\w*\.)?ListRows\.Add',statement,re.I):continue
+            unresolved.append({'kind':'unmodeled-executable-statement','statement':statement,
+                'reason':'unmodeled call, mutation or control flow cannot authorize native emission'})
+    return calls,unresolved
+
+
+def _analyze_body(executable: str, procedure_names=()) -> dict:
+    calls, unmodeled = _statement_inventory(executable, procedure_names)
     reads = []
     affected = []
     for match in _code_matches(_STATIC_RANGE, executable):
@@ -194,6 +266,9 @@ def _analyze_body(executable: str) -> dict:
             "value": match.group("value").strip(),
             "usesNow": bool(re.fullmatch(r"Now(?:\(\))?", match.group("value").strip(), re.I)),
         })
+    for match in _code_matches(r'(?P<target>[A-Za-z_]\w*\.Range\(\s*1\s*,\s*(?P<column>\d+)\s*\))\.Value\s*=\s*(?P<value>[^\r\n]+)', executable, re.I):
+        writes.append({'kind':'table-row-update','target':match['target'],'row':1,
+                       'column':int(match['column']),'value':match['value'].strip()})
     masked = _mask_strings(executable)
     append_evidence = []
     if re.search(r"\bListRows\.Add\b", masked, re.I):
@@ -238,7 +313,7 @@ def _analyze_body(executable: str) -> dict:
     ):
         if list(_code_matches(pattern, executable, re.I)):
             external.append({"kind": kind})
-    unresolved = []
+    unresolved = list(unmodeled)
     if _DYNAMIC_RANGE.search(executable) or re.search(r"\.Range\([ \t]*[A-Za-z_]", executable, re.I):
         unresolved.append({"kind": "dynamic-sheet-or-range",
                            "reason": "sheet or range identity is computed at runtime"})
@@ -282,7 +357,7 @@ def analyze_macro_source(path: str | Path, *, source_kind: str = "raw-module") -
     for item in slices:
         exact = item.pop("exactSource")
         executable = _strip_comments(exact)
-        facts = _analyze_body(executable)
+        facts = _analyze_body(executable, [p["name"] for p in slices])
         procedure_id = f"{module_name}.{item['name']}"
         body_hash = _sha256(exact.encode("utf-8"))
         procedure_hash = _sha256(
