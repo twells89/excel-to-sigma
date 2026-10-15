@@ -56,13 +56,13 @@ line for all years** and stayed small. That is the whole lesson.
 2. **Blank-as-zero.** Excel treats a blank as 0 in `+`/`−`; Sigma propagates null. So **additive
    canonicals wrap each ref in `Coalesce(ref, 0)`** — the sum computes live and matches Excel.
    Ratios/products stay strict (a null there is real).
-3. **Per-year structural differences & the parity gate (the trust anchor).** Simulate the WHOLE
-   model exactly as Sigma evaluates it (topological, null-propagating), compare to Excel's
-   cached values, and **freeze the Excel value into the data page for any cell the live formula
-   doesn't reproduce** (via the `Coalesce`, that cell shows the correct number). Result:
-   **displayed parity = 100%** — every cell is either live-verified or cached-frozen; never a
-   silent wrong number. A line whose one canonical is wrong in >25% of its years is flagged
-   `NEEDS_REVIEW` (a genuine "this line's formula varies" signal), but still shows correct values.
+3. **Per-year structural differences & the parity gate (the trust anchor).** Preserve each
+   source formula and literal at cell/year grain. Editable literal cells live in an ordinary
+   input table keyed by one constant shared scope; its system row/audit IDs never enter grouping
+   or join keys. Join that single shared row to every year in the calculation spine and let those literal overrides
+   drive both displayed source periods and downstream formulas. Compare the resulting live
+   workbook to Excel's cached values. A mismatch remains unresolved evidence; cached output is
+   never relabeled as a live formula or used to declare completion.
 
 ## Build gotchas (verified live via the REST API)
 
@@ -115,3 +115,19 @@ Staging approval and completion are separate gates:
    document version, then call `gate_completion_manifest(manifest)`.
 3. Source audit `BLOCKED` and existing `--post` behavior remain unchanged. Staging approval never
    overrides a source blocker, cached fallback, unresolved formula, or missing completion evidence.
+
+For shared inputs, first put `targetScope` (connection/folder) and
+`sharedInputArchitecture` into the plan with `architecture --workflow research`
+and rebuild the manifest; a research source does not inherit sales or expense
+features. Command-line IDs supplied later cannot inherit an old approval.
+`scripts/input-sync.py stage --plan <architecture-output-plan>` re-runs the
+source audit, calls the manifest staging gate, and requires a named reviewer,
+the exact feature set, and reviewed target bindings. `emit-create`,
+`emit-wiring`, and `plan` accept only that manifest/receipt pair; arbitrary
+caller hashes, seed rows, or targets cannot be substituted. Query current rows
+outside Code Mode, plan inserts/row-ID updates, execute, then read back and
+checkpoint. An existing shared row is selected by its non-null `Scope`; an
+intentional null input remains null rather than coalescing to the historical
+literal. `complete` requires every approved table, mapped feature, checkpoint,
+edit/restore check, unique-key count, and persistence readback for the exact
+document/version. There is no compare-and-swap, so re-query after interruption.
