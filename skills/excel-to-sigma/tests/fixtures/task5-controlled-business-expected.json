@@ -1,0 +1,23 @@
+{
+  "oracle": "Independent hand-derived component totals from reviewed forecast, not port execution",
+  "allocation": [56829.41969615794, 43639.46140238523, 21411.20008059867, 6215.987523460359],
+  "allocationSum": 128096.06870260219,
+  "allocationAbsoluteTolerance": 1e-9,
+  "goalSeek": {
+    "actualNetIncome": 114000,
+    "fixedComponent": -2644379.0813037893,
+    "subscriptionJuneBase": 521100,
+    "lowerNetIncome": 482220.9186962107,
+    "upperNetIncome": 4689314.644282148,
+    "target": 2000000,
+    "iterations": 28,
+    "growth": 0.114270488732,
+    "netIncome": 1999999.9961722782,
+    "currencyTolerance": 0.01,
+    "growthPrecisionDigits": 12
+  },
+  "typedEcho": "operation_id=task5-sp-0001|amount=1234.56|count=7|enabled=true|occurred_at=2026-10-15T14:30:00.000",
+  "failureWrites": 0,
+  "compiledVba": false,
+  "runtimeAcceptance": "BLOCKED"
+}

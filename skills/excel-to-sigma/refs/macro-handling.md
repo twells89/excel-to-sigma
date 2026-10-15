@@ -203,3 +203,7 @@ match the exact expectation or fall within those bounds (both if supplied).
 Naive dates/times, invalid values and retained stale timestamps fail. A retry of
 an operation already in durable history still requires exact row/timestamp
 preservation and does not write a fresh timestamp.
+
+For explicitly reviewed guarded allocation/goal-seek/scalar procedure ports, see
+[custom-ports.md](custom-ports.md). This route binds new controlled source and
+independent goldens; it does not relax automatic native analysis or production gates.
