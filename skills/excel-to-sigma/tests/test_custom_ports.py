@@ -43,6 +43,12 @@ class CustomPortTests(unittest.TestCase):
             for function in [n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]:
                 self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Name) and n.func.value.id=='sigma' for n in ast.walk(function)),function.name)
 
+    def test_port_buttons_emit_explicit_observed_filled_appearance(self):
+        fragment=self.port.build_port_fragments('binding','connection')
+        buttons=[e for e in fragment['elements'] if e['kind']=='button']
+        self.assertTrue(buttons)
+        self.assertTrue(all(e.get('appearance')=='filled' for e in buttons))
+
     def test_allocation_one_based_radians_unrounded_and_not_normalized(self):
         rows=self.port.allocate_overhead([40,30,20,10],100000,'allocation-A')
         golden=[56829.41969615794,43639.46140238523,21411.20008059867,6215.987523460359]

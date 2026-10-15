@@ -355,7 +355,7 @@ def build_port_fragments(model_binding,connection_id,*,column_maps=None,procedur
                        for i,name in enumerate(program['columns'])]})
         # Running goal/apply guard requires the controller to set invocation state
         # beforehand. These hidden-toast computation actions never write assumptions.
-        elements.append({'id':prefix+'Button','kind':'button','text':{'allocation':'Allocate overhead',
+        elements.append({'id':prefix+'Button','kind':'button','appearance':'filled','text':{'allocation':'Allocate overhead',
             'goalSeek':'Run prepared solve','applyGuard':'Validate prepared apply'}[key],
             'actions':[{'id':prefix+'Run','trigger':'on-click',
                 'effects':[{'effect':'run-python-element','codeElementId':code_id,'name':prefix+'RunResult'}],
@@ -365,7 +365,7 @@ def build_port_fragments(model_binding,connection_id,*,column_maps=None,procedur
         if procedure_action!=expected:raise PortError('PROCEDURE_ACTION_ARTIFACT_MISMATCH')
         if procedure_action['contract']['connectionId']!=connection_id:raise PortError('PROCEDURE_CONNECTION_MISMATCH')
         action={k:copy.deepcopy(procedure_action[k]) for k in ('id','trigger','effects','successToast')}
-        elements.append({'id':'task5ProcedureButton','kind':'button','text':'Run reviewed scalar procedure','actions':[action]})
+        elements.append({'id':'task5ProcedureButton','kind':'button','appearance':'filled','text':'Run reviewed scalar procedure','actions':[action]})
     page={'id':'task5Ports','name':'Reviewed Custom Ports'}
     layout='<Page type="grid" id="task5Ports" gridTemplateColumns="repeat(24, 1fr)">'
     cursor=1
@@ -650,7 +650,7 @@ def prepare_goal_action_update(manifest,receipt,current,initial_proposal,binding
     new=[]
     for phase in ('compute','guard','apply'):
         action=copy.deepcopy(actions[phase]);action['id']+=suffix
-        new.append({'id':page_id+phase,'kind':'button','text':{'compute':'Prepare and solve',
+        new.append({'id':page_id+phase,'kind':'button','appearance':'filled','text':{'compute':'Prepare and solve',
             'guard':'Prepare and validate apply','apply':'Apply verified growth'}[phase], 'actions':[action]})
     if page_id in {p['id'] for p in doc['pages']} or set(elements)&{e['id'] for e in new}:
         raise PortError('EXISTING_INTENT_ACTION_REFUSED_NO_REPLAY')
