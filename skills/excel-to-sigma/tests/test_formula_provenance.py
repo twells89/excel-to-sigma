@@ -16,6 +16,7 @@ if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
 from excel_expression import (  # noqa: E402
+    ExpressionError,
     UnsupportedExpression,
     emit_sigma,
     evaluate,
@@ -91,6 +92,15 @@ class TestExcelExpression(unittest.TestCase):
             evaluate(expression, lambda ref: values[(ref.sheet, ref.address)]), "PASS"
         )
 
+    def test_two_argument_if_defaults_false_and_short_round_is_rejected(self):
+        true_expression = parse_expression("=IF(1,42)", sheet="Sheet1")
+        false_expression = parse_expression("=IF(0,42)", sheet="Sheet1")
+
+        self.assertEqual(evaluate(true_expression, lambda _ref: None), 42)
+        self.assertIs(evaluate(false_expression, lambda _ref: None), False)
+        with self.assertRaisesRegex(ExpressionError, "ROUND requires two arguments"):
+            evaluate(parse_expression("=ROUND(1)", sheet="Sheet1"), lambda _ref: None)
+
 
 class TestFormulaGraph(unittest.TestCase):
     def test_cell_period_graph_does_not_invent_a_row_cycle(self):
@@ -161,6 +171,16 @@ class TestFormulaGraph(unittest.TestCase):
         self.assertEqual(graph.dependencies[CellIdentity("Model", "A1")],
                          (CellIdentity("Inputs", "A2"),))
         self.assertEqual(graph.evaluate()[CellIdentity("Model", "A1")], 11)
+
+    def test_malformed_formulas_are_unresolved_and_do_not_block_evaluation(self):
+        wb = Workbook(); ws = wb.active; ws.title = "Model"
+        ws["A1"] = "="; ws["B1"] = "=IF(0,42)"; ws["C1"] = "=ROUND(1)"
+
+        graph = FormulaGraph.from_workbook(wb)
+
+        self.assertIn(CellIdentity("Model", "A1"), graph.unresolved_formula_nodes())
+        self.assertEqual(graph.evaluate()[CellIdentity("Model", "B1")], False)
+        self.assertNotIn(CellIdentity("Model", "C1"), graph.evaluate())
 
     def test_fixture_graph_evaluates_all_display_and_audit_formulas(self):
         fixture = ROOT / "tests" / "fixtures" / "fixture-research-model.xlsx"
@@ -272,6 +292,18 @@ class TestMigrationManifest(unittest.TestCase):
 
         self.assertEqual(item["mappingStatus"], "unresolved")
         self.assertIn("unsupported", item["unresolvedReason"])
+
+    def test_malformed_source_formula_is_explicitly_unresolved(self):
+        from openpyxl import load_workbook
+        workbook = load_workbook(self.path)
+        workbook["FY results"]["D1"] = "="
+        workbook.save(self.path)
+
+        manifest = build_manifest(self.path)
+        item = next(item for item in manifest["formulaCells"] if item["id"] == "FY results!D1")
+
+        self.assertEqual(item["mappingStatus"], "unresolved")
+        self.assertEqual(item["unresolvedReason"], "empty formula")
 
     def test_unsupported_formula_needs_exact_hash_bound_reviewed_replacement(self):
         from openpyxl import load_workbook

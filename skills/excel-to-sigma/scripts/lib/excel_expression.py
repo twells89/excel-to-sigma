@@ -363,10 +363,16 @@ def evaluate(expression, resolver: Callable[[CellReference], object]):
             return operations[node.operator]()
         if isinstance(node, Function):
             if node.name == "IF":
+                if len(node.arguments) not in (2, 3):
+                    raise ExpressionError("IF requires two or three arguments")
                 condition = run(node.arguments[0])
-                return run(node.arguments[1]) if condition else run(node.arguments[2])
+                if condition:
+                    return run(node.arguments[1])
+                return run(node.arguments[2]) if len(node.arguments) == 3 else False
             args = [run(arg) for arg in node.arguments]
             if node.name == "ROUND":
+                if len(args) != 2:
+                    raise ExpressionError("ROUND requires two arguments")
                 places = int(args[1])
                 quantum = Decimal("1").scaleb(-places)
                 return float(Decimal(str(args[0])).quantize(quantum, rounding=ROUND_HALF_UP))

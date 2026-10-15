@@ -4,11 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 try:
-    from .excel_expression import (Range, Reference, UnsupportedExpression, evaluate,
-                                   expand_range, parse_expression)
+    from .excel_expression import (ExpressionError, Range, Reference, UnsupportedExpression,
+                                   evaluate, expand_range, parse_expression)
 except ImportError:  # standalone tests/scripts that place lib directly on sys.path
-    from excel_expression import (Range, Reference, UnsupportedExpression, evaluate,
-                                  expand_range, parse_expression)
+    from excel_expression import (ExpressionError, Range, Reference, UnsupportedExpression,
+                                  evaluate, expand_range, parse_expression)
 
 
 @dataclass(frozen=True, order=True)
@@ -52,7 +52,7 @@ class FormulaGraph:
             try:
                 expression = parse_expression(formula, sheet=identity.sheet)
                 refs = tuple(_expression_cells(expression))
-            except UnsupportedExpression as error:
+            except ExpressionError as error:
                 unsupported[identity] = str(error)
                 refs = ()
             deps = set()
@@ -148,7 +148,7 @@ class FormulaGraph:
         for identity, formula in self.formulas.items():
             try:
                 expressions[identity] = parse_expression(formula, sheet=identity.sheet)
-            except UnsupportedExpression:
+            except ExpressionError:
                 continue
         for identity in self.topological_order():
             expression = expressions.get(identity)
@@ -164,7 +164,7 @@ class FormulaGraph:
                 return values.get(CellIdentity(reference.sheet, reference.address))
             try:
                 values[identity] = evaluate(expression, resolve)
-            except (ArithmeticError, TypeError, ValueError, UnsupportedExpression):
+            except (ArithmeticError, TypeError, ValueError):
                 continue
         return values
 
