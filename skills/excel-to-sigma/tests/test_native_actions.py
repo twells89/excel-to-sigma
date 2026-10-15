@@ -469,4 +469,18 @@ class TestNativeActions(unittest.TestCase):
         self.assertEqual(audit_native_action_readback(expected,bad)['status'],'FAILED')
 
 
+    def test_public_elementId_layout_binds_and_ambiguous_or_wrong_owner_refuses(self):
+        plan,receipt,_,contents=self.bound_approval()
+        rows={f:{'rowIdColumn':'ID','rows':[{'ID':f+'-'+str(i),**r} for i,r in enumerate(spec['rows'])]}
+              for f,spec in plan['planProjection']['sharedInputArchitecture']['inputs'].items()}
+        contents['contents']['layout']=contents['contents']['layout'].replace('<Element id=', '<Element elementId=')
+        binding=bind_native_action_target(plan,receipt,current_contents=contents,input_readbacks=rows)
+        self.assertIn('expenseBusinessInput',binding['tables'])
+        for layout in ['<Page id="wrong"><Element elementId="expenseBusinessInput" /></Page>',
+                       '<Page id="host"><Element id="foreign" elementId="expenseBusinessInput" /></Page>',
+                       '<Page id="host"><Element elementId="expenseBusinessInput" /><Element elementId="expenseBusinessInput" /></Page>']:
+            bad=copy.deepcopy(contents);bad['contents']['layout']=layout
+            with self.assertRaises(ValueError):
+                bind_native_action_target(plan,receipt,current_contents=bad,input_readbacks=rows)
+
 if __name__=='__main__':unittest.main()

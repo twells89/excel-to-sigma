@@ -340,6 +340,18 @@ def _document(current,manifest):
     return doc,layout
 
 
+
+def _layout_element_owners(layout,element_id):
+    owners=[]
+    for page in layout.iter('Page'):
+        for node in page.iter('Element'):
+            public=node.get('elementId');legacy=node.get('id')
+            if public and legacy and public!=legacy and element_id in (public,legacy):
+                raise NativeActionError('ambiguous layout Element identity')
+            if (public or legacy)==element_id:owners.append(page)
+    return owners
+
+
 def bind_native_action_target(manifest,receipt,*,current_contents,input_readbacks):
     validate_native_action_plan(manifest);doc,layout=_document(current_contents,manifest)
     architecture=_architecture(manifest);pages=architecture['sourcePresentation']['pages']
@@ -353,7 +365,7 @@ def bind_native_action_target(manifest,receipt,*,current_contents,input_readback
         matches=[e for e in doc['elements'] if e.get('id')==target['elementId']]
         if len(matches)!=1 or matches[0].get('kind')!='input-table':
             raise NativeActionError('assigned input table did not resolve exactly once')
-        owners=[p for p in layout.iter('Page') if any(n.get('id')==target['elementId'] for n in p.iter())]
+        owners=_layout_element_owners(layout,target['elementId'])
         if len(owners)!=1 or owners[0].get('id')!=target['pageId']:
             raise NativeActionError('assigned input table has wrong/ambiguous page ownership')
         actual=matches[0].get('columns') or []
@@ -380,7 +392,7 @@ def bind_native_action_target(manifest,receipt,*,current_contents,input_readback
         matches=[e for e in doc['elements'] if e.get('id')==target.get('elementId')]
         if len(matches)!=1 or matches[0].get('kind')!='table' or _digest(matches[0])!=target.get('elementHash'):
             raise NativeActionError('reviewed live projection element/formula changed')
-        owners=[p for p in layout.iter('Page') if any(n.get('id')==target['elementId'] for n in p.iter())]
+        owners=_layout_element_owners(layout,target['elementId'])
         if len(owners)!=1 or owners[0].get('id')!=target['pageId']:
             raise NativeActionError('live projection page ownership changed')
         for name,cid in target['columnIds'].items():
