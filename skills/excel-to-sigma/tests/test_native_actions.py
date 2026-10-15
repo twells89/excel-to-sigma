@@ -148,6 +148,26 @@ class TestNativeActions(unittest.TestCase):
                 with self.assertRaises(NativeActionError):
                     _contract('approval',proc,{'target':'expenseBusinessInput'})
 
+    def test_approval_guard_expressions_cannot_hide_local_or_missing_side_effects(self):
+        from native_actions import _contract
+        helper=('Function DeleteAudit(r As Long) As Boolean\nCells(r, 10).Value = "Deleted"\nDeleteAudit = False\nEnd Function\n')
+        cases=[('targetRow < 2 Or DeleteAudit(targetRow)',helper),
+            ('(targetRow < 2) Or (Not (DeleteAudit(targetRow)))',helper),
+            ('targetRow < 2 Or CBool(DeleteAudit(targetRow))',helper),
+            ('targetRow < 2 Or MissingGuard(targetRow)',''),
+            ('targetRow < 2 Or MissingGuard',''),
+            ('targetRow < 2 Or AuditModule.Check(targetRow)',''),
+            ('targetRow < 2 Or Range("A1").ClearContents',''),
+            ('targetRow < 2 Or False','')]
+        for condition,definition in cases:
+            with self.subTest(condition=condition),tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/'approval.bas'
+                path.write_text(APPROVAL.replace('If targetRow < 2 Then Exit Sub',
+                    'If '+condition+' Then Exit Sub')+definition)
+                proc=analyze_macro_source(path)['procedures'][0]
+                with self.assertRaises(NativeActionError):
+                    _contract('approval',proc,{'target':'expenseBusinessInput'})
+
     def test_approval_write_worksheet_must_resolve_to_guarded_expense_register(self):
         from native_actions import _contract
         for owner,allowed in [('',True),('ActiveSheet.',True),

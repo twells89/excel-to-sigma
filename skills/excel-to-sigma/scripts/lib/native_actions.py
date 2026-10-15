@@ -142,8 +142,11 @@ def _contract(workflow,proc,decision):
                 or [w.get('column') for w in writes]!=[9,16]
                 or any(w.get('row')!=proc['selectedRecord']['variable'] for w in writes)
                 or writes[0].get('value')!='"Approved"' or not writes[1].get('usesNow')
-                or {g['kind'] for g in proc['guards']}!={'minimum-row','active-sheet'}
-                or not any(re.fullmatch(r'ActiveSheet\.Name\s*<>\s*"Expense Register"',g['condition'],re.I) for g in proc['guards'])):
+                or len(proc['guards'])!=2
+                or not re.fullmatch(re.escape(proc['selectedRecord']['variable'])+r'\s*<\s*2',
+                                    proc['guards'][0]['condition'],re.I)
+                or not re.fullmatch(r'ActiveSheet\.Name\s*<>\s*"Expense Register"',
+                                    proc['guards'][1]['condition'],re.I)):
             raise NativeActionError('approval body is not the reviewed selected-record update')
         for write in writes:
             # A partial suffix match is not a worksheet ownership proof.

@@ -174,6 +174,36 @@ class TestMacroBehavior(unittest.TestCase):
                 self.assertTrue(proc['unresolvedDependencies'])
                 self.assertEqual(proc['disposition']['status'],'UNRESOLVED')
 
+    def test_early_exit_guard_calls_expand_even_inside_compound_and_nested_conditions(self):
+        helper=('Function DeleteAudit(r As Long) As Boolean\nCells(r, 10).Value = "Deleted"\nDeleteAudit = False\nEnd Function\n')
+        for condition in ['targetRow < 2 Or DeleteAudit(targetRow)',
+                          '(targetRow < 2) Or (Not (DeleteAudit(targetRow)))',
+                          'targetRow < 2 Or CBool(DeleteAudit(targetRow))']:
+            with self.subTest(condition=condition):
+                path=self.write_module('Sub Parent()\nDim targetRow As Long\n'
+                    'targetRow = ActiveCell.Row\nIf '+condition+' Then Exit Sub\nEnd Sub\n'+helper)
+                proc=analyze_macro_source(path)['procedures'][0]
+                self.assertIn('DeleteAudit',[c['name'] for c in proc['calls']])
+                self.assertIn(10,[w.get('column') for w in proc['writes']])
+                self.assertTrue(proc['helperDefinitions'])
+                self.assertTrue(proc['unresolvedDependencies'])
+                self.assertEqual(proc['disposition']['status'],'UNRESOLVED')
+
+    def test_guard_missing_functions_identifiers_and_member_behavior_remain_unresolved(self):
+        for condition,missing in [('targetRow < 2 Or MissingGuard(targetRow)','MissingGuard'),
+                                  ('targetRow < 2 Or MissingGuard','MissingGuard'),
+                                  ('targetRow < 2 Or AuditModule.Check(targetRow)',None),
+                                  ('targetRow < 2 Or Range("A1").ClearContents',None)]:
+            with self.subTest(condition=condition):
+                path=self.write_module('Sub Parent()\nDim targetRow As Long\n'
+                    'targetRow = ActiveCell.Row\nIf '+condition+' Then Exit Sub\nEnd Sub\n')
+                proc=analyze_macro_source(path)['procedures'][0]
+                self.assertTrue(proc['unresolvedDependencies'])
+                self.assertEqual(proc['disposition']['status'],'UNRESOLVED')
+                if missing:
+                    text=str(proc['unresolvedDependencies'])+str(proc['calls'])
+                    self.assertIn(missing,text)
+
     def test_forged_behavior_facts_fail_source_validation(self):
         path = self.write_module('Sub Work()\nApplication.Calculate\nEnd Sub\n')
         analysis = analyze_macro_source(path)

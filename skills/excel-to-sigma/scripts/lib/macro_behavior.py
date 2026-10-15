@@ -163,6 +163,7 @@ def _statement_inventory(executable, procedure_names=()):
     """
     builtins = {'sheets','worksheets','range','cells','rows','columns','inputbox',
                 'msgbox','now','array','sin','cos','rnd','sqr','exp','tan','atn',
+                'cbool','and','or','not','xor','eqv','imp',
                 'environ','createobject','cstr','cdbl','clng','cint','len','abs',
                 'isnull','isempty','isnumeric'}
     locals_ = set()
@@ -190,11 +191,33 @@ def _statement_inventory(executable, procedure_names=()):
             if not statement or _PROC.match(statement) or re.fullmatch(r'End\s+(Sub|Function)',statement,re.I):
                 continue
             if re.match(r'^(Dim|Const|Option)\b',statement,re.I):continue
-            if re.fullmatch(r'If\s+.+\s+Then\s+Exit\s+Sub',statement,re.I):continue
+            early_exit=re.fullmatch(r'If\s+(.+?)\s+Then\s+Exit\s+Sub',statement,re.I)
             # Calls in expressions have ordinary function syntax. A property or
             # module-qualified call is not inferred to be an unqualified helper.
-            for match in re.finditer(r'(?<![\w.])([A-Za-z_]\w*)\s*\(',tokens):
+            for match in re.finditer(r'(?<![\w.])([A-Za-z_]\w*)\s*\(',
+                                     _mask_strings(early_exit[1]) if early_exit else tokens):
                 call(match[1])
+            if early_exit:
+                condition=early_exit[1]
+                # Conditions execute too: scan calls, including no-parentheses
+                # known functions, and unknown value dependencies before any
+                # modeled-control-flow skip. Compound/member conditions remain
+                # unresolved until their full semantics have a reviewed port.
+                for name in procedure_names:
+                    if re.search(r'(?<![\w.])'+re.escape(name)+r'\b',_mask_strings(condition),re.I):call(name)
+                permitted=locals_|builtins|{c['name'].lower() for c in calls}|{
+                    'true','false','nothing','null','activecell','activesheet'}
+                unknown=[m[1] for m in re.finditer(r'(?<![\w.])([A-Za-z_]\w*)',_mask_strings(condition))
+                         if m[1].lower() not in permitted]
+                if unknown:
+                    unresolved.append({'kind':'unmodeled-expression-identifier','names':unknown,
+                        'reason':'guard value may invoke an unknown function/property'})
+                row_guard=re.fullmatch(r'([A-Za-z_]\w*)\s*<\s*2',condition,re.I)
+                sheet_guard=re.fullmatch(r'ActiveSheet\.Name\s*<>\s*"[^"]+"',condition,re.I)
+                if not (sheet_guard or (row_guard and row_guard[1].lower() in locals_)):
+                    unresolved.append({'kind':'unmodeled-guard-expression','condition':condition,
+                        'reason':'only simple local-row and literal active-sheet early-exit guards are modeled'})
+                continue
             explicit=re.fullmatch(r'Call\s+([A-Za-z_]\w*)(?:\s*\(.*\)|\s+.*)?',statement,re.I)
             if explicit:
                 call(explicit[1]);continue
