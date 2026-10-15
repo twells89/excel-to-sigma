@@ -31,7 +31,7 @@ user-invocable: true
 - `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
 - `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
 - `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
-- `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The data-page + column-per-line-`Coalesce` + `transpose` + pivot recipe, canonical-formula inference, plug-cycle breaking, blank-as-zero, and the simulate-and-freeze parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
+- `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
 - `~/sigma-skills/sigma-workbooks/SKILL.md` + the Sigma OpenAPI — canonical workbook spec.
 
 ---
@@ -320,7 +320,7 @@ Live builders first validate with `POST /v2/workbooks` + `dryRun: true`, then
 create through the same endpoint. Data-model specs stay unwrapped.
 
 Confirm every element compiles and the totals tie out (parity hard gate —
-Phase 0c/0d simulate-and-freeze, Phase 2/4 section rollups, research
+Phase 0c/0d source-bound live evaluation, Phase 2/4 section rollups, research
 `batch-convert.py` AUTO_PARITY bucket). Never skip the parity comparison.
 
 ### Security: RLS / CLS
@@ -353,12 +353,53 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | scheduled/webhook automated action | ✅ limited document surface; ownership/failure review |
 | column protection / broader admin policy | ⚠️ UI/admin policy |
 
-For a REST-created empty input table, seed through Sigma MCP Code Mode when that
-connector is available; otherwise hand off CSV/clipboard import and **Publish**.
-MCP seeding is not performed by this skill's CLI scripts. In either path,
+For a REST-created empty input table, query it with the MCP companion tools, run
+`scripts/input-sync.py architecture --workflow ...` for the one source workflow,
+then `stage` with the output plan, exact source, named
+approval, and target bindings. Emit construction/native joins only from the
+approved manifest/receipt. After querying assigned IDs, re-stage those bindings
+and run `plan` to reconcile typed natural keys. Review its Code Mode chunks,
+execute through MCP, and query/read back again. The CLI never queries or mutates
+MCP itself. `complete` requires all workflow-specific target, checkpoint,
+edit/restore, persistence, and table evidence. Each table readback must report
+the exact approved row count and typed `naturalKeys`; missing, extra, or
+same-count substituted keys block completion. Otherwise hand off
+CSV/clipboard import and **Publish**. In either path,
 **Create warehouse view** remains an explicit UI hand-off. Linked mode remains
 live-review until an end-to-end MCP create/read/update/query regression proves
 inherited columns work.
+
+`stage` audits the exact source bytes and always refuses `BLOCKED` or blocker
+severity. Pending review issues may be built in the isolated test workspace
+with explicit staging approval; this does not assert verified dispositions.
+Approval includes the existing source/plan hashes, named `owner` and `reviewer`,
+all formula `reviewItems`, exact architecture `mappedFeatures` and
+`targetBindings`, plus `sourceReviewApproval`:
+
+```json
+{"status": "approved_for_staging", "issues": ["replace with the exact full audited issue objects"]}
+```
+
+Obtain the issue objects from `migration_gate.gate_plan_staging_source(plan,
+source_arg=source, plan_path=plan_path)[1]["issues"]` and review their complete
+scope. Omitted or changed issues fail approval. Finalize connection, folder,
+input `editMode`, and all logical architecture before hashing the manifest;
+rebuild and reapprove if the plan changes. The receipt reports
+`APPROVED_STAGING`, `PENDING_STAGING`, `pendingSourceIssues`, and
+`sourceReviewRequirements` (each full issue plus its `issueHash`). Cached or
+unresolved formula mappings still cannot stage. Production `--post` source
+gates retain their strict verified-disposition contract.
+
+Record Task 2 component readback/edit/restore checks as evidence JSON while
+source-feature work is pending; defer `complete` until the later workflow
+acceptance gate. Global completion re-audits the source and requires exact
+`manifest.sourceReviewEvidence` coverage, independent of the receipt. Each
+record needs `code`, `issueHash`, `status: "passed"`, a real `evidenceId`,
+`sourceHash`, `planHash`, `targetDocumentId`, `targetVersion`, `targetId`, and
+`targetBinding` with actual document/version/element and optional column/check
+IDs. `targetId` must match that binding. These are recorded runtime checks,
+never synthesized from staging approval; chart rendering, validation behavior,
+and formatting parity remain pending until actually tested.
 
 ---
 

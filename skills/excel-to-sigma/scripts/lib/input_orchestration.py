@@ -1,0 +1,208 @@
+"""Source/plan/target-bound gates for shared-input staging and completion."""
+from __future__ import annotations
+
+import json
+
+try:
+    from .input_sync import build_artifact_records
+    from .migration_gate import gate_completion_manifest, gate_staging_manifest, source_issue_hash
+except ImportError:
+    from input_sync import build_artifact_records
+    from migration_gate import gate_completion_manifest, gate_staging_manifest, source_issue_hash
+
+
+def _architecture(value):
+    if not isinstance(value, dict):
+        raise ValueError("approved architecture must be an object")
+    architecture = value.get("sharedInputArchitecture", value)
+    if not isinstance(architecture, dict) or not isinstance(architecture.get("inputs"), dict):
+        raise ValueError("approved architecture is missing sharedInputArchitecture.inputs")
+    return architecture
+
+
+def _same_hashes(manifest, value, label):
+    if value.get("sourceHash") != manifest.get("sourceHash"):
+        raise ValueError(f"{label} sourceHash is stale")
+    if value.get("planHash") != manifest.get("planHash"):
+        raise ValueError(f"{label} planHash is stale")
+
+
+def _typed_natural_keys(rows, key_columns, label):
+    if not isinstance(rows, list):
+        raise ValueError(f"{label} natural keys are required")
+    expected_fields = set(key_columns)
+    tokens = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != expected_fields:
+            raise ValueError(f"{label} natural keys do not match approved key columns")
+        key = []
+        for column in key_columns:
+            value = row[column]
+            if value is None:
+                raise ValueError(f"{label} natural keys cannot contain null")
+            if isinstance(value, bool):
+                value_type = "bool"
+            elif isinstance(value, int):
+                value_type = "int"
+            elif isinstance(value, float):
+                value_type = "float"
+            elif isinstance(value, str):
+                value_type = "str"
+            else:
+                raise ValueError(f"{label} natural keys contain an unsupported value")
+            key.append({"type": value_type, "value": value})
+        tokens.append(json.dumps(key, sort_keys=True, separators=(",", ":")))
+    if len(tokens) != len(set(tokens)):
+        raise ValueError(f"{label} natural keys contain duplicates")
+    return set(tokens)
+
+
+def gate_input_staging(manifest, approval, plan_or_architecture, source_gate_evidence):
+    """Run PR1 review, preserve the real source gate, and bind exact artifacts."""
+    gate_staging_manifest(manifest, approval)
+    architecture = _architecture(plan_or_architecture)
+    for field in ("sourceHash", "planHash", "reviewer", "mappedFeatures", "targetBindings"):
+        if not approval.get(field):
+            raise ValueError(f"approved staging requires {field}")
+    if not isinstance(approval["reviewer"], str) or not approval["reviewer"].strip():
+        raise ValueError("approved staging requires a named reviewer")
+    _same_hashes(manifest, approval, "approval")
+    if set(approval["mappedFeatures"]) != set(architecture.get("mappedFeatures") or []):
+        raise ValueError("mappedFeatures must exactly match the approved architecture")
+    if not isinstance(source_gate_evidence, dict):
+        raise ValueError("source gate evidence is required")
+    if source_gate_evidence.get("sourceSha256") != manifest.get("sourceHash"):
+        raise ValueError("source gate evidence sourceHash is stale")
+    source_status = source_gate_evidence.get("status")
+    review_status = source_gate_evidence.get("reviewStatus")
+    issues = source_gate_evidence.get("issues") or []
+    if (source_status == "BLOCKED" or review_status == "BLOCKED"
+            or any(issue.get("severity") == "blocker" for issue in issues)):
+        raise ValueError("source audit is BLOCKED")
+    if review_status not in {"NOT_REQUIRED", "DISPOSITIONED", "PENDING_STAGING"}:
+        raise ValueError("source audit review is unresolved")
+    if issues:
+        source_approval = approval.get("sourceReviewApproval") or {}
+        if (source_approval.get("status") != "approved_for_staging"
+                or source_approval.get("issues") != issues):
+            raise ValueError("sourceReviewApproval must explicitly approve the exact audited issue scope")
+        # A staging review never marks a source feature verified/dispositioned.
+        review_status = "PENDING_STAGING"
+    artifacts = build_artifact_records(manifest, architecture, approval["targetBindings"])
+    return {
+        "status": "APPROVED_STAGING", "sourceHash": approval["sourceHash"],
+        "planHash": approval["planHash"], "reviewer": approval["reviewer"],
+        "mappedFeatures": sorted(approval["mappedFeatures"]),
+        "sourceStatus": source_status, "sourceReviewStatus": review_status,
+        "sourceAuditEvidenceId": source_gate_evidence.get("evidenceId"),
+        "pendingSourceIssues": issues,
+        "sourceReviewRequirements": [
+            {"issue": issue, "issueHash": source_issue_hash(issue)} for issue in issues],
+        "targetBindings": approval["targetBindings"], "artifacts": artifacts,
+    }
+
+
+def _validate_target_bindings(manifest, receipt, runtime_evidence, architecture):
+    receipt_bindings = receipt.get("targetBindings") or {}
+    if runtime_evidence.get("targetBindings") != receipt_bindings:
+        raise ValueError("runtime target bindings do not match approved target bindings")
+    expected_tables = set(architecture["inputs"])
+    if set(receipt_bindings) != expected_tables:
+        raise ValueError("approved target bindings must exactly cover input tables")
+    target = runtime_evidence.get("target") or {}
+    manifest_target = manifest.get("target") or {}
+    if target != manifest_target or not target.get("documentId") or target.get("version") is None:
+        raise ValueError("runtime target document/version does not match manifest")
+    for name, binding in receipt_bindings.items():
+        if (binding.get("documentId") != target["documentId"]
+                or binding.get("version") != target["version"]
+                or not binding.get("pageId") or not binding.get("elementId")):
+            raise ValueError(f"target binding is incomplete or stale for {name}")
+        expected_columns = {column["name"] for column in architecture["inputs"][name]["columns"]}
+        if set(binding.get("columnIds") or {}) != expected_columns:
+            raise ValueError(f"target columns are incomplete or stale for {name}")
+
+
+def gate_input_completion(manifest, staging_receipt, runtime_evidence):
+    """Require complete feature/table/readback coverage for the approved live target."""
+    gate_completion_manifest(manifest)
+    architecture = _architecture((manifest.get("planProjection") or {}).get(
+        "sharedInputArchitecture", {}))
+    if staging_receipt.get("status") != "APPROVED_STAGING":
+        raise ValueError("completion requires an approved staging receipt")
+    _same_hashes(manifest, staging_receipt, "staging receipt")
+    _same_hashes(manifest, runtime_evidence, "runtime evidence")
+    if runtime_evidence.get("status") != "passed":
+        raise ValueError("runtime evidence has not passed")
+    expected_features = set(architecture.get("mappedFeatures") or [])
+    if (set(staging_receipt.get("mappedFeatures") or []) != expected_features
+            or set(runtime_evidence.get("mappedFeatures") or []) != expected_features):
+        raise ValueError("runtime mapped features must exactly cover approved feature scope")
+    expected_artifacts = build_artifact_records(
+        manifest, architecture, staging_receipt.get("targetBindings") or {})
+    if staging_receipt.get("artifacts") != expected_artifacts:
+        raise ValueError("staging receipt artifacts are stale")
+    _validate_target_bindings(manifest, staging_receipt, runtime_evidence, architecture)
+
+    expected_tables = set(architecture["inputs"])
+    tables = runtime_evidence.get("tables")
+    if not isinstance(tables, dict) or set(tables) != expected_tables:
+        raise ValueError("runtime table evidence must exactly cover approved input tables")
+    for name, spec in architecture["inputs"].items():
+        item = tables[name]
+        for field in ("querySnapshotId", "readbackId", "persistenceReadbackId"):
+            if not item.get(field):
+                raise ValueError(f"runtime table evidence for {name} requires {field}")
+        if item.get("keyColumns") != spec.get("keyColumns"):
+            raise ValueError(f"runtime key columns are stale for {name}")
+        expected_count = len(spec.get("rows") or [])
+        if (expected_count < 1 or type(item.get("rows")) is not int
+                or type(item.get("distinct")) is not int
+                or item["rows"] != expected_count or item["distinct"] != expected_count):
+            raise ValueError(f"runtime evidence does not match approved row count for {name}")
+        key_columns = spec["keyColumns"]
+        expected_keys = _typed_natural_keys(
+            [{key: row[key] for key in key_columns} for row in spec["rows"]],
+            key_columns, f"approved {name}")
+        actual_keys = _typed_natural_keys(
+            item.get("naturalKeys"), key_columns, f"runtime {name}")
+        if actual_keys != expected_keys:
+            raise ValueError(f"runtime natural keys do not match approved rows for {name}")
+
+    checkpoints = runtime_evidence.get("checkpointBindings")
+    if not isinstance(checkpoints, list) or not checkpoints:
+        raise ValueError("checkpoint bindings are required")
+    covered = set()
+    target = runtime_evidence["target"]
+    for item in checkpoints:
+        feature = item.get("feature")
+        if feature not in expected_tables or not item.get("checkpointId"):
+            raise ValueError("checkpoint binding has an unknown feature")
+        binding = staging_receipt["targetBindings"][feature]
+        if (item.get("artifactHash") != expected_artifacts[feature]["artifactHash"]
+                or item.get("documentId") != target["documentId"]
+                or item.get("version") != target["version"]
+                or item.get("elementId") != binding["elementId"]):
+            raise ValueError(f"checkpoint binding is stale for {feature}")
+        covered.add(feature)
+    if covered != expected_tables:
+        raise ValueError("checkpoint bindings must exactly cover approved input tables")
+
+    checks = runtime_evidence.get("acceptanceChecks")
+    expected_checks = set(architecture.get("acceptanceChecks") or [])
+    if not isinstance(checks, list) or {check.get("id") for check in checks} != expected_checks:
+        raise ValueError("acceptance checks must exactly cover approved feature checks")
+    for check in checks:
+        if (check.get("status") != "passed" or check.get("restored") is not True
+                or not check.get("evidenceId")
+                or check.get("documentId") != target["documentId"]
+                or check.get("version") != target["version"]
+                or check.get("sourceHash") != manifest["sourceHash"]
+                or check.get("planHash") != manifest["planHash"]):
+            raise ValueError(f"acceptance check is incomplete or stale: {check.get('id')}")
+    return {
+        "status": "VERIFIED_COMPLETE", "target": target,
+        "tableReadbackIds": {name: item["readbackId"] for name, item in tables.items()},
+        "checkpointIds": [item["checkpointId"] for item in checkpoints],
+        "acceptanceEvidenceIds": [item["evidenceId"] for item in checks],
+    }

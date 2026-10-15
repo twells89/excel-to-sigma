@@ -273,6 +273,35 @@ class TestMigrationManifest(unittest.TestCase):
         self.assertEqual(item["mappingStatus"], "unresolved")
         self.assertIn("unsupported", item["unresolvedReason"])
 
+    def test_unsupported_formula_needs_exact_hash_bound_reviewed_replacement(self):
+        from openpyxl import load_workbook
+        workbook = load_workbook(self.path)
+        workbook["FY results"]["D1"] = "={1,2,3}"
+        workbook.save(self.path)
+        replacement = {
+            "id": "FY results!D1", "mappingStatus": "live",
+            "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "d1"},
+            "reviewedReplacement": {
+                "originalFormula": "={1,2,3}", "replacementFormula": "[Input/Value]",
+                "reviewer": "Migration Owner", "reviewStatus": "approved",
+            },
+        }
+        manifest = build_manifest(self.path, {"formulaCells": [replacement]})
+        item = next(item for item in manifest["formulaCells"] if item["id"] == "FY results!D1")
+        self.assertEqual(item["mappingStatus"], "live")
+        self.assertEqual(item["reviewedReplacement"]["originalFormula"], "={1,2,3}")
+
+        stale = copy.deepcopy(replacement)
+        stale["reviewedReplacement"]["originalFormula"] = "={9,9,9}"
+        stale_manifest = build_manifest(self.path, {"formulaCells": [stale]})
+        stale_item = next(i for i in stale_manifest["formulaCells"] if i["id"] == "FY results!D1")
+        self.assertEqual(stale_item["mappingStatus"], "unresolved")
+
+        swapped = copy.deepcopy(replacement)
+        swapped["reviewedReplacement"]["replacementFormula"] = "[Other/Value]"
+        swapped_manifest = build_manifest(self.path, {"formulaCells": [swapped]})
+        self.assertNotEqual(manifest["planHash"], swapped_manifest["planHash"])
+
     def test_staging_review_and_completion_have_separate_evidence_contracts(self):
         plan = {"formulaCells": [
             {"id": "Audit!A1", "mappingStatus": "live",
