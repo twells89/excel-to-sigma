@@ -334,6 +334,28 @@ class TestMigrationManifest(unittest.TestCase):
         swapped_manifest = build_manifest(self.path, {"formulaCells": [swapped]})
         self.assertNotEqual(manifest["planHash"], swapped_manifest["planHash"])
 
+    def test_reviewed_unsupported_root_releases_its_live_transitive_consumer(self):
+        from openpyxl import load_workbook
+        workbook = load_workbook(self.path)
+        workbook["FY results"]["D1"] = "={1,2,3}"
+        workbook["FY results"]["E1"] = "=D1*2"
+        workbook.save(self.path)
+        plan = {"formulaCells": [
+            {"id": "FY results!D1", "mappingStatus": "live",
+             "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "d1"},
+             "reviewedReplacement": {
+                 "originalFormula": "={1,2,3}", "replacementFormula": "[Input/Value]",
+                 "reviewer": "Migration Owner", "reviewStatus": "approved"}},
+            {"id": "FY results!E1", "mappingStatus": "live",
+             "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "e1"}},
+        ]}
+
+        manifest = build_manifest(self.path, plan)
+
+        statuses = {item["id"]: item["mappingStatus"] for item in manifest["formulaCells"]}
+        self.assertEqual(statuses["FY results!D1"], "live")
+        self.assertEqual(statuses["FY results!E1"], "live")
+
     def test_staging_review_and_completion_have_separate_evidence_contracts(self):
         plan = {"formulaCells": [
             {"id": "Audit!A1", "mappingStatus": "live",

@@ -59,8 +59,43 @@ After assigned-ID readback, regenerate the 146-column receipt and use the normal
 row-ID reconciliation path to seed only missing values; this preserves Scope and
 prior user edits after a partial or complete retry.
 
+Use the source-bound input entry point before presentation emission:
+
+```bash
+python3 scripts/presentation-inputs.py prepare source.xlsx \
+  --connection CONNECTION --folder FOLDER --out-plan input-plan.json \
+  --out-manifest input-manifest.json
+python3 scripts/input-sync.py stage --source source.xlsx --plan input-plan.json \
+  --manifest input-manifest.json --approval reviewed-approval.json \
+  --out approved-preconstruction-receipt.json
+python3 scripts/presentation-inputs.py emit --manifest input-manifest.json \
+  --receipt approved-preconstruction-receipt.json \
+  --feature forecastBusinessInput --out construction.json
+```
+
+Before the presentation PUT, run `presentation-inputs.py bind-target` with the
+latest GET/readback document ID and version. Re-run it after a research column
+extension changes the version, then approve the assigned post-extension
+bindings against that manifest.
+
+Research `prepare` also takes `--research-plan`. Its first `emit` consumes the
+approved 134-column binding and an exact `--current-columns` readback, returning
+only the twelve missing-column operations. Record their returned IDs with
+`checkpoint-extension`, GET/read the exact fields, then stage a new receipt
+containing all 146 assigned IDs. `seed-extension` accepts that receipt and proof;
+it writes only created fields that were null at the checkpoint and remain null.
+A non-null field is retained as a user edit. The checkpoint cannot be replayed,
+and a partial retry emits only columns still absent from the latest approved
+binding. Unsupported source formulas require explicit reviewed replacements via
+`prepare --reviewed-formulas`; they are never silently promoted.
+Persist the returned seed plan before attempting its writes. It records the
+checkpoint hash as consumed, so an interrupted write cannot later reuse the
+creation proof after a field is cleared back to null; losing that plan leaves
+the field conservatively conflicted rather than authorizing a fabricated null
+baseline.
+
 Research runtime bindings should source the main and detail views from `calc`
-(`Calculation`): `Year` uses `yr`, and each metric uses the authored `c<row>`
+(`Calc`): `Year` uses `yr`, and each metric uses the authored `c<row>`
 column ID. The main view is Year, Revenue (`c8`), EBITDA (`c18`), EPS (`c37`),
 and Net debt / EBITDA (`c57`). The detail view carries every populated FY-results
 metric as a separate column. Each column takes its format from the first
@@ -69,6 +104,10 @@ ratio `x` suffix. The emitter derives format exactness by comparing the complete
 main/detail column contract; it does not trust a caller boolean. A generated runtime template records all
 145 logical input IDs and source cells; replace its twelve post-extension column
 placeholders with GET/readback IDs before integration.
+The edit-table patch keeps `Scope` and `i_model_inputs_c2` through
+`i_model_inputs_c7` visible in that order and formats the six growth assumptions
+as percentages. The remaining source inputs stay in the same physical table and
+remain available in Explore while the main edit grid stays compact.
 
 Every chart helper formula records target check ownership. Other source formulas
 are collected in one hash-bound unresolved scope per workflow until target

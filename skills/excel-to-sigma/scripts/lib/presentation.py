@@ -7,6 +7,7 @@ retained only as independent source-side acceptance expectations.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import hashlib
 import json
 import posixpath
@@ -21,10 +22,14 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.cell import range_boundaries
 
 try:
-    from .input_sync import _sdk_literal, emit_workbook_wiring, sigma_input_type
+    from .input_sync import (_sdk_literal, emit_construction_program,
+                             emit_workbook_wiring, plan_input_extension,
+                             sigma_input_type)
     from .migration_gate import gate_plan_staging_source, source_issue_hash
 except ImportError:
-    from input_sync import _sdk_literal, emit_workbook_wiring, sigma_input_type
+    from input_sync import (_sdk_literal, emit_construction_program,
+                            emit_workbook_wiring, plan_input_extension,
+                            sigma_input_type)
     from migration_gate import gate_plan_staging_source, source_issue_hash
 
 try:
@@ -80,6 +85,17 @@ NS = {
 
 def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _manifest_value(value):
+    """Normalize typed workbook dates without coercing date-looking text."""
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _manifest_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_manifest_value(item) for item in value]
+    return value
 
 
 def _workflow(path):
@@ -491,12 +507,12 @@ def extract_presentation(source_path):
     return result
 
 
-def _chart_binding(title, workflow):
+def _chart_binding(title, workflow, research_source_name="Calculation"):
     exact = {
         "Monthly revenue, EBITDA, and net income": ("pnlCombined", 'DateTrunc("month", [PnL Combined/Month End])', "Min([PnL Combined/Month Num])", ["Sum([PnL Combined/Revenue Amt])", "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])", "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])"]),
         "FY total by statement section": ("pnlCombined", "[PnL Combined/Section]", "Min([PnL Combined/Section Order])", ["Sum([PnL Combined/Amount])"]),
-        "Revenue and EBITDA (USD m)": ("researchCalc", "[Calculation/Year]", "Min([Calculation/Year])", ["Sum([Calculation/c8])", "Sum([Calculation/c18])"]),
-        "EPS and leverage": ("researchCalc", "[Calculation/Year]", "Min([Calculation/Year])", ["Sum([Calculation/c37])", "Sum([Calculation/c55]) / Sum([Calculation/c18])"]),
+        "Revenue and EBITDA (USD m)": ("researchCalc", f"[{research_source_name}/Year]", f"Min([{research_source_name}/Year])", [f"Sum([{research_source_name}/c8])", f"Sum([{research_source_name}/c18])"]),
+        "EPS and leverage": ("researchCalc", f"[{research_source_name}/Year]", f"Min([{research_source_name}/Year])", [f"Sum([{research_source_name}/c37])", f"Sum([{research_source_name}/c55]) / Sum([{research_source_name}/c18])"]),
         "Weighted pipeline by stage": ("salesPipeline", "[Pipeline/Stage]", 'Min(Switch([Pipeline/Stage], "Prospecting", 1, "Qualification", 2, "Proposal", 3, "Negotiation", 4, "Closed Won", 5, "Closed Lost", 6))', ["Sum([Pipeline/Weighted ACV])"]),
         "Weighted pipeline by expected close month": ("salesPipeline", 'DateTrunc("month", [Pipeline/Expected Close])', 'Min(DateTrunc("month", [Pipeline/Expected Close]))', ["Sum([Pipeline/Weighted ACV])"]),
         "Recommended reorder quantity by category": ("inventory", "[Inventory/Category]", 'Min(Switch([Inventory/Category], "Electronics", 1, "Components", 2, "Packaging", 3, "Service Parts", 4))', ["Sum([Inventory/Reorder Qty])"]),
@@ -523,7 +539,7 @@ def _source_columns(plan):
     return columns
 
 
-def _research_view_columns(plan):
+def _research_view_columns(plan, source_name="Calculation"):
     workbook = load_workbook(plan["source"]["path"], data_only=False, read_only=False)
     ws = workbook["FY results"]
     metrics = []
@@ -536,20 +552,31 @@ def _research_view_columns(plan):
                          for column in range(2, 14)
                          if plan["semanticFormats"].get(f"FY results!{get_column_letter(column)}{row}")), None)
         column = {"id": f"research_c{row}", "name": str(label).strip(),
-                  "formula": f"[Calculation/c{row}]", "sourceCell": f"FY results!B{row}"}
+                  "formula": f"[{source_name}/c{row}]", "sourceCell": f"FY results!B{row}"}
         if semantic:
             column["format"] = copy.deepcopy(semantic["emission"])
         metrics.append(column)
     workbook.close()
-    year = {"id": "research_year", "name": "Year", "formula": "[Calculation/Year]",
+    year = {"id": "research_year", "name": "Year", "formula": f"[{source_name}/Year]",
             "format": {"kind": "number", "formatString": ".0f"}}
     by_row = {int(column["id"].split("c")[-1]): column for column in metrics}
     main = [year] + [copy.deepcopy(by_row[row]) for row in (8, 18, 37, 57)]
     return main, [year] + metrics
 
 
+def research_view_columns(plan, calculation_source):
+    if (not isinstance(calculation_source, dict) or not calculation_source.get("elementId")
+            or not calculation_source.get("name")):
+        raise ValueError("research calculationSource requires runtime elementId and name")
+    return _research_view_columns(plan, calculation_source["name"])
+
+
 def _research_metric_formats_exact(plan, bindings):
-    expected_main, expected_detail = _research_view_columns(plan)
+    source = bindings.get("calculationSource") or {}
+    if (source.get("elementId") != bindings.get("viewSourceElementId")
+            or not source.get("name")):
+        return False
+    expected_main, expected_detail = research_view_columns(plan, source)
     keys = ("id", "name", "formula", "format")
     normalize = lambda columns: [
         {key: column.get(key) for key in keys} for column in (columns or [])]
@@ -563,9 +590,13 @@ def fixture_bindings(plan):
     Runtime callers replace IDs with GET/readback IDs before merge/PUT.
     """
     workflow = plan["workflow"]
+    calculation_source = ({"elementId": "researchCalc", "name": "Calculation"}
+                          if workflow == "research" else None)
     charts = {}
     for chart in plan["charts"]:
-        binding = _chart_binding(chart["title"], workflow)
+        binding = _chart_binding(
+            chart["title"], workflow,
+            calculation_source["name"] if calculation_source else "Calculation")
         if binding:
             element_id, category, order_formula, series = binding
             charts[chart["id"]] = {"sourceElementId": element_id,
@@ -582,7 +613,7 @@ def fixture_bindings(plan):
     detail = list(DETAIL_COLUMNS.get(workflow, []))
     edit = list(EDITABLE_COLUMNS.get(workflow, []))
     if workflow == "research":
-        edit = detail[:6]
+        edit = ["Scope"] + [f"i_model_inputs_c{row}" for row in range(2, 8)]
     source_names = {"forecast": "PnL Combined", "research": "Calculation", "sales": "Pipeline",
                     "inventory": "Inventory", "expense": "Expense Register"}
     source_ids = {"forecast": "pnlCombined", "research": "researchCalc", "sales": "salesPipeline",
@@ -597,7 +628,7 @@ def fixture_bindings(plan):
     detail_view_columns = default_view(detail)
     research_formats_exact = None
     if workflow == "research":
-        main_view_columns, detail_view_columns = _research_view_columns(plan)
+        main_view_columns, detail_view_columns = research_view_columns(plan, calculation_source)
         research_formats_exact = all(column.get("format") for column in detail_view_columns)
     main_ids = {column["name"]: column["id"] for column in main_view_columns}
     detail_ids = {column["name"]: column["id"] for column in detail_view_columns}
@@ -633,6 +664,7 @@ def fixture_bindings(plan):
         validation_targets[rule["id"]] = targets
     return {
         "workflow": workflow, "charts": charts, "columns": columns,
+        "calculationSource": calculation_source,
         "mainElementId": f"{workflow}-main-view", "editElementId": f"{workflow}-input",
         "detailElementId": f"{workflow}-detail-view", "viewSourceElementId": source_id,
         "mainViewColumns": main_view_columns, "detailViewColumns": detail_view_columns,
@@ -754,6 +786,105 @@ def build_business_operational_wiring(plan, binding):
             "requires": ["construct shared input from hash-bound PR2 manifest/receipt",
                          "replace logical shared-input element ID with assigned readback ID",
                          "merge native calculation tables with a guarded full-contents PUT"]}
+
+
+def build_business_input_architecture(plan, *, connection_id, folder_id, research_plan=None):
+    """Build a manifest-ready architecture owning the actual editable surface."""
+    if not connection_id or not folder_id:
+        raise ValueError("business input architecture requires connection_id and folder_id")
+    workflow = plan["workflow"]
+    if workflow == "research":
+        if (not isinstance(research_plan, dict)
+                or research_plan.get("sourceSha256") != plan["source"]["sha256"]):
+            raise ValueError("research business architecture requires the exact source-bound model plan")
+        architecture = build_shared_input_architecture(
+            copy.deepcopy(research_plan), connection_id=connection_id,
+            folder_id=folder_id, workflows=["research"])
+        feature = "researchModelInputs"
+    else:
+        architecture = {
+            "workflows": [workflow],
+            "targetScope": {"connectionId": connection_id, "folderId": folder_id},
+            "mappedFeatures": [], "featureToInput": {}, "inputs": {}, "joins": {},
+            "workbookWiring": {}, "calculations": {}, "provenance": {},
+            "acceptance": {"persistence": "reopen/refresh and query exact natural keys after restore"},
+            "acceptanceChecks": [],
+        }
+        feature = f"{workflow}BusinessInput"
+        if workflow in {"sales", "expense"}:
+            operational = build_business_operational_wiring(plan, {
+                "connectionId": connection_id, "folderId": folder_id,
+                "elementId": f"@input:{feature}",
+                "name": f"{workflow.title()} Business Inputs",
+            })
+            architecture = operational["architecture"]
+            architecture["workflows"] = [workflow]
+            source_key = f"{workflow}Source"
+            architecture["workbookWiring"][source_key]["inputFeature"] = feature
+            architecture["workbookWiring"][source_key].pop("elementId", None)
+        extracted = extract_business_input(plan)
+        architecture["inputs"][feature] = {
+            "kind": "input-table", "name": f"{workflow.title()} Business Inputs",
+            "keyColumns": extracted["keyColumns"], "connectionId": connection_id,
+            "rows": copy.deepcopy(extracted["rows"]),
+            "columns": copy.deepcopy(extracted["columns"]),
+            "editMode": "published-explore", "frame": [1, 4, 24, 24],
+            "sourceRange": extracted["sourceRange"],
+        }
+        mapped = f"{workflow}-business-input"
+        architecture["mappedFeatures"].append(mapped)
+        architecture["featureToInput"][mapped] = feature
+        architecture["acceptanceChecks"].append(f"{workflow}-business-input-edit-propagation")
+        architecture["provenance"][mapped] = {
+            "sourceHash": plan["source"]["sha256"],
+            "extractionHash": plan["extractionHash"], "sourceRange": extracted["sourceRange"]}
+    architecture["inputs"][feature]["editMode"] = "published-explore"
+    architecture["inputs"][feature].setdefault("frame", [1, 4, 24, 24])
+    architecture["presentationInputFeature"] = feature
+    architecture["presentationSourceHash"] = plan["source"]["sha256"]
+    return _manifest_value(architecture)
+
+
+def build_business_input_plan(plan, architecture, reviewed_formulas=None):
+    """Return the source-bound logical plan used to build an immutable manifest."""
+    if architecture.get("presentationSourceHash") != plan["source"]["sha256"]:
+        raise ValueError("business input architecture is stale for the presentation source")
+    reviewed = {item.get("id"): item for item in (reviewed_formulas or [])
+                if isinstance(item, dict) and item.get("id")}
+    if len(reviewed) != len(reviewed_formulas or []):
+        raise ValueError("reviewed formulas require unique source formula IDs")
+    formulas = []
+    for item in plan["formulaProvenance"]:
+        sheet, address = item["cell"].rsplit("!", 1)
+        record = {
+            "id": item["cell"], "sheet": sheet, "address": address,
+            "originalFormula": item["formula"], "mappingStatus": "verification",
+            "targetMapping": {"logicalCheckId": f"presentation-formula-scope-{plan['workflow']}"},
+        }
+        replacement = reviewed.get(item["cell"])
+        if replacement:
+            approved = replacement.get("reviewedReplacement") or {}
+            if (replacement.get("mappingStatus") != "live"
+                    or approved.get("originalFormula") != item["formula"]
+                    or approved.get("reviewStatus") != "approved"
+                    or not str(approved.get("reviewer") or "").strip()
+                    or not str(approved.get("replacementFormula") or "").strip()
+                    or not isinstance(replacement.get("targetMapping"), dict)):
+                raise ValueError(f"reviewed formula replacement is incomplete: {item['cell']}")
+            record.update(copy.deepcopy(replacement))
+            record.update({"id": item["cell"], "sheet": sheet, "address": address,
+                           "originalFormula": item["formula"]})
+        formulas.append(record)
+    unknown = set(reviewed) - {item["cell"] for item in plan["formulaProvenance"]}
+    if unknown:
+        raise ValueError("reviewed formula IDs are foreign to the source: " + ", ".join(sorted(unknown)))
+    return {
+        "source": plan["source"]["name"], "sourcePath": plan["source"]["path"],
+        "sourceSha256": plan["source"]["sha256"], "workflow": plan["workflow"],
+        "presentationExtractionHash": plan["extractionHash"],
+        "sharedInputArchitecture": copy.deepcopy(architecture),
+        "formulaCells": formulas,
+    }
 
 
 def emit_business_input_program(spec, binding):
@@ -887,6 +1018,21 @@ def emit_business_input_program(spec, binding):
             "program": "\n".join(lines) + "\n"}
 
 
+def emit_approved_business_input_program(manifest, staging_receipt, feature, *,
+                                         current_columns=None):
+    """Emit construction/extension only from approved immutable artifacts."""
+    architecture = (manifest.get("planProjection") or {}).get("sharedInputArchitecture") or {}
+    if architecture.get("presentationInputFeature") != feature:
+        raise ValueError("feature is not the approved presentation input")
+    target = (staging_receipt.get("targetBindings") or {}).get(feature) or {}
+    if not target.get("elementId"):
+        return {"mode": "construct-approved", "feature": feature,
+                "program": emit_construction_program(manifest, staging_receipt, feature)}
+    extension = plan_input_extension(
+        manifest, staging_receipt, feature, current_columns)
+    return extension
+
+
 def _layout(workflow, charts, bindings):
     overview, edit, detail = (f"{workflow}-overview", f"{workflow}-edit", f"{workflow}-detail")
     chart_ids = [chart["id"] for chart in charts]
@@ -965,6 +1111,7 @@ def _validate_presentation_staging(plan, bindings, manifest, staging_receipt):
 
 def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, logical_fixture=False):
     """Emit mergeable current-code-representation fragments from explicit bindings."""
+    bindings = copy.deepcopy(bindings)
     if bindings.get("workflow") != plan.get("workflow"):
         raise ValueError("presentation bindings target a different workflow")
     if bindings.get("sourceHash") != plan["source"]["sha256"]:
@@ -978,6 +1125,20 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
         staging_gate = _validate_presentation_staging(
             plan, bindings, manifest, staging_receipt)
     workflow = plan["workflow"]
+    if workflow == "research":
+        calculation_source = bindings.get("calculationSource") or {}
+        if (not calculation_source.get("elementId") or not calculation_source.get("name")
+                or bindings.get("viewSourceElementId") != calculation_source["elementId"]):
+            raise ValueError("research bindings require the resolved calculation source ID and name")
+        for chart in plan["charts"]:
+            target = (bindings.get("charts") or {}).get(chart["id"])
+            resolved = _chart_binding(chart["title"], workflow, calculation_source["name"])
+            if target and resolved:
+                if target.get("sourceElementId") != calculation_source["elementId"]:
+                    raise ValueError("research chart source does not match calculationSource")
+                _logical_id, category, order_formula, series = resolved
+                target.update({"categoryFormula": category, "orderFormula": order_formula,
+                               "seriesFormulas": series})
     ownership = f"excel-to-sigma:{workflow}:{plan['source']['sha256']}"
     elements, unresolved, aggregate_checks = [], [] , []
     for role in ("overview", "edit", "detail"):
@@ -1085,6 +1246,19 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
             patches[target["elementId"]]["columnUpdates"].setdefault(target["columnId"], {}).setdefault(
                 "format", copy.deepcopy(semantic["emission"]))
 
+    if workflow == "research" and not logical_fixture:
+        feature = staging_gate["feature"]
+        assigned = staging_receipt["targetBindings"][feature]["columnIds"]
+        prominent = ["Scope"] + [f"i_model_inputs_c{row}" for row in range(2, 8)]
+        if not set(prominent).issubset(assigned):
+            raise ValueError("research prominent assumptions are absent from the assigned receipt")
+        bindings["prominentEditableColumns"] = prominent
+        for name, column_id in assigned.items():
+            update = patches[bindings["editElementId"]]["columnUpdates"].setdefault(column_id, {})
+            update["hidden"] = name not in prominent
+            if name in prominent[1:]:
+                update["format"] = {"kind": "number", "formatString": ".1%"}
+
     main = list(MAIN_COLUMNS.get(workflow, []))
     detail = list(bindings.get("sharedInputColumns") or DETAIL_COLUMNS.get(workflow, main))
     edit = list(bindings.get("prominentEditableColumns") or EDITABLE_COLUMNS.get(workflow, []))
@@ -1093,10 +1267,16 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
     business_binding = {**(bindings.get("businessInput") or {}),
                         "planHash": bindings["planHash"],
                         "stagingReceiptHash": bindings["stagingReceiptHash"]}
-    business_program = emit_business_input_program(business_spec, business_binding)
-    operational_binding = {**business_binding,
-                           "elementId": business_binding.get("elementId") or bindings["editElementId"]}
-    operational_wiring = build_business_operational_wiring(plan, operational_binding)
+    if logical_fixture:
+        business_program = emit_business_input_program(business_spec, business_binding)
+        operational_binding = {**business_binding,
+                               "elementId": business_binding.get("elementId") or bindings["editElementId"]}
+        operational_wiring = build_business_operational_wiring(plan, operational_binding)
+    else:
+        business_program = emit_approved_business_input_program(
+            manifest, staging_receipt, staging_gate["feature"],
+            current_columns=business_binding.get("currentColumns"))
+        operational_wiring = emit_workbook_wiring(manifest, staging_receipt)["wiring"]
     checks_by_cell = defaultdict(list)
     for check in aggregate_checks:
         checks_by_cell[check["sourceCell"]].append(check["id"])
@@ -1129,6 +1309,7 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
         "planHash": bindings["planHash"], "stagingReceiptHash": bindings["stagingReceiptHash"],
         "stagingGate": staging_gate,
         "workflow": workflow, "pages": pages, "elements": elements,
+        "calculationSource": bindings.get("calculationSource"),
         "ownershipMarker": ownership,
         "layout": _layout(workflow, emitted_charts, bindings),
         "pageRoles": {role: f"{workflow}-{role}" for role in ("overview", "edit", "detail")},
@@ -1184,6 +1365,11 @@ def integrate_presentation(contents, artifact):
     missing = [eid for eid in artifact["referencedElementIds"] if eid not in existing_elements]
     if missing:
         raise ValueError("presentation references missing runtime elements: " + ", ".join(missing))
+    calculation_source = artifact.get("calculationSource")
+    if calculation_source:
+        observed = existing_elements.get(calculation_source["elementId"]) or {}
+        if observed.get("name") != calculation_source.get("name"):
+            raise ValueError("research calculation source name is stale")
     marker = artifact["ownershipMarker"]
 
     fingerprints = artifact.get("ownershipFingerprints") or {}

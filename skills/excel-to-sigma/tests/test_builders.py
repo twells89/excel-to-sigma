@@ -31,6 +31,7 @@ def load_script(filename: str, module_name: str):
 
 FORECAST = load_script("build-forecast-model.py", "forecast_builder")
 RESEARCH = load_script("build-research-model.py", "research_builder")
+INFER = load_script("infer-canonical-formulas.py", "research_inference")
 
 
 def forecast_plan():
@@ -396,8 +397,9 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertNotIn("[i_model_inputs_c8]", formula)
 
     def test_research_equity_literals_are_live_year_specific_inputs(self):
-        plan_path = ROOT.parents[3] / "work" / "task2-research-runtime-plan.json"
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan = INFER.infer(ROOT / "tests" / "fixtures" / "fixture-research-model.xlsx")
+        RESEARCH.include_research_line_input_literals(plan)
+        plan["targetScope"] = {"connectionId": "connection", "folderId": "folder"}
         _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
         workbook = RESEARCH.build_wb(
             plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,

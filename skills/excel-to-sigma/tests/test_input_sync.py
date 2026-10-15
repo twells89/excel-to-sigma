@@ -25,11 +25,14 @@ from input_sync import (  # noqa: E402
     build_artifact_records,
     build_operational_input_elements,
     build_shared_input_architecture,
+    checkpoint_input_extension,
     emit_construction_program,
     emit_workbook_wiring,
     emit_write_programs,
     evaluate_expense_exception,
     evaluate_timing_status,
+    plan_extension_seed,
+    plan_input_extension,
     plan_seed,
     sigma_input_type,
 )
@@ -269,6 +272,92 @@ class TestMcpPrograms(unittest.TestCase):
 
         self.assertIn("datetime(2026, 6, 30, 12)", program)
         self.assertNotIn("'2026-06-30'", program)
+
+    def test_extension_checkpoint_authorizes_only_new_null_columns_once(self):
+        architecture = copy.deepcopy(self.architecture)
+        spec = architecture["inputs"]["salesSettings"]
+        spec["columns"] += [
+            {"name": "New A", "type": "number", "provenance": "source:A1"},
+            {"name": "New B", "type": "number", "provenance": "source:B1"},
+        ]
+        spec["rows"] = [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30",
+                         "New A": 10, "New B": 20}]
+        manifest = {"sourceHash": "a" * 64, "planHash": "b" * 64,
+                    "planProjection": {"sharedInputArchitecture": architecture}}
+        pre_binding = {"documentId": "doc", "version": 7, "pageId": "page",
+                       "elementId": "table", "columnIds": {
+                           "Setting": "c-setting", "AsOfDate": "c-date"}}
+        pre = {"status": "APPROVED_STAGING", "sourceHash": "a" * 64,
+               "planHash": "b" * 64, "targetBindings": {"salesSettings": pre_binding}}
+        pre["artifacts"] = build_artifact_records(
+            manifest, architecture, pre["targetBindings"])
+        extension = plan_input_extension(manifest, pre, "salesSettings", [
+            {"name": "Setting", "type": "text", "id": "c-setting"},
+            {"name": "AsOfDate", "type": "datetime", "id": "c-date"},
+        ])
+        partial_binding = {**pre_binding, "columnIds": {
+            **pre_binding["columnIds"], "New A": "c-a"}}
+        partial = {**pre, "targetBindings": {"salesSettings": partial_binding}}
+        partial["artifacts"] = build_artifact_records(
+            manifest, architecture, partial["targetBindings"])
+        resumed = plan_input_extension(manifest, partial, "salesSettings", [
+            {"name": "Setting", "type": "text", "id": "c-setting"},
+            {"name": "AsOfDate", "type": "datetime", "id": "c-date"},
+            {"name": "New A", "type": "number", "id": "c-a"},
+        ])
+        self.assertEqual([column["name"] for column in resumed["missingColumns"]], ["New B"])
+        proof = checkpoint_input_extension(
+            extension, {"New A": "c-a", "New B": "c-b"}, result_version=8,
+            readback={"readbackId": "q-ext", "elementId": "table", "version": 8,
+                      "columns": {"New A": {"columnId": "c-a", "value": None},
+                                  "New B": {"columnId": "c-b", "value": 999}}})
+        with self.assertRaisesRegex(InputSyncError, "version"):
+            checkpoint_input_extension(
+                extension, {"New A": "c-a", "New B": "c-b"}, result_version=6,
+                readback={"readbackId": "stale", "elementId": "table", "version": 6,
+                          "columns": {"New A": {"columnId": "c-a", "value": None},
+                                      "New B": {"columnId": "c-b", "value": None}}})
+        post_binding = {**pre_binding, "version": 8,
+                        "columnIds": {**pre_binding["columnIds"],
+                                      "New A": "c-a", "New B": "c-b"}}
+        post_manifest = {**manifest, "target": {"documentId": "doc", "version": 8}}
+        post = {"status": "APPROVED_STAGING", "sourceHash": "a" * 64,
+                "planHash": "b" * 64, "targetBindings": {"salesSettings": post_binding}}
+        post["artifacts"] = build_artifact_records(
+            post_manifest, architecture, post["targetBindings"])
+        prior = plan_seed(
+            [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30"}],
+            [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30T12:00:00.000Z",
+              "Row ID": "row"}], ["Setting"], "Row ID",
+            column_types={"Setting": "text", "AsOfDate": "datetime"})
+        current = [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30T12:00:00.000Z",
+                    "New A": None, "New B": 999, "Row ID": "row"}]
+
+        seeded = plan_extension_seed(
+            spec["rows"], current, spec["keyColumns"], "Row ID", prior_seed=prior,
+            manifest=post_manifest, staging_receipt=post, feature="salesSettings",
+            extension_proof=proof,
+            column_types={column["name"]: column["type"] for column in spec["columns"]})
+
+        self.assertEqual(seeded["updates"][0]["changes"], {"New A": 10})
+        self.assertEqual(seeded["conflicts"][0]["columns"], ["New B"])
+        self.assertNotIn("New A", seeded["seedRecords"][0]["confirmedMigrationValue"])
+        self.assertNotIn("New B", seeded["seedRecords"][0]["confirmedMigrationValue"])
+        with self.assertRaisesRegex(InputSyncError, "replay"):
+            plan_extension_seed(
+                spec["rows"], current, spec["keyColumns"], "Row ID",
+                prior_seed=seeded, manifest=post_manifest, staging_receipt=post,
+                feature="salesSettings", extension_proof=proof,
+                column_types={column["name"]: column["type"] for column in spec["columns"]})
+
+        foreign = copy.deepcopy(proof)
+        foreign["elementId"] = "foreign"
+        with self.assertRaisesRegex(InputSyncError, "stale|element"):
+            plan_extension_seed(
+                spec["rows"], current, spec["keyColumns"], "Row ID", prior_seed=prior,
+                manifest=post_manifest, staging_receipt=post, feature="salesSettings",
+                extension_proof=foreign,
+                column_types={column["name"]: column["type"] for column in spec["columns"]})
 
 
 class TestSharedArchitecture(unittest.TestCase):

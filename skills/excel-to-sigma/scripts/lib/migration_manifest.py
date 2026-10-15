@@ -123,8 +123,22 @@ def build_manifest(source_path, plan=None) -> dict:
     cached = load_workbook(source, data_only=True, read_only=False)
     graph = FormulaGraph.from_workbook(workbook)
     cycle_members = {cell for component in graph.cycles() for cell in component}
-    unresolved_nodes = graph.unresolved_formula_nodes()
     plan_cells = _plan_cell_index(plan or {})
+    reviewed_roots = {
+        identity for identity, formula in graph.formulas.items()
+        if identity in graph.unsupported_formulas
+        and _valid_reviewed_replacement(plan_cells.get(identity.id, {}), formula)
+    }
+    unresolved_nodes = (
+        set(graph.unresolved_references) | set(graph.unresolved_names)
+        | (set(graph.unsupported_formulas) - reviewed_roots) | cycle_members)
+    changed = True
+    while changed:
+        changed = False
+        for node, dependencies in graph.dependencies.items():
+            if node not in unresolved_nodes and any(dep in unresolved_nodes for dep in dependencies):
+                unresolved_nodes.add(node)
+                changed = True
     formulas = []
     for identity in sorted(graph.formulas):
         formula = graph.formulas[identity]

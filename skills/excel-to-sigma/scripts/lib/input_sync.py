@@ -6,6 +6,7 @@ the emitted program, and query again before recording a checkpoint.
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -394,6 +395,188 @@ def _approved_feature(manifest, receipt, feature, *, require_assigned=False):
     return architecture["inputs"][feature], binding, expected[feature]
 
 
+def plan_input_extension(manifest, staging_receipt, feature, current_columns):
+    """Plan missing-only columns against an approved pre-extension target."""
+    input_spec, target, artifact = _approved_feature(
+        manifest, staging_receipt, feature)
+    if not target.get("elementId") or not isinstance(target.get("columnIds"), dict):
+        raise InputSyncError("approved pre-extension target requires elementId and columnIds")
+    if not isinstance(current_columns, list):
+        raise InputSyncError("extension requires current editable-column readback")
+    observed = {}
+    for column in current_columns:
+        if not isinstance(column, dict):
+            raise InputSyncError("current editable columns must be objects")
+        name, column_id = column.get("name"), column.get("id")
+        if not name or not column_id or name in observed:
+            raise InputSyncError("current editable columns require unique names and IDs")
+        observed[name] = column
+    if set(target["columnIds"]) != set(observed):
+        raise InputSyncError("current columns do not match the approved pre-extension binding")
+    for name, column_id in target["columnIds"].items():
+        if observed[name]["id"] != column_id:
+            raise InputSyncError(f"current column ID is stale: {name}")
+    expected = {column["name"]: column for column in input_spec["columns"]}
+    if not set(observed).issubset(expected):
+        raise InputSyncError("current columns are foreign to the approved input schema")
+    for name, column in observed.items():
+        if column.get("type") != expected[name]["type"]:
+            raise InputSyncError(f"current column type is stale: {name}")
+    missing = [expected[name] for name in expected if name not in observed]
+    material = {
+        "sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+        "preReceiptHash": _digest(staging_receipt), "artifactHash": artifact["artifactHash"],
+        "feature": feature, "documentId": target["documentId"],
+        "baseVersion": target["version"], "pageId": target["pageId"],
+        "elementId": target["elementId"], "observedColumns": target["columnIds"],
+        "missingColumns": missing,
+    }
+    extension_hash = _digest(material)
+    result = {**material, "extensionHash": extension_hash,
+              "mode": "extend-existing" if missing else "reconcile-existing"}
+    if missing:
+        lines = [
+            f"# extensionHash={extension_hash}",
+            f"# preReceiptHash={material['preReceiptHash']}",
+            f"host = sigma.workbook.get_page({target['pageId']!r})",
+            "if not isinstance(host, Page):",
+            "    raise RuntimeError('expected current page host')",
+            f"table = host.get_element({target['elementId']!r})",
+            "if not isinstance(table, InputTable):",
+            "    raise RuntimeError('expected existing input table')",
+        ]
+        for index, column in enumerate(missing):
+            lines.append(
+                f"n{index} = table.add_editable_column({column['name']!r}, {column['type']!r})")
+        lines.append("print('inputTableId=' + table.id())")
+        for index, column in enumerate(missing):
+            lines.append(f"print({('column:' + column['name'] + '=')!r} + n{index}.id())")
+        result["program"] = "\n".join(lines) + "\n"
+    return result
+
+
+def checkpoint_input_extension(extension_plan, created_columns, *, result_version, readback):
+    """Bind created IDs and immediate readback values to one extension plan."""
+    if extension_plan.get("mode") != "extend-existing":
+        raise InputSyncError("only a missing-column extension can be checkpointed")
+    expected = {column["name"] for column in extension_plan["missingColumns"]}
+    if (not isinstance(created_columns, dict) or set(created_columns) != expected
+            or any(not value for value in created_columns.values())
+            or len(set(created_columns.values())) != len(created_columns)):
+        raise InputSyncError("created column IDs must exactly cover the extension")
+    if (not isinstance(result_version, int)
+            or result_version < extension_plan["baseVersion"]):
+        raise InputSyncError("extension result version is stale")
+    if (not isinstance(readback, dict) or not readback.get("readbackId")
+            or readback.get("elementId") != extension_plan["elementId"]
+            or readback.get("version") != result_version):
+        raise InputSyncError("extension readback target/version is stale")
+    columns = readback.get("columns")
+    if not isinstance(columns, dict) or set(columns) != expected:
+        raise InputSyncError("extension readback must exactly cover created columns")
+    for name, item in columns.items():
+        if not isinstance(item, dict) or item.get("columnId") != created_columns[name]:
+            raise InputSyncError(f"extension readback column ID is stale: {name}")
+    proof = {
+        "status": "CHECKPOINTED_EXTENSION", "sourceHash": extension_plan["sourceHash"],
+        "planHash": extension_plan["planHash"],
+        "preReceiptHash": extension_plan["preReceiptHash"],
+        "extensionHash": extension_plan["extensionHash"],
+        "feature": extension_plan["feature"],
+        "documentId": extension_plan["documentId"],
+        "baseVersion": extension_plan["baseVersion"], "resultVersion": result_version,
+        "pageId": extension_plan["pageId"], "elementId": extension_plan["elementId"],
+        "createdColumns": dict(created_columns), "readback": readback,
+    }
+    proof["checkpointHash"] = _digest(proof)
+    return proof
+
+
+def plan_extension_seed(source_rows, current_rows, key_columns, row_id_column, *,
+                        prior_seed, manifest, staging_receipt, feature,
+                        extension_proof, snapshot=None, column_types=None):
+    """Authorize a first seed only for checkpointed, newly-created null fields."""
+    input_spec, target, _artifact = _approved_feature(
+        manifest, staging_receipt, feature, require_assigned=True)
+    proof = dict(extension_proof or {})
+    checkpoint_hash = proof.pop("checkpointHash", None)
+    if not checkpoint_hash or checkpoint_hash != _digest(proof):
+        raise InputSyncError("extension checkpoint hash is stale")
+    proof["checkpointHash"] = checkpoint_hash
+    if (proof.get("status") != "CHECKPOINTED_EXTENSION"
+            or proof.get("sourceHash") != manifest.get("sourceHash")
+            or proof.get("planHash") != manifest.get("planHash")
+            or proof.get("feature") != feature):
+        raise InputSyncError("extension checkpoint source/plan/feature is stale")
+    if (proof.get("documentId") != target.get("documentId")
+            or proof.get("resultVersion") != target.get("version")
+            or proof.get("pageId") != target.get("pageId")
+            or proof.get("elementId") != target.get("elementId")):
+        raise InputSyncError("extension checkpoint element or target version is stale")
+    created = proof.get("createdColumns") or {}
+    if any(target["columnIds"].get(name) != column_id
+           for name, column_id in created.items()):
+        raise InputSyncError("extension checkpoint created IDs are foreign to the assigned receipt")
+    readback_columns = (proof.get("readback") or {}).get("columns") or {}
+    if set(readback_columns) != set(created):
+        raise InputSyncError("extension checkpoint readback scope is stale")
+    if checkpoint_hash in set((prior_seed or {}).get("extensionSeedCheckpoints") or []):
+        raise InputSyncError("extension checkpoint replay is rejected")
+
+    result = plan_seed(
+        source_rows, current_rows, key_columns, row_id_column,
+        prior_seed=prior_seed, snapshot=snapshot, column_types=column_types)
+    current_index = _index(current_rows, key_columns, "current")
+    source_index = _index(source_rows, key_columns, "source")
+    authorized_updates = []
+    authorized_by_token = {}
+    for token, (key, wanted) in source_index.items():
+        if token not in current_index:
+            continue
+        _observed_key, observed = current_index[token]
+        safe = {}
+        for name, column_id in created.items():
+            proof_item = readback_columns[name]
+            if proof_item.get("columnId") != column_id:
+                raise InputSyncError("extension checkpoint readback column ID is stale")
+            if proof_item.get("value") is None and observed.get(name) is None:
+                safe[name] = wanted[name]
+        if safe:
+            authorized_by_token[token] = set(safe)
+            authorized_updates.append({
+                "key": key, "rowId": observed[row_id_column], "changes": safe,
+                "source": wanted,
+                "current": {name: value for name, value in observed.items()
+                            if name != row_id_column},
+                "confirmedMigrationValue": (_prior_index(prior_seed).get(token) or {}).get(
+                    "confirmedMigrationValue"),
+                "extensionCheckpointHash": checkpoint_hash,
+            })
+    conflicts = []
+    for conflict in result["conflicts"]:
+        token = _key_token(conflict["key"])
+        remaining = [name for name in conflict["columns"]
+                     if name not in authorized_by_token.get(token, set())]
+        if remaining:
+            conflicts.append({**conflict, "columns": remaining})
+    existing_updates = [update for update in result["updates"]
+                        if not set(update["changes"]) & set(created)]
+    result["updates"] = existing_updates + authorized_updates
+    result["conflicts"] = conflicts
+    result["extensionSeedCheckpoints"] = list(
+        (prior_seed or {}).get("extensionSeedCheckpoints") or [])
+    # Planning consumes the creation proof before any write is attempted. The
+    # caller persists this plan first, so an interrupted write cannot authorize
+    # the same first-seed proof against a later null readback.
+    result["extensionSeedCheckpoints"].append(checkpoint_hash)
+    logical = {key: result[key] for key in (
+        "sourceHash", "keyColumns", "rowIdColumn", "inserts", "updates",
+        "conflicts", "unchanged", "orphans")}
+    logical["extensionSeedCheckpoints"] = result["extensionSeedCheckpoints"]
+    result["planHash"] = _digest(logical)
+    return result
+
+
 def emit_workbook_wiring(manifest, staging_receipt):
     """Return approved REST-native join fragments bound to the artifact receipt."""
     architecture = _manifest_architecture(manifest)
@@ -402,7 +585,8 @@ def emit_workbook_wiring(manifest, staging_receipt):
     return {
         "sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
         "artifacts": staging_receipt["artifacts"],
-        "wiring": build_operational_input_elements(architecture),
+        "wiring": build_operational_input_elements(
+            architecture, target_bindings=staging_receipt["targetBindings"]),
     }
 
 
@@ -655,7 +839,7 @@ def _rest_columns(spec, prefix):
             for index, column in enumerate(spec["columns"])]
 
 
-def build_operational_input_elements(architecture):
+def build_operational_input_elements(architecture, target_bindings=None):
     """Build executable ordinary inputs and native join/calculation fragments."""
     inputs = architecture.get("inputs") or {}
     connection = (architecture.get("targetScope") or {}).get("connectionId")
@@ -663,9 +847,21 @@ def build_operational_input_elements(architecture):
     if not connection:
         raise InputSyncError("approved target connection is required")
     elements, consumers, validations = [], {}, {}
+    def resolved_source(key):
+        source = copy.deepcopy(wiring.get(key) or {})
+        feature = source.pop("inputFeature", None)
+        if feature:
+            if target_bindings is None:
+                source["elementId"] = f"@input:{feature}"
+            else:
+                binding = target_bindings.get(feature) or {}
+                if not binding.get("elementId"):
+                    raise InputSyncError(f"assigned target binding required for {feature}")
+                source["elementId"] = binding["elementId"]
+        return source
     if "salesSettings" in inputs:
         spec = inputs["salesSettings"]
-        source = wiring.get("salesSource") or {}
+        source = resolved_source("salesSource")
         if not source.get("elementId") or not source.get("name"):
             raise InputSyncError("approved sales source wiring is required")
         elements.extend([
@@ -710,7 +906,7 @@ def build_operational_input_elements(architecture):
         validations["salesSettings"] = {"uniqueKeys": ["Setting"]}
     if "expensePolicy" in inputs:
         spec = inputs["expensePolicy"]
-        source = wiring.get("expenseSource") or {}
+        source = resolved_source("expenseSource")
         if not source.get("elementId") or not source.get("name"):
             raise InputSyncError("approved expense source wiring is required")
         elements.extend([

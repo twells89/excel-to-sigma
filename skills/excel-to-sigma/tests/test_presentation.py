@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import copy
+import importlib.util
 import re
 import sys
 import tempfile
@@ -12,16 +13,46 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
-WORKSPACE = ROOT.parents[3]
+sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "lib"))
 
 import presentation  # noqa: E402
 from input_sync import (build_artifact_records, build_shared_input_architecture,
                         include_research_line_input_literals)  # noqa: E402
+from input_orchestration import gate_input_staging  # noqa: E402
 from migration_gate import gate_plan_staging_source, source_issue_hash  # noqa: E402
+from migration_manifest import build_manifest  # noqa: E402
 
 
-FIXTURES = WORKSPACE / "outputs"
+FIXTURES = ROOT / "tests" / "fixtures"
+
+
+def research_runtime_plan():
+    spec = importlib.util.spec_from_file_location(
+        "presentation_research_inference", SCRIPTS / "infer-canonical-formulas.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    plan = module.infer(FIXTURES / "fixture-research-model.xlsx")
+    include_research_line_input_literals(plan)
+    return plan
+
+
+def presentation_openapi_fixture():
+    return {"info": {"version": "portable-current-contract"},
+            "paths": {"/v2/workbooks/{workbookId}/contents": {}},
+            "components": {"schemas": {
+                "Kinds": {"enum": ["bar-chart", "line-chart", "single",
+                                     "backgroundScale", "fontScale", "number",
+                                     "datetime", "center", "hidden", "none"]},
+                "Chart": {"properties": {"xAxis": {}, "yAxis": {}, "columns": {},
+                                                   "columnIds": {}}},
+                "Validation": {"properties": {"values": {}, "valuesFrom": {}, "range": {}}},
+                "Conditional": {"properties": {"columnIds": {}, "scheme": {}, "domain": {},
+                                                         "order": {}, "nullBehavior": {}}},
+                "Number": {"properties": {"formatString": {}, "currencySymbol": {}}},
+                "Text": {"properties": {"verticalAlign": {}, "text": {}, "visibility": {}}},
+            }}}
 
 
 class TestPresentationExtraction(unittest.TestCase):
@@ -54,7 +85,7 @@ class TestPresentationExtraction(unittest.TestCase):
 
     def test_current_openapi_supports_emitted_alignment_description_and_style_contract(self):
         audit = presentation.audit_presentation_openapi(
-            json.loads((WORKSPACE / "work" / "sigma-openapi-current.json").read_text(encoding="utf-8")))
+            presentation_openapi_fixture())
         self.assertEqual(audit["status"], "PASS")
         self.assertTrue(audit["capabilities"]["presentationTextAndDescription"])
 
@@ -277,11 +308,9 @@ class TestPresentationEmission(unittest.TestCase):
 
     def test_actual_emission_recomputes_approved_146_column_gate(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
-        runtime_plan = json.loads(
-            (WORKSPACE / "work" / "task2-research-runtime-plan.json").read_text(encoding="utf-8"))
-        include_research_line_input_literals(runtime_plan)
-        architecture = build_shared_input_architecture(
-            runtime_plan, connection_id="conn", folder_id="folder", workflows=["research"])
+        runtime_plan = research_runtime_plan()
+        architecture = presentation.build_business_input_architecture(
+            plan, connection_id="conn", folder_id="folder", research_plan=runtime_plan)
         feature = "researchModelInputs"
         column_ids = {column["name"]: f"id-{index}"
                       for index, column in enumerate(architecture["inputs"][feature]["columns"])}
@@ -310,7 +339,8 @@ class TestPresentationEmission(unittest.TestCase):
                          "documentVersion": 7, "editElementId": "input-live"})
         bindings["businessInput"].update({
             "elementId": "input-live",
-            "currentColumns": [{"name": column["name"], "type": column["type"]}
+            "currentColumns": [{"name": column["name"], "type": column["type"],
+                                "id": column_ids[column["name"]]}
                                for column in architecture["inputs"][feature]["columns"]],
         })
         bindings["stagingReceiptHash"] = presentation._digest(receipt)
@@ -320,6 +350,99 @@ class TestPresentationEmission(unittest.TestCase):
         self.assertEqual(artifact["stagingGate"]["status"], "APPROVED_STAGING")
         self.assertEqual(len(architecture["inputs"][feature]["columns"]), 146)
         self.assertEqual(artifact["businessInputProgram"]["mode"], "reconcile-existing")
+        updates = artifact["elementPatches"]["input-live"]["columnUpdates"]
+        visible = {name for name, column_id in column_ids.items()
+                   if updates[column_id]["hidden"] is False}
+        self.assertEqual(visible, {"Scope", *(f"i_model_inputs_c{row}" for row in range(2, 8))})
+        self.assertTrue(all(
+            updates[column_ids[f"i_model_inputs_c{row}"]]["format"]["formatString"] == ".1%"
+            for row in range(2, 8)))
+
+    def test_business_input_architecture_covers_primary_inputs_for_all_five_workflows(self):
+        research_plan = research_runtime_plan()
+        expected = {
+            "fixture-forecast-model.xlsx": {"forecastBusinessInput"},
+            "fixture-research-model.xlsx": {"researchModelInputs"},
+            "fixture-sales-pipeline.xlsx": {"salesBusinessInput", "salesSettings"},
+            "fixture-inventory-reorder.xlsx": {"inventoryBusinessInput"},
+            "fixture-expense-approval.xlsx": {"expenseBusinessInput", "expensePolicy"},
+        }
+        for filename, features in expected.items():
+            plan = presentation.extract_presentation(FIXTURES / filename)
+            architecture = presentation.build_business_input_architecture(
+                plan, connection_id="conn", folder_id="folder",
+                research_plan=research_plan if plan["workflow"] == "research" else None)
+            self.assertEqual(set(architecture["inputs"]), features)
+            primary = architecture["presentationInputFeature"]
+            self.assertIn(primary, features)
+            self.assertEqual(architecture["inputs"][primary]["editMode"], "published-explore")
+        self.assertEqual(len(presentation.build_business_input_architecture(
+            presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx"),
+            connection_id="conn", folder_id="folder", research_plan=research_plan,
+        )["inputs"]["researchModelInputs"]["columns"]), 146)
+
+    def test_public_approved_entrypoint_constructs_or_extends_all_five_workflows(self):
+        research_plan = research_runtime_plan()
+        modes = {}
+        for filename in (
+                "fixture-forecast-model.xlsx", "fixture-research-model.xlsx",
+                "fixture-sales-pipeline.xlsx", "fixture-inventory-reorder.xlsx",
+                "fixture-expense-approval.xlsx"):
+            extracted = presentation.extract_presentation(FIXTURES / filename)
+            architecture = presentation.build_business_input_architecture(
+                extracted, connection_id="conn", folder_id="folder",
+                research_plan=research_plan if extracted["workflow"] == "research" else None)
+            logical = presentation.build_business_input_plan(extracted, architecture)
+            manifest = build_manifest(extracted["source"]["path"], logical)
+            unresolved = [item for item in manifest["formulaCells"]
+                          if item["mappingStatus"] == "unresolved"]
+            if unresolved:
+                reviewed = [{"id": item["id"], "mappingStatus": "live",
+                             "targetMapping": {"logicalCheckId": f"reviewed-{item['id']}"},
+                             "reviewedReplacement": {
+                                 "originalFormula": item["originalFormula"],
+                                 "replacementFormula": "0", "reviewer": "Fixture Reviewer",
+                                 "reviewStatus": "approved"}}
+                            for item in unresolved]
+                logical = presentation.build_business_input_plan(
+                    extracted, architecture, reviewed)
+                manifest = build_manifest(extracted["source"]["path"], logical)
+            bindings = {}
+            for feature, spec in architecture["inputs"].items():
+                binding = {"documentId": "doc", "version": 1,
+                           "pageId": f"{extracted['workflow']}-edit"}
+                if extracted["workflow"] == "research":
+                    columns = [column for column in spec["columns"]
+                               if not re.fullmatch(r"i_fy_results_[b-m]56", column["name"])]
+                    binding.update({"elementId": "research-input", "columnIds": {
+                        column["name"]: f"id-{index}" for index, column in enumerate(columns)}})
+                bindings[feature] = binding
+            _source, evidence = gate_plan_staging_source(
+                logical, source_arg=extracted["source"]["path"])
+            issues = evidence.get("issues") or []
+            approval = {
+                "sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+                "owner": "Migration Owner", "reviewer": "Migration Reviewer",
+                "reviewItems": [item["id"] for item in manifest["formulaCells"]],
+                "mappedFeatures": architecture["mappedFeatures"],
+                "targetBindings": bindings,
+            }
+            if issues:
+                approval["sourceReviewApproval"] = {
+                    "status": "approved_for_staging", "issues": issues}
+            receipt = gate_input_staging(manifest, approval, logical, evidence)
+            feature = architecture["presentationInputFeature"]
+            current = None
+            if extracted["workflow"] == "research":
+                by_name = {column["name"]: column for column in architecture["inputs"][feature]["columns"]}
+                current = [{"name": name, "type": by_name[name]["type"], "id": column_id}
+                           for name, column_id in bindings[feature]["columnIds"].items()]
+            result = presentation.emit_approved_business_input_program(
+                manifest, receipt, feature, current_columns=current)
+            modes[extracted["workflow"]] = result["mode"]
+        self.assertEqual(modes, {"forecast": "construct-approved", "research": "extend-existing",
+                                 "sales": "construct-approved", "inventory": "construct-approved",
+                                 "expense": "construct-approved"})
 
     def test_research_edit_view_keeps_shared_drivers_prominent_and_133_fields_in_detail(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
@@ -347,6 +470,26 @@ class TestPresentationEmission(unittest.TestCase):
             {name for name, update in updates.items() if update.get("range") == {"min": 0.0, "max": 0.25}},
             {f"i_model_inputs_c{row}" for row in range(2, 8)},
         )
+
+    def test_research_uses_runtime_calculation_source_name_for_views_and_charts(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-research-model.xlsx")
+        bindings = presentation.fixture_bindings(plan)
+        bindings["calculationSource"] = {"elementId": "calc", "name": "Calc"}
+        bindings["viewSourceElementId"] = "calc"
+        for chart in bindings["charts"].values():
+            chart["sourceElementId"] = "calc"
+        bindings["mainViewColumns"], bindings["detailViewColumns"] = (
+            presentation.research_view_columns(plan, bindings["calculationSource"]))
+
+        artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
+
+        self.assertTrue(artifact["researchMetricFormatsExact"])
+        formulas = [column["formula"] for element in artifact["elements"]
+                    if element.get("source", {}).get("elementId") == "calc"
+                    for column in element.get("columns", []) if column.get("formula")]
+        self.assertTrue(formulas)
+        self.assertTrue(all("[Calculation/" not in formula for formula in formulas))
+        self.assertTrue(any("[Calc/c8]" in formula for formula in formulas))
 
     def test_forecast_manual_validation_covers_each_month_column(self):
         plan = presentation.extract_presentation(FIXTURES / "fixture-forecast-model.xlsx")
