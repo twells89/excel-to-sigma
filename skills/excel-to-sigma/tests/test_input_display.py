@@ -65,6 +65,43 @@ class TestInputDisplay(unittest.TestCase):
                     growth=next(c for c in display['columns'] if c['name']=='i_model_inputs_c2')
                     self.assertEqual(growth['format'],{'pattern':'.1%'})
 
+    def test_reviewed_source_list_conversion_keeps_default_literal_guard_strict(self):
+        from input_display import build_input_display, _hash, _editable_column_contract
+        from input_sync import build_artifact_records
+        source,plan,manifest,staging=self.prepared('expense')
+        feature='expenseBusinessInput';target=staging['targetBindings'][feature]
+        spec=manifest['planProjection']['sharedInputArchitecture']['inputs'][feature]
+        column=next(c for c in spec['columns'] if c['name']=='Approval Status')
+        rule=next(r for r in plan['validations'] if r['field']=='Approval Status')
+        descriptor={'id':target['columnIds']['Approval Status'], 'columnClass':'SingleSelectEditableColumn',
+            'type':'text','allowedValues':rule['emission']['values'],
+            'sourceValidationHash':_hash(rule),'sdkEvidenceHash':'a'*64}
+        target['columnContracts']={'Approval Status':descriptor}
+        staging['artifacts']=build_artifact_records(manifest,manifest['planProjection']['sharedInputArchitecture'],staging['targetBindings'])
+        self.assertEqual(_editable_column_contract(manifest,target,column),descriptor)
+        result=build_input_display(plan,manifest,staging)
+        self.assertIn('SingleSelectEditableColumn',result['program'])
+        self.assertIn('.allowed_values()',result['program'])
+        self.assertNotIn('set_allowed_values',result['program'])
+        self.assertEqual(next(c for c in result['columns'] if c['name']=='Amount')['columnClass'],'LiteralEditableColumn')
+        for field,value in [('allowedValues',['Approved']),('sourceValidationHash','b'*64),('columnClass','MultiSelectEditableColumn')]:
+            bad=copy.deepcopy(target);bad['columnContracts']['Approval Status'][field]=value
+            with self.assertRaises(ValueError):_editable_column_contract(manifest,bad,column)
+
+    def test_numeric_source_whole_validation_requires_exact_90_value_whitelist(self):
+        from input_display import _hash, _editable_column_contract
+        _,plan,manifest,staging=self.prepared('inventory')
+        target=staging['targetBindings']['inventoryBusinessInput']
+        spec=manifest['planProjection']['sharedInputArchitecture']['inputs']['inventoryBusinessInput']
+        column=next(c for c in spec['columns'] if c['name']=='Lead Days')
+        rule=next(r for r in plan['validations'] if r['field']=='Lead Days')
+        target['columnContracts']={'Lead Days':{'id':target['columnIds']['Lead Days'],
+            'columnClass':'SingleSelectEditableColumn','type':'number','allowedValues':list(range(1,91)),
+            'sourceValidationHash':_hash(rule),'sdkEvidenceHash':'a'*64}}
+        self.assertEqual(len(_editable_column_contract(manifest,target,column)['allowedValues']),90)
+        target['columnContracts']['Lead Days']['allowedValues']=[str(i) for i in range(1,91)]
+        with self.assertRaisesRegex(ValueError,'allowed values'):_editable_column_contract(manifest,target,column)
+
     def captures(self, display, columns=None):
         base=display['target']['version']
         columns=columns or [dict(id=c['id'],name=c['name'],visible=c['visible'],

@@ -1,0 +1,709 @@
+"""Source-bound native action candidates. No VBA execution or live API calls.
+
+Construction approval is deliberately separate from runtime acceptance. Programs
+have no optimistic success UI: update_rows exposes no affected-row result. A
+fresh controller readback must establish the business outcome before any success
+is reported. Ordinary input tables provide no concurrent uniqueness guarantee.
+"""
+from __future__ import annotations
+
+import copy
+import re
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+try:
+    from .macro_behavior import validate_macro_source, procedure_by_identity
+    from .migration_manifest import build_manifest, validate_manifest
+    from .input_sync import (_approved_feature, _digest, build_artifact_records,
+        plan_input_extension, checkpoint_input_extension, emit_construction_program)
+    from .input_display import _system_column_contract, _editable_column_contract
+    from . import code_rep
+except ImportError:
+    from macro_behavior import validate_macro_source, procedure_by_identity
+    from migration_manifest import build_manifest, validate_manifest
+    from input_sync import (_approved_feature, _digest, build_artifact_records,
+        plan_input_extension, checkpoint_input_extension, emit_construction_program)
+    from input_display import _system_column_contract, _editable_column_contract
+    import code_rep
+
+
+class NativeActionError(ValueError):
+    pass
+
+
+APPROVAL_COLUMNS = [
+    {'name':'ApprovedAt','type':'datetime','provenance':'macro-column16'},
+    {'name':'Last Approval Operation ID','type':'text','provenance':'task4-safeguard'},
+    {'name':'Applied Approval Operation IDs','type':'text','provenance':'task4-safeguard'},
+]
+OPERATION_FIELDS = [('Workflow','text'),('Target Row ID','text'),('Target Business Key','text'),
+    ('Context','text'),('Source Hash','text'),('Plan Hash','text'),('Created At','datetime'),
+    ('State','text'),('Completed At','datetime'),('Outcome','text')]
+LIMITS = ['UNVERIFIED_PUBLISHED_SELECTION_CARDINALITY', 'UNVERIFIED_WRITE_OUTCOME',
+    'UNVERIFIED_CONCURRENCY: read-then-write guards are not warehouse uniqueness constraints',
+    'UNVERIFIED_REOPEN_RECOVERY: recover the same prepared operation before retry',
+    'PARTIAL_FAILURE: multiple effects are sequential and have no cross-effect transaction']
+
+
+def _architecture(manifest):
+    value=manifest.get('planProjection',{}).get('nativeActionArchitecture')
+    if not isinstance(value,dict) or value.get('version')!=1:
+        raise NativeActionError('manifest has no hash-bound native action architecture')
+    return value
+
+
+def _review(decision):
+    return (isinstance(decision,dict) and decision.get('reviewStatus')=='approved'
+            and bool(str(decision.get('reviewer') or '').strip())
+            and bool(str(decision.get('decisionId') or '').strip()))
+
+
+def _rows(readback, key):
+    if not isinstance(readback,dict) or not readback.get('rowIdColumn'):
+        raise NativeActionError('input readback requires the real row-ID column')
+    rows=readback.get('rows'); rid=readback['rowIdColumn']
+    if not isinstance(rows,list):raise NativeActionError('input readback rows required')
+    ids=[r.get(rid) for r in rows];keys=[r.get(key) for r in rows] if key else ids
+    if any(not isinstance(i,str) or not i for i in ids) or len(set(ids))!=len(ids):
+        raise NativeActionError('missing or ambiguous physical row ID')
+    if any(k is None for k in keys) or len(set(map(str,keys)))!=len(keys):
+        raise NativeActionError('missing or ambiguous business key')
+    return {r[rid]:r for r in rows}
+
+
+def _spec(template,name,fields):
+    return {**{k:copy.deepcopy(template[k]) for k in ('connectionId','writebackSchemaId','editMode','frame') if k in template},
+            'name':name,'keyColumns':['Operation ID'] if name!='Workflow Operations' else [],
+            'columns':[{'name':n,'type':t,'provenance':'task4-reviewed-workflow'} for n,t in fields], 'rows':[]}
+
+
+def _procedure(analyses,decision):
+    matches=[p for a in analyses for p in a['procedures'] if p['procedureId']==decision.get('procedureId')]
+    if len(matches)!=1:raise NativeActionError('reviewed procedure must resolve exactly once')
+    proc=matches[0]
+    if proc['procedureSha256']!=decision.get('procedureSha256'):
+        raise NativeActionError('reviewed procedure hash is stale')
+    if proc['unresolvedDependencies'] or proc['externalSideEffects']:
+        raise NativeActionError('unresolved helper/external side effect cannot authorize a native action')
+    return proc
+
+
+def _contract(workflow,proc,decision):
+    """Narrow body facts plus explicit reviewed mappings authorize each route."""
+    writes=proc['writes'];body=proc['sourceBody']
+    if workflow=='approval':
+        if (not proc['selectedRecord'] or len(writes)!=2
+                or [w.get('column') for w in writes]!=[9,16]
+                or any(w.get('row')!=proc['selectedRecord']['variable'] for w in writes)
+                or writes[0].get('value')!='"Approved"' or not writes[1].get('usesNow')
+                or {g['kind'] for g in proc['guards']}!={'minimum-row','active-sheet'}
+                or not any(re.fullmatch(r'ActiveSheet\.Name\s*<>\s*"Expense Register"',g['condition'],re.I) for g in proc['guards'])):
+            raise NativeActionError('approval body is not the reviewed selected-record update')
+        if decision.get('target')!='expenseBusinessInput':raise NativeActionError('approval target must be expenseBusinessInput')
+    elif workflow=='navigation':
+        if proc['disposition']['operation']!='navigate' or writes:
+            raise NativeActionError('navigation body has unsupported behavior')
+    elif workflow=='applyScenario':
+        expected=[('B5','0.06'),('B6','0.02'),('B5','0.01'),('B6','0.01')]
+        if ([(w.get('address'),w.get('value')) for w in writes]!=expected
+                or any(w.get('sheet')!='Assumptions' for w in writes)
+                or re.findall(r'Case\s+"([^"]+)"',body)!=['Aggressive','Conservative']):
+            raise NativeActionError('scenario body differs from reviewed source assignments')
+        if len(decision.get('assumptions') or [])!=2:raise NativeActionError('scenario needs two explicit assumption mappings')
+    elif workflow=='saveScenario':
+        if (not any(w['kind']=='append' and w.get('evidence')=='ListRows.Add' for w in writes)
+                or {r['identity'] for r in proc['reads']}!={'Assumptions!B5','Assumptions!B6'}):
+            raise NativeActionError('scenario save source contract differs')
+        if len(decision.get('assumptions') or [])!=2:raise NativeActionError('save needs two explicit assumption mappings')
+    elif workflow=='snapshot':
+        ranges=proc['affectedRanges']
+        if proc['disposition']['operation']!='append':raise NativeActionError('snapshot destination append is not proven')
+        if not any(r['identity']=='P&L!H7:M33' and (r['rows'],r['columns'])==(27,6) for r in ranges):
+            raise NativeActionError('snapshot source rectangle differs')
+        if (decision.get('mappingKind')!='reviewed-replacement'
+                or not decision.get('overwriteDisposition') or not decision.get('rangeMismatchDisposition')
+                or not decision.get('projection')):
+            raise NativeActionError('snapshot requires reviewed H7 overwrite and range-mismatch replacement')
+        pairs=[(p.get('line'),p.get('period')) for p in decision['projection']]
+        names=[p.get('name') for p in decision['projection']]
+        if (any(not a or not b for a,b in pairs) or len(set(pairs))!=len(pairs)
+                or len(set(names))!=len(names) or any(not n for n in names)):
+            raise NativeActionError('snapshot requires unique explicit line/period identities')
+    else:raise NativeActionError('unsupported Task4 workflow')
+    if workflow in {'applyScenario','saveScenario'}:
+        assumptions=decision['assumptions']
+        if {a.get('sourceCell') for a in assumptions}!={'Assumptions!B5','Assumptions!B6'}:
+            raise NativeActionError('assumption mappings must bind B5 and B6 explicitly')
+        for a in assumptions:
+            if not all(a.get(k) for k in ('feature','keyColumn','key','valueColumn','name')):
+                raise NativeActionError('incomplete source-bound assumption identity')
+
+
+def build_native_action_plan(*,workbook_source,base_manifest,base_receipt,presentation_bindings,
+                             current_contents,input_readbacks,macro_analyses,decisions):
+    validate_manifest(base_manifest,workbook_source)
+    shared=copy.deepcopy(base_manifest['planProjection']['sharedInputArchitecture'])
+    for feature,spec in shared['inputs'].items():
+        _approved_feature(base_manifest,base_receipt,feature,require_assigned=True)
+        key=(spec.get('keyColumns') or [None])[0]
+        _rows(input_readbacks.get(feature),key)
+    if (current_contents.get('workbookId')!=base_manifest.get('target',{}).get('documentId')
+            or current_contents.get('documentVersion')!=base_manifest.get('target',{}).get('version')
+            or code_rep.document(current_contents).get('kind')!='workbook'):
+        raise NativeActionError('base target/version or workbook kind is stale')
+    for analysis in macro_analyses:
+        validate_macro_source(analysis)
+        if analysis.get('sourceKind')!='raw-module' or Path(analysis['sourcePath']).suffix.lower() not in {'.bas','.cls','.frm','.vba','.txt'}:
+            raise NativeActionError('native mapping requires separately hash-bound raw module artifacts')
+    workflows={};unresolved=[]
+    for workflow,decision in decisions.items():
+        if not _review(decision):
+            unresolved.append({'workflow':workflow,'reason':'mapping requires named approved review'});continue
+        proc=_procedure(macro_analyses,decision);_contract(workflow,proc,decision)
+        if decision.get('mappingKind') not in {'exact','reviewed-replacement'}:
+            raise NativeActionError('unresolved mapping cannot emit')
+        if decision.get('page') not in presentation_bindings.get('pages',{}):
+            raise NativeActionError('workflow page lacks actual presentation binding')
+        module=next(a for a in macro_analyses if proc in a['procedures'])
+        workflows[workflow]={'procedureId':proc['procedureId'],'procedureSha256':proc['procedureSha256'],
+            'moduleByteSha256':module['moduleByteSha256'],'sourceReads':proc['reads'],
+            'sourceWrites':proc['writes'],'sourceOverwrites':proc['overwrites'],'guards':proc['guards'],
+            'decision':copy.deepcopy(decision),'mappingKind':decision['mappingKind'],
+            'operationPolicy':'insert_row returns physical operation ID; explicit prepare/new intent, reuse on retry',
+            'successPolicy':'no toast; require fresh confirmed business readback', 'status':'STAGED_CANDIDATE'}
+    for analysis in macro_analyses:
+        mapped={w['procedureId'] for w in workflows.values()}
+        for proc in analysis['procedures']:
+            if proc['procedureId'] not in mapped:
+                unresolved.append({'procedureId':proc['procedureId'],'procedureSha256':proc['procedureSha256'],
+                    'reason':proc['unresolvedDependencies'] or proc['externalSideEffects'] or 'no reviewed native mapping'})
+    template=next(iter(shared['inputs'].values()))
+    operation_fields=list(OPERATION_FIELDS)
+    if 'approval' in workflows:
+        operation_fields += [('Before:'+c['name'],c['type']) for c in shared['inputs']['expenseBusinessInput']['columns']]
+    if any(w in workflows for w in ('applyScenario','saveScenario')):
+        operation_fields += [('Scenario Name','text')]
+    captures={}
+    for w in ('saveScenario','snapshot'):
+        if w in workflows:
+            values=workflows[w]['decision'].get('assumptions') or workflows[w]['decision'].get('projection')
+            for a in values:
+                captures['Captured:'+a['name']]='number'
+    operation_fields += list(captures.items())
+    shared['inputs']['workflowOperations']=_spec(template,'Workflow Operations',operation_fields)
+    if 'approval' in workflows:
+        spec=shared['inputs']['expenseBusinessInput']
+        if len(spec['columns'])!=11 or len(spec['rows'])!=48:
+            raise NativeActionError('expense extension requires reviewed 48×11 source shape')
+        spec['columns']+=copy.deepcopy(APPROVAL_COLUMNS)
+        for row in spec['rows']:row.update({c['name']:None for c in APPROVAL_COLUMNS})
+    if 'saveScenario' in workflows:
+        fields=[('Operation ID','text'),('Scenario Name','text')]+[(a['name'],'number') for a in workflows['saveScenario']['decision']['assumptions']]
+        fields += [('Saved At','datetime'),('Source Hash','text'),('Plan Hash','text')]
+        shared['inputs']['savedScenarios']=_spec(template,'Saved Scenarios',fields)
+    if 'snapshot' in workflows:
+        fields=[('Operation ID','text'),('Captured At','datetime'),('Source Hash','text'),('Plan Hash','text'),
+                ('Source Procedure Hash','text'),('Replacement Decision ID','text')]
+        fields += [(p['name'],'number') for p in workflows['snapshot']['decision']['projection']]
+        shared['inputs']['forecastSnapshots']=_spec(template,'Forecast Snapshots',fields)
+    architecture={'version':1,'base':{'sourceHash':base_manifest['sourceHash'],'planHash':base_manifest['planHash'],
+        'stagingReceiptHash':_digest(base_receipt),'target':base_manifest['target']},
+        'sourceModules':copy.deepcopy(macro_analyses),'sourcePresentation':copy.deepcopy(presentation_bindings),
+        'baseInputReadbackHashes':{k:_digest(v) for k,v in input_readbacks.items()},
+        'workflows':workflows,'reviewedDecisions':copy.deepcopy(decisions),'unresolved':unresolved,
+        'limitations':LIMITS,'productionStatus':'BLOCKED'}
+    projection=copy.deepcopy(base_manifest['planProjection'])
+    projection.update(sharedInputArchitecture=shared,nativeActionArchitecture=architecture)
+    projection['formulaCells']=copy.deepcopy(base_manifest['formulaCells'])
+    manifest=build_manifest(workbook_source,projection);manifest['target']=copy.deepcopy(base_manifest['target'])
+    validate_native_action_plan(manifest)
+    return manifest
+
+
+def validate_native_action_plan(manifest,*,rehash_sources=True):
+    validate_manifest(manifest);architecture=_architecture(manifest)
+    if architecture.get('productionStatus')!='BLOCKED':raise NativeActionError('native production gate must remain BLOCKED')
+    for analysis in architecture['sourceModules']:
+        if rehash_sources:validate_macro_source(analysis)
+    for workflow,record in architecture['workflows'].items():
+        decision=record['decision']
+        if not _review(decision):raise NativeActionError('missing approved mapping review')
+        proc=_procedure(architecture['sourceModules'],decision);_contract(workflow,proc,decision)
+    return True
+
+
+def emit_action_schema(manifest,receipt,feature,*,current_columns=None):
+    validate_native_action_plan(manifest)
+    if current_columns is not None:
+        extension=plan_input_extension(manifest,receipt,feature,current_columns)
+        extension['preservationRequired']=True
+        extension['requiredBeforeHash']=_architecture(manifest)['baseInputReadbackHashes'].get(feature)
+        return extension
+    _approved_feature(manifest,receipt,feature)
+    return {'feature':feature,'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
+            'program':emit_construction_program(manifest,receipt,feature),'productionStatus':'BLOCKED'}
+
+
+def checkpoint_action_schema(extension,created_columns,*,result_version,before,after):
+    """Additive columns are accepted only with unchanged existing values and IDs."""
+    if _digest(before)!=extension.get('requiredBeforeHash'):
+        raise NativeActionError('extension preservation baseline differs from reviewed source readback')
+    rid=before.get('rowIdColumn')
+    if rid!=after.get('rowIdColumn'):raise NativeActionError('preservation requires the same physical ID column')
+    old=_rows(before,None);new=_rows(after,None)
+    if set(old)!=set(new):raise NativeActionError('extension did not preserve original row IDs')
+    added={c['name'] for c in extension['missingColumns']}
+    for key,row in old.items():
+        if any(new[key].get(n)!=v for n,v in row.items()) or any(new[key].get(n) is not None for n in added):
+            raise NativeActionError('extension did not preserve original values/all-null additions')
+        if set(new[key])!=set(row)|added:raise NativeActionError('extension has foreign or missing fields')
+    readback={k:after[k] for k in ('readbackId','elementId','version')}
+    readback['columns']={n:{'columnId':cid,'values':[r[n] for r in new.values()]} for n,cid in created_columns.items()}
+    proof=checkpoint_input_extension(extension,created_columns,result_version=result_version,readback=readback)
+    proof.update(preservedRowCount=len(old),beforeHash=_digest(before),afterHash=_digest(after))
+    proof['preservationHash']=_digest({k:v for k,v in proof.items() if k!='preservationHash'})
+    return proof
+
+
+def _document(current,manifest):
+    target=manifest['target']
+    if current.get('workbookId')!=target['documentId'] or current.get('documentVersion')!=target['version']:
+        raise NativeActionError('current target document/version is stale')
+    doc=code_rep.document(current)
+    if doc.get('kind')!='workbook':raise NativeActionError('contents.kind must be workbook')
+    try:layout=ET.fromstring('<Layout>'+re.sub(r'<\?xml[^?]*\?>','',doc.get('layout') or '')+'</Layout>')
+    except ET.ParseError as e:raise NativeActionError('cannot prove layout ownership') from e
+    return doc,layout
+
+
+def bind_native_action_target(manifest,receipt,*,current_contents,input_readbacks):
+    validate_native_action_plan(manifest);doc,layout=_document(current_contents,manifest)
+    architecture=_architecture(manifest);pages=architecture['sourcePresentation']['pages']
+    tables={};specs=manifest['planProjection']['sharedInputArchitecture']['inputs']
+    for page_id in pages.values():
+        if (sum(p.get('id')==page_id for p in doc.get('pages',[]))!=1
+                or sum(p.get('id')==page_id for p in layout.iter('Page'))!=1):
+            raise NativeActionError('assigned page must occur once in pages and layout')
+    for feature,spec in specs.items():
+        _,target,_=_approved_feature(manifest,receipt,feature,require_assigned=True)
+        matches=[e for e in doc['elements'] if e.get('id')==target['elementId']]
+        if len(matches)!=1 or matches[0].get('kind')!='input-table':
+            raise NativeActionError('assigned input table did not resolve exactly once')
+        owners=[p for p in layout.iter('Page') if any(n.get('id')==target['elementId'] for n in p.iter())]
+        if len(owners)!=1 or owners[0].get('id')!=target['pageId']:
+            raise NativeActionError('assigned input table has wrong/ambiguous page ownership')
+        actual=matches[0].get('columns') or []
+        for c in spec['columns']:
+            match=[a for a in actual if a.get('id')==target['columnIds'][c['name']] and a.get('name')==c['name']]
+            if len(match)!=1 or ('type' in match[0] and match[0]['type']!=c['type']):
+                raise NativeActionError('assigned editable column identity/type is stale')
+        readback=input_readbacks.get(feature);key=(spec.get('keyColumns') or [None])[0]
+        _rows(readback,key)
+        system=_system_column_contract(target)
+        system['id']=system.get('id') or readback['rowIdColumn']
+        tables[feature]={'target':copy.deepcopy(target),'systemColumn':system,'readbackHash':_digest(readback),
+            'identities':[{'rowId':r[readback['rowIdColumn']], 'key':{k:r[k] for k in spec.get('keyColumns') or []}} for r in readback['rows']]}
+    reads={}
+    for feature,target in architecture['sourcePresentation'].get('readTargets',{}).items():
+        if not re.fullmatch('[A-Za-z_][A-Za-z_0-9]*',feature) or feature in tables:
+            raise NativeActionError('read-target alias is unsafe or collides with input')
+        matches=[e for e in doc['elements'] if e.get('id')==target.get('elementId')]
+        if len(matches)!=1 or matches[0].get('kind')!='table' or _digest(matches[0])!=target.get('elementHash'):
+            raise NativeActionError('reviewed live projection element/formula changed')
+        owners=[p for p in layout.iter('Page') if any(n.get('id')==target['elementId'] for n in p.iter())]
+        if len(owners)!=1 or owners[0].get('id')!=target['pageId']:
+            raise NativeActionError('live projection page ownership changed')
+        for name,cid in target['columnIds'].items():
+            if sum(c.get('id')==cid and c.get('name')==name for c in matches[0]['columns'])!=1:
+                raise NativeActionError('live projection column identity changed')
+        keys=target.get('keyColumns');readback=input_readbacks.get(feature) or {}
+        if not keys or not isinstance(readback.get('rows'),list):
+            raise NativeActionError('live projection requires composite-key readback')
+        identities=[tuple(r.get(k) for k in keys) for r in readback['rows']]
+        if any(None in t for t in identities) or len(set(identities))!=len(identities):
+            raise NativeActionError('live projection keys missing or ambiguous')
+        reads[feature]={'target':copy.deepcopy(target),'readbackHash':_digest(readback),
+            'identities':[dict(zip(keys,t)) for t in identities]}
+    result={'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
+        'target':manifest['target'],'pages':pages,'tables':tables,'readTargets':reads,'contentsHash':_digest(doc)}
+    result['bindingHash']=_digest(result)
+    return result
+
+
+def _conjoin(values):
+    if not values:return 'const_bool(True)'
+    result=values[0]
+    for value in values[1:]:result=f'and_({result}, {value})'
+    return result
+
+
+def _c(feature,name):
+    return 'c_'+feature+'['+repr(name)+']'
+
+
+def _lit(value):return f'const_text({value!r})'
+
+
+def _lookup_assumption(a):
+    extras=''.join(', ('+_lit(e['value'])+', '+_c(a['feature'],e['column'])+')' for e in a.get('extraKeys',[]))
+    return 'lookup('+_c(a['feature'],a['valueColumn'])+', '+_lit(a['key'])+', '+_c(a['feature'],a['keyColumn'])+extras+')'
+
+
+def emit_native_action_program(manifest,receipt,action_bindings,*,current_contents,staging_review=None):
+    validate_native_action_plan(manifest);doc,layout=_document(current_contents,manifest)
+    binding=action_bindings
+    if (receipt.get('nativeActionBinding')!=binding or binding.get('sourceHash')!=manifest['sourceHash']
+            or binding.get('planHash')!=manifest['planHash'] or binding.get('target')!=manifest['target']
+            or binding.get('contentsHash')!=_digest(doc)
+            or binding.get('bindingHash')!=_digest({k:v for k,v in binding.items() if k!='bindingHash'})):
+        raise NativeActionError('native action binding/receipt/current contents is stale')
+    for feature in binding['tables']:_approved_feature(manifest,receipt,feature,require_assigned=True)
+    enabled=False
+    if staging_review is not None:
+        enabled=(staging_review.get('status')=='APPROVED_STAGING' and bool(staging_review.get('owner'))
+            and staging_review.get('bindingHash')==binding['bindingHash']
+            and staging_review.get('documentId')==manifest['target']['documentId']
+            and staging_review.get('version')==manifest['target']['version'])
+        if not enabled:raise NativeActionError('staging enable review is stale or targets a different document')
+    architecture=_architecture(manifest)
+    if 'approval' in architecture['workflows']:
+        proof=(receipt.get('nativeActionSchemaProofs') or {}).get('expenseBusinessInput') or {}
+        if (proof.get('status')!='CHECKPOINTED_EXTENSION'
+                or proof.get('sourceHash')!=manifest['sourceHash'] or proof.get('planHash')!=manifest['planHash']
+                or proof.get('beforeHash')!=architecture['baseInputReadbackHashes']['expenseBusinessInput']
+                or proof.get('preservedRowCount')!=48
+                or proof.get('documentId')!=manifest['target']['documentId']
+                or proof.get('resultVersion',-1)>manifest['target']['version']
+                or proof.get('preservationHash')!=_digest({k:v for k,v in proof.items() if k!='preservationHash'})):
+            raise NativeActionError('expense action requires checkpointed extension preservation proof')
+        columns=binding['tables']['expenseBusinessInput']['target']['columnIds']
+        if proof.get('createdColumns')!={c['name']:columns[c['name']] for c in APPROVAL_COLUMNS}:
+            raise NativeActionError('expense extension assigned columns are stale')
+    lines=['# Native action construction candidate; productionStatus=BLOCKED',
+        '# sourceHash='+manifest['sourceHash'],'# planHash='+manifest['planHash'],
+        'from sigma.page import Page','from sigma.framing import GridFramed','from sigma.inputTable import InputTable, LiteralEditableColumn, SingleSelectEditableColumn, InputTableIDColumn',
+        'from sigma.column import FormulaColumn','from sigma.levelTable import LevelTable','from sigma.control import add_text_control, add_number_control',
+        'from sigma.action.inputTableEffects import insert_row, update_rows',
+        'from sigma.action.navigateEffect import navigate_to',
+        'from sigma.action.setControlValueEffect import set_control_value',
+        'from sigma.action.controlFlow import if_else',
+        'from sigma.formula import const_text, const_num, const_bool, eq, neq, and_, or_, not_, is_null, now, contains, ampersand, coalesce, as_text, count_if, count_distinct, lookup']
+    for i,(page,page_id) in enumerate(binding['pages'].items()):
+        lines += [f'p{i} = sigma.workbook.get_page({page_id!r})',f'if not isinstance(p{i}, Page):',
+                  "    raise RuntimeError('expected assigned page')"]
+    pagevars={page:'p'+str(i) for i,page in enumerate(binding['pages'])}
+    for feature,t in binding['tables'].items():
+        target=t['target'];system=t['systemColumn'];variable='t_'+feature
+        lines += [f'h_{feature} = sigma.workbook.get_page({target["pageId"]!r})',
+            f'if not isinstance(h_{feature}, Page):',"    raise RuntimeError('expected assigned input page')",
+            f'{variable} = h_{feature}.get_element({target["elementId"]!r})',
+            f'if not isinstance({variable}, InputTable):',"    raise RuntimeError('expected ordinary input table')",
+            f'c_{feature} = {{}}']
+        spec=manifest['planProjection']['sharedInputArchitecture']['inputs'][feature]
+        for name,cid in target['columnIds'].items():
+            column=next(c for c in spec['columns'] if c['name']==name)
+            contract=_editable_column_contract(manifest,target,column)
+            v=_c(feature,name)
+            lines += [f'{v} = {variable}.get_column({cid!r})',f'if not isinstance({v}, {contract["columnClass"]}):',
+                      "    raise RuntimeError('expected assigned editable column class')",
+                      f'if {v}.type() != {contract["type"]!r}:',"    raise RuntimeError('assigned column type changed')"]
+            if contract['columnClass']=='SingleSelectEditableColumn':
+                lines += [f'if {v}.allowed_values() != {contract["allowedValues"]!r}:',"    raise RuntimeError('source-list options changed')"]
+        lines += [f'rid_{feature} = {variable}.get_column({system["id"]!r})']
+        if system['columnClass']=='FormulaColumn':
+            lines += [f'if not isinstance(rid_{feature}, FormulaColumn):',"    raise RuntimeError('expected reviewed row-ID alias')",
+                f'if rid_{feature}.formula() != {system["formula"]!r} or rid_{feature}.element_id() != {system["elementId"]!r}:',
+                "    raise RuntimeError('row-ID formula/owner changed')"]
+        else:
+            lines += [f'if not isinstance(rid_{feature}, InputTableIDColumn):',"    raise RuntimeError('expected physical system row-ID column')",
+                f'if rid_{feature}.kind() != \"row_id\" or rid_{feature}.element_id() != {target["elementId"]!r}:',
+                "    raise RuntimeError('physical row-ID kind/owner changed')"]
+    for feature,read in binding.get('readTargets',{}).items():
+        target=read['target']
+        lines += [f'h_{feature} = sigma.workbook.get_page({target["pageId"]!r})',
+            f'if not isinstance(h_{feature}, Page):',"    raise RuntimeError('expected projection page')",
+            f't_{feature} = h_{feature}.get_element({target["elementId"]!r})',
+            f'if not isinstance(t_{feature}, LevelTable):',"    raise RuntimeError('expected native live projection')",
+            f'c_{feature} = {{}}']
+        for name,cid in target['columnIds'].items():
+            v=_c(feature,name)
+            lines += [f'{v} = t_{feature}.get_column({cid!r})',f'if not isinstance({v}, FormulaColumn):',
+                "    raise RuntimeError('expected assigned projection column')"]
+    lines += ['audit_cursor = 1','for existing in h_workflowOperations.list_elements(flat=False):',
+        '    if isinstance(existing, GridFramed):',
+        '        audit_cursor = max(audit_cursor, existing.y() + existing.height())']
+    artifacts=[]
+    for workflow,record in architecture['workflows'].items():
+        decision=record['decision'];host=pagevars[decision['page']];prefix=workflow
+        lines += [f'cursor = 1',f'for existing in {host}.list_elements(flat=False):',
+            '    if isinstance(existing, GridFramed):',
+            '        cursor = max(cursor, existing.y() + existing.height())']
+        lines += [f'# workflow={workflow} procedureHash={record["procedureSha256"]}']
+        if workflow=='navigation':
+            destination=decision.get('destination','forecast-overview')
+            if destination not in pagevars:raise NativeActionError('navigation destination lacks actual page ID')
+            lines += [f'button = {host}.add_button("Go to forecast")',
+                'button.set_frame(1, cursor, min(24, button.parent_grid_width()), 2)',
+                f'sequence = button.on_click("Go to forecast", [navigate_to({pagevars[destination]})])',
+                f'sequence.set_disabled({not enabled!r})',"print('action:navigation=' + sequence.id())"]
+            artifacts.append(workflow);continue
+        # A separate Prepare click is intentional: ActionVariable is ActionValue,
+        # not FormulaResolvable, and same-sequence control reads are unproven.
+        op=prefix+'_operation';ctx=prefix+'_context';key=prefix+'_key';rowid=prefix+'_row';n=prefix+'_count'
+        for var,label in [(op,'operation'),(ctx,'context'),(key,'record'),(rowid,'physical-row')]:
+            lines += [f'{var} = add_text_control(h_workflowOperations, value="", variable_name={ (workflow+"-"+label)!r})',
+                f'{var}.set_frame(1, audit_cursor, min(24, {var}.parent_grid_width()), 2)', 'audit_cursor = audit_cursor + 2']
+        lines += [f'{n} = add_number_control(h_workflowOperations, value=0, variable_name={ (workflow+"-selection-count")!r})',
+            f'{n}.set_frame(1, audit_cursor, min(24, {n}.parent_grid_width()), 2)', 'audit_cursor = audit_cursor + 2']
+        if workflow=='approval':
+            table='expenseBusinessInput'
+            view=decision.get('selectionView')
+            if view:
+                read=binding.get('readTargets',{}).get(view)
+                rowfield=decision.get('selectionRowIdColumn','Input Row ID')
+                if (not read or read['target']['pageId']!=binding['pages'][decision['page']]
+                        or rowfield not in read['target']['columnIds'] or 'Expense ID' not in read['target']['columnIds']):
+                    raise NativeActionError('approval selection view must bind row ID/business key on the action page')
+                expected={(r['rowId'],r['key'].get('Expense ID')) for r in binding['tables'][table]['identities']}
+                observed={(r.get(rowfield),r.get('Expense ID')) for r in read['identities']}
+                if not observed or not observed.issubset(expected):
+                    raise NativeActionError('selection view physical/business identity does not match expense input')
+                selection_table='t_'+view;selection_id=_c(view,rowfield);selection_key=_c(view,'Expense ID')
+            else:
+                if binding['tables'][table]['target']['pageId']!=binding['pages'][decision['page']]:
+                    raise NativeActionError('approval requires same-page input selection or a reviewed selectionView')
+                selection_table='t_'+table;selection_id='rid_'+table;selection_key=_c(table,'Expense ID')
+            # on_select owns column context. The button never assumes Selection
+            # variables are globally readable. CountDistinct selection scope is
+            # deliberately a published acceptance gate; global scope fails closed.
+            lines += [f'capture = {selection_table}.on_select("Select expense", [',
+                f'    set_control_value({rowid}, {selection_id}),',
+                f'    set_control_value({key}, {selection_key}),',
+                f'    set_control_value({n}, count_distinct({selection_id})),',
+                f'    set_control_value({ctx}, {decision["page"]!r}),',
+                f'    set_control_value({op}, "")])',f'capture.set_disabled({not enabled!r})']
+            selection=_conjoin([f'eq({n}, const_num(1))',f'eq({ctx}, {_lit(decision["page"])})',
+                f'neq({rowid}, const_text(""))',f'neq({key}, const_text(""))',
+                f'eq(count_if({_conjoin([f"eq(rid_{table}, {rowid})",f"eq({_c(table, "Expense ID")}, {key})"])}), const_num(1))'])
+        else:
+            selection='const_bool(True)'
+        namevar=prefix+'_name'
+        if workflow in {'applyScenario','saveScenario'}:
+            lines += [f'{namevar} = add_text_control({host}, value="", variable_name={ (workflow+"-name")!r})',
+                f'{namevar}.set_frame(1, cursor, min(24, {namevar}.parent_grid_width()), 2)', 'cursor = cursor + 2']
+        prep_values={ 'Workflow':repr(workflow),'Target Row ID':rowid,'Target Business Key':key,
+            'Context':repr(decision['page']),'Source Hash':repr(manifest['sourceHash']),
+            'Plan Hash':repr(manifest['planHash']),'Created At':'now()','State':repr('PREPARED') }
+        if workflow=='approval':
+            original=manifest['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns'][:-3]
+            for c in original:
+                prep_values['Before:'+c['name']]=f'lookup({_c("expenseBusinessInput",c["name"])}, {rowid}, rid_expenseBusinessInput)'
+        elif workflow in {'applyScenario','saveScenario'}:
+            prep_values['Scenario Name']=namevar
+        if workflow in {'saveScenario','snapshot'}:
+            for a in decision.get('assumptions') or decision.get('projection'):
+                target=({**binding['tables'],**binding.get('readTargets',{})}).get(a['feature'])
+                if not target or a['valueColumn'] not in target['target']['columnIds']:
+                    raise NativeActionError('live source lookup target/column is not bound')
+                predicates=[f'eq({_c(a["feature"],a["keyColumn"])}, {_lit(a["key"])})']
+                predicates += [f'eq({_c(a["feature"],e["column"])}, {_lit(e["value"])})' for e in a.get('extraKeys',[])]
+                selection=_conjoin([selection,f'eq(count_if({_conjoin(predicates)}), const_num(1))'])
+                prep_values['Captured:'+a['name']]=_lookup_assumption(a)
+        values=', '.join(_c('workflowOperations',k)+': '+v for k,v in prep_values.items())
+        pending_predicates=[f'eq({_c("workflowOperations","Workflow")}, {_lit(workflow)})',
+            f'eq({_c("workflowOperations","Context")}, {_lit(decision["page"])})',
+            f'eq({_c("workflowOperations","Source Hash")}, {_lit(manifest["sourceHash"])})',
+            f'eq({_c("workflowOperations","Plan Hash")}, {_lit(manifest["planHash"])})',
+            f'eq({_c("workflowOperations","Target Row ID")}, {rowid})',
+            f'eq({_c("workflowOperations","Target Business Key")}, {key})',
+            f'eq({_c("workflowOperations","State")}, const_text("PREPARED"))']
+        lines += [f'pending_intent_count = count_if({_conjoin(pending_predicates)})']
+        lines += [f'prepare_insert = insert_row(t_workflowOperations, {{{values}}}, name="Prepare intent")',
+            'prepared_id = prepare_insert.returns()',f'prepare_button = {host}.add_button({("Prepare "+workflow)!r})',
+            'prepare_button.set_frame(1, cursor, min(24, prepare_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
+            f'prepare_sequence = prepare_button.on_click("Prepare new intent", [prepare_insert, set_control_value({op}, prepared_id)])',
+            f'prepare_sequence.set_condition({_conjoin([selection,f"eq(as_text(coalesce({op}, const_text(''))), const_text(''))", 'eq(pending_intent_count, const_num(0))'])})',
+            f'prepare_sequence.set_disabled({not enabled!r})',
+            f'new_button = {host}.add_button({("Start new "+workflow)!r})',
+            'new_button.set_frame(1, cursor, min(24, new_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
+            f'new_sequence = new_button.on_click("Start a new intentional operation", [update_rows(t_workflowOperations, eq(rid_workflowOperations, {op}), {{{_c("workflowOperations","State")}: "SUPERSEDED_NEW_INTENT"}}), set_control_value({op}, "")])',
+            f'new_sequence.set_condition(eq(count_if(eq(rid_workflowOperations, {op})), const_num(1)))',
+            f'new_sequence.set_disabled({not enabled!r})']
+        # Recover a prepared operation by selecting its durable metadata row.
+        # Physical ID + workflow + source/plan + context are rechecked on Apply.
+        recovery=[f'set_control_value({op}, rid_workflowOperations)',
+            f'set_control_value({rowid}, {_c("workflowOperations","Target Row ID")})',
+            f'set_control_value({key}, {_c("workflowOperations","Target Business Key")})',
+            f'set_control_value({ctx}, {_c("workflowOperations","Context")})',
+            f'set_control_value({n}, count_distinct(rid_workflowOperations))']
+        lines += [f'recover = t_workflowOperations.on_select({("Recover "+workflow+" intent")!r}, [{", ".join(recovery)}])',
+            f'recover.set_disabled({not enabled!r})']
+        op_predicates=[f'eq(rid_workflowOperations, {op})',
+            f'eq({_c("workflowOperations","Workflow")}, {_lit(workflow)})',
+            f'eq({_c("workflowOperations","Context")}, {_lit(decision["page"])})',
+            f'eq({_c("workflowOperations","Source Hash")}, {_lit(manifest["sourceHash"])})',
+            f'eq({_c("workflowOperations","Plan Hash")}, {_lit(manifest["planHash"])})',
+            f'eq({_c("workflowOperations","Target Row ID")}, {rowid})',
+            f'eq({_c("workflowOperations","Target Business Key")}, {key})']
+        if workflow=='applyScenario':
+            op_predicates.append(f'eq({_c("workflowOperations","State")}, const_text("PREPARED"))')
+        operation_guard=f'eq(count_if({_conjoin(op_predicates)}), const_num(1))'
+        guard=_conjoin([selection,operation_guard,f'neq({op}, const_text(""))',f'not_(contains({op}, const_text("|")))'])
+        effects=[]
+        if workflow=='approval':
+            history=_c('expenseBusinessInput','Applied Approval Operation IDs')
+            token=f'ampersand(ampersand(const_text("|"), {op}), const_text("|"))'
+            before_guards=[]
+            for c in manifest['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns'][:-3]:
+                current=_c('expenseBusinessInput',c['name'])
+                prior=f'lookup({_c("workflowOperations","Before:"+c["name"])}, {op}, rid_workflowOperations)'
+                before_guards.append(f'or_(and_(is_null({current}), is_null({prior})), eq({current}, {prior}))')
+            selector=_conjoin([f'eq(rid_expenseBusinessInput, {rowid})',f'eq({_c("expenseBusinessInput","Expense ID")}, {key})',
+                f'not_(contains(as_text(coalesce({history}, const_text(""))), {token}))']+before_guards)
+            vals={ 'Approval Status':repr('Approved'),'ApprovedAt':'now()',
+                'Last Approval Operation ID':op,'Applied Approval Operation IDs':f'ampersand(as_text(coalesce({history}, const_text(""))), {token})' }
+            effects=['update_rows(t_expenseBusinessInput, '+selector+', {'+', '.join(_c('expenseBusinessInput',k)+': '+v for k,v in vals.items())+'}, name="Approve selected expense")']
+        elif workflow=='applyScenario':
+            scenario=f'lookup({_c("workflowOperations","Scenario Name")}, {op}, rid_workflowOperations)'
+            for name,rates in [('Aggressive',[.06,.02]),('Conservative',[.01,.01])]:
+                branch=[]
+                for a,rate in zip(sorted(decision['assumptions'],key=lambda a:a['sourceCell']),rates):
+                    if a['feature'] not in binding['tables']:raise NativeActionError('assumption input target absent')
+                    identities=[r for r in binding['tables'][a['feature']]['identities'] if r['key'].get(a['keyColumn'])==a['key']]
+                    if len(identities)!=1:raise NativeActionError('scenario assumption identity is missing or ambiguous')
+                    selector=_conjoin([f'eq(rid_{a["feature"]}, {_lit(identities[0]["rowId"])})',
+                        f'eq({_c(a["feature"],a["keyColumn"])}, {_lit(a["key"])})'])
+                    guard=_conjoin([guard,f'eq(count_if({selector}), const_num(1))'])
+                    branch.append(f'update_rows(t_{a["feature"]}, {selector}, {{{_c(a["feature"],a["valueColumn"])}: {rate!r}}})')
+                lines += [f'{prefix}_{name} = [{", ".join(branch)}]']
+            effects=[f'if_else([(eq({scenario}, const_text("Aggressive")), {prefix}_Aggressive), (eq({scenario}, const_text("Conservative")), {prefix}_Conservative)], [])']
+        elif workflow=='saveScenario':
+            captured_name=f'lookup({_c("workflowOperations","Scenario Name")}, {op}, rid_workflowOperations)'
+            vals={'Operation ID':op,'Scenario Name':captured_name,'Saved At':'now()',
+                  'Source Hash':repr(manifest['sourceHash']),'Plan Hash':repr(manifest['planHash'])}
+            vals.update({a['name']:f'lookup({_c("workflowOperations","Captured:"+a["name"])}, {op}, rid_workflowOperations)' for a in decision['assumptions']})
+            guard=_conjoin([guard,f'eq(count_if(eq({_c("savedScenarios","Operation ID")}, {op})), const_num(0))'])
+            effects=['insert_row(t_savedScenarios, {'+', '.join(_c('savedScenarios',k)+': '+v for k,v in vals.items())+'})']
+        elif workflow=='snapshot':
+            vals={'Operation ID':op,'Captured At':'now()','Source Hash':repr(manifest['sourceHash']),
+                'Plan Hash':repr(manifest['planHash']),'Source Procedure Hash':repr(record['procedureSha256']),
+                'Replacement Decision ID':repr(decision['decisionId'])}
+            for p in decision['projection']:
+                # Only column handles in a uniquely keyed, reviewed native
+                # projection are accepted, never cached workbook literals.
+                a={'feature':p['feature'],'keyColumn':p['keyColumn'],'key':p['key'],'valueColumn':p['valueColumn']}
+                if a['feature'] not in {**binding['tables'],**binding.get('readTargets',{})}:raise NativeActionError('snapshot live projection target absent')
+                vals[p['name']]=f'lookup({_c("workflowOperations","Captured:"+p["name"])}, {op}, rid_workflowOperations)'
+            guard=_conjoin([guard,f'eq(count_if(eq({_c("forecastSnapshots","Operation ID")}, {op})), const_num(0))'])
+            effects=['insert_row(t_forecastSnapshots, {'+', '.join(_c('forecastSnapshots',k)+': '+v for k,v in vals.items())+'})']
+        # IfElseAction cannot nest inside IfElseAction (ActionEffect-only lists).
+        # ApplyScenario's one branch block is valid at sequence top level.
+        lines += [f'confirm_button = {host}.add_button({("Confirm "+workflow)!r})',
+            'confirm_button.set_frame(1, cursor, min(24, confirm_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
+            f'confirm_sequence = confirm_button.on_click({("Apply/retry "+workflow)!r}, [{", ".join(effects)}])',
+            f'confirm_sequence.set_condition({guard})',f'confirm_sequence.set_disabled({not enabled!r})',
+            "print('action:"+workflow+"=' + confirm_sequence.id())"]
+        artifacts.append(workflow)
+    program='\n'.join(lines)+'\n';compile(program,'native-action-program','exec')
+    return {'program':program,'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
+        'bindingHash':binding['bindingHash'],'target':manifest['target'],'features':artifacts,
+        'unresolved':architecture['unresolved'],'limitations':LIMITS,
+        'stagingStatus':'ENABLED_REVIEWED_TEST_TARGET' if enabled else 'DISABLED_CANDIDATE',
+        'productionStatus':'BLOCKED','acceptanceChecks':['published click','selection cardinality/context',
+        'deleted/stale identity','retry A after B','new intentional save','reopen recovery',
+        'failed/partial write','concurrent retries','before/after row and values','no optimistic success toast']}
+
+
+def audit_native_action_readback(expected,capture):
+    """Audit controller-captured rows, not a simulator of an assumed Sigma write."""
+    failures=[];workflow=expected.get('workflow');op=expected.get('operationId')
+    if not capture.get('evidenceId'):failures.append('missing independent readback evidence')
+    if capture.get('operationId')!=op or not op or '|' in op:failures.append('invalid operation identity')
+    if capture.get('context')!=expected.get('context'):failures.append('wrong page/context')
+    if capture.get('writeOutcome') not in {'confirmed','confirmed-noop'}:failures.append('write outcome unknown/failed')
+    before=capture.get('before') or [];after=capture.get('after') or []
+    if workflow=='approval':
+        if capture.get('selectionCount')!=1:failures.append('selection must contain exactly one record')
+        rid=expected['rowIdColumn'];key=expected['keyColumn']
+        left={r.get(rid):r for r in before};right={r.get(rid):r for r in after}
+        wanted=expected['selectedRowId'];business=expected['selectedBusinessKey']
+        if (len(left)!=len(before) or len(right)!=len(after) or set(left)!=set(right)
+                or wanted not in left or left.get(wanted,{}).get(key)!=business
+                or right.get(wanted,{}).get(key)!=business):failures.append('missing/deleted/ambiguous selected identity')
+        else:
+            old=left[wanted];new=right[wanted];token='|'+op+'|'
+            if token in (old.get('Applied Approval Operation IDs') or ''):
+                if new!=old:failures.append('retry changed previously applied approval')
+            else:
+                if (new.get('Approval Status')!='Approved' or not new.get('ApprovedAt')
+                        or new.get('Last Approval Operation ID')!=op
+                        or new.get('Applied Approval Operation IDs')!=(old.get('Applied Approval Operation IDs') or '')+token):
+                    failures.append('approval write not confirmed atomically')
+            allowed=set(expected.get('writeFields') or [])
+            if any(old.get(n)!=new.get(n) for n in set(old)|set(new) if n not in allowed):
+                failures.append('unrelated expense field changed')
+            if any(left[k]!=right[k] for k in left if k!=wanted):failures.append('wrong expense changed')
+    elif workflow in {'saveScenario','snapshot'}:
+        old=[r for r in before if r.get('Operation ID')==op];new=[r for r in after if r.get('Operation ID')==op]
+        if len(new)!=1 or len(old)>1:failures.append('operation insert missing/duplicated')
+        elif old and old!=new:failures.append('retry changed saved values')
+        elif any(new[0].get(k)!=v for k,v in (expected.get('values') or {}).items()):failures.append('saved line/period/source values differ')
+        other=lambda rs:sorted(_digest(r) for r in rs if r.get('Operation ID')!=op)
+        if other(before)!=other(after):failures.append('unrelated saved records changed')
+    elif workflow=='applyScenario':
+        if capture.get('writeOutcome')!='confirmed' or after!=expected.get('after'):
+            failures.append('scenario writes partial or differ from expected persisted rates')
+    else:failures.append('unsupported business audit workflow')
+    return {'status':'FAILED' if failures else 'PASSED_COMPONENT_READBACK', 'failures':failures,
+        'operationId':op,'beforeHash':_digest(before),'afterHash':_digest(after),
+        'evidenceId':capture.get('evidenceId'),'sourceHash':expected.get('sourceHash'),
+        'planHash':expected.get('planHash'),'productionStatus':'BLOCKED'}
+
+
+def emit_input_identity_projection(manifest,receipt,feature,*,current_contents,destination_page,name):
+    """Emit a new read-only view of assigned inputs, including physical row IDs.
+
+    This uses documented to_source/add_table/FormulaColumn construction. It does
+    not change source visibility, types, values or validation. Assigned view IDs
+    and fresh readback must be reviewed as readTargets before action attachment.
+    """
+    validate_manifest(manifest);doc,layout=_document(current_contents,manifest)
+    spec,target,artifact=_approved_feature(manifest,receipt,feature,require_assigned=True)
+    system=_system_column_contract(target)
+    if (sum(p.get('id')==destination_page for p in doc.get('pages',[]))!=1
+            or sum(p.get('id')==destination_page for p in layout.iter('Page'))!=1):
+        raise NativeActionError('projection destination page is absent or ambiguous')
+    if 'Input Row ID' in target['columnIds']:raise NativeActionError('reserved identity projection name collides')
+    system_id=system.get('id') or target.get('rowIdColumnId')
+    if not system_id:raise NativeActionError('projection requires an assigned row-ID column ID or reviewed alias')
+    lines=['from sigma.page import Page','from sigma.framing import GridFramed',
+        'from sigma.inputTable import InputTable, InputTableIDColumn',
+        'from sigma.column import FormulaColumn','from sigma.formula import text',
+        '# artifactHash='+artifact['artifactHash'],
+        f'source_host = sigma.workbook.get_page({target["pageId"]!r})',
+        'if not isinstance(source_host, Page):',"    raise RuntimeError('expected assigned source page')",
+        f'source = source_host.get_element({target["elementId"]!r})',
+        'if not isinstance(source, InputTable):',"    raise RuntimeError('expected assigned ordinary input')",
+        f'source_row_id = source.get_column({system_id!r})']
+    if system['columnClass']=='FormulaColumn':
+        lines += ['if not isinstance(source_row_id, FormulaColumn):',"    raise RuntimeError('expected reviewed row-ID alias')",
+            f'if source_row_id.formula() != {system["formula"]!r} or source_row_id.element_id() != {target["elementId"]!r}:',
+            "    raise RuntimeError('reviewed row-ID alias formula/owner changed')"]
+    else:
+        lines += ['if not isinstance(source_row_id, InputTableIDColumn):',"    raise RuntimeError('expected system row-ID column')",
+            f'if source_row_id.kind() != "row_id" or source_row_id.element_id() != {target["elementId"]!r}:',
+            "    raise RuntimeError('system row-ID kind/owner changed')"]
+    lines += [f'host = sigma.workbook.get_page({destination_page!r})','if not isinstance(host, Page):',
+        "    raise RuntimeError('expected destination page')",'cursor = 1',
+        'for existing in host.list_elements(flat=False):','    if isinstance(existing, GridFramed):',
+        '        cursor = max(cursor, existing.y() + existing.height())',
+        'projection = host.add_table(source.to_source())',f'projection.set_name({name!r})',
+        'projection.set_frame(1, cursor, min(24, projection.parent_grid_width()), 12)',
+        'projection_row_id = projection.add_column("Input Row ID", text(source_row_id))',
+        "print('projectionElementId=' + projection.id())", "print('projectionRowIdColumnId=' + projection_row_id.id())"]
+    return {'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
+        'artifactHash':artifact['artifactHash'],'target':manifest['target'],'feature':feature,
+        'destinationPage':destination_page,'sourceElementId':target['elementId'],
+        'status':'PENDING_ASSIGNED_PROJECTION_READBACK','productionStatus':'BLOCKED',
+        'program':'\n'.join(lines)+'\n'}

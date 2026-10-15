@@ -60,6 +60,15 @@ class TestMacroClassify(unittest.TestCase):
         )
         self.assertEqual((cls, status), ("TRANSFORM_ROLLUP", "PYTHON_REVIEW"))
 
+    def test_commit_name_cannot_authorize_append(self):
+        cls, status, target, *_ = self.classify("CommitExpenseApproval_Click",
+            'targetRow = ActiveCell.Row\nCells(targetRow, 9).Value = "Approved"\nCells(targetRow, 16).Value = Now')
+        self.assertEqual((cls, status), ("SELECTED_RECORD_UPDATE", "ACTION"))
+        self.assertIn("update", target.lower())
+        self.assertNotIn("append", target.lower())
+        cls, status, *_ = self.classify("CommitExpenseApproval_Click", "Application.CalculateFull")
+        self.assertEqual((cls, status), ("RECALC", "AUTO"))
+
     def test_comments_cannot_drive_classification(self):
         code = "Sub Example()\n' RunPython(\"danger\")\nApplication.Calculate\nEnd Sub"
         _name, _kind, body = next(macro.split_procedures(code))

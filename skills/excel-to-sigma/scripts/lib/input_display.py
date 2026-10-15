@@ -76,6 +76,51 @@ def _system_column_contract(target):
     return copy.deepcopy(alias)
 
 
+def _editable_column_contract(manifest, target, column):
+    """A list conversion is legal only with reviewed SDK + source-list identity.
+
+    sdkEvidenceHash names the canonical raw SDK capture (or column observation)
+    reviewed by the controller. The receipt hashes the entire descriptor; this
+    function verifies its source semantics, not server authenticity.
+    """
+    contract=(target.get('columnContracts') or {}).get(column['name'])
+    if contract is None:
+        return {'id':target['columnIds'][column['name']],
+                'columnClass':'LiteralEditableColumn','type':column['type']}
+    fields={'id','columnClass','type','allowedValues','sourceValidationHash','sdkEvidenceHash'}
+    if (not isinstance(contract,dict) or set(contract)!=fields
+            or contract['id']!=target['columnIds'][column['name']]
+            or contract['columnClass']!='SingleSelectEditableColumn'
+            or contract['type']!=column['type']
+            or not re.fullmatch('[0-9a-f]{64}',str(contract.get('sdkEvidenceHash') or ''))):
+        raise ValueError('select conversion requires exact reviewed class/type/ID/evidence descriptor')
+    source=column.get('sourceColumn') or ''
+    if '!' not in source:raise ValueError('select conversion has no literal source column')
+    sheet,letter=source.rsplit('!',1)
+    workbook=load_workbook(manifest['source']['path'],data_only=False)
+    try:
+        try:
+            from .presentation import _extract_validations
+        except ImportError:
+            from presentation import _extract_validations
+        rules=_extract_validations(workbook)
+    finally:workbook.close()
+    matches=[]
+    for rule in rules:
+        low,_,high,_=range_boundaries(rule['range'])
+        from openpyxl.utils.cell import column_index_from_string
+        if (rule['sheet']==sheet and low<=column_index_from_string(letter)<=high
+                and column['name'] in rule['fields'] and rule['status']=='supported'
+                and rule['emission'] is not None and 'values' in rule['emission']):
+            matches.append(rule)
+    if len(matches)!=1 or _hash(matches[0])!=contract['sourceValidationHash']:
+        raise ValueError('select conversion source validation hash/column is stale or ambiguous')
+    expected=matches[0]['emission']['values']
+    if contract['allowedValues']!=expected or any(type(a) is not type(b) for a,b in zip(contract['allowedValues'],expected)):
+        raise ValueError('select conversion allowed values differ from parsed source validation')
+    return copy.deepcopy(contract)
+
+
 def build_input_display(plan,manifest,receipt,feature=None):
     if manifest.get('sourceHash')!=plan['source']['sha256']:
         raise ValueError('input display source hash is stale')
@@ -109,7 +154,7 @@ def build_input_display(plan,manifest,receipt,feature=None):
             else:
                 fmt,fidelity,reason=source_format_intent(raw,column['type'])
             records.append({'id':target['columnIds'][name],'name':name,'visible':name in prominent,
-                            'columnClass':'LiteralEditableColumn','type':column['type'],
+                            **{k:v for k,v in _editable_column_contract(manifest,target,column).items() if k in {'columnClass','type','allowedValues'}},
                             'sourceCell':source_cell,'sourceFormat':raw,'format':fmt,
                             'fidelity':fidelity,'unresolvedReason':reason})
     finally:
@@ -127,11 +172,16 @@ def build_input_display(plan,manifest,receipt,feature=None):
             f'table = host.get_element({target["elementId"]!r})',
             "if not isinstance(table, InputTable): raise RuntimeError('expected approved input table')",
             f"if table.name() != {spec['name']!r}: raise RuntimeError('input table name is stale')"]
+    if any(c['columnClass']=='SingleSelectEditableColumn' for c in records):
+        header.insert(0,'from sigma.inputTable import SingleSelectEditableColumn')
     for i,c in enumerate(records):
         header += [f'c{i} = table.get_column({c["id"]!r})',
-                   f"if not isinstance(c{i}, LiteralEditableColumn): raise RuntimeError('expected approved literal editable column')",
+                   f"if not isinstance(c{i}, {c['columnClass']}): raise RuntimeError('expected approved editable column class')",
                    f"if c{i}.type() != {c['type']!r}: raise RuntimeError('approved column type is stale')",
                    f"if c{i}.name() != {c['name']!r}: raise RuntimeError('approved column name is stale')"]
+    for i,c in enumerate(records):
+        if c['columnClass']=='SingleSelectEditableColumn':
+            header.append(f"if c{i}.allowed_values() != {c['allowedValues']!r}: raise RuntimeError('source-list options changed')")
     # Validate the complete set before any setter, in both SDK programs.
     header += [f'approved_ids = {[c["id"] for c in records]!r}',
                'all_columns = table.list_columns()',
@@ -163,12 +213,16 @@ def build_input_display(plan,manifest,receipt,feature=None):
         '    fmt = column.format()',
         "    observations.append({'id': column.id(), 'name': column.name(), 'visible': column.is_visible(), 'elementId': column.element_id(), 'formula': column.formula() if isinstance(column, FormulaColumn) else None, 'columnClass': 'LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else ('FormulaColumn' if isinstance(column, FormulaColumn) else 'InputTableIDColumn'), 'type': column.type() if isinstance(column, LiteralEditableColumn) else None, 'systemKind': column.kind() if isinstance(column, InputTableIDColumn) else None, 'format': None if fmt is None else {'kind': fmt.kind(), 'decimals': fmt.decimal_places(), 'currency': fmt.currency(), 'pattern': fmt.pattern()}})",
         f"print({{'source': 'sdk-column-readback', 'contractHash': {contract_hash!r}, 'elementId': table.id(), 'columns': observations}})"]
+    if any(c['columnClass']=='SingleSelectEditableColumn' for c in records):
+        readback=[line.replace("'LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else ('FormulaColumn'", "'SingleSelectEditableColumn' if isinstance(column, SingleSelectEditableColumn) else ('LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else ('FormulaColumn'")
+            .replace("else 'InputTableIDColumn'), 'type':", "else 'InputTableIDColumn')), 'allowedValues': column.allowed_values() if isinstance(column, SingleSelectEditableColumn) else None, 'type':")
+            .replace("column.type() if isinstance(column, LiteralEditableColumn) else None", "column.type() if isinstance(column, (LiteralEditableColumn, SingleSelectEditableColumn)) else None") for line in readback]
     return {**contract,'contractHash':contract_hash,'status':'PENDING_SDK_READBACK',
             'executionBinding':{'workbookId':target['documentId'],'documentVersion':target['version']},
             'limitations':['SDK system aliases require explicit reviewed row-ID identity evidence in the receipt; no formula type getter or automatic alias-by-name inference is used.',
                           'SDK has no documented workbook-version CAS; caller must bind the execution context to this document/version and capture a fresh read-only SDK session after execution.',
                           'REST code-rep exports omit input display metadata and are not display readback evidence.',
-                          'Approved construction expects LiteralEditableColumn; post-validation runtime class/type remains an acceptance gate. Platform class conversion requires a newly reviewed schema, never broad class acceptance.'],
+                          'LiteralEditableColumn remains the default. SingleSelectEditableColumn requires an exact source-validation and SDK-evidence descriptor; other post-validation classes remain unresolved.'],
             'program':'\n'.join(program)+'\n','readbackProgram':'\n'.join(readback)+'\n'}
 
 
@@ -305,6 +359,8 @@ def verify_input_display(display,state,current):
         if (actual.get('systemKind') is not None or actual.get('visible') is not c['visible']
                 or actual.get('elementId')!=display['target']['elementId'] or actual.get('formula') is not None):
             mismatches.append({'columnId':c['id'],'field':'visibility/systemKind'})
+        if c.get('allowedValues') is not None and actual.get('allowedValues')!=c['allowedValues']:
+            mismatches.append({'columnId':c['id'],'field':'allowedValues'})
         intended=c['format']; fmt=actual.get('format')
         if fmt is not None and not isinstance(fmt,dict):
             raise ValueError('SDK format observation must be a structured record or null')
