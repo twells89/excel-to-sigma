@@ -151,8 +151,33 @@ Each output record binds codeElementId/codeHash/outputName/connectionId, and:
   copies it; it does not invent `[Code Output/...]` or infer a namespace.
 - metadataHash seals that metadata. columnMap explicitly maps each logical output
   field to its observed outputColumn/identifier/rowKey/formula. Both names and
-  observed types must match actual metadata uniquely. Guard code receives only
+  observed types must match actual metadata uniquely. Each outputColumn must
+  equal its fixed emitted semantic field name exactly; same-type field swaps
+  are refused. Identifiers and row keys remain explicit observed pairs; no
+  case-folding or unquoting inference. Guard code receives only
   actual Goal Seek Result identifier/rowKey pairs; no fabricated ninth map.
+
+`audit_port_update(proposal, readback, post_phase_context=...)` requires fresh
+reviewed controller context, including complete supported-element SDK inventory
+and separately qualified owned Code observations. Input-values/display hashes
+must equal the reviewed pre-update context. Exact REST equality alone cannot
+return construction/adoption success. Every next phase independently compares
+the previous phase's original SDK inventory with current actual observations,
+so REST-omitted native actions cannot disappear between phases. New SDK hosts
+are restricted to declared phase additions or exactly observed adopted native
+children; added buttons must have the one exact known RunPython block and tables
+no actions. Runtime and production completion remain unresolved/blocked.
+
+Old ordered SDK sequence configurations and assigned IDs must stay exact. If an
+actual known-artifact restoration assigns new IDs, current phase context includes
+`actionRestorationReview` with named APPROVED_STAGING owner/evidenceId, current
+documentId/version, beforeInventoryHash/afterInventoryHash (SDK inventory digests),
+assignedSequenceIds mapping each changed host's old→actual new sequence IDs, and
+restorationProofHashes mapping those hosts to the digest of their actual existing
+isolated restoreProof. Every current sequence still needs the ordinary exact
+reviewed missing-only restoration artifact/proof. This narrow qualification
+cannot change sequence semantics/order, permit an unknown host or excuse a lost
+sequence. Missing, stale or ambiguous restoration identity evidence is refused.
 
 `finalize_port_update(...,fresh_phase_context=...)` rechecks current input/display
 semantic hashes and complete SDK actions immediately before sending, alongside

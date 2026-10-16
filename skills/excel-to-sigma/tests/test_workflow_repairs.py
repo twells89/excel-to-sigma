@@ -75,6 +75,33 @@ class AuditAndPresentationRepairTests(unittest.TestCase):
     module=WorkflowRepairsTests.module
     fixture=WorkflowRepairsTests.fixture
     contract=WorkflowRepairsTests.contract
+    def test_unnamed_owned_expense_markers_require_exact_source_bound_direct_references(self):
+        import copy
+        p=self.module();contract=self.contract('expense');markers=('Last Approval Operation ID','Applied Approval Operation IDs')
+        source={'id':'expenseRegister','kind':'table','name':'Expense Register','columns':[],
+            'description':{'text':'excel-to-sigma:native:expense:'+contract['source']['sha256']}}
+        node={'id':'expense-main-view','kind':'table','source':{'kind':'table','elementId':source['id']},
+            'columns':[{'id':cid,'formula':formula} for cid,formula in [('amount','[Expense Register/Amount]'),
+                ('9a02f594f2312fb55654bd326f5be5ef','[Expense Register/'+markers[0]+']'),
+                ('4f3851f66779254208edd88e0f0e786d','[Expense Register/'+markers[1]+']'),
+                ('approved','[Expense Register/ApprovedAt]'),('foreign','[Foreign Register/'+markers[0]+']'),
+                ('concat','Concat([Expense Register/'+markers[0]+'], " note")'),('comment','[Expense Register/'+markers[1]+'] /* comment */')]]}
+        binding={'element':source,'elementHash':p._digest(source),'viewElementHash':p._digest(node)}
+        result=p.propagate_readonly_presentation(contract,node,{'amount':'Expense Register!G2'},technical_source=binding)
+        for i,col in enumerate(result['columns']):
+            expected=copy.deepcopy(node['columns'][i])
+            if i in (1,2):expected['hidden']=True
+            elif i==0:expected['format']=contract['semanticFormats']['Expense Register!G2']['emission']
+            self.assertEqual(col,expected)
+        self.assertFalse(any('hidden' in c for c in node['columns']))
+        unbound=p.propagate_readonly_presentation(contract,node,{})
+        self.assertFalse(any('hidden' in c for c in unbound['columns']))
+        named=copy.deepcopy(node);named['columns'][1]['name']=markers[0]
+        self.assertTrue(p.propagate_readonly_presentation(contract,named,{})['columns'][1]['hidden'])
+        conflict=copy.deepcopy(node);conflict['columns'][1]['name']='Business narrative'
+        with self.assertRaisesRegex(ValueError,'conflicting'):p.propagate_readonly_presentation(contract,conflict,{},technical_source={**binding,'viewElementHash':p._digest(conflict)})
+        for patch in ({'elementHash':'stale'},{'viewElementHash':'stale'},{'element':{**source,'id':'foreign'}}):
+            with self.subTest(patch=patch),self.assertRaises(ValueError):p.propagate_readonly_presentation(contract,node,{},technical_source={**binding,**patch})
     def test_normalized_research_audit_reads_every_live_input_and_physical_id(self):
         p=self.module();self.assertTrue(hasattr(p,'build_normalized_input_audit'),'normalized audit builder missing')
         spec={'name':'Research Inputs','columns':[{'name':'Scope','type':'text'},

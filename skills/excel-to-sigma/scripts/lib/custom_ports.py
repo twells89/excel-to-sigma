@@ -476,7 +476,7 @@ def _phase_context(context,current,receipt_hash,owned_code_ids):
         from .action_inventory import validate_action_inventory
     except ImportError:
         from action_inventory import validate_action_inventory
-    if not isinstance(context,dict):raise PortError('CURRENT_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
+    if not isinstance(context,dict) or not re.fullmatch('[a-f0-9]{64}',str(receipt_hash)):raise PortError('CURRENT_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
     fields={'documentId':current['workbookId'],'version':current['documentVersion'],'contentsHash':_digest(_snapshot(current)),'receiptHash':receipt_hash}
     review=context.get('review',{});owner=str(review.get('owner') or '').strip()
     if (context.get('origin')!='sigma-controller-actual' or not context.get('evidenceId') or any(context.get(k)!=v for k,v in fields.items())
@@ -552,6 +552,7 @@ def _materialized_outputs(evidence,keys,manifest,receipt,current,previous,model_
         for name,typ in expected.items():
             pair=mapping[name]
             if not isinstance(pair,dict) or set(pair)!={'outputColumn','identifier','rowKey','formula'}:raise PortError('ACTUAL_PAIRED_OUTPUT_COLUMN_MAP_REQUIRED')
+            if pair['outputColumn']!=name:raise PortError('SEMANTIC_OUTPUT_FIELD_NAME_MISMATCH')
             if pair['formula']!='['+namespace+'/'+pair['outputColumn']+']':raise PortError('EXACT_OBSERVED_CODE_OUTPUT_FORMULA_REQUIRED')
             matches=[i for i,c in enumerate(observed) if all(c[k]==v for k,v in pair.items()) and c['type']==typ]
             if len(matches)!=1 or matches[0] in used:raise PortError('OUTPUT_FIELD_TYPE_OR_PAIRED_NAME_MISMATCH')
@@ -577,6 +578,45 @@ def _materialized_outputs(evidence,keys,manifest,receipt,current,previous,model_
         elif same:raise PortError('EXPLICIT_EXISTING_NATIVE_CHILD_ADOPTION_REQUIRED')
         result[key]=copy.deepcopy(record)
     return result
+
+
+def _verify_phase_action_preservation(previous,current,context,*,native_child_ids=()):
+    """Prove persisted old SDK actions, including REST-omitted sequences.
+
+    Added hosts may only be the declared phase objects or exact observed native
+    children. Changed assigned sequence IDs require independently reviewed exact
+    restoration proof; semantic equality alone cannot authorize a new identity.
+    """
+    try:
+        from .action_inventory import verify_action_preservation,digest as action_digest
+    except ImportError:
+        from action_inventory import verify_action_preservation,digest as action_digest
+    before=(previous.get('phaseContext') or {}).get('sdkActions')
+    if before is None:raise PortError('PREVIOUS_PHASE_SDK_ACTION_PROOF_REQUIRED')
+    after=context['sdkActions'];elements={e['id']:e for e in _snapshot(current)['elements']}
+    supported=copy.deepcopy(current);supported['contents']=copy.deepcopy(_snapshot(current));supported['contents']['elements']=[e for e in supported['contents']['elements'] if e['kind']!='code']
+    proof=verify_action_preservation(before,after,supported)
+    extra=set(after['elements'])-set(before['elements'])
+    declared=set(previous['addedElementIds'])|set(native_child_ids)
+    if not extra<=declared:raise PortError('UNDECLARED_POST_PHASE_SDK_ACTION_HOST')
+    for eid in extra:
+        element=elements[eid];sequences=after['elements'][eid]['sequences'];actions=element.get('actions',[])
+        if element['kind']=='button':
+            expected=[{'kind':'RunPythonElement','fields':{'codeElementId':effect['codeElementId'],'name':effect['name']}} for action in actions for effect in action['effects'] if effect['effect']=='run-python-element']
+            if (len(actions)!=1 or len(sequences)!=1 or len(expected)!=1 or sequences[0]['trigger']!='on-click'
+                    or sequences[0]['condition'] is not None or sequences[0]['disabled'] is not False or sequences[0]['blocks']!=expected):raise PortError('NEW_PORT_ACTION_DIFFERS_FROM_KNOWN_RUN_PYTHON_CONSTRUCTOR')
+        elif sequences:raise PortError('NEW_OUTPUT_TABLE_MUST_HAVE_NO_ACTIONS')
+    remapped={eid:{old['id']:new['id'] for old,new in zip(element['sequences'],after['elements'][eid]['sequences']) if old['id']!=new['id']}
+        for eid,element in before['elements'].items()}
+    remapped={eid:mapping for eid,mapping in remapped.items() if mapping}
+    if remapped:
+        review=context.get('actionRestorationReview') or {};owner=str(review.get('owner') or '').strip()
+        fields={'documentId':current['workbookId'],'version':current['documentVersion'],'beforeInventoryHash':action_digest(before),
+            'afterInventoryHash':action_digest(after),'assignedSequenceIds':remapped,
+            'restorationProofHashes':{eid:action_digest(after['elements'][eid]['restorationArtifact']['restoreProof']) for eid in remapped}}
+        if (review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
+                or not review.get('evidenceId') or any(review.get(k)!=v for k,v in fields.items())):raise PortError('EXACT_ACTUAL_RESTORED_SEQUENCE_ID_REVIEW_REQUIRED')
+    return proof
 
 
 def prepare_port_update(manifest,receipt,current,sources,*,column_maps=None,procedure_action=None,phase='code-first',previous_phase=None,output_evidence=None,phase_context=None,consumed_phases=(),adoption_evidence=None):
@@ -663,6 +703,8 @@ def prepare_port_update(manifest,receipt,current,sources,*,column_maps=None,proc
         contents=copy.deepcopy(doc);contents['elements']+=new;pos=matches[0].end()-len('</Page>');contents['layout']=layout[:pos]+_phase_layout(new,start=cursor)+layout[pos:];added_pages=[]
     owned_codes=[eid for eid in owned if elements[eid]['kind']=='code']
     context=_phase_context(phase_context,current,_digest(receipt),owned_codes) if phase_context is not None or phase!='code-first' else None
+    if previous is not None:
+        _verify_phase_action_preservation(previous,current,context,native_child_ids=[v['nativeChildObservation']['elementId'] for v in actual_outputs.values() if v.get('nativeChildObservation')])
     phase_id=_digest({'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'modelBinding':model_binding,'phase':phase,'previous':lineage,'contentsHash':_digest(doc),'version':current['documentVersion']})
     if phase_id in consumed_phases:raise PortError('CONSUMED_PHASE_REPLAY_REFUSED')
     proposal={'phase':phase,'phaseId':phase_id,'phaseLineage':lineage,'previousProposalHash':previous['proposalHash'] if previous else None,
@@ -711,19 +753,25 @@ def finalize_port_update(proposal,fresh,dry_run,*,consumed_proposals=(),reviewed
             'proposalHash':proposal['proposalHash'],'consumeBeforeSend':True,'productionStatus':'BLOCKED'}
 
 
-def audit_port_update(proposal,readback):
+def audit_port_update(proposal,readback,*,post_phase_context=None):
     if proposal.get('proposalHash')!=_digest({k:v for k,v in proposal.items() if k!='proposalHash'}):raise PortError('PROPOSAL_HASH_MISMATCH')
     if proposal.get('phase') and not proposal.get('phaseContext'):raise PortError('CURRENT_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
+    if post_phase_context is None:raise PortError('POST_PHASE_SDK_ACTION_PROOF_REQUIRED')
+    owned={e['id']:e for e in proposal['dryRunRequest']['contents']['elements']}
+    code_ids=[eid for eid in proposal['ownedPortElementIds'] if owned[eid]['kind']=='code']
+    context=_phase_context(post_phase_context,readback,post_phase_context.get('receiptHash'),code_ids)
+    if any(context[k]!=proposal['phaseContext'][k] for k in ('inputValuesHash','schemaDisplayHash')):raise PortError('POST_PHASE_INPUT_OR_DISPLAY_CHANGED')
+    action_proof=_verify_phase_action_preservation(proposal,readback,context)
     if proposal.get('restMutationRequired') is False:
         if readback.get('workbookId')!=proposal['workbookId'] or readback.get('documentVersion')!=proposal['documentVersion'] or _snapshot(readback)!=proposal['beforeContents']:raise PortError('NATIVE_ADOPTION_READBACK_CHANGED')
         return {'status':'VERIFIED_COMPONENT_NATIVE_ADOPTION','documentId':proposal['workbookId'],'version':readback['documentVersion'],
-            'elementIds':proposal['adoptedElementIds'],'proposalHash':proposal['proposalHash'],'restMutationRequired':False,'productionStatus':'BLOCKED'}
+            'elementIds':proposal['adoptedElementIds'],'proposalHash':proposal['proposalHash'],'restMutationRequired':False,'actionPreservation':action_proof,'productionStatus':'BLOCKED'}
     if (readback.get('workbookId')!=proposal['workbookId'] or type(readback.get('documentVersion')) is not int or readback['documentVersion']<=proposal['documentVersion']
             or _snapshot(readback)!=proposal['dryRunRequest']['contents']):
         raise PortError('PORT_UPDATE_READBACK_MISMATCH')
     return {'status':'VERIFIED_COMPONENT_CONSTRUCTION','documentId':proposal['workbookId'],
             'version':readback['documentVersion'],'elementIds':proposal['addedElementIds'],
-            'proposalHash':proposal['proposalHash'],'productionStatus':'BLOCKED'}
+            'proposalHash':proposal['proposalHash'],'actionPreservation':action_proof,'productionStatus':'BLOCKED'}
 
 
 def _constant(value):

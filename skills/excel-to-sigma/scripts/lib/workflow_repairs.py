@@ -235,7 +235,7 @@ def build_input_id_audit(input_spec,target):
         ('StoredRowID','['+input_spec['name']+'/'+target['systemColumnId']+']')])
 
 
-def propagate_readonly_presentation(contract,element,source_cells):
+def propagate_readonly_presentation(contract,element,source_cells,*,technical_source=None):
     validate_repair_contract(contract)
     if element.get('kind') not in ('table','pivot-table'):raise RepairError('read-only table required')
     result=copy.deepcopy(element);ids={c['id'] for c in result['columns']}
@@ -261,9 +261,22 @@ def propagate_readonly_presentation(contract,element,source_cells):
         result.setdefault('conditionalFormats',[]).extend(r for _,r in sorted(rules,key=lambda p:p[0],reverse=True))
     finally:workbook.close()
     # Technical operation metadata is audit-only; business fields remain intact.
+    owned_source=None
+    if technical_source is not None:
+        owned_source=technical_source.get('element',{})
+        if (contract['workflow']!='expense' or technical_source.get('viewElementHash')!=_digest(element)
+                or technical_source.get('elementHash')!=_digest(owned_source) or owned_source.get('kind')!='table'
+                or owned_source.get('name')!='Expense Register'
+                or owned_source.get('description',{}).get('text')!='excel-to-sigma:native:expense:'+contract['source']['sha256']
+                or element.get('source')!={'kind':'table','elementId':owned_source.get('id')}):raise RepairError('owned technical presentation source/view binding stale or foreign')
     for col in result['columns']:
         if col.get('name') in ('Last Approval Operation ID','Applied Approval Operation IDs','StoredRowID'):
             col['hidden']=True
+        elif owned_source is not None:
+            reference=re.fullmatch(r'\[([^\[\]/]+)/([^\[\]/]+)\]',col.get('formula',''))
+            if reference and reference[1]==owned_source['name'] and reference[2] in {'Last Approval Operation ID','Applied Approval Operation IDs'}:
+                if col.get('name') not in (None,reference[2]):raise RepairError('conflicting owned technical column identity')
+                col['hidden']=True
     return result
 
 
@@ -540,7 +553,12 @@ def prepare_repair_update(manifest,receipt,contract,current,bindings,*,scope,rev
     merged=proposal['dryRunRequest']['contents'];by_id={e['id']:e for e in merged['elements']}
     for eid,mapping in review.get('readonlyFormats',{}).items():
         if eid not in elements or mapping.get('elementHash')!=_digest(elements[eid]):raise RepairError('read-only display target changed')
-        by_id[eid]=propagate_readonly_presentation(contract,elements[eid],mapping['sourceCells'])
+        technical_source=None
+        if contract['workflow']=='expense':
+            calc=bindings['calculation'];source=elements[calc['elementId']]
+            if elements[eid].get('source')=={'kind':'table','elementId':calc['elementId']}:
+                technical_source={'element':source,'elementHash':calc['elementHash'],'viewElementHash':mapping['elementHash']}
+        by_id[eid]=propagate_readonly_presentation(contract,elements[eid],mapping['sourceCells'],technical_source=technical_source)
     if contract['workflow']=='expense':
         patch=review.get('currencyPatch',{});calc=bindings['calculation'];element=copy.deepcopy(by_id[calc['elementId']])
         if patch.get('decisionHash')!=_digest(contract['currencyDecision']) or patch.get('elementHash')!=calc['elementHash']:

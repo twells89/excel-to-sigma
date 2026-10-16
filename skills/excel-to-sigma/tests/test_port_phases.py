@@ -6,6 +6,73 @@ import test_custom_ports as fixtures
 import custom_ports as p
 
 class PortPhaseTests(unittest.TestCase):
+    def test_same_type_output_semantic_permutations_fail_even_with_fresh_review_hash(self):
+        from port_phase_fixtures import context,installed,restage,outputs,reviewed
+        _,m,r,c,s=fixtures.PortGateTests().case();first=p.prepare_port_update(m,r,c,s,phase_context=context(m,r,c));c=installed(c,first);m,r=restage(m,r,c)
+        for left,right in [('Target','LowerBound'),('OperationId','ErrorCode')]:
+            ev=outputs(m,r,c,first,('allocation','goalSeek'));mapping=ev['outputs']['goalSeek']['columnMap']
+            mapping[left],mapping[right]=mapping[right],mapping[left];reviewed(ev)
+            with self.subTest(fields=(left,right)),self.assertRaisesRegex(ValueError,'SEMANTIC_OUTPUT'):
+                p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=first,phase_context=context(m,r,c),output_evidence=ev)
+
+    def test_post_phase_and_next_phase_refuse_lost_rest_omitted_sdk_action(self):
+        from port_phase_fixtures import context,installed,restage,outputs,reviewed
+        from action_inventory import digest
+        from test_action_inventory import ActionInventoryTests
+        _,m,r,c,s=fixtures.PortGateTests().case()
+        c['contents']['elements'].append({'id':'old-navigation','kind':'button','text':'Existing REST-omitted action'})
+        c['contents']['layout']=c['contents']['layout'].replace('</Page>','<Element elementId="old-navigation" gridRow="100 / 102"/></Page>',1)
+        before=context(m,r,c);_,old=ActionInventoryTests().fixture();old=ActionInventoryTests().reviewed(old)
+        e=copy.deepcopy(old['elements']['button']);e['elementId']='old-navigation';artifact=e.pop('restorationArtifact')
+        artifact.update(elementId='old-navigation',sourceObservationHash=digest(e));e['restorationArtifact']=artifact;before['sdkActions']['elements']['old-navigation']=e;reviewed(before)
+        first=p.prepare_port_update(m,r,c,s,phase_context=before);c=installed(c,first);m,r=restage(m,r,c);after=context(m,r,c)
+        with self.assertRaisesRegex(ValueError,'POST_PHASE'):p.audit_port_update(first,c)
+        with self.assertRaises(ValueError):p.audit_port_update(first,c,post_phase_context=after)
+        with self.assertRaises(ValueError):p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=first,phase_context=after,output_evidence=outputs(m,r,c,first,('allocation','goalSeek')))
+
+    def test_post_phase_requires_exact_action_identity_or_reviewed_actual_restoration(self):
+        from port_phase_fixtures import context,installed,restage,outputs,reviewed
+        from action_inventory import digest
+        from test_action_inventory import ActionInventoryTests
+        _,m,r,c,s=fixtures.PortGateTests().case()
+        c['contents']['elements'].append({'id':'old-action','kind':'button','text':'Old omitted action'})
+        c['contents']['layout']=c['contents']['layout'].replace('</Page>','<Element elementId="old-action" gridRow="100 / 102"/></Page>',1)
+        before=context(m,r,c);_,template=ActionInventoryTests().fixture();template=ActionInventoryTests().reviewed(template)
+        e=copy.deepcopy(template['elements']['button']);e['elementId']='old-action';artifact=e.pop('restorationArtifact')
+        artifact.update(elementId='old-action',sourceObservationHash=digest(e));e['restorationArtifact']=artifact;before['sdkActions']['elements']['old-action']=e;reviewed(before)
+        first=p.prepare_port_update(m,r,c,s,phase_context=before);c=installed(c,first);m,r=restage(m,r,c);after=context(m,r,c)
+        after['sdkActions']['elements']['old-action']=copy.deepcopy(e);reviewed(after)
+        proof=p.audit_port_update(first,c,post_phase_context=after);self.assertEqual(proof['status'],'VERIFIED_COMPONENT_CONSTRUCTION');self.assertIn('actionPreservation',proof)
+        altered=copy.deepcopy(after);element=altered['sdkActions']['elements']['old-action'];element['sequences'][0]['id']='restored-assigned-ID'
+        artifact=element.pop('restorationArtifact');artifact['sourceObservationHash']=digest(element);element['restorationArtifact']=artifact;reviewed(altered)
+        with self.assertRaisesRegex(ValueError,'RESTORED_SEQUENCE_ID'):p.audit_port_update(first,c,post_phase_context=altered)
+        alteration={'status':'APPROVED_STAGING','owner':'unit-reviewer','evidenceId':'SYNTHETIC_RESTORATION_ONLY','documentId':'doc','version':c['documentVersion'],
+            'beforeInventoryHash':digest(before['sdkActions']),'afterInventoryHash':digest(altered['sdkActions']),
+            'assignedSequenceIds':{'old-action':{e['sequences'][0]['id']:'restored-assigned-ID'}},
+            'restorationProofHashes':{'old-action':digest(artifact['restoreProof'])}}
+        altered['actionRestorationReview']=alteration;reviewed(altered)
+        self.assertEqual(p.audit_port_update(first,c,post_phase_context=altered)['status'],'VERIFIED_COMPONENT_CONSTRUCTION')
+        for change in ({'version':8},{'assignedSequenceIds':{}},{'restorationProofHashes':{}},{'owner':'PENDING'}):
+            bad=copy.deepcopy(altered);bad['actionRestorationReview'].update(change);reviewed(bad)
+            with self.subTest(change=change),self.assertRaises(ValueError):p.audit_port_update(first,c,post_phase_context=bad)
+        for field in ('inputValuesHash','schemaDisplayHash'):
+            bad=copy.deepcopy(after);bad[field]='f'*64;reviewed(bad)
+            with self.subTest(field=field),self.assertRaisesRegex(ValueError,'INPUT_OR_DISPLAY_CHANGED'):p.audit_port_update(first,c,post_phase_context=bad)
+        bad=copy.deepcopy(after);bad['receiptHash']=None;reviewed(bad)
+        with self.assertRaises(ValueError):p.audit_port_update(first,c,post_phase_context=bad)
+        self.assertEqual(p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=first,phase_context=after,output_evidence=outputs(m,r,c,first,('allocation','goalSeek')))['phase'],'solver-outputs')
+        self.assertEqual(p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=first,phase_context=altered,output_evidence=outputs(m,r,c,first,('allocation','goalSeek')))['phase'],'solver-outputs')
+
+    def test_new_phase_hosts_and_run_effects_must_match_declared_port_constructor(self):
+        from port_phase_fixtures import context,installed,restage,outputs,reviewed
+        from action_inventory import digest,configuration
+        _,m,r,c,s=fixtures.PortGateTests().case();first=p.prepare_port_update(m,r,c,s,phase_context=context(m,r,c));c=installed(c,first);m,r=restage(m,r,c)
+        after=context(m,r,c);button=after['sdkActions']['elements']['task5AllocationButton']
+        button['sequences'][0]['blocks'][0]['fields']['codeElementId']='foreign-code'
+        artifact=button.pop('restorationArtifact');button['semanticHash']=digest(configuration(button));artifact['sourceObservationHash']=digest(button);artifact['semanticHash']=button['semanticHash'];artifact['restoreProof']['semanticHash']=button['semanticHash'];button['restorationArtifact']=artifact;reviewed(after)
+        with self.assertRaisesRegex(ValueError,'NEW_PORT_ACTION'):p.audit_port_update(first,c,post_phase_context=after)
+        c=copy.deepcopy(c);c['contents']['elements'].append({'id':'foreign-new-host','kind':'text','body':'unrelated'});m,r=restage(m,r,c)
+        with self.assertRaisesRegex(ValueError,'UNDECLARED_POST_PHASE'):p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=first,phase_context=context(m,r,c),output_evidence=outputs(m,r,c,first,('allocation','goalSeek')))
     def test_emitted_runtime_marshals_decimal_target_success_and_failure_to_real_snowpark_types(self):
         from decimal import Decimal
         from types import SimpleNamespace
@@ -166,7 +233,7 @@ class PortPhaseTests(unittest.TestCase):
         final=p.prepare_port_update(m,r,c,s,phase='guard-output',previous_phase=second,phase_context=context(m,r,c),output_evidence=ev)
         self.assertEqual(final['addedElementIds'],[]);self.assertEqual(final['adoptedElementIds'],['actual-native-applyGuard']);self.assertFalse(final['restMutationRequired'])
         self.assertEqual(final['dryRunRequest']['contents'],c['contents']);self.assertEqual(len(final['ownedPortElementIds']),9)
-        self.assertEqual(p.audit_port_update(final,c)['status'],'VERIFIED_COMPONENT_NATIVE_ADOPTION')
+        self.assertEqual(p.audit_port_update(final,c,post_phase_context=context(m,r,c))['status'],'VERIFIED_COMPONENT_NATIVE_ADOPTION')
         with self.assertRaises(ValueError):p.finalize_port_update(final,c,{'httpStatus':200,'dryRun':True,'evidenceId':'unit'},fresh_phase_context=context(m,r,c))
     def test_reviewed_current_code_adoption_is_distinct_from_an_unexecuted_new_put(self):
         from port_phase_fixtures import context,installed,restage,outputs,reviewed
@@ -177,7 +244,7 @@ class PortPhaseTests(unittest.TestCase):
             'receiptHash':p._digest(r),'elementHashes':{e['id']:p._digest(e) for e in fragments['elements']}})
         adopted=p.prepare_port_update(m,r,c,s,phase_context=context(m,r,c),adoption_evidence=ev)
         self.assertFalse(adopted['restMutationRequired']);self.assertEqual(adopted['addedElementIds'],[]);self.assertEqual(len(adopted['ownedPortElementIds']),4)
-        proof=p.audit_port_update(adopted,c);self.assertEqual(proof['status'],'VERIFIED_COMPONENT_NATIVE_ADOPTION')
+        proof=p.audit_port_update(adopted,c,post_phase_context=context(m,r,c));self.assertEqual(proof['status'],'VERIFIED_COMPONENT_NATIVE_ADOPTION')
         capture=outputs(m,r,c,adopted,('allocation','goalSeek'));capture['installation']=dict(proof,contentsHash=p._digest(c['contents']),evidenceId='SYNTHETIC_UNIT_ONLY');reviewed(capture)
         second=p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=adopted,phase_context=context(m,r,c),output_evidence=capture)
         self.assertEqual(second['previousProposalHash'],adopted['proposalHash'])

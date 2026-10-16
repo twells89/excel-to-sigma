@@ -188,6 +188,16 @@ role, persisted outcome and restoration evidence remain separate mandatory gates
 
 ## Persisted workflow result UI
 
+Read-only Expense formatting also handles REST columns whose names are omitted.
+`propagate_readonly_presentation(..., technical_source=...)` accepts the exact
+current owned Expense Register element/hash and target view hash. The view must
+directly source that element and its description must bind the Expense source
+contract. Only whole direct references to that exact source's Last Approval
+Operation ID and Applied Approval Operation IDs become hidden. Foreign sources,
+expressions/comments and ApprovedAt are preserved. `prepare_repair_update` derives
+this binding from its already validated calculation source and reviewed view
+hash; no column IDs, formulas, order or names change.
+
 `operation_outcomes.build_outcome_view(binding)` projects persisted operation
 state. Pending/prepared states say "Pending verification". It has no optimistic
 action-chain success effect. `reconcile_operation(expected,capture,operations,
