@@ -189,7 +189,7 @@ class PublicNativeActionsTests(unittest.TestCase):
         by={e['role']:e for e in f['actionEdits']};self.assertEqual(set(by),{'selection','recovery','confirm','clear-context'})
         selection=by['selection']['afterAction'];self.assertEqual(selection['trigger'],'on-select')
         self.assertEqual(selection['effects'][2]['value'],{'type':'formula','formula':'CountDistinct([Selection/ID])'})
-        confirm=by['confirm']['afterAction'];update=confirm['effects'][0]
+        confirm=by['confirm']['afterAction'];update=next(e for e in confirm['effects'] if e['effect']=='update-rows')
         self.assertEqual(update['whichRows']['type'],'formula')
         self.assertIn('([ID] = [approval-physical-row])',update['whichRows']['formula'])
         guard=confirm['trigger']['condition']['formula'];self.assertIn('CountIf(',guard);self.assertIn('Applied Approval Operation IDs',guard)
@@ -223,7 +223,8 @@ class PublicNativeActionsTests(unittest.TestCase):
     def test_approval_public_write_selector_rechecks_all_frozen_fields(self):
         m,r,b,c,cap,a,f=self.public_fixture()
         action=next(e['afterAction'] for e in f['actionEdits'] if e['role']=='confirm')
-        selector=action['effects'][0]['whichRows']
+        update=next(e for e in action['effects'] if e['effect']=='update-rows')
+        selector=update['whichRows']
         self.assertEqual(selector['type'],'formula','physical-ID-only writes discard the write-boundary freeze')
         formula=selector['formula']
         self.assertNotIn('CountIf(',formula)
@@ -233,44 +234,45 @@ class PublicNativeActionsTests(unittest.TestCase):
         for field in self.APPROVAL_FIELDS:
             before=f'Lookup([Workflow Operations/Before:{field}], [approval-operation], [Workflow Operations/Row ID])'
             self.assertIn(f'((IsNull([{field}]) and IsNull({before})) or ([{field}] = {before}))',formula,field)
-        self.assertEqual(set(action['effects'][0]['values']),
+        self.assertEqual(set(update['values']),
                          {b['tables']['expenseBusinessInput']['target']['columnIds'][field] for field in
                           ('Approval Status','ApprovedAt','Last Approval Operation ID','Applied Approval Operation IDs')})
 
-    def test_history_value_uses_native_ui_bound_selected_lookup(self):
-        # Native UI saved Lookup with target-owned physical column IDs inside
-        # the value. Definition validation and actual effects are separate gates.
+    def test_approval_captures_live_history_before_control_value_update(self):
+        # Actual native staging P1 overwrote a deliberately stale intermediary
+        # before the row update; retry preserved timestamp/token. Public import
+        # and first-effect failure-halt qualification remain separate gates.
         for native_expense in (False,True):
             with self.subTest(native_expense=native_expense):
                 m,r,b,c,cap,a,f=self.public_fixture(native_expense=native_expense)
                 action=next(e['afterAction'] for e in f['actionEdits'] if e['role']=='confirm')
-                expense=b['tables']['expenseBusinessInput']
-                history=expense['target']['columnIds']['Applied Approval Operation IDs']
-                rowid=expense['systemColumn']['id']
-                selected_history=f'Lookup([{history}], [approval-physical-row], [{rowid}])'
-                self.assertEqual(action['effects'][0]['values'][history],{'type':'formula','formula':
-                    '(Coalesce('+selected_history+', "") & (("|" & [approval-operation]) & "|"))'})
+                self.assertEqual([e['effect'] for e in action['effects']],['set-control-value','update-rows'])
+                capture,update=action['effects']
+                self.assertEqual(capture['control'],'approval-next-history')
+                source_id_name=b['tables']['expenseBusinessInput']['systemColumn']['name']
+                self.assertEqual(capture['value'],{'type':'formula','formula':
+                    '(((Coalesce(Lookup([Expense Business Inputs/Applied Approval Operation IDs], [approval-physical-row], [Expense Business Inputs/'+source_id_name+']), "") & "|") & [approval-operation]) & "|")'})
+                history=b['tables']['expenseBusinessInput']['target']['columnIds']['Applied Approval Operation IDs']
+                self.assertEqual(update['values'][history],{'type':'control','control':'approval-next-history'})
                 self.assertIn('Lookup([Expense Business Inputs/Applied Approval Operation IDs]',action['trigger']['condition']['formula'])
-                self.assertIn('[Applied Approval Operation IDs]',action['effects'][0]['whichRows']['formula'])
+                self.assertIn('[Applied Approval Operation IDs]',update['whichRows']['formula'])
                 self.assertEqual(action['state'],'disabled');self.assertNotIn('successToast',action)
+                self.assertEqual(f['productionStatus'],'BLOCKED')
 
-    def test_value_id_context_preserves_cross_source_and_selector_names(self):
-        columns={'history':{'elementId':'expense','tableName':'Expense','name':'History','id':'history-id'},
-                 'rowid':{'elementId':'expense','tableName':'Expense','name':'ID','id':'row-id'},
-                 'before':{'elementId':'ops','tableName':'Operations','name':'Before:History','id':'before-id'},
-                 'opsid':{'elementId':'ops','tableName':'Operations','name':'ID','id':'ops-id'}}
-        controls={'selected':{'variableId':'selected-row'},'operation':{'variableId':'operation'}}
-        node=ast.parse('eq(lookup(history, selected, rowid), lookup(before, operation, opsid))',mode='eval').body
-        self.assertEqual(native._public_formula(node,columns,controls,local_element_id='expense',local_column_ids=True),
-                         '(Lookup([history-id], [selected-row], [row-id]) = Lookup([Operations/Before:History], [operation], [Operations/ID]))')
-        self.assertEqual(native._public_formula(node,columns,controls,local_element_id='expense'),
-                         '(Lookup([History], [selected-row], [ID]) = Lookup([Operations/Before:History], [operation], [Operations/ID]))')
-        self.assertEqual(native._public_formula(node,columns,controls),
-                         '(Lookup([Expense/History], [selected-row], [Expense/ID]) = Lookup([Operations/Before:History], [operation], [Operations/ID]))')
-        for malformed in ('',None,'history] & True & [other'):
-            with self.subTest(malformed=malformed),self.assertRaisesRegex(ValueError,'identifier'):
-                native._public_formula(node,{**columns,'history':{**columns['history'],'id':malformed}},controls,
-                                       local_element_id='expense',local_column_ids=True)
+    def test_history_intermediary_is_new_blank_unfiltered_sdk_component(self):
+        m,r,b,c=self.fixture();result=native.emit_native_action_program(m,r,b,current_contents=c)
+        self.assertIn('approval_next_history',result['componentControls'])
+        self.assertEqual(result['componentControls']['approval_next_history']['variableId'],'approval-next-history')
+        tree=ast.parse(result['program'])
+        assignment=next(n for n in tree.body if isinstance(n,ast.Assign) and
+                        any(isinstance(t,ast.Name) and t.id=='approval_next_history' for t in n.targets))
+        self.assertEqual(assignment.value.func.id,'add_text_control')
+        self.assertEqual({k.arg:ast.literal_eval(k.value) for k in assignment.value.keywords},
+                         {'value':'','variable_name':'approval-next-history'})
+        self.assertIn('approval_next_history.list_targets()',result['program'])
+        self.assertNotIn('update_rows(t_expenseBusinessInput',result['program'])
+        self.assertEqual(result['constructionStatus'],'PARTIAL_REQUIRES_PUBLIC_ACTIONS')
+        self.assertTrue(any('first-effect' in v.lower() for v in result['limitations']))
 
     def test_native_id_approval_also_defers_full_formula_selector_instead_of_sdk_hoisting(self):
         m,r,b,c,cap,a,f=self.public_fixture(native_expense=True)
@@ -278,7 +280,7 @@ class PublicNativeActionsTests(unittest.TestCase):
         self.assertNotIn('update_rows(t_expenseBusinessInput',emitted['program'])
         self.assertTrue(any(q['workflow']=='approval' and q['role']=='confirm' for q in emitted['publicActionRequirements']))
         action=next(e['afterAction'] for e in f['actionEdits'] if e['role']=='confirm')
-        self.assertEqual(action['effects'][0]['whichRows']['type'],'formula')
+        self.assertEqual(next(e for e in action['effects'] if e['effect']=='update-rows')['whichRows']['type'],'formula')
         self.assertTrue(all('Lookup(' not in expression for expression in
                             self.formula_arguments(action['trigger']['condition']['formula'],'CountIf')))
     def test_public_routing_rejects_foreign_components_stale_state_and_missing_recovery(self):

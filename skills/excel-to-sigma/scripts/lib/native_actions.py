@@ -549,7 +549,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
             lines += [f'button = {host}.add_button("Go to forecast")',
                 'button.set_frame(1, cursor, min(24, button.parent_grid_width()), 2)',
                 f'sequence = button.on_click("Go to forecast", [navigate_to({pagevars[destination]})])',
-                f'sequence.set_disabled({not enabled!r})',"print('action:navigation=' + sequence.id())"]
+                'sequence.set_disabled(True)', f'sequence.set_disabled({not enabled!r})',"print('action:navigation=' + sequence.id())"]
             artifacts.append(workflow);continue
         # A separate Prepare click is intentional: ActionVariable is ActionValue,
         # not FormulaResolvable, and same-sequence control reads are unproven.
@@ -564,6 +564,12 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
                 f'{var}.set_frame(1, audit_cursor, min(24, {var}.parent_grid_width()), 2)', 'audit_cursor = audit_cursor + 2']
         lines += [f'{n} = add_number_control(h_workflowOperations, value=0, variable_name={ (workflow+"-selection-count")!r})',
             f'{n}.set_frame(1, audit_cursor, min(24, {n}.parent_grid_width()), 2)', 'audit_cursor = audit_cursor + 2']
+        if workflow=='approval':
+            next_history=prefix+'_next_history'
+            lines += [f'{next_history} = add_text_control(h_workflowOperations, value="", variable_name="approval-next-history")',
+                f'{next_history}.set_frame(1, audit_cursor, min(24, {next_history}.parent_grid_width()), 2)', 'audit_cursor = audit_cursor + 2',
+                f'if {next_history}.value() != "" or len({next_history}.list_targets()) != 0 or len({next_history}.list_action_sequences()) != 0:',
+                "    raise RuntimeError('new approval History intermediary must be blank, unfiltered and action-free')"]
         if binding['pages'][decision['page']]==binding['tables']['workflowOperations']['target']['pageId']:
             lines += ['cursor = max(cursor, audit_cursor)']
         if workflow=='approval':
@@ -592,7 +598,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
                 f'    set_control_value({key}, {selection_key}),',
                 f'    set_control_value({n}, count_distinct({selection_id})),',
                 f'    set_control_value({ctx}, {decision["page"]!r}),',
-                f'    set_control_value({op}, "")])',f'capture.set_disabled({not enabled!r})']
+                f'    set_control_value({op}, "")])','capture.set_disabled(True)',f'capture.set_disabled({not enabled!r})']
             selection=_conjoin([f'eq({n}, const_num(1))',f'eq({ctx}, {_lit(decision["page"])})',
                 f'neq({rowid}, const_text(""))',f'neq({key}, const_text(""))',
                 f'eq(count_if({_conjoin([f"eq(rid_{table}, {rowid})",f"eq({_c(table, "Expense ID")}, {key})"])}), const_num(1))'])
@@ -602,7 +608,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
         lines += [f'clear_button = {host}.add_button("Clear selection context")',
                 'clear_button.set_frame(1, cursor, min(24, clear_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
                 f'clear_sequence = clear_button.on_click("Clear captured context", [set_control_value({op}, ""), set_control_value({ctx}, ""), set_control_value({key}, ""), set_control_value({rowid}, ""), set_control_value({n}, 0.0)])',
-                f'clear_sequence.set_disabled({not enabled!r})']
+                'clear_sequence.set_disabled(True)', f'clear_sequence.set_disabled({not enabled!r})']
         if workflow=='approval':
             summary_values={'state':f'if_({selection}, const_text("One expense is captured."), const_text("Select exactly one expense or clear this context."))',
                 'record':f'if_({selection}, {key}, const_text("—"))','count':n}
@@ -647,12 +653,12 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
             'prepared_id = prepare_insert.returns()',f'prepare_button = {host}.add_button({("Prepare "+workflow)!r})',
             'prepare_button.set_frame(1, cursor, min(24, prepare_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
             f'prepare_sequence = prepare_button.on_click("Prepare new intent", [prepare_insert, set_control_value({op}, prepared_id)])',
-            f'prepare_sequence.set_condition({_conjoin([selection,f"eq(as_text(coalesce({op}, const_text(''))), const_text(''))", 'eq(pending_intent_count, const_num(0))'])})',
+            'prepare_sequence.set_disabled(True)', f'prepare_sequence.set_condition({_conjoin([selection,f"eq(as_text(coalesce({op}, const_text(''))), const_text(''))", 'eq(pending_intent_count, const_num(0))'])})',
             f'prepare_sequence.set_disabled({not enabled!r})',
             f'new_button = {host}.add_button({("Start new "+workflow)!r})',
             'new_button.set_frame(1, cursor, min(24, new_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
             f'new_sequence = new_button.on_click("Start a new intentional operation", [update_rows(t_workflowOperations, eq(rid_workflowOperations, {op}), {{{_c("workflowOperations","State")}: "SUPERSEDED_NEW_INTENT"}}), set_control_value({op}, "")])',
-            f'new_sequence.set_condition(eq(count_if(eq(rid_workflowOperations, {op})), const_num(1)))',
+            'new_sequence.set_disabled(True)', f'new_sequence.set_condition(eq(count_if(eq(rid_workflowOperations, {op})), const_num(1)))',
             f'new_sequence.set_disabled({not enabled!r})']
         # Recover a prepared operation by selecting its durable metadata row.
         # Physical ID + workflow + source/plan + context are rechecked on Apply.
@@ -662,7 +668,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
             f'set_control_value({ctx}, {_c("workflowOperations","Context")})',
             f'set_control_value({n}, count_distinct(rid_workflowOperations))']
         lines += [f'recover = t_workflowOperations.on_select({("Recover "+workflow+" intent")!r}, [{", ".join(recovery)}])',
-            f'recover.set_disabled({not enabled!r})']
+            'recover.set_disabled(True)', f'recover.set_disabled({not enabled!r})']
         op_predicates=[f'eq(rid_workflowOperations, {op})',
             f'eq({_c("workflowOperations","Workflow")}, {_lit(workflow)})',
             f'eq({_c("workflowOperations","Context")}, {_lit(decision["page"])})',
@@ -696,8 +702,13 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
             selector=_conjoin([f'eq(rid_expenseBusinessInput, {rowid})',f'eq({_c("expenseBusinessInput","Expense ID")}, {key})',
                 f'not_(contains(as_text(coalesce({history}, const_text(""))), {token}))']+before_guards)
             vals={ 'Approval Status':repr('Approved'),'ApprovedAt':'now()',
-                'Last Approval Operation ID':op,'Applied Approval Operation IDs':f'ampersand(as_text(coalesce({selected_history}, const_text(""))), {token})' }
-            effects=['update_rows(t_expenseBusinessInput, '+selector+', {'+', '.join(_c('expenseBusinessInput',k)+': '+v for k,v in vals.items())+'}, name="Approve selected expense")']
+                'Last Approval Operation ID':op,'Applied Approval Operation IDs':next_history }
+            # Native UpdateRows scalar History formulas failed validation even
+            # after successful import. Stage the live text in a control first;
+            # the write reads that control, retaining its complete row freeze.
+            capture_history=f'ampersand(ampersand(ampersand(as_text(coalesce({selected_history}, const_text(""))), const_text("|")), {op}), const_text("|"))'
+            effects=[f'set_control_value({next_history}, {capture_history})',
+                'update_rows(t_expenseBusinessInput, '+selector+', {'+', '.join(_c('expenseBusinessInput',k)+': '+v for k,v in vals.items())+'}, name="Approve selected expense")']
         elif workflow=='applyScenario':
             scenario=f'lookup({_c("workflowOperations","Scenario Name")}, {op}, rid_workflowOperations)'
             for name,rates in [('Aggressive',[.06,.02]),('Conservative',[.01,.01])]:
@@ -736,7 +747,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
         lines += [f'confirm_button = {host}.add_button({("Confirm "+workflow)!r})',
             'confirm_button.set_frame(1, cursor, min(24, confirm_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
             f'confirm_sequence = confirm_button.on_click({("Apply/retry "+workflow)!r}, [{", ".join(effects)}])',
-            f'confirm_sequence.set_condition({guard})',f'confirm_sequence.set_disabled({not enabled!r})',
+            'confirm_sequence.set_disabled(True)', f'confirm_sequence.set_condition({guard})',f'confirm_sequence.set_disabled({not enabled!r})',
             "print('action:"+workflow+"=' + confirm_sequence.id())"]
         artifacts.append(workflow)
     program='\n'.join(lines)+'\n';compile(program,'native-action-program','exec')
@@ -971,7 +982,10 @@ def _authored_routes(manifest,receipt,binding,current_contents,staging_review=No
         'assignedComponentReadbackRequired':component_records,'authoringAstHash':_digest(source),
         'limitations':[*authored['limitations'],'Selection namespace has no SDK expression getter; exact reviewed public actions required.',
             'Approval requires a full public formula row selector; native action/selector execution must be qualified before business use.',
-            'Single-row selectors plus full CountIf predicates require serialized staging; predicate evaluation/write have a TOCTOU race. No transaction/affected-row guarantee.']}
+            'Single-row selectors plus full CountIf predicates require serialized staging; predicate evaluation/write have a TOCTOU race. No transaction/affected-row guarantee.',
+            *(['Approval first-effect failure-halt and stale intermediary behavior require independent runtime qualification; control capture alone is not a successful row write.',
+               'Public REST import of control-staged approval History remains unqualified; native construction evidence does not transfer to a public fragment.']
+              if 'approval' in _architecture(manifest)['workflows'] else [])]}
 
 
 def emit_native_action_program(manifest,receipt,action_bindings,*,current_contents,staging_review=None):
@@ -996,8 +1010,8 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
     return result
 
 
-def _public_formula(node,columns,controls,*,local_element_id=None,local_column_ids=False):
-    def render(child):return _public_formula(child,columns,controls,local_element_id=local_element_id,local_column_ids=local_column_ids)
+def _public_formula(node,columns,controls,*,local_element_id=None):
+    def render(child):return _public_formula(child,columns,controls,local_element_id=local_element_id)
     if isinstance(node,ast.Constant):
         if node.value is None:return 'Null'
         if type(node.value) is bool:return 'True' if node.value else 'False'
@@ -1007,7 +1021,7 @@ def _public_formula(node,columns,controls,*,local_element_id=None,local_column_i
         if node.id in columns:
             column=columns[node.id]
             if column['elementId']==local_element_id:
-                identifier=column['id'] if local_column_ids else column['name']
+                identifier=column['name']
                 if not isinstance(identifier,str) or not identifier or any(char in identifier for char in '[]'):
                     raise NativeActionError('unescaped public local column identifier refused')
                 return '['+identifier+']'
@@ -1080,7 +1094,7 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
             system=record['systemColumn']
             columns['rid_'+feature]={'tableName':name,'name':system['name'],'id':system['id'],'elementId':target['elementId']}
     if any(any(char in record[field] for char in '[]') for record in columns.values() for field in ('tableName','name')) or any(any(char in record['variableId'] for char in '[]') for record in controls.values()):raise NativeActionError('unescaped public formula identifier refused')
-    def value(node,*,selection=False,target_element_id=None):
+    def value(node,*,selection=False):
         if isinstance(node,ast.Name) and node.id in controls:return {'type':'control','control':controls[node.id]['variableId']}
         if isinstance(node,ast.Name) and node.id in columns:return {'type':'column','columnId':columns[node.id]['id']}
         if isinstance(node,ast.Constant) and node.value is not None:
@@ -1089,7 +1103,7 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
         if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='count_distinct':
             if not selection or len(node.args)!=1 or not isinstance(node.args[0],ast.Name) or node.args[0].id not in columns:raise NativeActionError('Selection aggregate only allowed on assigned selection event')
             return {'type':'formula','formula':'CountDistinct([Selection/'+columns[node.args[0].id]['name']+'])'}
-        return {'type':'formula','formula':_public_formula(node,columns,controls,local_element_id=target_element_id,local_column_ids=target_element_id is not None)}
+        return {'type':'formula','formula':_public_formula(node,columns,controls)}
     edits=[];authorities=[]
     for requirement in routes['publicActionRequirements']:
         workflow=requirement['workflow'];role=requirement['role'];call=ast.parse(requirement['call'],mode='eval').body
@@ -1115,10 +1129,7 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
                     # ID alone or reintroduce CountIf(Lookup(...)) on the event.
                     return {'effect':'update-rows','tableElementId':tables[table],
                         'whichRows':{'type':'formula','formula':_public_formula(node.args[1],columns,controls,local_element_id=tables[table])},
-                        # Native UI binds target-owned columns by physical ID
-                        # inside scalar values; the row selector above retains
-                        # its separate target-local name context.
-                        'values':{columns[k.id]['id']:value(v,target_element_id=tables[table]) for k,v in zip(node.args[2].keys,node.args[2].values)}}
+                        'values':{columns[k.id]['id']:value(v) for k,v in zip(node.args[2].keys,node.args[2].values)}}
                 selector_predicates.append(_public_formula(node.args[1],columns,controls))
                 return {'effect':'update-rows','tableElementId':tables[table],'whichRows':{'type':'single-row','primaryKeys':{columns[rid]['id']:value(ids[0])}},
                     'values':{columns[k.id]['id']:value(v) for k,v in zip(node.args[2].keys,node.args[2].values)}}
