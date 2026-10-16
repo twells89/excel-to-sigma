@@ -302,6 +302,22 @@ explicitly owned added row IDs can be deleted. Its narrow SDK programs guard
 page/table/complete classes/names/types/options before mutation. Reverting REST
 alone cannot undo warehouse values or restore display. Run `verify_restoration`
 with the complete actual document, rows, SDK display and DMs after rollback.
+
+Generated rollback/outcome headers and input display/readback programs use explicit
+loops and dictionary membership for full column inventory. They reject duplicate,
+missing or extra schema/ID entries before setters or row effects. SDK programs do
+not use set(), set literals/generators, subset methods or tuple-class isinstance;
+select metadata is read only inside its explicit concrete class branch. Display
+programs import their public SDK classes and preserve source allowed values.
+These known-dialect AST checks and effect-recorder tests are offline admission
+regressions, not proof of actual MCP typechecking or rollback execution. Original
+URL promotion remains blocked until actual source-bound runtime/rollback proof.
+
+Construction and resumable seeds preserve fractional datetime microseconds as an
+integer seventh constructor argument, after existing UTC normalization. Zero
+fractions retain the six-argument form and date-only values retain the explicit
+noon policy. The actual read-only SDK admitted this constructor; actual input
+storage precision and reopen/rollback roundtrips still require runtime evidence.
 Backup/promotion/checkpoint JSON cannot authenticate itself: the designated
 controller captures real calls; independent review verifies their provenance.
 

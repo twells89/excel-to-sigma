@@ -86,7 +86,14 @@ def _header(capture):
         "if not isinstance(host, Page): raise RuntimeError('expected assigned page')",
         f"table = host.get_element({b['elementId']!r})",
         "if not isinstance(table, InputTable): raise RuntimeError('expected assigned input table')",
-        f"if set(c.id() for c in table.list_columns()) != {set(c['id'] for c in b['sdkColumns'])!r}: raise RuntimeError('SDK columns changed')"]
+        f"approved_ids = {[c['id'] for c in b['sdkColumns']]!r}",
+        'observed_ids = {}',
+        'for column in table.list_columns():',
+        "    if column.id() in observed_ids: raise RuntimeError('duplicate SDK column ID')",
+        '    observed_ids[column.id()] = True',
+        "if len(observed_ids) != len(approved_ids): raise RuntimeError('SDK columns changed')",
+        'for approved_id in approved_ids:',
+        "    if approved_id not in observed_ids: raise RuntimeError('SDK columns changed')"]
     for i,column in enumerate(b['sdkColumns']):
         var=f'c{i}';lines += [f"{var} = table.get_column({column['id']!r})",
             f"if not isinstance({var}, {column['columnClass']}): raise RuntimeError('column class changed')",

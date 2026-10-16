@@ -4,7 +4,9 @@ import json
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -279,6 +281,13 @@ class TestInputDisplay(unittest.TestCase):
         context={'sigma':Sigma(),'Page':Page,'InputTable':Table,'LiteralEditableColumn':LiteralColumn,
                  'FormulaColumn':FormulaColumn,'InputTableIDColumn':SystemColumn,'SingleSelectEditableColumn':SelectColumn,'MultiSelectEditableColumn':SelectColumn,
                  'print':lambda value:outputs.append(value)}
+        # Generated programs import their public SDK classes explicitly. Keep the
+        # effect-recording adapter honest about that standalone entry contract.
+        modules={name:types.ModuleType(name) for name in ('sigma','sigma.page','sigma.inputTable','sigma.column')}
+        modules['sigma.page'].Page=Page;modules['sigma.column'].FormulaColumn=FormulaColumn
+        for name in ('InputTable','LiteralEditableColumn','InputTableIDColumn','SingleSelectEditableColumn','MultiSelectEditableColumn'):
+            setattr(modules['sigma.inputTable'],name,context[name])
+        mocked=patch.dict(sys.modules,modules);mocked.start();self.addCleanup(mocked.stop)
         return context,state,outputs
 
     def test_generated_program_and_fresh_observation_contract_detect_metadata_noops(self):

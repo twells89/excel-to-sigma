@@ -263,8 +263,9 @@ def _sdk_literal(value, column_type=None):
         if date_only:
             return f"datetime({value.year}, {value.month}, {value.day}, 12)"
     if isinstance(value, dt.datetime):
+        fraction=f", {value.microsecond}" if value.microsecond else ""
         return (f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, "
-                f"{value.minute}, {value.second})")
+                f"{value.minute}, {value.second}{fraction})")
     if isinstance(value, dt.date):
         return f"datetime({value.year}, {value.month}, {value.day}, 12)"
     if value is None:
