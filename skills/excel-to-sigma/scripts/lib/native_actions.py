@@ -678,11 +678,21 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
         if workflow=='approval':
             history=_c('expenseBusinessInput','Applied Approval Operation IDs')
             token=f'ampersand(ampersand(const_text("|"), {op}), const_text("|"))'
-            before_guards=[]
+            before_guards=[];scalar_before_guards=[]
             for c in manifest['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns'][:-3]:
                 current=_c('expenseBusinessInput',c['name'])
                 prior=f'lookup({_c("workflowOperations","Before:"+c["name"])}, {op}, rid_workflowOperations)'
                 before_guards.append(f'or_(and_(is_null({current}), is_null({prior})), eq({current}, {prior}))')
+                selected=f'lookup({current}, {rowid}, rid_expenseBusinessInput)'
+                scalar_before_guards.append(f'or_(and_(is_null({selected}), is_null({prior})), eq({selected}, {prior}))')
+            # Lookup comparisons inside CountIf have failed actual native
+            # evaluation even when both scalar lookups match. Keep them scalar
+            # in the event guard AND retain the full row predicate at the write.
+            selected_history=f'lookup({history}, {rowid}, rid_expenseBusinessInput)'
+            guard=_conjoin([guard,
+                f'eq(lookup({_c("workflowOperations","State")}, {op}, rid_workflowOperations), const_text("PREPARED"))',
+                f'not_(contains(as_text(coalesce({selected_history}, const_text(""))), {token}))',
+                *scalar_before_guards])
             selector=_conjoin([f'eq(rid_expenseBusinessInput, {rowid})',f'eq({_c("expenseBusinessInput","Expense ID")}, {key})',
                 f'not_(contains(as_text(coalesce({history}, const_text(""))), {token}))']+before_guards)
             vals={ 'Approval Status':repr('Approved'),'ApprovedAt':'now()',
@@ -906,7 +916,8 @@ def _authored_routes(manifest,receipt,binding,current_contents,staging_review=No
         w=workflow(node);var=node.targets[0].id;call=node.value
         if not isinstance(call.func,ast.Attribute) or call.func.attr not in {'on_select','on_click'}:continue
         us=updates(call,w)
-        if call.func.attr=='on_select' or any(not eligible(u) for u in us) or var=='clear_sequence':
+        if (call.func.attr=='on_select' or any(not eligible(u) for u in us) or var=='clear_sequence'
+                or (w=='approval' and var=='confirm_sequence')):
             role='selection' if var=='capture' else 'recovery' if var=='recover' else 'new-intent' if var=='new_sequence' else 'confirm' if var=='confirm_sequence' else 'clear-context' if var=='clear_sequence' else None
             if role is None:raise NativeActionError('unsupported deferred authored event')
             deferred.append({'workflow':w,'role':role,'variable':var,'hostVariable':ast.unparse(call.func.value),
@@ -959,6 +970,7 @@ def _authored_routes(manifest,receipt,binding,current_contents,staging_review=No
         'publicActionRequirements':deferred,'componentControls':controls,'componentButtons':{w+':'+name:record for (w,name),record in buttons.items()},
         'assignedComponentReadbackRequired':component_records,'authoringAstHash':_digest(source),
         'limitations':[*authored['limitations'],'Selection namespace has no SDK expression getter; exact reviewed public actions required.',
+            'Approval requires a full public formula row selector; native action/selector execution must be qualified before business use.',
             'Single-row selectors plus full CountIf predicates require serialized staging; predicate evaluation/write have a TOCTOU race. No transaction/affected-row guarantee.']}
 
 
@@ -984,22 +996,25 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
     return result
 
 
-def _public_formula(node,columns,controls):
+def _public_formula(node,columns,controls,*,local_element_id=None):
+    def render(child):return _public_formula(child,columns,controls,local_element_id=local_element_id)
     if isinstance(node,ast.Constant):
         if node.value is None:return 'Null'
         if type(node.value) is bool:return 'True' if node.value else 'False'
         return json.dumps(node.value,ensure_ascii=False)
     if isinstance(node,ast.Name):
         if node.id in controls:return '['+controls[node.id]['variableId']+']'
-        if node.id in columns:return '['+columns[node.id]['tableName']+'/'+columns[node.id]['name']+']'
+        if node.id in columns:
+            column=columns[node.id]
+            return '['+(column['name'] if column['elementId']==local_element_id else column['tableName']+'/'+column['name'])+']'
         raise NativeActionError('unknown authored public formula name: '+node.id)
     if isinstance(node,ast.Call) and isinstance(node.func,ast.Name):
         name=node.func.id
-        if name in {'const_text','const_num','const_bool','as_text','as_num','as_bool','as_date'} and len(node.args)==1:return _public_formula(node.args[0],columns,controls)
+        if name in {'const_text','const_num','const_bool','as_text','as_num','as_bool','as_date'} and len(node.args)==1:return render(node.args[0])
         binary={'eq':'=','neq':'!=','and_':'and','or_':'or','ampersand':'&'}
-        if name in binary and len(node.args)==2:return '('+_public_formula(node.args[0],columns,controls)+' '+binary[name]+' '+_public_formula(node.args[1],columns,controls)+')'
+        if name in binary and len(node.args)==2:return '('+render(node.args[0])+' '+binary[name]+' '+render(node.args[1])+')'
         functions={'is_null':'IsNull','contains':'Contains','coalesce':'Coalesce','count_if':'CountIf','lookup':'Lookup','now':'Now','not_':'Not','if_':'If','text':'Text'}
-        if name in functions:return functions[name]+'('+', '.join(_public_formula(v,columns,controls) for v in node.args)+')'
+        if name in functions:return functions[name]+'('+', '.join(render(v) for v in node.args)+')'
     raise NativeActionError('unsupported authored public formula AST; no opaque SDK inference')
 
 
@@ -1090,6 +1105,12 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
                 feature=table[2:];rid='rid_'+feature
                 ids=[n.args[1] for n in ast.walk(node.args[1]) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='eq' and isinstance(n.args[0],ast.Name) and n.args[0].id==rid]
                 if len(ids)!=1:raise NativeActionError('one assigned physical row predicate required')
+                if workflow=='approval' and role=='confirm':
+                    # Do not replace this write-boundary freeze with a physical
+                    # ID alone or reintroduce CountIf(Lookup(...)) on the event.
+                    return {'effect':'update-rows','tableElementId':tables[table],
+                        'whichRows':{'type':'formula','formula':_public_formula(node.args[1],columns,controls,local_element_id=tables[table])},
+                        'values':{columns[k.id]['id']:value(v) for k,v in zip(node.args[2].keys,node.args[2].values)}}
                 selector_predicates.append(_public_formula(node.args[1],columns,controls))
                 return {'effect':'update-rows','tableElementId':tables[table],'whichRows':{'type':'single-row','primaryKeys':{columns[rid]['id']:value(ids[0])}},
                     'values':{columns[k.id]['id']:value(v) for k,v in zip(node.args[2].keys,node.args[2].values)}}

@@ -1,11 +1,33 @@
 """Offline regression contracts for actual SDK runtime gaps; never live evidence."""
-import ast,copy,sys,unittest
+import ast,copy,re,sys,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'scripts/lib'))
 import test_native_actions as helpers
 import native_actions as native
 
 class PublicNativeActionsTests(unittest.TestCase):
+    APPROVAL_FIELDS=('Expense ID','Date','Employee','Department','Category','Vendor',
+                     'Amount','Receipt Status','Approval Status','Card Amount','Ledger Amount')
+
+    def formula_arguments(self,formula,function):
+        """Read nested public function arguments without mistaking quoted text for syntax."""
+        result=[]
+        for match in re.finditer(r'\b'+re.escape(function)+r'\(',formula):
+            start=match.end();depth=1;quoted=False;escaped=False
+            for i in range(start,len(formula)):
+                char=formula[i]
+                if quoted:
+                    if escaped:escaped=False
+                    elif char=='\\':escaped=True
+                    elif char=='"':quoted=False
+                elif char=='"':quoted=True
+                elif char=='(':depth+=1
+                elif char==')':
+                    depth-=1
+                    if not depth:result.append(formula[start:i]);break
+            else:self.fail('unclosed generated public formula')
+        return result
+
     def fixture(self):
         helper=helpers.TestNativeActions();self.addCleanup(helper.doCleanups)
         return helper.bound_approval()
@@ -72,10 +94,18 @@ class PublicNativeActionsTests(unittest.TestCase):
         self.assertTrue(result['publicActionRequirements'])
         self.assertIn('Clear selection context',result['program']);self.assertIn('Captured expense context',result['program'])
         self.assertIn('.returns()',result['program'],'known Prepare ActionVariable must remain native')
-    def public_fixture(self,normalized_ops=False):
+    def public_fixture(self,normalized_ops=False,native_expense=False):
         from input_sync import _digest
         from action_inventory import empty_action_capture
         m,r,b,c=self.fixture()
+        if native_expense:
+            from input_sync import build_artifact_records
+            from input_display import _system_column_contract
+            target=r['targetBindings']['expenseBusinessInput'];target.pop('systemColumn')
+            system={**_system_column_contract(target),'id':'ID'}
+            b['tables']['expenseBusinessInput'].update(target=copy.deepcopy(target),systemColumn=system)
+            r['artifacts']=build_artifact_records(m,m['planProjection']['sharedInputArchitecture'],r['targetBindings'])
+            b['bindingHash']=_digest({k:v for k,v in b.items() if k!='bindingHash'});r['nativeActionBinding']=b
         if normalized_ops:
             from input_sync import build_artifact_records
             target=r['targetBindings']['workflowOperations'];alias={'id':'ID','name':'ID','columnClass':'FormulaColumn','type':None,'systemKind':None,'formula':'[New Input Table/ID]','elementId':target['elementId'],
@@ -160,7 +190,8 @@ class PublicNativeActionsTests(unittest.TestCase):
         selection=by['selection']['afterAction'];self.assertEqual(selection['trigger'],'on-select')
         self.assertEqual(selection['effects'][2]['value'],{'type':'formula','formula':'CountDistinct([Selection/ID])'})
         confirm=by['confirm']['afterAction'];update=confirm['effects'][0]
-        self.assertEqual(update['whichRows'],{'type':'single-row','primaryKeys':{'ID':{'type':'control','control':'approval-physical-row'}}})
+        self.assertEqual(update['whichRows']['type'],'formula')
+        self.assertIn('([ID] = [approval-physical-row])',update['whichRows']['formula'])
         guard=confirm['trigger']['condition']['formula'];self.assertIn('CountIf(',guard);self.assertIn('Applied Approval Operation IDs',guard)
         for column in m['planProjection']['sharedInputArchitecture']['inputs']['expenseBusinessInput']['columns'][:-3]:
             self.assertIn('Expense Business Inputs/'+column['name'],guard);self.assertIn('Before:'+column['name'],guard)
@@ -169,6 +200,52 @@ class PublicNativeActionsTests(unittest.TestCase):
         self.assertEqual(update['values'][b['tables']['expenseBusinessInput']['target']['columnIds']['ApprovedAt']],{'type':'formula','formula':'Now()'})
         self.assertNotIn('successToast',confirm);self.assertEqual(confirm['state'],'disabled')
         self.assertTrue(f['selectionAuthorities']);self.assertNotIn('Missing node',str(f));self.assertNotIn('returns',str(f['actionEdits']))
+
+    def test_approval_event_freeze_is_scalar_not_lookup_inside_countif(self):
+        # Native published evidence: all11 scalar equalities are true, while
+        # CountIf(rowField = Lookup(...)) returns0 for same/cross-source lookups.
+        # This checks our emitted contract, not a simulated Sigma execution.
+        m,r,b,c,cap,a,f=self.public_fixture()
+        action=next(e['afterAction'] for e in f['actionEdits'] if e['role']=='confirm')
+        guard=action['trigger']['condition']['formula']
+        counts=self.formula_arguments(guard,'CountIf')
+        self.assertTrue(counts)
+        self.assertTrue(all('Lookup(' not in expression for expression in counts),
+                        'approval must not hoist frozen Lookup comparisons into CountIf')
+        for field in self.APPROVAL_FIELDS:
+            current=f'Lookup([Expense Business Inputs/{field}], [approval-physical-row], [Expense Business Inputs/ID])'
+            before=f'Lookup([Workflow Operations/Before:{field}], [approval-operation], [Workflow Operations/Row ID])'
+            self.assertIn(f'((IsNull({current}) and IsNull({before})) or ({current} = {before}))',guard,field)
+        self.assertIn('PREPARED',guard)
+        self.assertIn('Lookup([Expense Business Inputs/Applied Approval Operation IDs]',guard)
+        self.assertEqual(action['state'],'disabled');self.assertEqual(f['productionStatus'],'BLOCKED')
+
+    def test_approval_public_write_selector_rechecks_all_frozen_fields(self):
+        m,r,b,c,cap,a,f=self.public_fixture()
+        action=next(e['afterAction'] for e in f['actionEdits'] if e['role']=='confirm')
+        selector=action['effects'][0]['whichRows']
+        self.assertEqual(selector['type'],'formula','physical-ID-only writes discard the write-boundary freeze')
+        formula=selector['formula']
+        self.assertNotIn('CountIf(',formula)
+        self.assertIn('([ID] = [approval-physical-row])',formula)
+        self.assertIn('([Expense ID] = [approval-record])',formula)
+        self.assertIn('[Applied Approval Operation IDs]',formula)
+        for field in self.APPROVAL_FIELDS:
+            before=f'Lookup([Workflow Operations/Before:{field}], [approval-operation], [Workflow Operations/Row ID])'
+            self.assertIn(f'((IsNull([{field}]) and IsNull({before})) or ([{field}] = {before}))',formula,field)
+        self.assertEqual(set(action['effects'][0]['values']),
+                         {b['tables']['expenseBusinessInput']['target']['columnIds'][field] for field in
+                          ('Approval Status','ApprovedAt','Last Approval Operation ID','Applied Approval Operation IDs')})
+
+    def test_native_id_approval_also_defers_full_formula_selector_instead_of_sdk_hoisting(self):
+        m,r,b,c,cap,a,f=self.public_fixture(native_expense=True)
+        emitted=native.emit_native_action_program(m,r,b,current_contents=c)
+        self.assertNotIn('update_rows(t_expenseBusinessInput',emitted['program'])
+        self.assertTrue(any(q['workflow']=='approval' and q['role']=='confirm' for q in emitted['publicActionRequirements']))
+        action=next(e['afterAction'] for e in f['actionEdits'] if e['role']=='confirm')
+        self.assertEqual(action['effects'][0]['whichRows']['type'],'formula')
+        self.assertTrue(all('Lookup(' not in expression for expression in
+                            self.formula_arguments(action['trigger']['condition']['formula'],'CountIf')))
     def test_public_routing_rejects_foreign_components_stale_state_and_missing_recovery(self):
         from input_sync import _digest
         m,r,b,c,cap,assigned,f=self.public_fixture()
