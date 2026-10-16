@@ -6,6 +6,62 @@ import test_custom_ports as fixtures
 import custom_ports as p
 
 class PortPhaseTests(unittest.TestCase):
+    def adoption_case(self):
+        from port_phase_fixtures import context,installed,restage,reviewed
+        _,m,r,c,s=fixtures.PortGateTests().case();first=p.prepare_port_update(m,r,c,s,phase_context=context(m,r,c));c=installed(c,first);m,r=restage(m,r,c)
+        fragments=p.build_port_fragments(first['modelBinding'],'conn')
+        ev=reviewed({'origin':'sigma-code-first-native-adoption-actual','evidenceId':'SYNTHETIC_UNIT_ONLY','documentId':c['workbookId'],'version':c['documentVersion'],
+            'sourceHash':m['sourceHash'],'planHash':m['planHash'],'modelBinding':first['modelBinding'],'contentsHash':p._digest(c['contents']),
+            'receiptHash':p._digest(r),'elementHashes':{e['id']:p._digest(e) for e in fragments['elements']}})
+        cap=context(m,r,c);adopted=p.prepare_port_update(m,r,c,s,phase_context=cap,adoption_evidence=ev)
+        return m,r,c,s,ev,cap,adopted
+    def reseal_button(self,cap,change):
+        from action_inventory import digest,configuration
+        from port_phase_fixtures import reviewed
+        changed=copy.deepcopy(cap);button=changed['sdkActions']['elements']['task5AllocationButton'];change(button['sequences'])
+        artifact=button.pop('restorationArtifact');button['semanticHash']=digest(configuration(button));artifact.update(sourceObservationHash=digest(button),semanticHash=button['semanticHash']);artifact['restoreProof']['semanticHash']=button['semanticHash'];button['restorationArtifact']=artifact
+        return reviewed(changed)
+    def test_owned_adopted_sdk_button_cannot_hide_dml_behind_exact_pure_rest_wire(self):
+        from port_phase_fixtures import outputs,reviewed
+        m,r,c,s,ev,cap,adopted=self.adoption_case()
+        bad=self.reseal_button(cap,lambda seq:seq[0].update(blocks=[{'kind':'UpdateRowsEffect','fields':{'tableId':'assumptions','whichRows':{'kind':'all'},'values':{'Monthly Growth':.25}}}]))
+        with self.assertRaisesRegex(ValueError,'OWNED_PORT_ACTION'):p.prepare_port_update(m,r,c,s,phase_context=bad,adoption_evidence=ev)
+        with self.assertRaisesRegex(ValueError,'OWNED_PORT_ACTION'):p.audit_port_update(adopted,c,post_phase_context=bad)
+        # Exact repro also treats the wrong button as originally present in the
+        # reviewed adoption context; preservation alone is insufficient.
+        forged=copy.deepcopy(adopted);forged['phaseContext']=bad;forged['proposalHash']=p._digest({k:v for k,v in forged.items() if k!='proposalHash'})
+        output=outputs(m,r,c,forged,('allocation','goalSeek'));output['installation'].update(status='VERIFIED_COMPONENT_NATIVE_ADOPTION');reviewed(output)
+        with self.assertRaisesRegex(ValueError,'OWNED_PORT_ACTION'):p.audit_port_update(forged,c,post_phase_context=bad)
+        with self.assertRaisesRegex(ValueError,'OWNED_PORT_ACTION'):p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=forged,phase_context=bad,output_evidence=output)
+    def test_owned_python_button_rejects_visible_or_optimistic_sdk_toast(self):
+        m,r,c,s,ev,cap,adopted=self.adoption_case()
+        for toast in ({'title':'Applied','message':'Assumptions updated','formulas':{}},
+                {'title':None,'message':'Success','formulas':{}},{'title':None,'message':None,'formulas':{'result':'opaque'}}):
+            bad=self.reseal_button(cap,lambda seq:seq[0].update(successToast=toast))
+            with self.subTest(toast=toast),self.assertRaisesRegex(ValueError,'PORT.*TOAST'):p.prepare_port_update(m,r,c,s,phase_context=bad,adoption_evidence=ev)
+            with self.subTest(auditToast=toast),self.assertRaisesRegex(ValueError,'PORT.*TOAST'):p.audit_port_update(adopted,c,post_phase_context=bad)
+    def test_owned_button_qualification_accepts_real_empty_sdk_toast_and_preserves_hidden_wire(self):
+        from port_phase_fixtures import outputs,reviewed
+        m,r,c,s,ev,cap,adopted=self.adoption_case()
+        cap=self.reseal_button(cap,lambda seq:seq[0].update(successToast={'title':None,'message':None,'formulas':{}}))
+        adopted=p.prepare_port_update(m,r,c,s,phase_context=cap,adoption_evidence=ev)
+        proof=p.audit_port_update(adopted,c,post_phase_context=cap)
+        qualified=proof['actionPreservation']['ownedPortButtonQualifications'];self.assertEqual(set(qualified),{'task5AllocationButton','task5GoalSeekButton'})
+        self.assertIsNone(qualified['task5AllocationButton']['toastVisibilityGetter'])
+        output=outputs(m,r,c,adopted,('allocation','goalSeek'));output['installation'].update(status='VERIFIED_COMPONENT_NATIVE_ADOPTION');reviewed(output)
+        second=p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=adopted,phase_context=cap,output_evidence=output)
+        for element in second['dryRunRequest']['contents']['elements']:
+            if element['id'] in second['ownedPortElementIds'] and element['kind']=='button':self.assertEqual(element['actions'][0]['successToast'],{'showMessage':'hidden'})
+    def test_owned_port_sdk_action_requires_one_exact_pure_enabled_onclick(self):
+        m,r,c,s,ev,cap,adopted=self.adoption_case()
+        changes={'target':lambda seq:seq[0]['blocks'][0]['fields'].update(codeElementId='foreign-code'),
+            'extra-block':lambda seq:seq[0]['blocks'].append(copy.deepcopy(seq[0]['blocks'][0])),
+            'extra-sequence':lambda seq:seq.append({**copy.deepcopy(seq[0]),'id':'another-action'}),
+            'disabled':lambda seq:seq[0].update(disabled=True),'trigger':lambda seq:seq[0].update(trigger='on-select'),
+            'condition':lambda seq:seq[0].update(condition={'type':'formula','formula':'True'})}
+        for mode,change in changes.items():
+            bad=self.reseal_button(cap,change)
+            with self.subTest(mode=mode),self.assertRaisesRegex(ValueError,'OWNED_PORT_ACTION'):p.prepare_port_update(m,r,c,s,phase_context=bad,adoption_evidence=ev)
     def test_same_type_output_semantic_permutations_fail_even_with_fresh_review_hash(self):
         from port_phase_fixtures import context,installed,restage,outputs,reviewed
         _,m,r,c,s=fixtures.PortGateTests().case();first=p.prepare_port_update(m,r,c,s,phase_context=context(m,r,c));c=installed(c,first);m,r=restage(m,r,c)
@@ -67,10 +123,15 @@ class PortPhaseTests(unittest.TestCase):
         from port_phase_fixtures import context,installed,restage,outputs,reviewed
         from action_inventory import digest,configuration
         _,m,r,c,s=fixtures.PortGateTests().case();first=p.prepare_port_update(m,r,c,s,phase_context=context(m,r,c));c=installed(c,first);m,r=restage(m,r,c)
+        # Newly introduced hosts must obey the same toast rule as initial native
+        # adoptions; a fresh reviewed metadata hash does not excuse optimism.
+        toast=self.reseal_button(context(m,r,c),lambda seq:seq[0].update(successToast={'title':'Applied','message':'Assumptions updated','formulas':{}}))
+        with self.assertRaisesRegex(ValueError,'PORT.*TOAST'):p.audit_port_update(first,c,post_phase_context=toast)
+        with self.assertRaisesRegex(ValueError,'PORT.*TOAST'):p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=first,phase_context=toast,output_evidence=outputs(m,r,c,first,('allocation','goalSeek')))
         after=context(m,r,c);button=after['sdkActions']['elements']['task5AllocationButton']
         button['sequences'][0]['blocks'][0]['fields']['codeElementId']='foreign-code'
         artifact=button.pop('restorationArtifact');button['semanticHash']=digest(configuration(button));artifact['sourceObservationHash']=digest(button);artifact['semanticHash']=button['semanticHash'];artifact['restoreProof']['semanticHash']=button['semanticHash'];button['restorationArtifact']=artifact;reviewed(after)
-        with self.assertRaisesRegex(ValueError,'NEW_PORT_ACTION'):p.audit_port_update(first,c,post_phase_context=after)
+        with self.assertRaisesRegex(ValueError,'OWNED_PORT_ACTION'):p.audit_port_update(first,c,post_phase_context=after)
         c=copy.deepcopy(c);c['contents']['elements'].append({'id':'foreign-new-host','kind':'text','body':'unrelated'});m,r=restage(m,r,c)
         with self.assertRaisesRegex(ValueError,'UNDECLARED_POST_PHASE'):p.prepare_port_update(m,r,c,s,phase='solver-outputs',previous_phase=first,phase_context=context(m,r,c),output_evidence=outputs(m,r,c,first,('allocation','goalSeek')))
     def test_emitted_runtime_marshals_decimal_target_success_and_failure_to_real_snowpark_types(self):

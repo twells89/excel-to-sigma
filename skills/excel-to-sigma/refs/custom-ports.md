@@ -165,8 +165,23 @@ return construction/adoption success. Every next phase independently compares
 the previous phase's original SDK inventory with current actual observations,
 so REST-omitted native actions cannot disappear between phases. New SDK hosts
 are restricted to declared phase additions or exactly observed adopted native
-children; added buttons must have the one exact known RunPython block and tables
-no actions. Runtime and production completion remain unresolved/blocked.
+children; tables have no actions. EVERY owned port button, including buttons
+already in an initial native-adoption inventory, must equal the known pure
+RunPython constructor. Preparation, post-update audit, later-phase advancement
+and fresh finalize require exactly one enabled unconditional on-click sequence
+and one RunPythonElement targeting the assigned port code/name. Existing owned
+inventory membership never exempts a button from this check. Unrelated old known
+actions remain governed by exact preservation, without being reclassified as
+port computation buttons. Runtime and production completion remain unresolved.
+
+Every generated/adopted port button REST action has `successToast.showMessage`
+exactly `hidden`. Actual SDK successToast must be None or the exact empty default
+title/message/formulas object (null/empty text and empty formulas). Any custom
+title, message or formula is refused, including an optimistic "Assumptions
+updated" claim. The SDK provides no visibility getter: qualification explicitly
+binds the exact hidden REST constructor and actual empty typed SDK observation;
+it does not invent a getter or claim that successful computation wrote inputs.
+Audit includes ownedPortButtonQualifications in its action-preservation proof.
 
 Old ordered SDK sequence configurations and assigned IDs must stay exact. If an
 actual known-artifact restoration assigns new IDs, current phase context includes

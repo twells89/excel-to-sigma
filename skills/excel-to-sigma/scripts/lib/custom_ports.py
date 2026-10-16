@@ -378,6 +378,15 @@ def validate_custom_port_completion(manifest):
     return True
 
 
+def _port_run_button(key):
+    prefix=PORT_PREFIX[key]
+    return {'id':prefix+'Button','kind':'button','appearance':'filled','text':{'allocation':'Allocate overhead',
+        'goalSeek':'Run prepared solve','applyGuard':'Validate prepared apply'}[key],
+        'actions':[{'id':prefix+'Run','trigger':'on-click',
+            'effects':[{'effect':'run-python-element','codeElementId':prefix+'Python','name':prefix+'RunResult'}],
+            'successToast':{'showMessage':'hidden'}}]}
+
+
 def _port_templates(model_binding,connection_id,*,column_maps=None,procedure_action=None):
     programs=emit_python_programs(model_binding,column_maps=column_maps)
     ids={'allocation':'task5Allocation','goalSeek':'task5GoalSeek','applyGuard':'task5GoalSeekApplyGuard'}
@@ -393,11 +402,7 @@ def _port_templates(model_binding,connection_id,*,column_maps=None,procedure_act
                        for i,name in enumerate(program['columns'])]})
         # Running goal/apply guard requires the controller to set invocation state
         # beforehand. These hidden-toast computation actions never write assumptions.
-        elements.append({'id':prefix+'Button','kind':'button','appearance':'filled','text':{'allocation':'Allocate overhead',
-            'goalSeek':'Run prepared solve','applyGuard':'Validate prepared apply'}[key],
-            'actions':[{'id':prefix+'Run','trigger':'on-click',
-                'effects':[{'effect':'run-python-element','codeElementId':code_id,'name':prefix+'RunResult'}],
-                'successToast':{'showMessage':'hidden'}}]})
+        elements.append(_port_run_button(key))
     if procedure_action:
         expected=build_procedure_action(procedure_action.get('contract',{}),procedure_action.get('orderedArguments'))
         if procedure_action!=expected:raise PortError('PROCEDURE_ACTION_ARTIFACT_MISMATCH')
@@ -580,6 +585,33 @@ def _materialized_outputs(evidence,keys,manifest,receipt,current,previous,model_
     return result
 
 
+def _validate_owned_port_buttons(current,context,owned_ids):
+    """All owned buttons, including initial native adoptions, are pure Python.
+
+    SDK has no toast visibility getter. The exact hidden REST constructor plus
+    an absent/empty typed SDK toast qualifies this known gap; custom title,
+    message or formulas cannot claim a persisted business write succeeded.
+    """
+    elements={e['id']:e for e in _snapshot(current)['elements']}
+    known={PORT_PREFIX[key]+'Button':_port_run_button(key) for key in PORT_PREFIX};qualified={}
+    for eid in owned_ids:
+        element=elements.get(eid)
+        if element is None:raise PortError('OWNED_PORT_ACTION_HOST_MISSING')
+        if eid not in known:
+            if element['kind']=='button':raise PortError('UNKNOWN_OWNED_PORT_ACTION_HOST')
+            continue
+        if element!=known[eid]:raise PortError('OWNED_PORT_ACTION_DIFFERS_FROM_KNOWN_HIDDEN_RUN_PYTHON_CONSTRUCTOR')
+        sequences=context['sdkActions']['elements'][eid]['sequences'];effect=known[eid]['actions'][0]['effects'][0]
+        expected=[{'kind':'RunPythonElement','fields':{'codeElementId':effect['codeElementId'],'name':effect['name']}}]
+        if (len(sequences)!=1 or sequences[0]['trigger']!='on-click' or sequences[0]['condition'] is not None
+                or sequences[0]['disabled'] is not False or sequences[0]['blocks']!=expected):raise PortError('OWNED_PORT_ACTION_DIFFERS_FROM_KNOWN_RUN_PYTHON_CONSTRUCTOR')
+        toast=sequences[0]['successToast']
+        if toast is not None and (set(toast)!={'title','message','formulas'} or toast['title'] not in (None,'') or toast['message'] not in (None,'') or toast['formulas']!={}):raise PortError('OWNED_PORT_OPTIMISTIC_OR_UNQUALIFIED_TOAST_REFUSED')
+        qualified[eid]={'hiddenRestActionHash':_digest(element['actions'][0]),'actualSequenceId':sequences[0]['id'],
+            'actualSdkToast':copy.deepcopy(toast),'toastVisibilityGetter':None,'authority':'exact-hidden-REST-constructor-and-empty-typed-SDK-toast'}
+    return qualified
+
+
 def _verify_phase_action_preservation(previous,current,context,*,native_child_ids=()):
     """Prove persisted old SDK actions, including REST-omitted sequences.
 
@@ -593,6 +625,7 @@ def _verify_phase_action_preservation(previous,current,context,*,native_child_id
         from action_inventory import verify_action_preservation,digest as action_digest
     before=(previous.get('phaseContext') or {}).get('sdkActions')
     if before is None:raise PortError('PREVIOUS_PHASE_SDK_ACTION_PROOF_REQUIRED')
+    buttons=_validate_owned_port_buttons(current,context,previous['ownedPortElementIds'])
     after=context['sdkActions'];elements={e['id']:e for e in _snapshot(current)['elements']}
     supported=copy.deepcopy(current);supported['contents']=copy.deepcopy(_snapshot(current));supported['contents']['elements']=[e for e in supported['contents']['elements'] if e['kind']!='code']
     proof=verify_action_preservation(before,after,supported)
@@ -600,12 +633,7 @@ def _verify_phase_action_preservation(previous,current,context,*,native_child_id
     declared=set(previous['addedElementIds'])|set(native_child_ids)
     if not extra<=declared:raise PortError('UNDECLARED_POST_PHASE_SDK_ACTION_HOST')
     for eid in extra:
-        element=elements[eid];sequences=after['elements'][eid]['sequences'];actions=element.get('actions',[])
-        if element['kind']=='button':
-            expected=[{'kind':'RunPythonElement','fields':{'codeElementId':effect['codeElementId'],'name':effect['name']}} for action in actions for effect in action['effects'] if effect['effect']=='run-python-element']
-            if (len(actions)!=1 or len(sequences)!=1 or len(expected)!=1 or sequences[0]['trigger']!='on-click'
-                    or sequences[0]['condition'] is not None or sequences[0]['disabled'] is not False or sequences[0]['blocks']!=expected):raise PortError('NEW_PORT_ACTION_DIFFERS_FROM_KNOWN_RUN_PYTHON_CONSTRUCTOR')
-        elif sequences:raise PortError('NEW_OUTPUT_TABLE_MUST_HAVE_NO_ACTIONS')
+        if elements[eid]['kind']!='button' and after['elements'][eid]['sequences']:raise PortError('NEW_OUTPUT_TABLE_MUST_HAVE_NO_ACTIONS')
     remapped={eid:{old['id']:new['id'] for old,new in zip(element['sequences'],after['elements'][eid]['sequences']) if old['id']!=new['id']}
         for eid,element in before['elements'].items()}
     remapped={eid:mapping for eid,mapping in remapped.items() if mapping}
@@ -616,6 +644,7 @@ def _verify_phase_action_preservation(previous,current,context,*,native_child_id
             'restorationProofHashes':{eid:action_digest(after['elements'][eid]['restorationArtifact']['restoreProof']) for eid in remapped}}
         if (review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
                 or not review.get('evidenceId') or any(review.get(k)!=v for k,v in fields.items())):raise PortError('EXACT_ACTUAL_RESTORED_SEQUENCE_ID_REVIEW_REQUIRED')
+    proof['ownedPortButtonQualifications']=buttons
     return proof
 
 
@@ -703,6 +732,7 @@ def prepare_port_update(manifest,receipt,current,sources,*,column_maps=None,proc
         contents=copy.deepcopy(doc);contents['elements']+=new;pos=matches[0].end()-len('</Page>');contents['layout']=layout[:pos]+_phase_layout(new,start=cursor)+layout[pos:];added_pages=[]
     owned_codes=[eid for eid in owned if elements[eid]['kind']=='code']
     context=_phase_context(phase_context,current,_digest(receipt),owned_codes) if phase_context is not None or phase!='code-first' else None
+    if context is not None:_validate_owned_port_buttons(current,context,owned)
     if previous is not None:
         _verify_phase_action_preservation(previous,current,context,native_child_ids=[v['nativeChildObservation']['elementId'] for v in actual_outputs.values() if v.get('nativeChildObservation')])
     phase_id=_digest({'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'modelBinding':model_binding,'phase':phase,'previous':lineage,'contentsHash':_digest(doc),'version':current['documentVersion']})
@@ -736,6 +766,8 @@ def finalize_port_update(proposal,fresh,dry_run,*,consumed_proposals=(),reviewed
         if not before:raise PortError('CURRENT_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
         code_ids=[e['id'] for e in doc['elements'] if e.get('kind')=='code']
         context=_phase_context(fresh_phase_context,fresh,proposal['receiptHash'],code_ids)
+        present={e['id'] for e in doc['elements']}
+        _validate_owned_port_buttons(fresh,context,[eid for eid in proposal['ownedPortElementIds'] if eid in present])
         if any(context[k]!=before[k] for k in ('inputValuesHash','schemaDisplayHash')):raise PortError('INPUT_OR_DISPLAY_CHANGED_SINCE_PHASE_REVIEW')
         try:
             from .action_inventory import verify_action_preservation
