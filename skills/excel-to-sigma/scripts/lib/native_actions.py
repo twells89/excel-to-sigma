@@ -417,9 +417,11 @@ def bind_native_action_target(manifest,receipt,*,current_contents,input_readback
 
 def _conjoin(values):
     if not values:return 'const_bool(True)'
-    result=values[0]
-    for value in values[1:]:result=f'and_({result}, {value})'
-    return result
+    pending=list(values)
+    while len(pending)>1:
+        pending=[f'and_({pending[i]}, {pending[i+1]})' if i+1<len(pending) else pending[i]
+                 for i in range(0,len(pending),2)]
+    return pending[0]
 
 
 def _c(feature,name):

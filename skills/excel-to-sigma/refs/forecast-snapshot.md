@@ -28,6 +28,14 @@ conflicts, duplicate keys, and foreign keys block the entire action. Both
 constructors remain disabled and remove custom success toasts. Neither writes
 primary inputs or automatically marks an operation successful.
 
+Confirm balances adjacent AND/OR operands instead of accumulating deep left
+folds. Operand order, duplicates, all 96 input checks, all 108 snapshot checks,
+and the foreign-key blocker are preserved. This changes only boolean grouping;
+lookup keys, frozen values, arithmetic, and effects remain unchanged. A staging
+condition setter rejected the depth-220 fold and accepted equivalent depth-23
+grouping while the existing sequence remained disabled. This is condition-setter
+admission only; it establishes no general engine depth limit or event acceptance.
+
 `reconcile_snapshot_rows` is a pure component planner; its unit data is not live
 evidence. `plan_snapshot_reconciliation` additionally requires complete actual
 `origin: sigma-query` captures bound to the same document/version/source/plan,

@@ -181,6 +181,20 @@ def _join(expressions, operator='and_'):
     return operator+'('+_join(values[:middle],operator)+', '+_join(values[middle:],operator)+')'
 
 
+def _balance_lines(name, operator, count):
+    """Pair adjacent boolean operands without changing order or duplicates."""
+    following = 'next_'+name
+    return [f'if len({name}) != {count}: raise RuntimeError("guard part count")',
+        f'for balance_level in range({(count-1).bit_length()}):',
+        f'    {following} = []',
+        f'    for balance_index in range(0, len({name}), 2):',
+        f'        if balance_index + 1 < len({name}):',
+        f'            {following}.append({operator}({name}[balance_index], {name}[balance_index+1]))',
+        '        else:', f'            {following}.append({name}[balance_index])',
+        f'    {name} = {following}',
+        f'if len({name}) != 1: raise RuntimeError("guard balance count")']
+
+
 def render_snapshot_candidate(definition, current, bindings, *, phase, operation_control_id=None, prepared_contract=None):
     """Render one disabled, guarded native action construction phase.
 
@@ -384,13 +398,13 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
             f'sections = {[cell["section"] for cell in definition["cells"]]!r}',
             f'periods = {[cell["period"] for cell in definition["cells"]]!r}',
             f'capture_time = {op_lookup("Created At")}',
-            f'confirm_guard = {_join([*guard_parts, "is_not_null(capture_time)"])}',
+            f'confirm_guard_parts = [{_join([*guard_parts, "is_not_null(capture_time)"])}]',
             'for i in range(96):', f'    before = lookup(frozen_assumptions[i], op, {rid})',
-            '    actual = current_assumptions[i]', f'    confirm_guard = and_(confirm_guard, {nullsame("actual","before")})',
-            'allowed = eq(const_num(0), const_num(1))', 'effects = []', 'for i in range(108):',
+            '    actual = current_assumptions[i]', f'    confirm_guard_parts.append({nullsame("actual","before")})',
+            'allowed_parts = [eq(const_num(0), const_num(1))]', 'effects = []', 'for i in range(108):',
             f'    frozen = as_num(lookup(frozen_columns[i], op, {rid}))',
             f'    key = and_(eq({c("snapshots","Operation ID")}, op), eq({c("snapshots","Snapshot Key")}, const_text(snapshot_keys[i])))',
-            f'    allowed = or_(allowed, eq({c("snapshots","Snapshot Key")}, const_text(snapshot_keys[i])))']
+            f'    allowed_parts.append(eq({c("snapshots","Snapshot Key")}, const_text(snapshot_keys[i])))']
         payload={'Operation ID':'op','Snapshot Key':'const_text(snapshot_keys[i])','Source Sheet':'const_text("Monthly Model")',
             'Source Cell':'const_text(source_cells[i])','Source Row':'const_num(source_rows[i])',
             'Line Item':'const_text(line_items[i])','Section':'const_text(sections[i])',
@@ -398,12 +412,19 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
             **{n:op_lookup(n) for n in ('Source Hash','Plan Hash','Source Procedure Hash','Replacement Decision ID')}}
         matching=_join([f'eq({c("snapshots",name)}, {value})' for name,value in payload.items()])
         lines += [f'    matching = and_(key, {matching})',
-            f'    confirm_guard = and_(confirm_guard, and_({finite("frozen")}, or_(eq(count_if(key), const_num(0)), and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1))))))',
-            '    effects.append(if_else([(eq(count_if(key), const_num(0)), [insert_row('+snapshot_table+', {'+', '.join(c('snapshots',n)+': '+v for n,v in payload.items())+'})])], []))',
+            f'    confirm_guard_parts.append(and_({finite("frozen")}, or_(eq(count_if(key), const_num(0)), and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1))))))',
+            '    effects.append(if_else([(eq(count_if(key), const_num(0)), [insert_row('+snapshot_table+', {'+', '.join(c('snapshots',n)+': '+v for n,v in payload.items())+'})])], []))']
+        # Deep left folds were rejected by the live condition setter. Balance
+        # only associative booleans; every nullable/conflict/foreign-key guard
+        # and all frozen-value arithmetic remain unchanged.
+        lines += _balance_lines('allowed_parts', 'or_', 109)
+        lines += [f'confirm_guard_parts.append(eq(count_if(and_(eq({c("snapshots","Operation ID")}, op), not_(allowed_parts[0]))), const_num(0)))']
+        lines += _balance_lines('confirm_guard_parts', 'and_', 206)
+        lines += [
             f'button = {ui_page}.add_button("Commit prepared forecast snapshot")',
             'button.set_frame(1, ui_cursor, min(12, button.parent_grid_width()), 2)',
             'sequence = button.on_click("Fill missing frozen snapshot values", effects)']
-        guard=f'and_(confirm_guard, eq(count_if(and_(eq({c("snapshots","Operation ID")}, op), not_(allowed))), const_num(0)))'
+        guard='confirm_guard_parts[0]'
         effect_count=108
     lines += ['sequence.set_disabled(True)', f'sequence.set_condition({guard})','sequence.remove_success_toast()',
         'sequence.set_disabled(True)', 'if not sequence.is_disabled(): raise RuntimeError("disabled")',
