@@ -457,3 +457,14 @@ CountDistinct(column) is not assumed to equal the selected-row count and is
 never silently replaced with constant1. Forecast source inspection subsequently
 proved quoted identifiers differ from collected Row keys at v9; explicit paired
 runtime maps address that compiler/runtime boundary.
+
+Actual ordinary input factories may expose native `InputTableIDColumn` with name
+`ID` and an assigned physical column ID. Preserve that observed name: the
+default `Row ID` contract is not a reason to rename it. Bind `target.systemColumn`
+to exact `id`, `name: ID`, `columnClass: InputTableIDColumn`, `type: null`,
+`systemKind: row_id`, `formula: null`, `elementId`, and `sdkEvidenceHash`. Its
+ID must equal `target.rowIdColumnId` and differ from every editable column ID.
+The evidence hash is reviewed capture provenance bound into the receipt, not an
+SDK getter. This explicit route retains physical-ID/name/class/kind/owner guards;
+it grants no arbitrary name normalization or row persistence proof. The existing
+`Row ID` default and explicitly evidenced FormulaColumn alias route remain.

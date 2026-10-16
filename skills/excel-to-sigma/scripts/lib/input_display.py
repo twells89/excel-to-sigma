@@ -49,7 +49,7 @@ def currency_pattern(raw, precision):
 
 
 def _system_column_contract(target):
-    """Only an explicitly approved, evidenced post-REST alias can widen the route.
+    """Default Row ID, evidenced native ID, or an evidenced post-REST alias.
 
     FormulaColumn exposes formula()/element_id(), not a documented type() or
     system kind getter. Its row-ID identity/type comes from independent reviewed
@@ -59,6 +59,18 @@ def _system_column_contract(target):
     if alias is None:
         return {'name':'Row ID','columnClass':'InputTableIDColumn','type':None,
                 'systemKind':'row_id','formula':None,'elementId':target['elementId']}
+    if isinstance(alias,dict) and alias.get('columnClass')=='InputTableIDColumn':
+        fields={'id','name','columnClass','type','systemKind','formula','elementId','sdkEvidenceHash'}
+        if (set(alias)!=fields or alias.get('name')!='ID'
+                or not isinstance(alias.get('id'),str) or not alias['id']
+                or alias['id']!=target.get('rowIdColumnId')
+                or alias['id'] in target.get('columnIds',{}).values()
+                or alias.get('type') is not None or alias.get('systemKind')!='row_id'
+                or alias.get('formula') is not None or alias.get('elementId')!=target['elementId']
+                or not re.fullmatch(r'[0-9a-f]{64}',str(alias.get('sdkEvidenceHash') or ''))):
+            raise ValueError('native ID requires exact reviewed ID/name/class/kind/type/owner and SDK evidence')
+        # Provenance is receipt-bound; it is not an SDK column getter field.
+        return {k:copy.deepcopy(v) for k,v in alias.items() if k!='sdkEvidenceHash'}
     keys={'id','name','columnClass','type','systemKind','formula','elementId','rowIdBinding'}
     identity=alias.get('rowIdBinding') if isinstance(alias,dict) else None
     if (not isinstance(alias,dict) or set(alias)!=keys
@@ -205,6 +217,8 @@ def build_input_display(plan,manifest,receipt,feature=None):
     else:
         header += ["if not isinstance(system_column, InputTableIDColumn): raise RuntimeError('expected system row ID column class')",
                    "if system_column.kind() != 'row_id': raise RuntimeError('expected system row_id kind')"]
+    if system_column['columnClass']=='InputTableIDColumn' and 'id' in system_column:
+        header.append(f"if system_column.id() != {system_column['id']!r}: raise RuntimeError('foreign native row ID column')")
     program=list(header)
     program.append('table.set_visible_columns(['+', '.join(f'c{i}' for i,c in enumerate(records) if c['visible'])+'])')
     for i,c in enumerate(records):

@@ -1,0 +1,216 @@
+{
+  "provenance": "actual readonly isolated two-input SDK schemas; no stored rows or runtime acceptance",
+  "schemas": [
+    {
+      "elementId": "LwKVZs6C4d",
+      "pageId": "sdk-recovery-diagnostic",
+      "name": "Fractional Diagnostic Rows",
+      "mode": "draft",
+      "frame": [
+        1,
+        5,
+        24,
+        14
+      ],
+      "columns": [
+        {
+          "id": "UEZ-QTWF_Y",
+          "name": "Key",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "LwKVZs6C4d",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "BQKZCQLPCF",
+          "name": "Operation ID",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "LwKVZs6C4d",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "M7BDITAUT_",
+          "name": "At",
+          "columnClass": "LiteralEditableColumn",
+          "type": "datetime",
+          "elementId": "LwKVZs6C4d",
+          "visible": true,
+          "format": [
+            "datetime",
+            null,
+            null,
+            "%Y-%m-%d"
+          ]
+        },
+        {
+          "id": "FARWYFNOR6",
+          "name": "Amount",
+          "columnClass": "LiteralEditableColumn",
+          "type": "number",
+          "elementId": "LwKVZs6C4d",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "IDM4-ASGR8",
+          "name": "Choice",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "LwKVZs6C4d",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "XJMCWGQNV0",
+          "name": "Enabled",
+          "columnClass": "LiteralEditableColumn",
+          "type": "boolean",
+          "elementId": "LwKVZs6C4d",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "DJOZ0EAHWI",
+          "name": "ID",
+          "columnClass": "InputTableIDColumn",
+          "type": null,
+          "formula": null,
+          "systemKind": "row_id",
+          "elementId": "LwKVZs6C4d",
+          "visible": true,
+          "format": null
+        }
+      ],
+      "sequenceCount": 0
+    },
+    {
+      "elementId": "iB86rGSKOr",
+      "pageId": "sdk-recovery-diagnostic",
+      "name": "Workflow Operations",
+      "mode": "draft",
+      "frame": [
+        1,
+        21,
+        24,
+        14
+      ],
+      "columns": [
+        {
+          "id": "HPY-18CWGD",
+          "name": "Workflow",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "WQZ-P-6FWS",
+          "name": "Target Row ID",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "GX7ENSGST9",
+          "name": "Target Business Key",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "NVTUGQSBJB",
+          "name": "Context",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "Z2WRL9PRXE",
+          "name": "Source Hash",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "JXIIHQAVN_",
+          "name": "Plan Hash",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "ZANC-ITCGN",
+          "name": "Created At",
+          "columnClass": "LiteralEditableColumn",
+          "type": "datetime",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": [
+            "datetime",
+            null,
+            null,
+            "%Y-%m-%d"
+          ]
+        },
+        {
+          "id": "MT2YSRFN3V",
+          "name": "State",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "M7ZSMR9G06",
+          "name": "Completed At",
+          "columnClass": "LiteralEditableColumn",
+          "type": "datetime",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": [
+            "datetime",
+            null,
+            null,
+            "%Y-%m-%d"
+          ]
+        },
+        {
+          "id": "AYOUJAJ3K8",
+          "name": "Outcome",
+          "columnClass": "LiteralEditableColumn",
+          "type": "text",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        },
+        {
+          "id": "KR28O4MONK",
+          "name": "ID",
+          "columnClass": "InputTableIDColumn",
+          "type": null,
+          "formula": null,
+          "systemKind": "row_id",
+          "elementId": "iB86rGSKOr",
+          "visible": true,
+          "format": null
+        }
+      ],
+      "sequenceCount": 0
+    }
+  ]
+}
