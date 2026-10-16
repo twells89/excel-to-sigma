@@ -237,6 +237,41 @@ class PublicNativeActionsTests(unittest.TestCase):
                          {b['tables']['expenseBusinessInput']['target']['columnIds'][field] for field in
                           ('Approval Status','ApprovedAt','Last Approval Operation ID','Applied Approval Operation IDs')})
 
+    def test_history_value_uses_native_ui_bound_selected_lookup(self):
+        # Native UI saved Lookup with target-owned physical column IDs inside
+        # the value. Definition validation and actual effects are separate gates.
+        for native_expense in (False,True):
+            with self.subTest(native_expense=native_expense):
+                m,r,b,c,cap,a,f=self.public_fixture(native_expense=native_expense)
+                action=next(e['afterAction'] for e in f['actionEdits'] if e['role']=='confirm')
+                expense=b['tables']['expenseBusinessInput']
+                history=expense['target']['columnIds']['Applied Approval Operation IDs']
+                rowid=expense['systemColumn']['id']
+                selected_history=f'Lookup([{history}], [approval-physical-row], [{rowid}])'
+                self.assertEqual(action['effects'][0]['values'][history],{'type':'formula','formula':
+                    '(Coalesce('+selected_history+', "") & (("|" & [approval-operation]) & "|"))'})
+                self.assertIn('Lookup([Expense Business Inputs/Applied Approval Operation IDs]',action['trigger']['condition']['formula'])
+                self.assertIn('[Applied Approval Operation IDs]',action['effects'][0]['whichRows']['formula'])
+                self.assertEqual(action['state'],'disabled');self.assertNotIn('successToast',action)
+
+    def test_value_id_context_preserves_cross_source_and_selector_names(self):
+        columns={'history':{'elementId':'expense','tableName':'Expense','name':'History','id':'history-id'},
+                 'rowid':{'elementId':'expense','tableName':'Expense','name':'ID','id':'row-id'},
+                 'before':{'elementId':'ops','tableName':'Operations','name':'Before:History','id':'before-id'},
+                 'opsid':{'elementId':'ops','tableName':'Operations','name':'ID','id':'ops-id'}}
+        controls={'selected':{'variableId':'selected-row'},'operation':{'variableId':'operation'}}
+        node=ast.parse('eq(lookup(history, selected, rowid), lookup(before, operation, opsid))',mode='eval').body
+        self.assertEqual(native._public_formula(node,columns,controls,local_element_id='expense',local_column_ids=True),
+                         '(Lookup([history-id], [selected-row], [row-id]) = Lookup([Operations/Before:History], [operation], [Operations/ID]))')
+        self.assertEqual(native._public_formula(node,columns,controls,local_element_id='expense'),
+                         '(Lookup([History], [selected-row], [ID]) = Lookup([Operations/Before:History], [operation], [Operations/ID]))')
+        self.assertEqual(native._public_formula(node,columns,controls),
+                         '(Lookup([Expense/History], [selected-row], [Expense/ID]) = Lookup([Operations/Before:History], [operation], [Operations/ID]))')
+        for malformed in ('',None,'history] & True & [other'):
+            with self.subTest(malformed=malformed),self.assertRaisesRegex(ValueError,'identifier'):
+                native._public_formula(node,{**columns,'history':{**columns['history'],'id':malformed}},controls,
+                                       local_element_id='expense',local_column_ids=True)
+
     def test_native_id_approval_also_defers_full_formula_selector_instead_of_sdk_hoisting(self):
         m,r,b,c,cap,a,f=self.public_fixture(native_expense=True)
         emitted=native.emit_native_action_program(m,r,b,current_contents=c)

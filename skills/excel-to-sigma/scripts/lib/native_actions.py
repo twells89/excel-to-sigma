@@ -696,7 +696,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
             selector=_conjoin([f'eq(rid_expenseBusinessInput, {rowid})',f'eq({_c("expenseBusinessInput","Expense ID")}, {key})',
                 f'not_(contains(as_text(coalesce({history}, const_text(""))), {token}))']+before_guards)
             vals={ 'Approval Status':repr('Approved'),'ApprovedAt':'now()',
-                'Last Approval Operation ID':op,'Applied Approval Operation IDs':f'ampersand(as_text(coalesce({history}, const_text(""))), {token})' }
+                'Last Approval Operation ID':op,'Applied Approval Operation IDs':f'ampersand(as_text(coalesce({selected_history}, const_text(""))), {token})' }
             effects=['update_rows(t_expenseBusinessInput, '+selector+', {'+', '.join(_c('expenseBusinessInput',k)+': '+v for k,v in vals.items())+'}, name="Approve selected expense")']
         elif workflow=='applyScenario':
             scenario=f'lookup({_c("workflowOperations","Scenario Name")}, {op}, rid_workflowOperations)'
@@ -996,8 +996,8 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
     return result
 
 
-def _public_formula(node,columns,controls,*,local_element_id=None):
-    def render(child):return _public_formula(child,columns,controls,local_element_id=local_element_id)
+def _public_formula(node,columns,controls,*,local_element_id=None,local_column_ids=False):
+    def render(child):return _public_formula(child,columns,controls,local_element_id=local_element_id,local_column_ids=local_column_ids)
     if isinstance(node,ast.Constant):
         if node.value is None:return 'Null'
         if type(node.value) is bool:return 'True' if node.value else 'False'
@@ -1006,7 +1006,12 @@ def _public_formula(node,columns,controls,*,local_element_id=None):
         if node.id in controls:return '['+controls[node.id]['variableId']+']'
         if node.id in columns:
             column=columns[node.id]
-            return '['+(column['name'] if column['elementId']==local_element_id else column['tableName']+'/'+column['name'])+']'
+            if column['elementId']==local_element_id:
+                identifier=column['id'] if local_column_ids else column['name']
+                if not isinstance(identifier,str) or not identifier or any(char in identifier for char in '[]'):
+                    raise NativeActionError('unescaped public local column identifier refused')
+                return '['+identifier+']'
+            return '['+column['tableName']+'/'+column['name']+']'
         raise NativeActionError('unknown authored public formula name: '+node.id)
     if isinstance(node,ast.Call) and isinstance(node.func,ast.Name):
         name=node.func.id
@@ -1075,7 +1080,7 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
             system=record['systemColumn']
             columns['rid_'+feature]={'tableName':name,'name':system['name'],'id':system['id'],'elementId':target['elementId']}
     if any(any(char in record[field] for char in '[]') for record in columns.values() for field in ('tableName','name')) or any(any(char in record['variableId'] for char in '[]') for record in controls.values()):raise NativeActionError('unescaped public formula identifier refused')
-    def value(node,*,selection=False):
+    def value(node,*,selection=False,target_element_id=None):
         if isinstance(node,ast.Name) and node.id in controls:return {'type':'control','control':controls[node.id]['variableId']}
         if isinstance(node,ast.Name) and node.id in columns:return {'type':'column','columnId':columns[node.id]['id']}
         if isinstance(node,ast.Constant) and node.value is not None:
@@ -1084,7 +1089,7 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
         if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='count_distinct':
             if not selection or len(node.args)!=1 or not isinstance(node.args[0],ast.Name) or node.args[0].id not in columns:raise NativeActionError('Selection aggregate only allowed on assigned selection event')
             return {'type':'formula','formula':'CountDistinct([Selection/'+columns[node.args[0].id]['name']+'])'}
-        return {'type':'formula','formula':_public_formula(node,columns,controls)}
+        return {'type':'formula','formula':_public_formula(node,columns,controls,local_element_id=target_element_id,local_column_ids=target_element_id is not None)}
     edits=[];authorities=[]
     for requirement in routes['publicActionRequirements']:
         workflow=requirement['workflow'];role=requirement['role'];call=ast.parse(requirement['call'],mode='eval').body
@@ -1110,7 +1115,10 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
                     # ID alone or reintroduce CountIf(Lookup(...)) on the event.
                     return {'effect':'update-rows','tableElementId':tables[table],
                         'whichRows':{'type':'formula','formula':_public_formula(node.args[1],columns,controls,local_element_id=tables[table])},
-                        'values':{columns[k.id]['id']:value(v) for k,v in zip(node.args[2].keys,node.args[2].values)}}
+                        # Native UI binds target-owned columns by physical ID
+                        # inside scalar values; the row selector above retains
+                        # its separate target-local name context.
+                        'values':{columns[k.id]['id']:value(v,target_element_id=tables[table]) for k,v in zip(node.args[2].keys,node.args[2].values)}}
                 selector_predicates.append(_public_formula(node.args[1],columns,controls))
                 return {'effect':'update-rows','tableElementId':tables[table],'whichRows':{'type':'single-row','primaryKeys':{columns[rid]['id']:value(ids[0])}},
                     'values':{columns[k.id]['id']:value(v) for k,v in zip(node.args[2].keys,node.args[2].values)}}
