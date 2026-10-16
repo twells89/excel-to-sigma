@@ -78,6 +78,95 @@ for raw growth field names and a normalized metadata spine joined to the LIVE
 wide input by Scope; Switch reads every numeric input and stored row ID. It
 never displays original seed values as a substitute for live edits. Parent must
 review/query the actual join and every normalized value after construction.
+SourceOrder is the existing hidden metadata column and sort refers to its declared
+ID. The edit grid must retain at least14 grid rows: `4 / 18` means height14.
+`repair_research_edit_layout` makes the source/hash-bound Research input placement
+`4 / 18` and guidance `20 / 34`, preserving element objects and unrelated XML;
+unknown or colliding placements fail. Optional `review.researchEditLayout` supplies
+its named arguments in `prepare_repair_update`, with layout_hash bound to the
+generated merged layout. It must target the assigned primary input. Generic
+`inputLayout` reductions also refuse heights below14. Guidance preserves a blank
+paragraph before the audit explanation.
+
+## Split native action construction
+
+Actual SDK gaps require two reviewed routes. `native_actions.emit_native_action_program`
+emits safe disabled construction and `PARTIAL_REQUIRES_PUBLIC_ACTIONS`, including
+`publicActionRequirements`, `componentControls` and `componentButtons`. It never
+emits whole-table CountDistinct as selected count or a Boolean update_rows selector.
+Supported native-ID dictionary updates retain CountIf of the complete prior row
+predicate in their event condition. The exact Prepare insert/returns factory stays
+native. Clear selection context resets five controls/count0 without a row write;
+the summary labels captured context. Escape clears highlighting only. Construct
+once, save assigned component IDs, and capture fresh complete rows/schema/display,
+REST contents and SDK actions. A construction review binds the exact disabled
+candidateProgramHash, source/plan/binding/document/version. It cannot enable or
+replay the constructor; saved native enabling needs its separately reviewed exact
+configuration/known-artifact adapter after disabled proof.
+
+`public-native-actions` calls `emit_public_native_action_fragments(manifest, receipt,
+action_bindings, current_contents=..., sdk_actions=..., assigned_components=...)`.
+The assigned_components object binds target, bindingHash, contentsHash and these maps:
+
+- controls: emitted local alias to actual elementId, pageId and elementHash.
+- buttons: emitted `workflow:local` role to actual elementId, pageId and elementHash.
+- actions: exact `workflow:role` to stable sequenceId and beforeActionHash, null for
+  a new action. Roles come from publicActionRequirements; undeclared roles fail.
+
+All controls must match their actual variable-name controlId, type, source host
+and assigned physical ID. Every deferred button must be present. Every table ID,
+column ID, source class/options, source/plan and current document hash stays bound.
+Selection count uses `CountDistinct([Selection/<verified host ID column name>])`
+only on that host's on-select event. Public single-row primaryKeys uses its physical
+ID, while the original event condition AND CountIf(the COMPLETE original row
+predicate)=1 retains business key, original fields, context, history and operation
+identity. No optimistic success or affected-row assertion is added. Staging must
+serialize executions: validation and write have a TOCTOU race.
+
+`native-action-update` calls `prepare_native_action_update` with those arguments,
+the generated fragments, current contents, scope and review. This narrow adapter
+rebuilds and compares the compiler output; it only appends/replaces the declared
+action IDs with exact before/after hashes. Review binds beforeHash, sourceHash,
+planHash, bindingHash, fragmentHash, assignedComponentsHash, sdkInventoryHash,
+allowedActionEdits, `sdkAllowedChanges` for exactly the edited hosts (complete
+`{sequences:[...]}` semantic configurations), and `readbackEvidenceHashes` containing
+fullRows/schemaDisplay/sourceGraph actual capture hashes. Rows, input definitions,
+other actions, formulas, charts, display and layout remain exact. Existing full
+SDK inventory/restoration proof, actual dry-run, fresh documentVersion, one-use
+send and post-REST gates still apply. REST absence never waives native Prepare
+restoration; no public ActionVariable return syntax is invented.
+
+`qualify-public-selection` calls `action_inventory.qualify_public_selection_capture`
+for the one known SDK getter gap. Record unsupported getter value as
+`{type:'unavailable',reason:'SDK_SELECTION_NAMESPACE_NO_GETTER'}`, never a repr.
+The actual FloatSetControlValueEffect must bind both `controlId` (variable name)
+and `controlElementId` (physical control ID). A named review binds actual current
+document/version/contents, captureHash, fragmentHash, sourceHash/planHash/bindingHash,
+plus publishedSelectionEvidence keyed by `hostElementId:controlElementId`, each
+containing zero/one/multiple/clear. Every source/count-control pair, including
+Operations recovery, needs its own observations; Expense proof cannot qualify it.
+Each observation includes those exact hostElementId/controlElementId values and
+contains evidenceId, origin=sigma-browser, published=true, current documentId/version,
+memberId, identityEvidenceId, adminBypass=false and actualCount0/1/2/0 respectively.
+The exact public host/source/action/effect literal must match. Qualification adds
+provenance outside semantic configuration and removes stale restoration proof;
+new exact restoration artifacts/proof are still required before a future full PUT.
+Arbitrary opaque expressions and Missing-node repr are rejected.
+
+Disabled public construction is mandatory first. A later emitter staging_review
+binds the default disabled fragmentHash and all source/current/component/SDK hashes,
+document/version, owner/status plus enable=true and disabledConstructionProofHash
+of the fresh full SDK inventory. Only exact existing disabled public actions with
+qualified current published Selection authority can then become enabled. Obtain
+a second adapter review binding the final enabled fragmentHash and allowed deltas.
+This changes staging configuration only; acceptance remains BLOCKED.
+
+After the PUT, `native-action-readback` calls `verify_native_action_update_readback`
+with proposal/readback/sdk_actions and a fresh named review binding proposalHash,
+contentsHash, actionInventoryHash and allowedSemanticChangesHash. It requires exact
+REST content, complete SDK semantics, canonical qualified Selection authority and
+preservation of every unrelated sequence. Actual published runtime, failure/retry,
+role, persisted outcome and restoration evidence remain separate mandatory gates.
 
 ## Persisted workflow result UI
 

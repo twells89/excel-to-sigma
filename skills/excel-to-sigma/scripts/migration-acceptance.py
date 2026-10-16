@@ -16,6 +16,8 @@ import acceptance as evidence
 import operation_outcomes as outcomes
 import promotion
 import workflow_repairs as repairs
+import native_actions
+import action_inventory
 import decimal_procedure_adapter as decimal_adapter
 
 
@@ -39,7 +41,7 @@ def atomic_write(path,value):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command',choices=['repair-contract','repair-manifest','repair-update','finalize-repair','formula-accounting',
-        'secondary-input-hosts','published-mode','decimal-adapter','rebind-repair','matrix','record','reports','backup','promote','rollback','finalize-mutation','checkpoint','outcome','verify-outcome'])
+        'secondary-input-hosts','published-mode','decimal-adapter','rebind-repair','matrix','record','reports','backup','promote','rollback','finalize-mutation','checkpoint','outcome','verify-outcome','public-native-actions','native-action-update','native-action-readback','qualify-public-selection'])
     parser.add_argument('--bundle',type=Path,help='JSON object of named library arguments')
     parser.add_argument('--source',type=Path);parser.add_argument('--state',type=Path)
     parser.add_argument('--out',required=True,type=Path);args=parser.parse_args()
@@ -59,7 +61,9 @@ def main():
                 else promotion.checkpoint_promotion(ledger,data['backup'],data['event']))
             atomic_write(args.state,result)
     else:
-        functions={'secondary-input-hosts':repairs.build_secondary_input_hosts,'published-mode':repairs.build_published_input_mode_program,'decimal-adapter':decimal_adapter.build_decimal_text_procedure_action,'repair-manifest':repairs.extend_repair_manifest,'repair-update':repairs.prepare_repair_update,
+        functions={'public-native-actions':native_actions.emit_public_native_action_fragments,'native-action-update':repairs.prepare_native_action_update,
+            'native-action-readback':repairs.verify_native_action_update_readback,'qualify-public-selection':action_inventory.qualify_public_selection_capture,
+            'secondary-input-hosts':repairs.build_secondary_input_hosts,'published-mode':repairs.build_published_input_mode_program,'decimal-adapter':decimal_adapter.build_decimal_text_procedure_action,'repair-manifest':repairs.extend_repair_manifest,'repair-update':repairs.prepare_repair_update,
             'rebind-repair':repairs.rebind_after_repair,'finalize-repair':repairs.finalize_repair_update,'formula-accounting':repairs.account_formula_targets,
             'matrix':evidence.build_acceptance_matrix,'backup':promotion.build_promotion_backup,
             'promote':promotion.prepare_promotion,'rollback':promotion.prepare_rollback,

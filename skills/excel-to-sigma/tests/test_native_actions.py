@@ -286,12 +286,15 @@ class TestNativeActions(unittest.TestCase):
         program=result['program'];compile(program,'candidate','exec')
         self.assertIn('insert_row(t_workflowOperations',program)
         self.assertIn('.returns()',program)
-        self.assertIn('update_rows(t_expenseBusinessInput',program)
+        self.assertNotIn('update_rows(t_expenseBusinessInput',program)
+        self.assertEqual(result['constructionStatus'],'PARTIAL_REQUIRES_PUBLIC_ACTIONS')
+        self.assertTrue(any(r['role']=='confirm' for r in result['publicActionRequirements']))
         self.assertNotIn('insert_row(t_expenseBusinessInput',program)
         self.assertIn('Applied Approval Operation IDs',program)
-        self.assertIn('count_distinct',program)
+        self.assertNotIn('count_distinct',program)
         self.assertIn('set_control_value',program)
-        self.assertIn('on_select',program)
+        self.assertNotIn('on_select',program)
+        self.assertTrue(any(r['role']=='selection' for r in result['publicActionRequirements']))
         self.assertIn('pending_intent_count',program)
         self.assertIn('SUPERSEDED_NEW_INTENT',program)
         self.assertNotIn('.execute(',program)
@@ -300,8 +303,10 @@ class TestNativeActions(unittest.TestCase):
         self.assertIn('set_disabled(True)',program)
         enabled=emit_native_action_program(plan,receipt,binding,current_contents=contents,
             staging_review={'status':'APPROVED_STAGING','owner':'reviewer','bindingHash':binding['bindingHash'],
-                            'documentId':'doc','version':8})
-        self.assertIn('set_disabled(False)',enabled['program'])
+                            'documentId':'doc','version':8,'sourceHash':plan['sourceHash'],'planHash':plan['planHash'],
+                            'candidateProgramHash':result['candidateProgramHash']})
+        self.assertIn('set_disabled(True)',enabled['program'])
+        self.assertNotIn('set_disabled(False)',enabled['program'])
         self.assertEqual(enabled['productionStatus'],'BLOCKED')
 
     def test_readback_never_reports_success_for_zero_write_wrong_row_or_partial_failure(self):
@@ -373,19 +378,21 @@ class TestNativeActions(unittest.TestCase):
         import ast
         plan,staged,binding,contents=self.bound_approval()
         program=emit_native_action_program(plan,staged,binding,current_contents=contents)['program'];tree=ast.parse(program)
-        editable=set()
+        editable=set();physical=set()
         for node in ast.walk(tree):
             if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='isinstance' and isinstance(node.args[1],ast.Name) and node.args[1].id in {'LiteralEditableColumn','SingleSelectEditableColumn','MultiSelectEditableColumn'}:
                 self.assertIsInstance(node.args[0],ast.Name,'SDK narrowing cannot persist on a dictionary subscript')
                 editable.add(node.args[0].id)
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='isinstance' and isinstance(node.args[1],ast.Name) and node.args[1].id=='InputTableIDColumn':physical.add(node.args[0].id)
             if isinstance(node,ast.Assign) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='get_column':
                 self.assertTrue(all(isinstance(t,ast.Name) for t in node.targets),'get_column must assign a unique narrowed local')
         self.assertTrue(editable)
         for node in ast.walk(tree):
             if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id in {'insert_row','update_rows'}:
                 dictionaries=[arg for arg in node.args if isinstance(arg,ast.Dict)]
-                self.assertEqual(len(dictionaries),1)
-                self.assertTrue(all(isinstance(key,ast.Name) and key.id in editable for key in dictionaries[0].keys))
+                self.assertTrue(dictionaries)
+                self.assertTrue(all(isinstance(key,ast.Name) and key.id in editable for key in dictionaries[-1].keys))
+                if node.func.id=='update_rows':self.assertTrue(all(isinstance(key,ast.Name) and key.id in physical for key in node.args[1].keys))
 
     def test_forecast_workflows_emit_effects_and_snapshot_replacement_is_explicit(self):
         def decisions(analyses):
@@ -517,6 +524,7 @@ class TestNativeActions(unittest.TestCase):
             def list_elements(self,flat=False):return list(self.items)
             def add_button(self,label):
                 frame=Frame(self);self.items.append(frame);return frame
+            def add_text(self,label,**kwargs):return self.add_button(label)
         def control(host,**kwargs):return host.add_button('control')
         for shared in (True,False):
             plan,receipt,_,contents=self.bound_approval()
@@ -535,11 +543,13 @@ class TestNativeActions(unittest.TestCase):
                 elif isinstance(node,ast.Assign):
                     names=[t.id for t in node.targets if isinstance(t,ast.Name)]
                     call=node.value if isinstance(node.value,ast.Call) else None
-                    if any(n in ('cursor','audit_cursor') for n in names) or (call and ((isinstance(call.func,ast.Name) and call.func.id in ('add_text_control','add_number_control')) or (isinstance(call.func,ast.Attribute) and call.func.attr=='add_button'))):keep.append(node)
+                    if any(n in ('cursor','audit_cursor') for n in names) or (call and ((isinstance(call.func,ast.Name) and call.func.id in ('add_text_control','add_number_control')) or (isinstance(call.func,ast.Attribute) and call.func.attr in ('add_button','add_text')))):
+                        if call and isinstance(call.func,ast.Attribute) and call.func.attr=='add_text':call.keywords=[]
+                        keep.append(node)
                 elif isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='set_frame':keep.append(node)
             workflow_host=Host();audit_host=workflow_host if shared else Host()
             namespace={'GridFramed':Frame,'add_text_control':control,'add_number_control':control,'h_workflowOperations':audit_host}
-            for name in re.findall(r'(\w+)\.(?:add_button|list_elements)',program):namespace.setdefault(name,workflow_host)
+            for name in re.findall(r'(\w+)\.(?:add_button|add_text|list_elements)',program):namespace.setdefault(name,workflow_host)
             exec(compile(ast.Module(body=keep,type_ignores=[]),'actual-emitted-placements','exec'),namespace)
             for host in {workflow_host,audit_host}:
                 intervals=sorted((e.y(),e.y()+e.height()) for e in host.items)

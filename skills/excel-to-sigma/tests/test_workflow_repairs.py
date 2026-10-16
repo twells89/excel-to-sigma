@@ -119,9 +119,9 @@ class AuditAndPresentationRepairTests(unittest.TestCase):
         p=self.module();node={'id':'input','kind':'input-table','name':'Research Inputs'}
         layout='<Page id="edit"><Element elementId="input" gridColumn="1 / 25" gridRow="4 / 28" /><Element elementId="other" gridRow="30 / 34" unknown="keep" /></Page>'
         contents={'elements':[node,{'id':'other','kind':'text','body':'keep'}],'pages':[{'id':'edit'}],'layout':layout}
-        patch={'input':{'pageId':'edit','elementHash':p._digest(node),'fromGridRow':'4 / 28','toGridRow':'4 / 10'}}
+        patch={'input':{'pageId':'edit','elementHash':p._digest(node),'fromGridRow':'4 / 28','toGridRow':'4 / 18'}}
         result=p.shrink_input_layout(contents,patch)
-        self.assertEqual(result['layout'],layout.replace('4 / 28','4 / 10'))
+        self.assertEqual(result['layout'],layout.replace('4 / 28','4 / 18'))
         self.assertEqual(result['elements'],contents['elements'])
         with self.assertRaises(ValueError):p.shrink_input_layout(contents,{'input':{**patch['input'],'toGridRow':'1 / 99'}})
 

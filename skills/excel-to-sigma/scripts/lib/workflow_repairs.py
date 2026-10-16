@@ -217,9 +217,11 @@ def build_normalized_input_audit(contract,input_spec,target,*,connection_id):
     audit=_join('research-normalized-input-audit','Research Input Audit',meta['id'],target['elementId'],'Scope','Scope',
         [(n,'[Base/'+n+']') for n in ('Scope','SourceCell','Label','SourceNumberFormat','Unit','SourceOrder')]+[
             ('RawValue',switch),('StoredRowID','[Detail/'+target['systemColumnId']+']')])
-    audit['sort']=[{'columnId':'source_order','direction':'ascending'}]
+    order=next(c for c in audit['columns'] if c['name']=='SourceOrder')
+    order['hidden']=True
+    audit['sort']=[{'columnId':order['id'],'direction':'ascending'}]
     growth=[r for r in rows if r['SourceCell'].startswith('Model Inputs!')]
-    guidance={'id':'research-input-guidance','kind':'text','body':'## Editable research assumptions\n'+ '\n'.join('- '+r['LogicalInputId']+': '+r['Label']+' ('+r['Unit']+')' for r in growth)+'\nThe source inputs audit below exposes every live source value and its stored row identity. Fixed gross profit and designated historical/cash-flow literals remain source inputs.'}
+    guidance={'id':'research-input-guidance','kind':'text','body':'## Editable research assumptions\n'+ '\n'.join('- '+r['LogicalInputId']+': '+r['Label']+' ('+r['Unit']+')' for r in growth)+'\n\nThe source inputs audit below exposes every live source value and its stored row identity. Fixed gross profit and designated historical/cash-flow literals remain source inputs.'}
     result=_page('research-input-audit-normalized','Research source inputs',[guidance,meta,audit])
     result.update(metadataRows=rows,sourceHash=contract['source']['sha256'],productionStatus='BLOCKED')
     return result
@@ -302,7 +304,7 @@ def shrink_input_layout(contents,patches):
         nodes=[n for n in owners[0].iter('Element') if (n.get('elementId') or n.get('id'))==eid]
         if len(nodes)!=1 or nodes[0].get('gridRow')!=patch.get('fromGridRow'):raise RepairError('input placement changed')
         old=re.fullmatch(r'(\d+) / (\d+)',patch.get('fromGridRow',''));new=re.fullmatch(r'(\d+) / (\d+)',patch.get('toGridRow',''))
-        if not old or not new or int(new[1])!=int(old[1]) or not int(new[1])<int(new[2])<=int(old[2]):raise RepairError('only bounded same-start input height reduction allowed')
+        if not old or not new or int(new[1])!=int(old[1]) or not int(new[1])+14<=int(new[2])<=int(old[2]):raise RepairError('bounded same-start input height reduction requires at least14 grid rows for editable data')
         tags=[]
         for match in re.finditer(r'<Element\b[^>]*>',result['layout']):
             raw=match.group();node=ET.fromstring(raw[:-1].rstrip('/ ')+' />')
@@ -310,6 +312,39 @@ def shrink_input_layout(contents,patches):
         if len(tags)!=1:raise RepairError('ambiguous raw placement')
         match,raw=tags[0];replacement=re.sub(r"(gridRow=[\"'])[^\"']*([\"'])",lambda m:m[1]+patch['toGridRow']+m[2],raw)
         result['layout']=result['layout'][:match.start()]+replacement+result['layout'][match.end():]
+    return result
+
+
+def repair_research_edit_layout(contents,*,input_element_id,guidance_element_id,page_id,input_element_hash,guidance_element_hash,layout_hash):
+    """Reviewed Research edit layout: visible data rows and a separate guide.
+
+    GridRow is start/end, not start/height. Keep all element objects and all
+    unrelated layout bytes. Unknown/overlapping full-width placements block.
+    """
+    if layout_hash!=_digest(contents['layout']) or input_element_id==guidance_element_id:raise RepairError('research layout stale/ambiguous')
+    elements={e['id']:e for e in contents['elements']}
+    if (elements.get(input_element_id,{}).get('kind')!='input-table' or _digest(elements.get(input_element_id))!=input_element_hash
+            or elements.get(guidance_element_id,{}).get('kind')!='text' or _digest(elements.get(guidance_element_id))!=guidance_element_hash):raise RepairError('research layout source kind/hash mismatch')
+    root=_layout_root(contents['layout']);pages=[p for p in root.iter('Page') if p.get('id')==page_id]
+    if len(pages)!=1:raise RepairError('research edit page ambiguous')
+    desired={input_element_id:(4,18),guidance_element_id:(20,34)}
+    for eid in desired:
+        allnodes=[n for n in root.iter('Element') if (n.get('elementId') or n.get('id'))==eid]
+        if len(allnodes)!=1 or allnodes[0] not in list(pages[0].iter('Element')):raise RepairError('research layout wrong/ambiguous owner')
+    for node in pages[0].iter('Element'):
+        eid=node.get('elementId') or node.get('id')
+        if eid in desired:continue
+        row=re.fullmatch(r'(\d+) / (\d+)',node.get('gridRow',''))
+        if not row or any(int(row[1])<end and start<int(row[2]) for start,end in desired.values()):raise RepairError('research edit layout foreign/unknown placement overlap')
+    result=copy.deepcopy(contents)
+    for eid,(start,end) in desired.items():
+        matches=[]
+        for match in re.finditer(r'<Element\b[^>]*>',result['layout']):
+            node=ET.fromstring(match.group()[:-1].rstrip('/ ')+' />')
+            if (node.get('elementId') or node.get('id'))==eid:matches.append(match)
+        if len(matches)!=1 or len(re.findall(r'gridRow=',matches[0].group()))!=1:raise RepairError('research raw grid placement ambiguous')
+        match=matches[0];raw=re.sub(r'(gridRow=[\"\'])[^\"\']*([\"\'])',lambda m:m[1]+str(start)+' / '+str(end)+m[2],match.group())
+        result['layout']=result['layout'][:match.start()]+raw+result['layout'][match.end():]
     return result
 
 
@@ -529,6 +564,10 @@ def prepare_repair_update(manifest,receipt,contract,current,bindings,*,scope,rev
         by_id[eid]=element
     merged['elements']=[by_id[e['id']] for e in merged['elements']]
     if review.get('inputLayout'):merged=shrink_input_layout(merged,review['inputLayout']);proposal['dryRunRequest']['contents']=merged
+    if review.get('researchEditLayout'):
+        patch=review['researchEditLayout'];feature=arch.get('presentationInputFeature')
+        if contract['workflow']!='research' or patch.get('input_element_id')!=receipt['targetBindings'][feature]['elementId']:raise RepairError('research layout must target assigned primary input')
+        merged=repair_research_edit_layout(merged,**patch);proposal['dryRunRequest']['contents']=merged
     if review.get('cleanup'):merged=cleanup_owned_scaffolds(merged,review['cleanup']);proposal['dryRunRequest']['contents']=merged
     proposal['sourceBindings']=copy.deepcopy(bindings)
     proposal['sourceGraph']=_source_graph_hashes(elements,[b['elementId'] for b in bindings.values()])
@@ -623,7 +662,9 @@ def rebind_after_repair(manifest,receipt,proposal,readback,sdk_observations,revi
         from .action_inventory import verify_action_preservation
     except ImportError:
         from action_inventory import verify_action_preservation
-    verify_action_preservation(proposal['sdkActions'],sdk_actions,readback)
+    if proposal.get('nativeActionEdits'):
+        verify_native_action_update_readback(proposal,readback,sdk_actions,review)
+    else:verify_action_preservation(proposal['sdkActions'],sdk_actions,readback)
     if (proposal.get('proposalHash')!=_digest({k:v for k,v in proposal.items() if k!='proposalHash'})
         or proposal['sourceHash']!=manifest['sourceHash'] or proposal['planHash']!=manifest['planHash']):raise RepairError('repair proposal/source/plan changed')
     if (readback.get('workbookId')!=proposal['workbookId'] or not isinstance(readback.get('documentVersion'),int)
@@ -678,3 +719,105 @@ def rebind_after_repair(manifest,receipt,proposal,readback,sdk_observations,revi
     new_receipt={'status':'APPROVED_STAGING','sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'targetBindings':bindings,
         'artifacts':build_artifact_records(updated,arch,bindings),'repairProposalHash':proposal['proposalHash'],'review':copy.deepcopy(review)}
     return {'manifest':updated,'receipt':new_receipt,'status':'STAGED_INPUT_BINDINGS_REVIEWED','productionStatus':'BLOCKED'}
+
+
+def prepare_native_action_update(manifest,receipt,action_bindings,fragments,current,*,scope,review,sdk_actions,assigned_components):
+    """Edit only compiler-produced native actions, never general element content.
+
+    Exact restoration proof is required even for an action omitted by public GET.
+    Finalize with the existing fresh/dry-run/one-use protocol, then query rows and
+    capture complete SDK semantics using the declared allowed semantic changes.
+    """
+    try:
+        from .native_actions import emit_public_native_action_fragments
+        from .action_inventory import digest as action_digest
+    except ImportError:
+        from native_actions import emit_public_native_action_fragments
+        from action_inventory import digest as action_digest
+    rebuilt=emit_public_native_action_fragments(manifest,receipt,action_bindings,current_contents=current,
+        sdk_actions=sdk_actions,assigned_components=assigned_components,staging_review=fragments.get('constructionReview'))
+    if fragments!=rebuilt:raise RepairError('public action fragments differ from exact source compiler output')
+    required={'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'bindingHash':action_bindings['bindingHash'],
+        'fragmentHash':fragments['fragmentHash'],'assignedComponentsHash':fragments['assignedComponentsHash'],
+        'sdkInventoryHash':action_digest(sdk_actions),'allowedActionEdits':fragments['allowedEditPaths']}
+    if review.get('status')!='APPROVED_STAGING' or not str(review.get('owner') or '').strip() or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',str(review.get('owner'))) or any(review.get(k)!=v for k,v in required.items()):
+        raise RepairError('exact fresh named native action construction review required')
+    semantic_changes=review.get('sdkAllowedChanges') or {}
+    expected_hosts={e['hostElementId'] for e in fragments['actionEdits']}
+    if set(semantic_changes)!=expected_hosts or any(set(v)!={'sequences'} or not isinstance(v['sequences'],list) for v in semantic_changes.values()):raise RepairError('complete exact declared SDK semantic changes required')
+    for host in expected_hosts:
+        old=sdk_actions['elements'][host]['sequences'];edits=[e for e in fragments['actionEdits'] if e['hostElementId']==host]
+        edited_ids={e['sequenceId'] for e in edits};old_ids={s['id'] for s in old};expected=semantic_changes[host]['sequences']
+        if len(expected)!=len(old)+len(edited_ids-old_ids):raise RepairError('SDK delta must account exactly generated sequences')
+        # Preserve all unrelated sequences, including ones omitted by REST, in
+        # their original order even when their host receives a public edit.
+        cursor=0
+        for seq in old:
+            if seq['id'] in edited_ids:continue
+            semantic={k:v for k,v in seq.items() if k!='id'}
+            matches=[i for i in range(cursor,len(expected)) if expected[i]==semantic]
+            if not matches:raise RepairError('unrelated SDK sequence cannot change/disappear on edited host')
+            cursor=matches[0]+1
+    evidence=review.get('readbackEvidenceHashes') or {}
+    if set(evidence)!={'fullRows','schemaDisplay','sourceGraph'} or any(not re.fullmatch('[a-f0-9]{64}',str(h)) for h in evidence.values()):
+        raise RepairError('fresh complete rows/schema/display/source evidence hashes required')
+    proposal=prepare_fragment_update(current,[],scope=scope,source_hash=manifest['sourceHash'],plan_hash=manifest['planHash'],
+        review={**review,'sdkActionInventory':sdk_actions})
+    merged=proposal['dryRunRequest']['contents'];elements={e['id']:e for e in merged['elements']}
+    seen=set()
+    for edit in fragments['actionEdits']:
+        key=(edit['hostElementId'],edit['sequenceId'])
+        if key in seen:raise RepairError('duplicate generated action edit')
+        seen.add(key);host=elements[edit['hostElementId']];actions=host.setdefault('actions',[])
+        matches=[i for i,a in enumerate(actions) if a['id']==edit['sequenceId']]
+        if edit['beforeActionHash'] is None:
+            if matches:raise RepairError('new action already exists')
+            actions.append(copy.deepcopy(edit['afterAction']))
+        elif len(matches)==1 and _digest(actions[matches[0]])==edit['beforeActionHash']:
+            actions[matches[0]]=copy.deepcopy(edit['afterAction'])
+        else:raise RepairError('existing action semantic pointer stale')
+    # Assert exact data/layout preservation independently of fragment generation.
+    before={e['id']:e for e in current['contents']['elements']}
+    for eid,element in elements.items():
+        if {k:v for k,v in element.items() if k!='actions'}!={k:v for k,v in before[eid].items() if k!='actions'}:
+            raise RepairError('native action adapter attempted a non-action edit')
+    proposal['nativeActionEdits']=copy.deepcopy(fragments['allowedEditPaths'])
+    proposal['publicSelectionAuthorities']=copy.deepcopy(fragments['selectionAuthorities'])
+    proposal['nativeActionFragmentHash']=fragments['fragmentHash']
+    proposal['sdkAllowedChangesReview']=copy.deepcopy(review.get('sdkAllowedChanges',{}))
+    proposal['limitations']=['Initial construction is disabled; enabling requires separate exact disabled-proof and configuration reviews.',
+        'Trigger CountIf and dictionary/single-row update are serialized staging safeguards with a TOCTOU race; no transaction or affected-row count.',
+        'Public GET can omit native Prepare; exact reviewed missing-only restoration and actual SDK post-readback remain mandatory.']
+    proposal.pop('proposalHash');proposal['proposalHash']=_digest(proposal)
+    return proposal
+
+
+def verify_native_action_update_readback(proposal,readback,sdk_actions,review):
+    """Actual post-REST proof for precisely declared native action deltas only."""
+    try:
+        from .action_inventory import verify_action_preservation,digest as action_digest
+    except ImportError:
+        from action_inventory import verify_action_preservation,digest as action_digest
+    if proposal.get('proposalHash')!=_digest({k:v for k,v in proposal.items() if k!='proposalHash'}):raise RepairError('native action proposal hash stale')
+    if (readback.get('workbookId')!=proposal['workbookId'] or not isinstance(readback.get('documentVersion'),int)
+            or readback['documentVersion']<=proposal['documentVersion'] or readback.get('contents')!=proposal['dryRunRequest']['contents']):raise RepairError('exact fresh native action REST readback required')
+    expected_hosts={e['hostElementId'] for e in proposal.get('nativeActionEdits',[])}
+    changes=proposal.get('sdkAllowedChangesReview') or {}
+    if not expected_hosts or set(changes)!=expected_hosts:raise RepairError('complete exact declared SDK semantic changes required')
+    if (review.get('status')!='APPROVED_STAGING' or not str(review.get('owner') or '').strip() or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',str(review.get('owner')))
+            or review.get('proposalHash')!=proposal['proposalHash'] or review.get('contentsHash')!=_digest(readback['contents'])
+            or review.get('actionInventoryHash')!=action_digest(sdk_actions) or review.get('allowedSemanticChangesHash')!=action_digest(changes)):
+        raise RepairError('named exact actual SDK semantic readback review required')
+    for authority in proposal.get('publicSelectionAuthorities',[]):
+        element=sdk_actions.get('elements',{}).get(authority['hostElementId'],{})
+        sequences=[seq for seq in element.get('sequences',[]) if seq['id']==authority['sequenceId']]
+        if len(sequences)!=1 or authority['effectIndex']>=len(sequences[0]['blocks']):raise RepairError('qualified actual Selection block missing')
+        block=sequences[0]['blocks'][authority['effectIndex']]
+        if block.get('fields',{}).get('value')!={'type':'formula','formula':authority['formula']}:raise RepairError('opaque Selection getter cannot prove exact public semantics')
+        qualified=[record for record in element.get('publicSelectionAuthority',[]) if record.get('authority')==authority
+            and record.get('review',{}).get('fragmentHash')==proposal['nativeActionFragmentHash']
+            and record.get('review',{}).get('contentsHash')==_digest(readback['contents'])
+            and record.get('review',{}).get('documentId')==readback['workbookId']
+            and record.get('review',{}).get('version')==readback['documentVersion']]
+        if len(qualified)!=1:raise RepairError('source-bound actual public Selection authority missing/stale')
+    return verify_action_preservation(proposal['sdkActions'],sdk_actions,readback,allowed_changes=changes)

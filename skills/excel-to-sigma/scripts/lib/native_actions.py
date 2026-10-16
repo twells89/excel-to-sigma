@@ -7,6 +7,9 @@ is reported. Ordinary input tables provide no concurrent uniqueness guarantee.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
+import json
 import copy
 import datetime as dt
 import re
@@ -380,7 +383,7 @@ def bind_native_action_target(manifest,receipt,*,current_contents,input_readback
             _complete_input_readback(readback,spec['columns'],row_ids=contract['rowIds'],
                 row_id_column=contract['rowIdColumn'])
         system=_system_column_contract(target)
-        system['id']=system.get('id') or readback['rowIdColumn']
+        system['id']=system.get('id') or target.get('rowIdColumnId') or readback['rowIdColumn']
         tables[feature]={'target':copy.deepcopy(target),'systemColumn':system,'readbackHash':_digest(readback),
             'identities':[{'rowId':r[readback['rowIdColumn']], 'key':{k:r[k] for k in spec.get('keyColumns') or []}} for r in readback['rows']]}
     if 'expenseBusinessInput' in tables:
@@ -433,7 +436,7 @@ def _lookup_assumption(a):
     return 'lookup('+_c(a['feature'],a['valueColumn'])+', '+_lit(a['key'])+', '+_c(a['feature'],a['keyColumn'])+extras+')'
 
 
-def emit_native_action_program(manifest,receipt,action_bindings,*,current_contents,staging_review=None):
+def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_contents,staging_review=None):
     validate_native_action_plan(manifest);doc,layout=_document(current_contents,manifest)
     binding=action_bindings
     if (receipt.get('nativeActionBinding')!=binding or binding.get('sourceHash')!=manifest['sourceHash']
@@ -486,12 +489,12 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
         'from sigma.action.navigateEffect import navigate_to',
         'from sigma.action.setControlValueEffect import set_control_value',
         'from sigma.action.controlFlow import if_else',
-        'from sigma.formula import const_text, const_num, const_bool, eq, neq, and_, or_, not_, is_null, now, contains, ampersand, coalesce, as_text, count_if, count_distinct, lookup']
-    for i,(page,page_id) in enumerate(binding['pages'].items()):
+        'from sigma.formula import const_text, const_num, const_bool, eq, neq, and_, or_, not_, is_null, now, contains, ampersand, coalesce, as_text, count_if, count_distinct, lookup, if_, text']
+    for i,(page,page_id) in enumerate(sorted(binding['pages'].items())):
         lines += [f'p{i} = sigma.workbook.get_page({page_id!r})',f'if not isinstance(p{i}, Page):',
                   "    raise RuntimeError('expected assigned page')"]
-    pagevars={page:'p'+str(i) for i,page in enumerate(binding['pages'])}
-    for feature,t in binding['tables'].items():
+    pagevars={page:'p'+str(i) for i,page in enumerate(sorted(binding['pages']))}
+    for feature,t in sorted(binding['tables'].items()):
         target=t['target'];system=t['systemColumn'];variable='t_'+feature
         lines += [f'h_{feature} = sigma.workbook.get_page({target["pageId"]!r})',
             f'if not isinstance(h_{feature}, Page):',"    raise RuntimeError('expected assigned input page')",
@@ -499,14 +502,14 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             f'if not isinstance({variable}, InputTable):',"    raise RuntimeError('expected ordinary input table')",
             ]
         spec=manifest['planProjection']['sharedInputArchitecture']['inputs'][feature]
-        for name,cid in target['columnIds'].items():
+        for name,cid in sorted(target['columnIds'].items()):
             column=next(c for c in spec['columns'] if c['name']==name)
             contract=_editable_column_contract(manifest,target,column)
             v=_c(feature,name)
             lines += [f'{v} = {variable}.get_column({cid!r})',f'if not isinstance({v}, {contract["columnClass"]}):',
                       "    raise RuntimeError('expected assigned editable column class')",
                       f'if {v}.type() != {contract["type"]!r}:',"    raise RuntimeError('assigned column type changed')",
-                      f'if {v}.name() != {name!r}:',"    raise RuntimeError('assigned column name changed')"]
+                      f'if {v}.name() != {name!r} or {v}.element_id() != {target["elementId"]!r}:',"    raise RuntimeError('assigned column name/owner changed')"]
             if contract['columnClass']=='SingleSelectEditableColumn':
                 lines += [f'if {v}.allowed_values() != {contract["allowedValues"]!r}:',"    raise RuntimeError('source-list options changed')"]
         lines += [f'rid_{feature} = {variable}.get_column({system["id"]!r})']
@@ -516,16 +519,17 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
                 "    raise RuntimeError('row-ID formula/owner changed')"]
         else:
             lines += [f'if not isinstance(rid_{feature}, InputTableIDColumn):',"    raise RuntimeError('expected physical system row-ID column')",
-                f'if rid_{feature}.kind() != \"row_id\" or rid_{feature}.element_id() != {target["elementId"]!r}:',
-                "    raise RuntimeError('physical row-ID kind/owner changed')"]
-    for feature,read in binding.get('readTargets',{}).items():
+                f'if rid_{feature}.kind() != \"row_id\" or rid_{feature}.element_id() != {target["elementId"]!r} or rid_{feature}.name() != {system["name"]!r}:',
+                "    raise RuntimeError('physical row-ID kind/owner changed')",
+                ]
+    for feature,read in sorted(binding.get('readTargets',{}).items()):
         target=read['target']
         lines += [f'h_{feature} = sigma.workbook.get_page({target["pageId"]!r})',
             f'if not isinstance(h_{feature}, Page):',"    raise RuntimeError('expected projection page')",
             f't_{feature} = h_{feature}.get_element({target["elementId"]!r})',
             f'if not isinstance(t_{feature}, LevelTable):',"    raise RuntimeError('expected native live projection')",
             ]
-        for name,cid in target['columnIds'].items():
+        for name,cid in sorted(target['columnIds'].items()):
             v=_c(feature,name)
             lines += [f'{v} = t_{feature}.get_column({cid!r})',f'if not isinstance({v}, FormulaColumn):',
                 "    raise RuntimeError('expected assigned projection column')"]
@@ -533,7 +537,7 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
         '    if isinstance(existing, GridFramed):',
         '        audit_cursor = max(audit_cursor, existing.y() + existing.height())']
     artifacts=[]
-    for workflow,record in architecture['workflows'].items():
+    for workflow,record in sorted(architecture['workflows'].items()):
         decision=record['decision'];host=pagevars[decision['page']];prefix=workflow
         lines += [f'cursor = 1',f'for existing in {host}.list_elements(flat=False):',
             '    if isinstance(existing, GridFramed):',
@@ -580,9 +584,9 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
                 if binding['tables'][table]['target']['pageId']!=binding['pages'][decision['page']]:
                     raise NativeActionError('approval requires same-page input selection or a reviewed selectionView')
                 selection_table='t_'+table;selection_id='rid_'+table;selection_key=_c(table,'Expense ID')
-            # on_select owns column context. The button never assumes Selection
-            # variables are globally readable. CountDistinct selection scope is
-            # deliberately a published acceptance gate; global scope fails closed.
+            # Private authoring AST anchor only. The public route compiler below
+            # always removes this unsupported event from executable SDK output
+            # and emits exact on-select Selection namespace fragments instead.
             lines += [f'capture = {selection_table}.on_select("Select expense", [',
                 f'    set_control_value({rowid}, {selection_id}),',
                 f'    set_control_value({key}, {selection_key}),',
@@ -594,6 +598,21 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
                 f'eq(count_if({_conjoin([f"eq(rid_{table}, {rowid})",f"eq({_c(table, "Expense ID")}, {key})"])}), const_num(1))'])
         else:
             selection='const_bool(True)'
+        if workflow=='approval':
+            # Explicit control-only clearing is required: Escape changes grid
+            # highlighting, not the captured controls/durable intent.
+            lines += [f'clear_button = {host}.add_button("Clear selection context")',
+                'clear_button.set_frame(1, cursor, min(24, clear_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
+                f'clear_sequence = clear_button.on_click("Clear captured expense context", [set_control_value({op}, ""), set_control_value({ctx}, ""), set_control_value({key}, ""), set_control_value({rowid}, ""), set_control_value({n}, 0.0)])',
+                f'clear_sequence.set_disabled({not enabled!r})']
+            summary_values={'state':f'if_({selection}, const_text("One expense is captured."), const_text("Select exactly one expense or clear this context."))',
+                'record':f'if_({selection}, {key}, const_text("—"))','count':n}
+            for name in ('Employee','Vendor','Amount'):
+                summary_values[name.lower()]=f'if_({selection}, text(lookup({_c(table,name)}, {rowid}, rid_{table})), const_text("—"))'
+            text='### Captured expense context\n{{state}}\n\nExpense: {{record}} · Employee: {{employee}} · Vendor: {{vendor}} · Amount: {{amount}}\n\nCaptured rows: {{count}}. Escape removes highlighting only. Clear selection context resets captured controls and keeps any prepared intent saved.'
+            formula_values=', '.join(repr(k)+': '+v for k,v in summary_values.items())
+            lines += [f'summary = {host}.add_text({text!r}, formulas={{{formula_values}}})',
+                'summary.set_frame(1, cursor, min(24, summary.parent_grid_width()), 6)', 'cursor = cursor + 6']
         namevar=prefix+'_name'
         if workflow in {'applyScenario','saveScenario'}:
             lines += [f'{namevar} = add_text_control({host}, value="", variable_name={ (workflow+"-name")!r})',
@@ -842,3 +861,292 @@ def emit_input_identity_projection(manifest,receipt,feature,*,current_contents,d
         'destinationPage':destination_page,'sourceElementId':target['elementId'],
         'status':'PENDING_ASSIGNED_PROJECTION_READBACK','productionStatus':'BLOCKED',
         'program':'\n'.join(lines)+'\n'}
+
+
+def _authored_routes(manifest,receipt,binding,current_contents,staging_review=None):
+    """Compile only our known authored AST, never live opaque SDK expressions.
+
+    The private authoring plan is not executable output. Its old Boolean/selection
+    syntax is consumed here and cannot leave this function as an SDK program.
+    """
+    authored=_native_action_authoring_plan(manifest,receipt,binding,current_contents=current_contents,staging_review=staging_review)
+    source=authored.pop('program');tree=ast.parse(source)
+    markers=[(i+1,re.match(r'# workflow=(\w+)',line)[1]) for i,line in enumerate(source.splitlines()) if re.match(r'# workflow=(\w+)',line)]
+    def workflow(node):return next((w for line,w in reversed(markers) if line<=node.lineno),None)
+    def called(node,name):return isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id==name
+    assignments={};controls={};buttons={};conditions={};branches={}
+    for node in tree.body:
+        w=workflow(node)
+        if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
+            name=node.targets[0].id;assignments[(w,name)]=node.value
+            if called(node.value,'add_text_control') or called(node.value,'add_number_control'):
+                variable=next(k.value.value for k in node.value.keywords if k.arg=='variable_name')
+                controls[name]={'variableId':variable,'type':'number' if called(node.value,'add_number_control') else 'text','workflow':w,'hostVariable':ast.unparse(node.value.args[0])}
+            if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='add_button':
+                buttons[(w,name)]={'text':ast.literal_eval(node.value.args[0]),'host':ast.unparse(node.value.func.value)}
+            if isinstance(node.value,ast.List) and any(called(n,'update_rows') for n in ast.walk(node.value)):branches[(w,name)]=node.value
+        if isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='set_condition':
+            conditions[(w,ast.unparse(node.value.func.value))]=node.value.args[0]
+    def updates(node,w):
+        found=[n for n in ast.walk(node) if called(n,'update_rows')]
+        for n in ast.walk(node):
+            if isinstance(n,ast.Name) and (w,n.id) in branches:found.extend(updates(branches[(w,n.id)],w))
+        return found
+    def eligible(update):
+        if not isinstance(update.args[0],ast.Name) or not update.args[0].id.startswith('t_'):raise NativeActionError('unknown authored row target')
+        feature=update.args[0].id[2:]
+        return binding['tables'][feature]['systemColumn']['columnClass']=='InputTableIDColumn'
+    def identity(update):
+        feature=update.args[0].id[2:];rid='rid_'+feature
+        found=[n.args[1] for n in ast.walk(update.args[1]) if called(n,'eq') and len(n.args)==2 and isinstance(n.args[0],ast.Name) and n.args[0].id==rid]
+        if len(found)!=1:raise NativeActionError('authored row predicate must contain one exact target physical identity')
+        return feature,found[0]
+    deferred=[];drop=set();condition_additions={}
+    for node in tree.body:
+        if not isinstance(node,ast.Assign) or len(node.targets)!=1 or not isinstance(node.targets[0],ast.Name) or not isinstance(node.value,ast.Call):continue
+        w=workflow(node);var=node.targets[0].id;call=node.value
+        if not isinstance(call.func,ast.Attribute) or call.func.attr not in {'on_select','on_click'}:continue
+        us=updates(call,w)
+        if call.func.attr=='on_select' or any(not eligible(u) for u in us):
+            role='selection' if var=='capture' else 'recovery' if var=='recover' else 'new-intent' if var=='new_sequence' else 'confirm' if var=='confirm_sequence' else None
+            if role is None:raise NativeActionError('unsupported deferred authored event')
+            deferred.append({'workflow':w,'role':role,'variable':var,'hostVariable':ast.unparse(call.func.value),
+                'call':ast.unparse(call),'condition':ast.unparse(conditions[(w,var)]) if (w,var) in conditions else None,
+                'rowPredicates':[ast.unparse(u.args[1]) for u in us],
+                'branches':{name:ast.unparse(value) for (wf,name),value in branches.items() if wf==w}})
+            drop.add((w,var))
+        elif us:
+            # Dictionary selection cannot embed the frozen predicate. Preserve the
+            # WHOLE predicate in its original event condition, with exact CountIf.
+            if (w,var) not in conditions:raise NativeActionError('row update requires complete authored condition')
+            condition_additions[(w,var)]=[u.args[1] for u in us]
+    class SafeSDK(ast.NodeTransformer):
+        def visit_Call(self,node):
+            if called(node,'update_rows'):
+                if not eligible(node):raise NativeActionError('unsupported selector escaped safe SDK route')
+                feature,value=identity(node)
+                node.args[1]=ast.Dict(keys=[ast.Name(id='rid_'+feature,ctx=ast.Load())],values=[value])
+            return self.generic_visit(node)
+    safe=[];component_records=[]
+    for node in tree.body:
+        w=workflow(node)
+        if isinstance(node,ast.ImportFrom):node.names=[a for a in node.names if a.name!='count_distinct']
+        if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
+            var=node.targets[0].id
+            if (w,var) in drop:continue
+            if (w,var) in branches and any(not eligible(u) for u in updates(node.value,w)):continue
+        if isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute):
+            owner=ast.unparse(node.value.func.value)
+            if (w,owner) in drop:continue
+            if node.value.func.attr=='set_condition' and (w,owner) in condition_additions:
+                expression=ast.unparse(node.value.args[0])
+                for predicate in condition_additions[(w,owner)]:expression=f'and_({expression}, eq(count_if({ast.unparse(predicate)}), const_num(1)))'
+                node.value.args[0]=ast.parse(expression,mode='eval').body
+        # print(action id) references are not valid for deferred assignments.
+        if isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id=='print':
+            if any(isinstance(n,ast.Name) and (w,n.id) in drop for n in ast.walk(node)):continue
+        safe.append(SafeSDK().visit(node))
+        if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
+            var=node.targets[0].id
+            if var in controls or (w,var) in buttons:
+                key=var if var in controls else w+':'+var
+                safe.extend(ast.parse(f"print({{'component': {key!r}, 'elementId': {var}.id()}})").body)
+                component_records.append(key)
+    tree.body=safe;ast.fix_missing_locations(tree);program=ast.unparse(tree)+'\n';compile(program,'safe-native-actions','exec')
+    for n in ast.walk(tree):
+        if called(n,'count_distinct') or (called(n,'update_rows') and not isinstance(n.args[1],ast.Dict)):
+            raise NativeActionError('known unsupported SDK syntax escaped routing')
+    return {**authored,'program':program,'constructionStatus':'PARTIAL_REQUIRES_PUBLIC_ACTIONS' if deferred else 'SDK_CANDIDATE_REQUIRES_RUNTIME',
+        'publicActionRequirements':deferred,'componentControls':controls,'componentButtons':{w+':'+name:record for (w,name),record in buttons.items()},
+        'assignedComponentReadbackRequired':component_records,'authoringAstHash':_digest(source),
+        'limitations':[*authored['limitations'],'Selection namespace has no SDK expression getter; exact reviewed public actions required.',
+            'Single-row selectors plus full CountIf predicates require serialized staging; predicate evaluation/write have a TOCTOU race. No transaction/affected-row guarantee.']}
+
+
+def emit_native_action_program(manifest,receipt,action_bindings,*,current_contents,staging_review=None):
+    """Emit disabled safe construction; review never authorizes constructor replay.
+
+    Enabling saved native sequences needs the exact missing-only/configuration
+    adapter and actual disabled/readback proof. This constructor cannot do that.
+    """
+    result=_authored_routes(manifest,receipt,action_bindings,current_contents)
+    candidate_hash=hashlib.sha256(result['program'].encode()).hexdigest()
+    if staging_review is not None:
+        expected={'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'bindingHash':action_bindings['bindingHash'],
+            'documentId':manifest['target']['documentId'],'version':manifest['target']['version'],'candidateProgramHash':candidate_hash}
+        owner=str(staging_review.get('owner') or '').strip()
+        if (staging_review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
+                or staging_review.get('enable',False) is not False
+                or any(staging_review.get(k)!=v for k,v in expected.items())):raise NativeActionError('exact disabled source/binding/program construction review required; saved native enabling is separate')
+        result['constructionReview']=copy.deepcopy(staging_review)
+    result['candidateProgramHash']=candidate_hash
+    result['programHash']=hashlib.sha256(result['program'].encode()).hexdigest()
+    if result['publicActionRequirements']:result['stagingStatus']='PARTIAL_REQUIRES_PUBLIC_ACTIONS'
+    return result
+
+
+def _public_formula(node,columns,controls):
+    if isinstance(node,ast.Constant):
+        if node.value is None:return 'Null'
+        if type(node.value) is bool:return 'True' if node.value else 'False'
+        return json.dumps(node.value,ensure_ascii=False)
+    if isinstance(node,ast.Name):
+        if node.id in controls:return '['+controls[node.id]['variableId']+']'
+        if node.id in columns:return '['+columns[node.id]['tableName']+'/'+columns[node.id]['name']+']'
+        raise NativeActionError('unknown authored public formula name: '+node.id)
+    if isinstance(node,ast.Call) and isinstance(node.func,ast.Name):
+        name=node.func.id
+        if name in {'const_text','const_num','const_bool','as_text','as_num','as_bool','as_date'} and len(node.args)==1:return _public_formula(node.args[0],columns,controls)
+        binary={'eq':'=','neq':'!=','and_':'and','or_':'or','ampersand':'&'}
+        if name in binary and len(node.args)==2:return '('+_public_formula(node.args[0],columns,controls)+' '+binary[name]+' '+_public_formula(node.args[1],columns,controls)+')'
+        functions={'is_null':'IsNull','contains':'Contains','coalesce':'Coalesce','count_if':'CountIf','lookup':'Lookup','now':'Now','not_':'Not','if_':'If','text':'Text'}
+        if name in functions:return functions[name]+'('+', '.join(_public_formula(v,columns,controls) for v in node.args)+')'
+    raise NativeActionError('unsupported authored public formula AST; no opaque SDK inference')
+
+
+def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,current_contents,sdk_actions,assigned_components,staging_review=None):
+    """Source-bound pure action edits after actual SDK component ID readback.
+
+    No public Prepare representation is invented: its ActionVariable is retained
+    in the exact SDK factory and protected by the existing restoration proof gate.
+    """
+    try:
+        from .action_inventory import validate_action_inventory,digest as action_digest
+    except ImportError:
+        from action_inventory import validate_action_inventory,digest as action_digest
+    routes=_authored_routes(manifest,receipt,action_bindings,current_contents)
+    validate_action_inventory(sdk_actions,current_contents,require_recovery=True)
+    doc,layout=_document(current_contents,manifest);elements={e['id']:e for e in doc['elements']}
+    if len(elements)!=len(doc['elements']):raise NativeActionError('duplicate current element identity refused')
+    for feature,record in {**action_bindings['tables'],**action_bindings.get('readTargets',{})}.items():
+        target=record['target'];actual=elements.get(target['elementId'],{});owners=_layout_element_owners(layout,target['elementId'])
+        kind='input-table' if feature in action_bindings['tables'] else 'table'
+        if (actual.get('kind')!=kind or len(owners)!=1 or owners[0].get('id')!=target['pageId']
+                or any(sum(c.get('id')==cid and c.get('name')==name for c in actual.get('columns',[]))!=1 for name,cid in target['columnIds'].items())):
+            raise NativeActionError('assigned public source kind/page/column schema changed')
+    if (assigned_components.get('target')!=manifest['target'] or assigned_components.get('bindingHash')!=action_bindings['bindingHash']
+            or assigned_components.get('contentsHash')!=_digest(doc)):raise NativeActionError('assigned public components target/binding/content stale')
+    expected_actions={r['workflow']+':'+r['role'] for r in routes['publicActionRequirements']}
+    if set(assigned_components.get('controls',{}))!=set(routes['componentControls']) or set(assigned_components.get('actions',{}))!=expected_actions or not set(assigned_components.get('buttons',{}))<=set(routes['componentButtons']):raise NativeActionError('assigned components must cover exact declared source roles')
+    controls={};buttons={}
+    for alias,expected in routes['componentControls'].items():
+        observed=assigned_components.get('controls',{}).get(alias,{})
+        element=elements.get(observed.get('elementId'),{})
+        owners=_layout_element_owners(layout,element.get('id'))
+        page_variables={'p'+str(i):action_bindings['pages'][key] for i,key in enumerate(sorted(action_bindings['pages']))}
+        expected_page=action_bindings['tables']['workflowOperations']['target']['pageId'] if expected['hostVariable']=='h_workflowOperations' else page_variables.get(expected['hostVariable'])
+        if (element.get('kind')!='control' or element.get('controlId')!=expected['variableId'] or element.get('controlType')!=expected['type']
+                or observed.get('elementHash')!=_digest(element) or observed.get('pageId')!=expected_page
+                or len(owners)!=1 or owners[0].get('id')!=expected_page):raise NativeActionError('assigned source control ID/type/variable/page/hash mismatch')
+        controls[alias]={**expected,'elementId':element['id']}
+    for key,expected in routes['componentButtons'].items():
+        observed=assigned_components.get('buttons',{}).get(key,{})
+        if not observed:continue  # Only deferred button hosts are required.
+        element=elements.get(observed.get('elementId'),{});owners=_layout_element_owners(layout,element.get('id'))
+        workflow=key.split(':')[0];page=action_bindings['pages'][_architecture(manifest)['workflows'][workflow]['decision']['page']]
+        if (element.get('kind')!='button' or element.get('text')!=expected['text'] or observed.get('elementHash')!=_digest(element)
+                or observed.get('pageId')!=page or len(owners)!=1 or owners[0].get('id')!=page):raise NativeActionError('assigned source button/page/hash mismatch')
+        buttons[key]=element['id']
+    columns={};tables={}
+    for feature,record in {**action_bindings['tables'],**action_bindings.get('readTargets',{})}.items():
+        target=record['target'];spec=manifest['planProjection']['sharedInputArchitecture']['inputs'].get(feature)
+        name=spec['name'] if spec else elements[target['elementId']]['name'];tables['t_'+feature]=target['elementId']
+        for field,cid in target['columnIds'].items():columns[_c(feature,field)]={'tableName':name,'name':field,'id':cid,'elementId':target['elementId']}
+        if feature in action_bindings['tables']:
+            system=record['systemColumn']
+            columns['rid_'+feature]={'tableName':name,'name':system['name'],'id':system['id'],'elementId':target['elementId']}
+    if any(any(char in record[field] for char in '[]') for record in columns.values() for field in ('tableName','name')) or any(any(char in record['variableId'] for char in '[]') for record in controls.values()):raise NativeActionError('unescaped public formula identifier refused')
+    def value(node,*,selection=False):
+        if isinstance(node,ast.Name) and node.id in controls:return {'type':'control','control':controls[node.id]['variableId']}
+        if isinstance(node,ast.Name) and node.id in columns:return {'type':'column','columnId':columns[node.id]['id']}
+        if isinstance(node,ast.Constant) and node.value is not None:
+            typ='boolean' if type(node.value) is bool else 'text' if isinstance(node.value,str) else 'number'
+            return {'type':'constant','value':{'type':typ,'value':node.value}}
+        if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='count_distinct':
+            if not selection or len(node.args)!=1 or not isinstance(node.args[0],ast.Name) or node.args[0].id not in columns:raise NativeActionError('Selection aggregate only allowed on assigned selection event')
+            return {'type':'formula','formula':'CountDistinct([Selection/'+columns[node.args[0].id]['name']+'])'}
+        return {'type':'formula','formula':_public_formula(node,columns,controls)}
+    edits=[];authorities=[]
+    for requirement in routes['publicActionRequirements']:
+        workflow=requirement['workflow'];role=requirement['role'];call=ast.parse(requirement['call'],mode='eval').body
+        selector_predicates=[];branches={k:ast.parse(v,mode='eval').body for k,v in requirement['branches'].items()}
+        def effects(node):
+            if isinstance(node,ast.Name) and node.id in branches:return effects(branches[node.id])
+            if isinstance(node,ast.List):return [effect(e) for e in node.elts]
+            raise NativeActionError('unsupported authored public effect list')
+        def effect(node):
+            if not isinstance(node,ast.Call) or not isinstance(node.func,ast.Name):raise NativeActionError('unsupported authored public effect')
+            if node.func.id=='set_control_value':
+                alias=node.args[0].id
+                if alias not in controls:raise NativeActionError('unassigned public action control')
+                return {'effect':'set-control-value','control':controls[alias]['variableId'],'value':value(node.args[1],selection=role in {'selection','recovery'})}
+            if node.func.id=='update_rows':
+                table=node.args[0].id
+                if table not in tables:raise NativeActionError('foreign public row target')
+                feature=table[2:];rid='rid_'+feature
+                ids=[n.args[1] for n in ast.walk(node.args[1]) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='eq' and isinstance(n.args[0],ast.Name) and n.args[0].id==rid]
+                if len(ids)!=1:raise NativeActionError('one assigned physical row predicate required')
+                selector_predicates.append(_public_formula(node.args[1],columns,controls))
+                return {'effect':'update-rows','tableElementId':tables[table],'whichRows':{'type':'single-row','primaryKeys':{columns[rid]['id']:value(ids[0])}},
+                    'values':{columns[k.id]['id']:value(v) for k,v in zip(node.args[2].keys,node.args[2].values)}}
+            if node.func.id=='if_else':
+                branches_out=[{'condition':{'type':'formula','formula':_public_formula(pair.elts[0],columns,controls)},'effects':effects(pair.elts[1])} for pair in node.args[0].elts]
+                if not branches_out:raise NativeActionError('nonempty authored condition branches required')
+                return {'effect':'if-else','if':branches_out[0],'elseif':branches_out[1:],'else':{'effects':effects(node.args[1])}}
+            raise NativeActionError('unsupported public effect; native Prepare/returns are never serialized')
+        compiled=effects(call.args[1]);condition=_public_formula(ast.parse(requirement['condition'],mode='eval').body,columns,controls) if requirement['condition'] else None
+        for predicate in selector_predicates:condition='('+condition+') and (CountIf('+predicate+') = 1)' if condition else 'CountIf('+predicate+') = 1'
+        host=tables.get(requirement['hostVariable']) if role in {'selection','recovery'} else buttons.get(workflow+':'+requirement['hostVariable'])
+        if not host:raise NativeActionError('deferred action host has no assigned component')
+        key=workflow+':'+role;assignment=assigned_components.get('actions',{}).get(key,{})
+        sequence_id=assignment.get('sequenceId')
+        if not isinstance(sequence_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]+',sequence_id):raise NativeActionError('explicit stable public action identity required')
+        prior=[a for a in elements[host].get('actions',[]) if a['id']==sequence_id]
+        foreign_rest=any(a['id']==sequence_id for eid,e in elements.items() if eid!=host for a in e.get('actions',[]))
+        foreign_sdk=any(s['id']==sequence_id for eid,e in sdk_actions['elements'].items() if eid!=host for s in e['sequences'])
+        if foreign_rest or foreign_sdk:raise NativeActionError('public action identity collides with unrelated existing sequence')
+        before=assignment.get('beforeActionHash')
+        if (len(prior)>1 or (before is None and prior) or (before is not None and (len(prior)!=1 or _digest(prior[0])!=before))):raise NativeActionError('existing public action pointer/hash stale')
+        event='on-select' if role in {'selection','recovery'} else 'on-click'
+        if prior:
+            oldevent=prior[0]['trigger'];oldevent=oldevent if isinstance(oldevent,str) else oldevent.get('on')
+            if oldevent!=event:raise NativeActionError('undeclared existing event replacement')
+        action={'id':sequence_id,'name':ast.literal_eval(call.args[0]),'trigger':{'on':event,'condition':{'type':'formula','formula':condition}} if condition else event,
+                'effects':compiled,'state':'disabled'}
+        edits.append({'role':role,'workflow':workflow,'hostElementId':host,'sequenceId':sequence_id,'beforeActionHash':before,'afterActionHash':_digest(action),'afterAction':action})
+        for index,e in enumerate(compiled):
+            if e['effect']=='set-control-value' and e['value'].get('formula','').startswith('CountDistinct([Selection/'):
+                ridnode=next(v.args[1].args[0] for v in call.args[1].elts if isinstance(v.args[1],ast.Call) and isinstance(v.args[1].func,ast.Name) and v.args[1].func.id=='count_distinct')
+                column=columns[ridnode.id]
+                if column['elementId']!=host:raise NativeActionError('Selection source must belong to its on-select host')
+                authorities.append({'hostElementId':host,'hostWithoutActionsHash':_digest({k:v for k,v in elements[host].items() if k!='actions'}),'sequenceId':sequence_id,
+                    'effectIndex':index,'controlId':e['control'],'controlElementId':next(c['elementId'] for c in controls.values() if c['variableId']==e['control']),'formula':e['value']['formula'],'sourceColumn':copy.deepcopy(column),'trigger':'on-select'})
+    result={'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'bindingHash':action_bindings['bindingHash'],'target':manifest['target'],
+        'contentsHash':_digest(doc),'assignedComponentsHash':_digest(assigned_components),'sdkInventoryHash':action_digest(sdk_actions),
+        'actionEdits':edits,'selectionAuthorities':authorities,'authoringAstHash':routes['authoringAstHash'],
+        'allowedEditPaths':[{'hostElementId':e['hostElementId'],'sequenceId':e['sequenceId'],'beforeActionHash':e['beforeActionHash'],'afterActionHash':e['afterActionHash'],'role':e['role']} for e in edits],
+        'status':'DISABLED_CANDIDATE_REQUIRES_REVIEW','productionStatus':'BLOCKED','limitations':routes['limitations']}
+    result['fragmentHash']=_digest(result)
+    if staging_review is not None:
+        fields={'sourceHash':result['sourceHash'],'planHash':result['planHash'],'bindingHash':result['bindingHash'],'fragmentHash':result['fragmentHash'],
+            'contentsHash':result['contentsHash'],'assignedComponentsHash':result['assignedComponentsHash'],'sdkInventoryHash':result['sdkInventoryHash'],
+            'documentId':manifest['target']['documentId'],'version':manifest['target']['version']}
+        if staging_review.get('status')!='APPROVED_STAGING' or (not str(staging_review.get('owner') or '').strip() or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',str(staging_review.get('owner')))) or any(staging_review.get(k)!=v for k,v in fields.items()):raise NativeActionError('public native staging review stale/incomplete')
+        if staging_review.get('enable',False) is not False:
+            if staging_review.get('enable') is not True or staging_review.get('disabledConstructionProofHash')!=action_digest(sdk_actions):raise NativeActionError('actual exact disabled construction SDK proof required before enabling')
+            for authority in authorities:
+                qualified=[q for q in sdk_actions['elements'][authority['hostElementId']].get('publicSelectionAuthority',[])
+                    if q.get('authority')==authority and q.get('review',{}).get('documentId')==manifest['target']['documentId']
+                    and q.get('review',{}).get('version')==manifest['target']['version'] and q.get('review',{}).get('contentsHash')==_digest(doc)]
+                if len(qualified)!=1:raise NativeActionError('fresh qualified published Selection authority required before enabling')
+            for edit in edits:
+                prior=[a for a in elements[edit['hostElementId']].get('actions',[]) if a['id']==edit['sequenceId']]
+                observed=[s for s in sdk_actions['elements'][edit['hostElementId']]['sequences'] if s['id']==edit['sequenceId']]
+                if (len(prior)!=1 or prior[0].get('state')!='disabled' or len(observed)!=1 or observed[0]['disabled'] is not True
+                        or {k:v for k,v in prior[0].items() if k!='state'}!={k:v for k,v in edit['afterAction'].items() if k!='state'}):raise NativeActionError('only exact previously constructed disabled actions may be enabled')
+                edit['afterAction']['state']='enabled';edit['afterActionHash']=_digest(edit['afterAction'])
+            result['allowedEditPaths']=[{k:edit[k] for k in ('hostElementId','sequenceId','beforeActionHash','afterActionHash','role')} for edit in edits]
+            result['status']='ENABLED_REVIEWED_STAGING_ONLY_REQUIRES_RUNTIME'
+        result['constructionReview']=copy.deepcopy(staging_review)
+        result.pop('fragmentHash');result['fragmentHash']=_digest(result)
+    return result

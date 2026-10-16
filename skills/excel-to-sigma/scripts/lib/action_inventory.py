@@ -8,6 +8,7 @@ construction/restoration artifacts and actual isolated restoration proof.
 import copy
 import hashlib
 import json
+import re
 
 
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
@@ -102,3 +103,66 @@ def verify_action_preservation(before,after,after_document,*,allowed_changes=Non
 
 def action_restore_programs(capture):
     return {eid:copy.deepcopy(element['restorationArtifact']) for eid,element in capture['elements'].items() if element['sequences']}
+
+
+def qualify_public_selection_capture(capture,document,fragment_bundle,review):
+    """Bind ONLY known on-select CountDistinct Selection literals across SDK gaps.
+
+    A caller records getter unavailability as a structured sentinel, never a
+    Missing-node repr. Exact REST constructor + actual SDK block/control + named
+    published 0/1/multi/clear proof authorizes the one canonical literal. Authority
+    provenance is outside sequence configuration and cannot alter semantics.
+    This does not provide restoration proof or authenticate runtime sessions.
+    """
+    try:
+        from .input_sync import _digest
+    except ImportError:
+        from input_sync import _digest
+    if fragment_bundle.get('fragmentHash')!=_digest({k:v for k,v in fragment_bundle.items() if k!='fragmentHash'}):raise ValueError('Selection source fragment hash stale')
+    validate_action_inventory(capture,document)
+    required={'documentId':document['workbookId'],'version':document['documentVersion'],'contentsHash':_digest(document['contents']),
+        'captureHash':digest(capture),'fragmentHash':fragment_bundle['fragmentHash'],
+        **{k:fragment_bundle[k] for k in ('sourceHash','planHash','bindingHash')}}
+    evidence=review.get('publishedSelectionEvidence') or {}
+    authorities=fragment_bundle.get('selectionAuthorities',[])
+    expected_keys={a['hostElementId']+':'+a['controlElementId'] for a in authorities}
+    owner=str(review.get('owner') or '').strip()
+    if (review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
+            or any(review.get(k)!=v for k,v in required.items()) or not expected_keys or set(evidence)!=expected_keys):
+        raise ValueError('exact reviewed actual published Selection authority required')
+    for authority in authorities:
+        cases=evidence[authority['hostElementId']+':'+authority['controlElementId']]
+        if not isinstance(cases,dict) or set(cases)!={'zero','one','multiple','clear'}:raise ValueError('every source-host/count-control requires actual published 0/1/2/clear observations')
+        for name,count in [('zero',0),('one',1),('multiple',2),('clear',0)]:
+            record=cases[name]
+            if (not isinstance(record,dict) or record.get('origin')!='sigma-browser' or record.get('published') is not True
+                    or record.get('hostElementId')!=authority['hostElementId'] or record.get('controlElementId')!=authority['controlElementId']
+                    or record.get('documentId')!=document['workbookId'] or record.get('version')!=document['documentVersion']
+                    or record.get('adminBypass') is not False or type(record.get('actualCount')) is not int or record['actualCount']!=count
+                    or any(not isinstance(record.get(k),str) or not record[k].strip() or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',record[k]) for k in ('evidenceId','memberId','identityEvidenceId'))):
+                raise ValueError('actual published source-bound 0/1/2/clear observations and session identity required')
+    result=copy.deepcopy(capture);elements={e['id']:e for e in document['contents']['elements']};touched=set()
+    sentinel={'type':'unavailable','reason':'SDK_SELECTION_NAMESPACE_NO_GETTER'}
+    for authority in fragment_bundle.get('selectionAuthorities',[]):
+        eid=authority['hostElementId'];host=elements.get(eid,{})
+        if _digest({k:v for k,v in host.items() if k!='actions'})!=authority['hostWithoutActionsHash']:raise ValueError('Selection source schema/assigned host changed')
+        column=authority['sourceColumn'];formula='CountDistinct([Selection/'+column['name']+'])'
+        if authority['formula']!=formula or column['elementId']!=eid or authority['trigger']!='on-select':raise ValueError('foreign Selection source/trigger/expression')
+        actions=[a for a in host.get('actions',[]) if a['id']==authority['sequenceId']]
+        if len(actions)!=1 or actions[0]['trigger']!='on-select':raise ValueError('exact public Selection event missing')
+        index=authority['effectIndex'];effects=actions[0]['effects']
+        if not isinstance(index,int) or not 0<=index<len(effects):raise ValueError('Selection effect pointer stale')
+        expected={'effect':'set-control-value','control':authority['controlId'],'value':{'type':'formula','formula':formula}}
+        if effects[index]!=expected:raise ValueError('public Selection literal/control/effect differs')
+        element=result['elements'][eid];sequences=[s for s in element['sequences'] if s['id']==authority['sequenceId']]
+        if len(sequences)!=1 or sequences[0]['trigger']!='on-select' or index>=len(sequences[0]['blocks']):raise ValueError('actual SDK Selection event/sequence/block missing')
+        block=sequences[0]['blocks'][index]
+        if block['kind']!='FloatSetControlValueEffect' or block['fields'].get('controlId')!=authority['controlId'] or block['fields'].get('controlElementId')!=authority['controlElementId'] or block['fields'].get('value') not in (sentinel,expected['value']):
+            raise ValueError('arbitrary opaque SDK value cannot become Selection authority')
+        block['fields']['value']=copy.deepcopy(expected['value'])
+        element.setdefault('publicSelectionAuthority',[]).append({'authority':copy.deepcopy(authority),'review':copy.deepcopy(review)})
+        element.pop('restorationArtifact',None)  # Old observation hash is no longer current; never carry stale proof.
+        element['semanticHash']=digest(configuration(element));touched.add(eid)
+    if not touched:raise ValueError('no exact known Selection literals to qualify')
+    validate_action_inventory(result,document)
+    return result
