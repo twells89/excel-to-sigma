@@ -114,6 +114,19 @@ def qualify_public_selection_capture(capture,document,fragment_bundle,review):
     provenance is outside sequence configuration and cannot alter semantics.
     This does not provide restoration proof or authenticate runtime sessions.
     """
+    return _qualify_public_selection(capture,document,fragment_bundle,review,published=True)
+
+
+def qualify_public_selection_construction(capture,document,fragment_bundle,review):
+    """Known REST literal + typed SDK binding only; NEVER published count proof.
+
+    This permits inspection of disabled construction and the control-only probe
+    before any business effect is enabled. It grants no runtime authority.
+    """
+    return _qualify_public_selection(capture,document,fragment_bundle,review,published=False)
+
+
+def _qualify_public_selection(capture,document,fragment_bundle,review,*,published):
     try:
         from .input_sync import _digest
     except ImportError:
@@ -128,9 +141,9 @@ def qualify_public_selection_capture(capture,document,fragment_bundle,review):
     expected_keys={a['hostElementId']+':'+a['controlElementId'] for a in authorities}
     owner=str(review.get('owner') or '').strip()
     if (review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
-            or any(review.get(k)!=v for k,v in required.items()) or not expected_keys or set(evidence)!=expected_keys):
+            or any(review.get(k)!=v for k,v in required.items()) or not expected_keys or (published and set(evidence)!=expected_keys)):
         raise ValueError('exact reviewed actual published Selection authority required')
-    for authority in authorities:
+    for authority in authorities if published else []:
         cases=evidence[authority['hostElementId']+':'+authority['controlElementId']]
         if not isinstance(cases,dict) or set(cases)!={'zero','one','multiple','clear'}:raise ValueError('every source-host/count-control requires actual published 0/1/2/clear observations')
         for name,count in [('zero',0),('one',1),('multiple',2),('clear',0)]:
@@ -150,17 +163,19 @@ def qualify_public_selection_capture(capture,document,fragment_bundle,review):
         if authority['formula']!=formula or column['elementId']!=eid or authority['trigger']!='on-select':raise ValueError('foreign Selection source/trigger/expression')
         actions=[a for a in host.get('actions',[]) if a['id']==authority['sequenceId']]
         if len(actions)!=1 or actions[0]['trigger']!='on-select':raise ValueError('exact public Selection event missing')
+        if published and actions[0].get('state')!='enabled':raise ValueError('published Selection proof requires an enabled control-only probe')
         index=authority['effectIndex'];effects=actions[0]['effects']
         if not isinstance(index,int) or not 0<=index<len(effects):raise ValueError('Selection effect pointer stale')
         expected={'effect':'set-control-value','control':authority['controlId'],'value':{'type':'formula','formula':formula}}
         if effects[index]!=expected:raise ValueError('public Selection literal/control/effect differs')
         element=result['elements'][eid];sequences=[s for s in element['sequences'] if s['id']==authority['sequenceId']]
         if len(sequences)!=1 or sequences[0]['trigger']!='on-select' or index>=len(sequences[0]['blocks']):raise ValueError('actual SDK Selection event/sequence/block missing')
+        if published and sequences[0]['disabled'] is not False:raise ValueError('published Selection proof requires actual enabled SDK event')
         block=sequences[0]['blocks'][index]
         if block['kind']!='FloatSetControlValueEffect' or block['fields'].get('controlId')!=authority['controlId'] or block['fields'].get('controlElementId')!=authority['controlElementId'] or block['fields'].get('value') not in (sentinel,expected['value']):
             raise ValueError('arbitrary opaque SDK value cannot become Selection authority')
         block['fields']['value']=copy.deepcopy(expected['value'])
-        element.setdefault('publicSelectionAuthority',[]).append({'authority':copy.deepcopy(authority),'review':copy.deepcopy(review)})
+        element.setdefault('publicSelectionAuthority' if published else 'publicSelectionConstruction',[]).append({'authority':copy.deepcopy(authority),'review':copy.deepcopy(review)})
         element.pop('restorationArtifact',None)  # Old observation hash is no longer current; never carry stale proof.
         element['semanticHash']=digest(configuration(element));touched.add(eid)
     if not touched:raise ValueError('no exact known Selection literals to qualify')

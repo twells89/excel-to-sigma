@@ -784,6 +784,7 @@ def prepare_native_action_update(manifest,receipt,action_bindings,fragments,curr
     proposal['nativeActionEdits']=copy.deepcopy(fragments['allowedEditPaths'])
     proposal['publicSelectionAuthorities']=copy.deepcopy(fragments['selectionAuthorities'])
     proposal['nativeActionFragmentHash']=fragments['fragmentHash']
+    proposal['nativeActionFragments']=copy.deepcopy(fragments)
     proposal['sdkAllowedChangesReview']=copy.deepcopy(review.get('sdkAllowedChanges',{}))
     proposal['limitations']=['Initial construction is disabled; enabling requires separate exact disabled-proof and configuration reviews.',
         'Trigger CountIf and dictionary/single-row update are serialized staging safeguards with a TOCTOU race; no transaction or affected-row count.',
@@ -795,9 +796,9 @@ def prepare_native_action_update(manifest,receipt,action_bindings,fragments,curr
 def verify_native_action_update_readback(proposal,readback,sdk_actions,review):
     """Actual post-REST proof for precisely declared native action deltas only."""
     try:
-        from .action_inventory import verify_action_preservation,digest as action_digest
+        from .action_inventory import verify_action_preservation,digest as action_digest,qualify_public_selection_construction
     except ImportError:
-        from action_inventory import verify_action_preservation,digest as action_digest
+        from action_inventory import verify_action_preservation,digest as action_digest,qualify_public_selection_construction
     if proposal.get('proposalHash')!=_digest({k:v for k,v in proposal.items() if k!='proposalHash'}):raise RepairError('native action proposal hash stale')
     if (readback.get('workbookId')!=proposal['workbookId'] or not isinstance(readback.get('documentVersion'),int)
             or readback['documentVersion']<=proposal['documentVersion'] or readback.get('contents')!=proposal['dryRunRequest']['contents']):raise RepairError('exact fresh native action REST readback required')
@@ -808,16 +809,14 @@ def verify_native_action_update_readback(proposal,readback,sdk_actions,review):
             or review.get('proposalHash')!=proposal['proposalHash'] or review.get('contentsHash')!=_digest(readback['contents'])
             or review.get('actionInventoryHash')!=action_digest(sdk_actions) or review.get('allowedSemanticChangesHash')!=action_digest(changes)):
         raise RepairError('named exact actual SDK semantic readback review required')
-    for authority in proposal.get('publicSelectionAuthorities',[]):
-        element=sdk_actions.get('elements',{}).get(authority['hostElementId'],{})
-        sequences=[seq for seq in element.get('sequences',[]) if seq['id']==authority['sequenceId']]
-        if len(sequences)!=1 or authority['effectIndex']>=len(sequences[0]['blocks']):raise RepairError('qualified actual Selection block missing')
-        block=sequences[0]['blocks'][authority['effectIndex']]
-        if block.get('fields',{}).get('value')!={'type':'formula','formula':authority['formula']}:raise RepairError('opaque Selection getter cannot prove exact public semantics')
-        qualified=[record for record in element.get('publicSelectionAuthority',[]) if record.get('authority')==authority
-            and record.get('review',{}).get('fragmentHash')==proposal['nativeActionFragmentHash']
-            and record.get('review',{}).get('contentsHash')==_digest(readback['contents'])
-            and record.get('review',{}).get('documentId')==readback['workbookId']
-            and record.get('review',{}).get('version')==readback['documentVersion']]
-        if len(qualified)!=1:raise RepairError('source-bound actual public Selection authority missing/stale')
-    return verify_action_preservation(proposal['sdkActions'],sdk_actions,readback,allowed_changes=changes)
+    fragments=proposal['nativeActionFragments']
+    # Construction authority bridges only the exact known literal/typed binding;
+    # it deliberately cannot authorize business activation or claim cardinality.
+    construction_review={'status':'APPROVED_STAGING','owner':review['owner'],'documentId':readback['workbookId'],
+        'version':readback['documentVersion'],'contentsHash':_digest(readback['contents']),'captureHash':action_digest(sdk_actions),
+        **{k:fragments[k] for k in ('fragmentHash','sourceHash','planHash','bindingHash')}}
+    canonical=qualify_public_selection_construction(sdk_actions,readback,fragments,construction_review)
+    result=verify_action_preservation(proposal['sdkActions'],canonical,readback,allowed_changes=changes)
+    result.update(status='VERIFIED_NATIVE_ACTION_CONSTRUCTION_RUNTIME_UNRESOLVED',productionStatus='BLOCKED',
+        activation=fragments.get('activation','disabled'))
+    return result

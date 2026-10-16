@@ -153,19 +153,37 @@ provenance outside semantic configuration and removes stale restoration proof;
 new exact restoration artifacts/proof are still required before a future full PUT.
 Arbitrary opaque expressions and Missing-node repr are rejected.
 
-Disabled public construction is mandatory first. A later emitter staging_review
-binds the default disabled fragmentHash and all source/current/component/SDK hashes,
-document/version, owner/status plus enable=true and disabledConstructionProofHash
-of the fresh full SDK inventory. Only exact existing disabled public actions with
-qualified current published Selection authority can then become enabled. Obtain
-a second adapter review binding the final enabled fragmentHash and allowed deltas.
-This changes staging configuration only; acceptance remains BLOCKED.
+The default public candidate is disabled. A separately reviewed staging probe uses
+`activation='selection-probe'`, `probeOnly=true`, and
+`businessActionsDisabledInventoryHash` equal to the complete current SDK inventory
+digest, together with every ordinary source/current/component/fragment review hash.
+It enables only Selection/recovery/clear-context handlers, each restricted to
+set-control-value effects. Every other SDK write/side-effect sequence, including
+REST-omitted Prepare, must be disabled unless this exact edit disables it. Existing
+restoration proof is still mandatory. Clear resets all five captured controls.
+This probe permits actual published 0/1/2/clear observations without a row write.
+
+Only an enabled exact REST and SDK probe may supply published qualification. A
+later `activation='business-enable'`, `enable=true` review binds the fresh disabled
+candidate hashes and `disabledConstructionProofHash` of the current complete SDK
+inventory. Exact control handlers must already be enabled, exact business handlers
+disabled, and each Selection authority qualified at that current probe version.
+Old evidence versions are never rewritten. Obtain another adapter review for the
+final action deltas. Acceptance and production remain BLOCKED.
+
+Public formula sources require the approved exact actual input name and unique
+case-insensitive title among current elements. Renamed or ambiguous sources are
+refused even when their IDs, columns and refreshed binding hashes are valid.
 
 After the PUT, `native-action-readback` calls `verify_native_action_update_readback`
 with proposal/readback/sdk_actions and a fresh named review binding proposalHash,
 contentsHash, actionInventoryHash and allowedSemanticChangesHash. It requires exact
-REST content, complete SDK semantics, canonical qualified Selection authority and
-preservation of every unrelated sequence. Actual published runtime, failure/retry,
+REST content, complete SDK semantics and preservation of every unrelated sequence.
+`qualify_public_selection_construction` bridges only the exact known REST literal
+and typed SDK control/host binding. It records `publicSelectionConstruction`, never
+runtime authority, and needs no fabricated published counts for disabled handlers.
+The readback status is `VERIFIED_NATIVE_ACTION_CONSTRUCTION_RUNTIME_UNRESOLVED`.
+Actual published runtime, failure/retry,
 role, persisted outcome and restoration evidence remain separate mandatory gates.
 
 ## Persisted workflow result UI

@@ -598,13 +598,12 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
                 f'eq(count_if({_conjoin([f"eq(rid_{table}, {rowid})",f"eq({_c(table, "Expense ID")}, {key})"])}), const_num(1))'])
         else:
             selection='const_bool(True)'
-        if workflow=='approval':
-            # Explicit control-only clearing is required: Escape changes grid
-            # highlighting, not the captured controls/durable intent.
-            lines += [f'clear_button = {host}.add_button("Clear selection context")',
+        # Escape changes highlighting, not captured controls/durable intent.
+        lines += [f'clear_button = {host}.add_button("Clear selection context")',
                 'clear_button.set_frame(1, cursor, min(24, clear_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
-                f'clear_sequence = clear_button.on_click("Clear captured expense context", [set_control_value({op}, ""), set_control_value({ctx}, ""), set_control_value({key}, ""), set_control_value({rowid}, ""), set_control_value({n}, 0.0)])',
+                f'clear_sequence = clear_button.on_click("Clear captured context", [set_control_value({op}, ""), set_control_value({ctx}, ""), set_control_value({key}, ""), set_control_value({rowid}, ""), set_control_value({n}, 0.0)])',
                 f'clear_sequence.set_disabled({not enabled!r})']
+        if workflow=='approval':
             summary_values={'state':f'if_({selection}, const_text("One expense is captured."), const_text("Select exactly one expense or clear this context."))',
                 'record':f'if_({selection}, {key}, const_text("—"))','count':n}
             for name in ('Employee','Vendor','Amount'):
@@ -907,14 +906,14 @@ def _authored_routes(manifest,receipt,binding,current_contents,staging_review=No
         w=workflow(node);var=node.targets[0].id;call=node.value
         if not isinstance(call.func,ast.Attribute) or call.func.attr not in {'on_select','on_click'}:continue
         us=updates(call,w)
-        if call.func.attr=='on_select' or any(not eligible(u) for u in us):
-            role='selection' if var=='capture' else 'recovery' if var=='recover' else 'new-intent' if var=='new_sequence' else 'confirm' if var=='confirm_sequence' else None
+        if call.func.attr=='on_select' or any(not eligible(u) for u in us) or var=='clear_sequence':
+            role='selection' if var=='capture' else 'recovery' if var=='recover' else 'new-intent' if var=='new_sequence' else 'confirm' if var=='confirm_sequence' else 'clear-context' if var=='clear_sequence' else None
             if role is None:raise NativeActionError('unsupported deferred authored event')
             deferred.append({'workflow':w,'role':role,'variable':var,'hostVariable':ast.unparse(call.func.value),
                 'call':ast.unparse(call),'condition':ast.unparse(conditions[(w,var)]) if (w,var) in conditions else None,
                 'rowPredicates':[ast.unparse(u.args[1]) for u in us],
                 'branches':{name:ast.unparse(value) for (wf,name),value in branches.items() if wf==w}})
-            drop.add((w,var))
+            if var!='clear_sequence':drop.add((w,var))  # Retain the known disabled native factory for restoration.
         elif us:
             # Dictionary selection cannot embed the frozen predicate. Preserve the
             # WHOLE predicate in its original event condition, with exact CountIf.
@@ -1020,6 +1019,11 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
     if len(elements)!=len(doc['elements']):raise NativeActionError('duplicate current element identity refused')
     for feature,record in {**action_bindings['tables'],**action_bindings.get('readTargets',{})}.items():
         target=record['target'];actual=elements.get(target['elementId'],{});owners=_layout_element_owners(layout,target['elementId'])
+        spec=manifest['planProjection']['sharedInputArchitecture']['inputs'].get(feature)
+        name=actual.get('name')
+        if (not isinstance(name,str) or not name or (spec is not None and name!=spec['name'])
+                or sum(str(e.get('name','')).casefold()==name.casefold() for e in elements.values())!=1):
+            raise NativeActionError('public formula source name must equal the approved unique actual name')
         kind='input-table' if feature in action_bindings['tables'] else 'table'
         if (actual.get('kind')!=kind or len(owners)!=1 or owners[0].get('id')!=target['pageId']
                 or any(sum(c.get('id')==cid and c.get('name')==name for c in actual.get('columns',[]))!=1 for name,cid in target['columnIds'].items())):
@@ -1132,7 +1136,27 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
             'contentsHash':result['contentsHash'],'assignedComponentsHash':result['assignedComponentsHash'],'sdkInventoryHash':result['sdkInventoryHash'],
             'documentId':manifest['target']['documentId'],'version':manifest['target']['version']}
         if staging_review.get('status')!='APPROVED_STAGING' or (not str(staging_review.get('owner') or '').strip() or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',str(staging_review.get('owner')))) or any(staging_review.get(k)!=v for k,v in fields.items()):raise NativeActionError('public native staging review stale/incomplete')
-        if staging_review.get('enable',False) is not False:
+        activation=staging_review.get('activation','business-enable' if staging_review.get('enable') is True else 'disabled')
+        if activation not in {'disabled','selection-probe','business-enable'}:raise NativeActionError('unknown reviewed native activation')
+        control_roles={'selection','recovery','clear-context'}
+        if activation=='selection-probe':
+            if (staging_review.get('probeOnly') is not True or staging_review.get('enable',False) is not False
+                    or staging_review.get('businessActionsDisabledInventoryHash')!=action_digest(sdk_actions)):
+                raise NativeActionError('exact control-only probe review and disabled business inventory required')
+            declared={(edit['hostElementId'],edit['sequenceId']):edit for edit in edits}
+            for eid,element in sdk_actions['elements'].items():
+                for seq in element['sequences']:
+                    edit=declared.get((eid,seq['id']))
+                    if edit is not None and edit['role'] not in control_roles:continue  # This exact edit disables it.
+                    if not seq['disabled'] and any(block['kind'] not in {'TextSetControlValueEffect','FloatSetControlValueEffect','BooleanSetControlValueEffect','DateSetControlValueEffect','NavigateAction'} for block in seq['blocks']):
+                        raise NativeActionError('selection probe requires every other business action disabled')
+            for edit in edits:
+                if edit['role'] in control_roles:
+                    if any(effect['effect']!='set-control-value' for effect in edit['afterAction']['effects']):raise NativeActionError('selection probe cannot contain row writes')
+                    edit['afterAction']['state']='enabled'
+                    edit['afterActionHash']=_digest(edit['afterAction'])
+            result['status']='CONTROL_ONLY_PROBE_REQUIRES_PUBLISHED_SELECTION_EVIDENCE'
+        elif activation=='business-enable':
             if staging_review.get('enable') is not True or staging_review.get('disabledConstructionProofHash')!=action_digest(sdk_actions):raise NativeActionError('actual exact disabled construction SDK proof required before enabling')
             for authority in authorities:
                 qualified=[q for q in sdk_actions['elements'][authority['hostElementId']].get('publicSelectionAuthority',[])
@@ -1142,11 +1166,14 @@ def emit_public_native_action_fragments(manifest,receipt,action_bindings,*,curre
             for edit in edits:
                 prior=[a for a in elements[edit['hostElementId']].get('actions',[]) if a['id']==edit['sequenceId']]
                 observed=[s for s in sdk_actions['elements'][edit['hostElementId']]['sequences'] if s['id']==edit['sequenceId']]
-                if (len(prior)!=1 or prior[0].get('state')!='disabled' or len(observed)!=1 or observed[0]['disabled'] is not True
-                        or {k:v for k,v in prior[0].items() if k!='state'}!={k:v for k,v in edit['afterAction'].items() if k!='state'}):raise NativeActionError('only exact previously constructed disabled actions may be enabled')
+                expected_state='enabled' if edit['role'] in control_roles else 'disabled'
+                if (len(prior)!=1 or prior[0].get('state')!=expected_state or len(observed)!=1 or observed[0]['disabled'] is not (expected_state=='disabled')
+                        or {k:v for k,v in prior[0].items() if k!='state'}!={k:v for k,v in edit['afterAction'].items() if k!='state'}):raise NativeActionError('only exact previously constructed probe and disabled business actions may be enabled')
                 edit['afterAction']['state']='enabled';edit['afterActionHash']=_digest(edit['afterAction'])
-            result['allowedEditPaths']=[{k:edit[k] for k in ('hostElementId','sequenceId','beforeActionHash','afterActionHash','role')} for edit in edits]
             result['status']='ENABLED_REVIEWED_STAGING_ONLY_REQUIRES_RUNTIME'
+        elif staging_review.get('enable',False) is not False:raise NativeActionError('inconsistent reviewed native activation')
+        result['activation']=activation
+        result['allowedEditPaths']=[{k:edit[k] for k in ('hostElementId','sequenceId','beforeActionHash','afterActionHash','role')} for edit in edits]
         result['constructionReview']=copy.deepcopy(staging_review)
         result.pop('fragmentHash');result['fragmentHash']=_digest(result)
     return result

@@ -9,6 +9,59 @@ class PublicNativeActionsTests(unittest.TestCase):
     def fixture(self):
         helper=helpers.TestNativeActions();self.addCleanup(helper.doCleanups)
         return helper.bound_approval()
+    def probe(self,m,r,b,c,cap,a,disabled):
+        from action_inventory import digest
+        review={'status':'APPROVED_STAGING','owner':'offline-reviewer','documentId':'doc','version':c['documentVersion'],
+            **{k:disabled[k] for k in ('sourceHash','planHash','bindingHash','fragmentHash','contentsHash','assignedComponentsHash','sdkInventoryHash')},
+            'activation':'selection-probe','probeOnly':True,'businessActionsDisabledInventoryHash':digest(cap)}
+        return native.emit_public_native_action_fragments(m,r,b,current_contents=c,sdk_actions=cap,assigned_components=a,staging_review=review)
+
+    def test_reviewed_control_only_probe_breaks_disabled_cardinality_bootstrap_without_writes(self):
+        m,r,b,c,cap,a,disabled=self.public_fixture();probe=self.probe(m,r,b,c,cap,a,disabled)
+        self.assertEqual(probe['activation'],'selection-probe')
+        roles={e['role']:e for e in probe['actionEdits']};self.assertIn('clear-context',roles)
+        for role,edit in roles.items():
+            if role in {'selection','recovery','clear-context'}:
+                self.assertEqual(edit['afterAction']['state'],'enabled')
+                self.assertTrue(all(effect['effect']=='set-control-value' for effect in edit['afterAction']['effects']))
+            else:self.assertEqual(edit['afterAction']['state'],'disabled')
+        self.assertEqual(probe['productionStatus'],'BLOCKED')
+
+    def test_public_formulas_reject_renamed_or_ambiguous_actual_input_even_freshly_rebound(self):
+        from input_sync import _digest
+        for attack in ('rename','duplicate'):
+            m,r,b,c,cap,a,f=self.public_fixture();eid=b['tables']['expenseBusinessInput']['target']['elementId']
+            source=next(e for e in c['contents']['elements'] if e['id']==eid)
+            if attack=='rename':source['name']='Renamed Expense Source'
+            else:next(e for e in c['contents']['elements'] if e['id']!=eid)['name']=source['name'].swapcase()
+            b['contentsHash']=_digest(c['contents']);b['bindingHash']=_digest({k:v for k,v in b.items() if k!='bindingHash'});r['nativeActionBinding']=b
+            a.update(bindingHash=b['bindingHash'],contentsHash=b['contentsHash'])
+            with self.subTest(attack=attack),self.assertRaisesRegex(ValueError,'name'):native.emit_public_native_action_fragments(m,r,b,current_contents=c,sdk_actions=cap,assigned_components=a)
+
+    def test_selection_probe_rejects_enabled_omitted_business_sequence_and_incomplete_review(self):
+        from action_inventory import configuration,digest
+        m,r,b,c,cap,a,f=self.public_fixture();probe=self.probe(m,r,b,c,cap,a,f)
+        for change in ({'probeOnly':False},{'businessActionsDisabledInventoryHash':'stale'},{'enable':True},{'activation':'unknown'}):
+            with self.subTest(change=change),self.assertRaises(ValueError):native.emit_public_native_action_fragments(m,r,b,current_contents=c,sdk_actions=cap,assigned_components=a,staging_review={**probe['constructionReview'],**change})
+        # A valid independently reviewed restoration artifact does not authorize
+        # leaving an enabled native Prepare/other write running during a probe.
+        from test_action_inventory import ActionInventoryTests
+        _,old=ActionInventoryTests().fixture();old=ActionInventoryTests().reviewed(old)
+        host=a['buttons']['approval:prepare_button']['elementId'];e=copy.deepcopy(old['elements']['button']);e['elementId']=host
+        artifact=e.pop('restorationArtifact');artifact.update(elementId=host,sourceObservationHash=digest(e));e['restorationArtifact']=artifact;cap['elements'][host]=e
+        f=native.emit_public_native_action_fragments(m,r,b,current_contents=c,sdk_actions=cap,assigned_components=a)
+        with self.assertRaisesRegex(ValueError,'every other business action disabled'):self.probe(m,r,b,c,cap,a,f)
+
+    def test_disabled_construction_cannot_supply_published_selection_proof(self):
+        from action_inventory import qualify_public_selection_capture,qualify_public_selection_construction,digest
+        from input_sync import _digest
+        m,r,b,c,cap,a,f=self.public_fixture();fresh,after=self.post_actions(c,cap,f)
+        review={'status':'APPROVED_STAGING','owner':'offline-reviewer','documentId':'doc','version':fresh['documentVersion'],
+            'contentsHash':_digest(fresh['contents']),'captureHash':digest(after),**{k:f[k] for k in ('fragmentHash','sourceHash','planHash','bindingHash')},
+            'publishedSelectionEvidence':self.selection_proofs(f,fresh['documentVersion'])}
+        constructed=qualify_public_selection_construction(after,fresh,f,review)
+        self.assertFalse(any(e.get('publicSelectionAuthority') for e in constructed['elements'].values()))
+        with self.assertRaisesRegex(ValueError,'enabled'):qualify_public_selection_capture(after,fresh,f,review)
     def test_sdk_never_emits_global_selection_count_or_boolean_row_selector(self):
         m,r,b,c=self.fixture();result=native.emit_native_action_program(m,r,b,current_contents=c);tree=ast.parse(result['program'])
         calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)]
@@ -30,6 +83,9 @@ class PublicNativeActionsTests(unittest.TestCase):
             target['systemColumn']=alias;b['tables']['workflowOperations'].update(target=copy.deepcopy(target),systemColumn=alias)
             r['artifacts']=build_artifact_records(m,m['planProjection']['sharedInputArchitecture'],r['targetBindings'])
             b['bindingHash']=_digest({k:v for k,v in b.items() if k!='bindingHash'});r['nativeActionBinding']=b
+        for feature,record in b['tables'].items():
+            next(e for e in c['contents']['elements'] if e['id']==record['target']['elementId'])['name']=m['planProjection']['sharedInputArchitecture']['inputs'][feature]['name']
+        b['contentsHash']=_digest(c['contents']);b['bindingHash']=_digest({k:v for k,v in b.items() if k!='bindingHash'});r['nativeActionBinding']=b
         routes=native.emit_native_action_program(m,r,b,current_contents=c)
         assigned={'controls':{},'buttons':{},'actions':{}}
         for alias,record in routes['componentControls'].items():
@@ -57,12 +113,12 @@ class PublicNativeActionsTests(unittest.TestCase):
             for effect in action['effects']:
                 if effect['effect']=='set-control-value':
                     count=effect['control'].endswith('selection-count');value=effect['value']
-                    if count:value={'type':'unavailable','reason':'SDK_SELECTION_NAMESPACE_NO_GETTER'}
+                    if value.get('formula','').startswith('CountDistinct([Selection/'):value={'type':'unavailable','reason':'SDK_SELECTION_NAMESPACE_NO_GETTER'}
                     control_element=next(e['id'] for e in current['contents']['elements'] if e.get('kind')=='control' and e.get('controlId')==effect['control'])
                     blocks.append({'kind':'FloatSetControlValueEffect' if count else 'TextSetControlValueEffect','fields':{'controlId':effect['control'],'controlElementId':control_element,'value':value}})
                 else:blocks.append({'kind':'UpdateRowsEffect','fields':{'tableId':effect['tableElementId'],'whichRows':effect['whichRows'],'values':effect['values']}})
             element=cap['elements'][host['id']];element['sequences'].append({'id':action['id'],'name':action['name'],'trigger':action['trigger'] if isinstance(action['trigger'],str) else action['trigger']['on'],
-                'disabled':True,'condition':action['trigger'].get('condition') if isinstance(action['trigger'],dict) else None,'blocks':blocks,'successToast':None})
+                'disabled':action['state']=='disabled','condition':action['trigger'].get('condition') if isinstance(action['trigger'],dict) else None,'blocks':blocks,'successToast':None})
             element['semanticHash']=digest(configuration(element))
         return fresh,cap
     def selection_proofs(self,fragments,version):
@@ -73,7 +129,7 @@ class PublicNativeActionsTests(unittest.TestCase):
     def test_selection_authority_is_exact_source_bound_actual_proof_not_missing_node_repr(self):
         from action_inventory import qualify_public_selection_capture,digest
         from input_sync import _digest
-        m,r,b,c,cap,assigned,f=self.public_fixture();fresh,after=self.post_actions(c,cap,f)
+        m,r,b,c,cap,assigned,f=self.public_fixture();f=self.probe(m,r,b,c,cap,assigned,f);fresh,after=self.post_actions(c,cap,f)
         runtime=self.selection_proofs(f,9);key=next(iter(runtime))
         review={'status':'APPROVED_STAGING','owner':'offline-reviewer','documentId':'doc','version':9,'contentsHash':_digest(fresh['contents']),
             'captureHash':digest(after),**{k:f[k] for k in ('fragmentHash','sourceHash','planHash','bindingHash')},'publishedSelectionEvidence':runtime}
@@ -100,7 +156,7 @@ class PublicNativeActionsTests(unittest.TestCase):
 
     def test_public_routes_preserve_complete_frozen_predicate_and_exact_selection_scope(self):
         m,r,b,c,cap,assigned,f=self.public_fixture()
-        by={e['role']:e for e in f['actionEdits']};self.assertEqual(set(by),{'selection','recovery','confirm'})
+        by={e['role']:e for e in f['actionEdits']};self.assertEqual(set(by),{'selection','recovery','confirm','clear-context'})
         selection=by['selection']['afterAction'];self.assertEqual(selection['trigger'],'on-select')
         self.assertEqual(selection['effects'][2]['value'],{'type':'formula','formula':'CountDistinct([Selection/ID])'})
         confirm=by['confirm']['afterAction'];update=confirm['effects'][0]
@@ -144,11 +200,12 @@ class PublicNativeActionsTests(unittest.TestCase):
             'allowedActionEdits':f['allowedEditPaths'],'readbackEvidenceHashes':dict.fromkeys(['fullRows','schemaDisplay','sourceGraph'],'a'*64)}
         from action_inventory import configuration,digest
         after,post_capture=self.post_actions(c,cap,f)
-        from action_inventory import qualify_public_selection_capture
+        raw_capture=copy.deepcopy(post_capture)
+        from action_inventory import qualify_public_selection_construction
         selection_review={'status':'APPROVED_STAGING','owner':'offline-reviewer','documentId':'doc','version':9,'contentsHash':_digest(after['contents']),
             'captureHash':digest(post_capture),**{k:f[k] for k in ('fragmentHash','sourceHash','planHash','bindingHash')},
             'publishedSelectionEvidence':self.selection_proofs(f,9)}
-        post_capture=qualify_public_selection_capture(post_capture,after,f,selection_review)
+        post_capture=qualify_public_selection_construction(post_capture,after,f,selection_review)
 
         review['sdkAllowedChanges']={host:configuration(post_capture['elements'][host]) for host in {e['hostElementId'] for e in f['actionEdits']}}
         proposal=repair.prepare_native_action_update(m,r,b,f,c,scope=scope,review=review,sdk_actions=cap,assigned_components=assigned)
@@ -161,9 +218,13 @@ class PublicNativeActionsTests(unittest.TestCase):
         bad=copy.deepcopy(f);bad['actionEdits'][0]['afterAction']['effects'][2]['value']['formula']='CountDistinct([Whole table/ID])'
         with self.assertRaises(ValueError):repair.prepare_native_action_update(m,r,b,bad,c,scope=scope,review=review,sdk_actions=cap,assigned_components=assigned)
         post_review={'status':'APPROVED_STAGING','owner':'offline-reviewer','proposalHash':proposal['proposalHash'],'contentsHash':_digest(after['contents']),
-            'actionInventoryHash':digest(post_capture),'allowedSemanticChangesHash':digest(review['sdkAllowedChanges'])}
-        self.assertEqual(repair.verify_native_action_update_readback(proposal,after,post_capture,post_review)['status'],'VERIFIED_SDK_ACTION_SEMANTICS')
-        with self.assertRaises(ValueError):repair.verify_native_action_update_readback(proposal,after,post_capture,{**post_review,'allowedSemanticChangesHash':'stale'})
+            'actionInventoryHash':digest(raw_capture),'allowedSemanticChangesHash':digest(review['sdkAllowedChanges'])}
+        self.assertEqual(repair.verify_native_action_update_readback(proposal,after,raw_capture,post_review)['status'],'VERIFIED_NATIVE_ACTION_CONSTRUCTION_RUNTIME_UNRESOLVED')
+        with self.assertRaises(ValueError):repair.verify_native_action_update_readback(proposal,after,raw_capture,{**post_review,'allowedSemanticChangesHash':'stale'})
+        bad=copy.deepcopy(raw_capture);authority=f['selectionAuthorities'][0];element=bad['elements'][authority['hostElementId']]
+        element['sequences'][0]['blocks'][authority['effectIndex']]['fields']['controlElementId']='foreign'
+        element['semanticHash']=digest(configuration(element))
+        with self.assertRaisesRegex(ValueError,'arbitrary opaque'):repair.verify_native_action_update_readback(proposal,after,bad,{**post_review,'actionInventoryHash':digest(bad)})
         dry={'httpStatus':200,'dryRun':True,'evidenceId':'offline-only','proposalHash':proposal['proposalHash']}
         self.assertEqual(repair.finalize_repair_update(proposal,c,dry,fresh_sdk_actions=cap)['body']['documentVersion'],8)
         with self.assertRaises(ValueError):repair.finalize_repair_update(proposal,{**c,'documentVersion':9},dry,fresh_sdk_actions=cap)
@@ -219,11 +280,18 @@ class PublicNativeActionsTests(unittest.TestCase):
         review={'status':'APPROVED_STAGING','owner':'offline-reviewer','documentId':'doc','version':8,
             **{k:f[k] for k in fields},'enable':True,'disabledConstructionProofHash':digest(cap)}
         with self.assertRaises(ValueError):native.emit_public_native_action_fragments(m,r,b,current_contents=c,sdk_actions=cap,assigned_components=a,staging_review=review)
-        fresh,after=self.post_actions(c,cap,f);fresh['documentVersion']=8;after['version']=8
+        f=self.probe(m,r,b,c,cap,a,f)
+        fresh,after=self.post_actions(c,cap,f);f=copy.deepcopy(f)
+        # The new probe version is observed, never assigned onto old proof.
+        m['target']['version']=fresh['documentVersion'];b['target']['version']=fresh['documentVersion'];a['target']['version']=fresh['documentVersion']
+        from input_sync import build_artifact_records
+        for target in r['targetBindings'].values():target['version']=fresh['documentVersion']
+        for record in b['tables'].values():record['target']['version']=fresh['documentVersion']
+        r['artifacts']=build_artifact_records(m,m['planProjection']['sharedInputArchitecture'],r['targetBindings'])
         from action_inventory import qualify_public_selection_capture
-        selection_review={'status':'APPROVED_STAGING','owner':'offline-reviewer','documentId':'doc','version':8,'contentsHash':_digest(fresh['contents']),
+        selection_review={'status':'APPROVED_STAGING','owner':'offline-reviewer','documentId':'doc','version':fresh['documentVersion'],'contentsHash':_digest(fresh['contents']),
             'captureHash':digest(after),**{k:f[k] for k in ('fragmentHash','sourceHash','planHash','bindingHash')},
-            'publishedSelectionEvidence':self.selection_proofs(f,8)}
+            'publishedSelectionEvidence':self.selection_proofs(f,fresh['documentVersion'])}
         after=qualify_public_selection_capture(after,fresh,f,selection_review)
         # This fixture exercises the existing recovery contract, not a recovery shortcut.
         for eid,e in after['elements'].items():
@@ -239,12 +307,21 @@ class PublicNativeActionsTests(unittest.TestCase):
         for record in [*a['controls'].values(),*a['buttons'].values()]:record['elementHash']=_digest(next(e for e in fresh['contents']['elements'] if e['id']==record['elementId']))
         for edit in f['actionEdits']:a['actions'][edit['workflow']+':'+edit['role']]['beforeActionHash']=edit['afterActionHash']
         disabled=native.emit_public_native_action_fragments(m,r,b,current_contents=fresh,sdk_actions=after,assigned_components=a)
-        review.update({k:disabled[k] for k in fields});review['disabledConstructionProofHash']=digest(after)
+        review.update({k:disabled[k] for k in fields});review['version']=fresh['documentVersion'];review['disabledConstructionProofHash']=digest(after)
         enabled=native.emit_public_native_action_fragments(m,r,b,current_contents=fresh,sdk_actions=after,assigned_components=a,staging_review=review)
         self.assertTrue(all(e['afterAction']['state']=='enabled' for e in enabled['actionEdits']))
         self.assertEqual(enabled['status'],'ENABLED_REVIEWED_STAGING_ONLY_REQUIRES_RUNTIME')
         for change in ({'disabledConstructionProofHash':'stale'},{'owner':'PENDING'},{'fragmentHash':f['fragmentHash']}):
             with self.subTest(change=change),self.assertRaises(ValueError):native.emit_public_native_action_fragments(m,r,b,current_contents=fresh,sdk_actions=after,assigned_components=a,staging_review={**review,**change})
+        stale=copy.deepcopy(after)
+        for element in stale['elements'].values():
+            if element.get('publicSelectionAuthority'):
+                element['publicSelectionAuthority'][0]['review']['version']-=1
+                artifact=element.pop('restorationArtifact');artifact['sourceObservationHash']=digest(element);element['restorationArtifact']=artifact
+                break
+        candidate=native.emit_public_native_action_fragments(m,r,b,current_contents=fresh,sdk_actions=stale,assigned_components=a)
+        updated={**review,**{k:candidate[k] for k in fields},'disabledConstructionProofHash':digest(stale)}
+        with self.assertRaisesRegex(ValueError,'fresh qualified'):native.emit_public_native_action_fragments(m,r,b,current_contents=fresh,sdk_actions=stale,assigned_components=a,staging_review=updated)
 
     def test_public_fragment_and_narrow_adapter_entrypoints_exist(self):
         self.assertTrue(callable(getattr(native,'emit_public_native_action_fragments',None)))
