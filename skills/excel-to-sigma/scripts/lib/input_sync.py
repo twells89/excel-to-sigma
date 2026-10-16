@@ -254,20 +254,30 @@ def _parse_datetime(value, date_only=False):
     return value
 
 
-def _sdk_literal(value, column_type=None):
-    if column_type == "datetime":
+def _sdk_literal(value, column_type=None, *, date_only_hour=12):
+    """Emit constructor literals admitted by the MCP SDK, never parser calls.
+
+    Authored source dates use noon; captured warehouse timestamps/date strings
+    use hour0 explicitly so rollback does not shift midnight. Aware instants
+    normalize to UTC before their timezone-free warehouse constructor is emitted.
+    """
+    if date_only_hour not in (0, 12):
+        raise InputSyncError('date-only SDK literal policy must be midnight or noon')
+    if column_type == "datetime" or isinstance(value, (dt.datetime, dt.date)):
         date_only = (isinstance(value, dt.date) and not isinstance(value, dt.datetime)) or (
             isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
         )
         value = _parse_datetime(value)
         if date_only:
-            return f"datetime({value.year}, {value.month}, {value.day}, 12)"
+            if date_only_hour == 12:
+                return f"datetime({value.year}, {value.month}, {value.day}, 12)"
+            value = value.replace(hour=0)
+        if value is not None and not isinstance(value, dt.datetime):
+            raise InputSyncError('datetime SDK literal requires an actual timestamp')
     if isinstance(value, dt.datetime):
         fraction=f", {value.microsecond}" if value.microsecond else ""
         return (f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, "
                 f"{value.minute}, {value.second}{fraction})")
-    if isinstance(value, dt.date):
-        return f"datetime({value.year}, {value.month}, {value.day}, 12)"
     if value is None:
         return "None"
     return repr(value)

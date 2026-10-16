@@ -16,6 +16,7 @@ def unsupported(program):
         if isinstance(node,ast.Call):
             if isinstance(node.func,ast.Name) and node.func.id=='set':failures.append('set()')
             if isinstance(node.func,ast.Attribute) and node.func.attr=='issubset':failures.append('issubset()')
+            if isinstance(node.func,ast.Attribute) and node.func.attr=='fromisoformat':failures.append('fromisoformat()')
             if isinstance(node.func,ast.Name) and node.func.id=='isinstance' and len(node.args)>1 and isinstance(node.args[1],ast.Tuple):failures.append('tuple isinstance')
     return failures
 
@@ -64,6 +65,60 @@ def fake_sdk(binding,*,table_name='Input'):
 
 
 class SdkProgramAdmissionTests(unittest.TestCase):
+    def test_rollback_timestamps_execute_without_fromisoformat_and_restore_exact_instants(self):
+        cases=[('2026-10-15T00:00:00.123456Z',dt.datetime(2026,10,15,0,0,0,123456)),
+            ('2026-10-15T23:45:12.987654-04:00',dt.datetime(2026,10,16,3,45,12,987654)),
+            ('2026-10-15',dt.datetime(2026,10,15)),(None,None)]
+        for captured,want in cases:
+            p,current,rows,sdk,scope=rollback_fixtures.PromotionTests().fixture();binding=rows['input']['binding']
+            binding['columnIds']['At']='at';binding['columnTypes']['At']='datetime';binding['columnClasses']['At']='LiteralEditableColumn'
+            binding['sdkColumns'].insert(-1,{'id':'at','name':'At','columnClass':'LiteralEditableColumn','type':'datetime'})
+            current['contents']['elements'][0]['columns'].insert(-1,{'id':'at','name':'At','type':'datetime'})
+            sdk['input']['columns'].insert(-1,['at',True,None]);rows['input']['rows'][0]['At']=captured
+            backup=p.build_promotion_backup(scope,current,rows,sdk,{})
+            changed=copy.deepcopy(rows);changed['input']['rows'][0]['At']='2026-11-01T12:00:00'
+            plan=p.prepare_rollback(backup,{**current,'documentVersion':8},changed);program=plan['rowPrograms']['input']
+            self.assertEqual(unsupported(program),[])
+            sigma,table,effects,modules=fake_sdk(binding)
+            # Actual MCP exposes the constructor, not datetime.fromisoformat.
+            constructor_only=types.ModuleType('datetime');constructor_only.datetime=lambda *args:dt.datetime(*args);modules['datetime']=constructor_only
+            with self.subTest(captured=captured),patch.dict(sys.modules,modules):exec(program,{'sigma':sigma})
+            self.assertEqual(len(effects),1);self.assertEqual(effects[0][0],'update')
+            rid,changes=effects[0][1][0];self.assertEqual(rid,'row1')
+            self.assertEqual({c.name():v for c,v in changes.items()},{'At':want})
+            restored=copy.deepcopy(rows);restored['input']['rows'][0]['At']=want.isoformat() if want else None
+            fresh={**current,'documentVersion':8}
+            self.assertEqual(p.verify_restoration(backup,fresh,restored,sdk,sdk_actions=rollback_fixtures.PromotionTests().actions(fresh))['status'],'RESTORED_BUSINESS_VALUES_AND_DOCUMENT_DISPLAY')
+            if want is not None:
+                wrong=copy.deepcopy(restored);wrong['input']['rows'][0]['At']=(want+dt.timedelta(microseconds=1)).isoformat()
+                with self.assertRaises(ValueError):p.verify_restoration(backup,fresh,wrong,sdk,sdk_actions=rollback_fixtures.PromotionTests().actions(fresh))
+
+    def test_outcome_constructor_and_readback_preserve_fractional_utc_instants(self):
+        cases=[('2026-10-15T00:00:00.000001Z',dt.datetime(2026,10,15,0,0,0,1)),
+            ('2026-10-15T23:45:12.123456-04:00',dt.datetime(2026,10,16,3,45,12,123456)),
+            ('2026-10-15',dt.datetime(2026,10,15))]
+        for wire,want in cases:
+            h=outcome_fixtures.OutcomeTests();p,operations,expected,capture=h.fixture()
+            plan=p.reconcile_operation(expected,capture,operations,completed_at=wire,manifest=h.manifest,receipt=h.receipt)
+            self.assertEqual(unsupported(plan['program']),[])
+            sigma,table,effects,modules=fake_sdk(operations['binding']);constructor_only=types.ModuleType('datetime')
+            constructor_only.datetime=lambda *args:dt.datetime(*args);modules['datetime']=constructor_only
+            with self.subTest(wire=wire),patch.dict(sys.modules,modules):exec(plan['program'],{'sigma':sigma})
+            rid,values=effects[0][1][0];self.assertEqual(rid,'op1')
+            changes={c.name():v for c,v in values.items()};self.assertEqual(changes['Completed At'],want)
+            self.assertEqual(changes['State'],'CONFIRMED');self.assertEqual(plan['intendedRows']['op1']['Completed At'],want.isoformat())
+            final=copy.deepcopy(operations);final.update(executionId='fresh-after',evidenceId='fresh-after',rows=copy.deepcopy(list(plan['intendedRows'].values())))
+            final['rows'][0]['Completed At']=want.isoformat()+'Z'
+            self.assertEqual(p.verify_outcome_row(plan,final)['status'],'CONFIRMED_COMPONENT_OUTCOME')
+            final['rows'][0]['Completed At']=(want+dt.timedelta(microseconds=1)).isoformat()
+            with self.assertRaises(ValueError):p.verify_outcome_row(plan,final)
+
+    def test_source_date_noon_policy_does_not_change_captured_midnight_or_aware_datetimes(self):
+        from input_sync import _sdk_literal
+        self.assertEqual(eval(_sdk_literal('2026-10-15','datetime'),{'datetime':dt.datetime}),dt.datetime(2026,10,15,12))
+        midnight=dt.datetime(2026,10,15,tzinfo=dt.timezone(dt.timedelta(hours=2)))
+        self.assertEqual(eval(_sdk_literal(midnight),{'datetime':dt.datetime}),dt.datetime(2026,10,14,22))
+
     def test_fractional_datetime_literals_roundtrip_utc_offsets_and_seed_retry_exactly(self):
         from input_sync import _sdk_literal,plan_seed
         for wire,expected in [('2026-10-15T08:45:12.123Z',dt.datetime(2026,10,15,8,45,12,123000)),
@@ -171,7 +226,8 @@ class SdkProgramAdmissionTests(unittest.TestCase):
 
     def test_admission_filter_rejects_archived_failure_shapes(self):
         for code in ('a = set(c.id() for c in table.list_columns())','a = {"id"}',
-                'if set(approved).issubset(set(observed)): pass','if isinstance(column, (LiteralEditableColumn, SingleSelectEditableColumn)): pass'):
+                'if set(approved).issubset(set(observed)): pass','if isinstance(column, (LiteralEditableColumn, SingleSelectEditableColumn)): pass',
+                "value = datetime.fromisoformat('2026-10-15T08:45:12.123000+00:00')"):
             with self.subTest(code=code):self.assertTrue(unsupported(code))
 
 

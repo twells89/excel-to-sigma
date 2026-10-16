@@ -8,8 +8,10 @@ import hashlib
 import json
 try:
     from .action_inventory import validate_action_inventory,verify_action_preservation,action_restore_programs
+    from .input_sync import _sdk_literal
 except ImportError:
     from action_inventory import validate_action_inventory,verify_action_preservation,action_restore_programs
+    from input_sync import _sdk_literal
 
 
 def _digest(value):
@@ -32,6 +34,13 @@ def _rows(capture):
             raise ValueError('row IDs/business keys must be complete and unique')
         result[rid]=row;seen.add(key)
     return result
+
+
+def _comparable_rows(capture,column_types):
+    """Only typed timestamps normalize; captured date-only values mean midnight."""
+    return {rid:{name:(_sdk_literal(value,'datetime',date_only_hour=0)
+            if column_types.get(name)=='datetime' else value) for name,value in row.items()}
+        for rid,row in _rows(capture).items()}
 
 
 def _display(capture,binding):
@@ -130,7 +139,7 @@ def prepare_rollback(backup,fresh,current_rows,owned_added_rows=None,*,fresh_dat
             for name,cid in fields.items():
                 if row.get(name)==after[rid].get(name):continue
                 value=row[name];kind=original['binding']['columnTypes'][name]
-                literal=(f'datetime.fromisoformat({value.replace("Z","+00:00")!r})' if kind=='datetime' and value is not None else repr(value))
+                literal=_sdk_literal(value,kind,date_only_hour=0)
                 changes.append(f'{by_id[cid]}: {literal}')
             if changes:updates.append(f"({rid!r}, {{{', '.join(changes)}}})")
         if updates:lines.append('table.update_rows(['+', '.join(updates)+'])')
@@ -201,7 +210,8 @@ def verify_restoration(backup,fresh,rows,sdk,data_models=None,*,sdk_actions=None
     if fresh.get('workbookId')!=backup['scope']['documentId'] or fresh.get('contents')!=backup['document']['contents']:raise ValueError('original document not restored')
     if set(rows)!=set(backup['rows']) or sdk!=backup['sdk']:raise ValueError('complete SDK display and row readback required')
     for eid,capture in rows.items():
-        if _rows(capture)!=_rows(backup['rows'][eid]):raise ValueError('business rows not restored')
+        types=backup['rows'][eid]['binding']['columnTypes']
+        if _comparable_rows(capture,types)!=_comparable_rows(backup['rows'][eid],types):raise ValueError('business rows not restored')
     models=data_models or {}
     if set(models)!=set(backup['dataModels']):raise ValueError('all affected data-model readbacks required')
     for identity,model in backup['dataModels'].items():

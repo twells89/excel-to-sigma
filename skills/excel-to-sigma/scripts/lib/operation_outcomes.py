@@ -12,14 +12,14 @@ try:
     from .promotion import _header,_rows,_digest
     from .workflow_repairs import _project
     from .migration_manifest import validate_manifest
-    from .input_sync import _approved_feature
+    from .input_sync import _approved_feature,_sdk_literal,_parse_datetime
     from .input_display import _system_column_contract, _editable_column_contract
 except ImportError:
     from native_actions import audit_native_action_readback
     from promotion import _header,_rows,_digest
     from workflow_repairs import _project
     from migration_manifest import validate_manifest
-    from input_sync import _approved_feature
+    from input_sync import _approved_feature,_sdk_literal,_parse_datetime
     from input_display import _system_column_contract, _editable_column_contract
 
 
@@ -70,7 +70,7 @@ def reconcile_operation(expected,capture,operations,*,completed_at,manifest=None
         raise ValueError('actual fresh business query required')
     for key in ('sourceHash','planHash','documentId','version','operationId','context'):
         if not expected.get(key) or expected[key]!=capture.get(key):raise ValueError('operation readback binding mismatch')
-    timestamp=datetime.datetime.fromisoformat(completed_at.replace('Z','+00:00')).isoformat()
+    timestamp=_parse_datetime(datetime.datetime.fromisoformat(completed_at.replace('Z','+00:00'))).isoformat()
     audit=audit_native_action_readback(expected,capture)
     if audit['status']!='PASSED_COMPONENT_READBACK':raise ValueError('business outcome not confirmed: '+', '.join(audit['failures']))
     row=indexed.get(expected['operationId'])
@@ -85,7 +85,7 @@ def reconcile_operation(expected,capture,operations,*,completed_at,manifest=None
     lines += [f'# sourceHash={expected["sourceHash"]}; planHash={expected["planHash"]}; evidence={capture["evidenceId"]}',
         '# Controller must serialize this follow-up and capture the updated row; no SDK return proves a write.',
         'from datetime import datetime',
-        f"table.update_rows([({expected['operationId']!r}, {{{variables['State']}: 'CONFIRMED', {variables['Outcome']}: {outcome!r}, {variables['Completed At']}: datetime.fromisoformat({timestamp!r})}})])"]
+        f"table.update_rows([({expected['operationId']!r}, {{{variables['State']}: 'CONFIRMED', {variables['Outcome']}: {outcome!r}, {variables['Completed At']}: {_sdk_literal(timestamp,'datetime',date_only_hour=0)}}})])"]
     result={'businessAudit':audit,'operationId':expected['operationId'],'operationsBeforeHash':_digest(operations),
         'expected':copy.deepcopy(expected),'manifest':copy.deepcopy(manifest),'receipt':copy.deepcopy(receipt),
         'operationsBefore':copy.deepcopy(operations),'intendedRows':intended,
@@ -104,7 +104,7 @@ def verify_outcome_row(plan,rows):
     row=index.get(plan['operationId'])
     if not row:raise ValueError('persisted outcome row missing')
     index=copy.deepcopy(index)
-    try:index[plan['operationId']]['Completed At']=datetime.datetime.fromisoformat(row['Completed At'].replace('Z','+00:00')).isoformat()
+    try:index[plan['operationId']]['Completed At']=_parse_datetime(datetime.datetime.fromisoformat(row['Completed At'].replace('Z','+00:00'))).isoformat()
     except (ValueError,TypeError,AttributeError,KeyError):raise ValueError('persisted exact completion timestamp required')
     if _digest(index)!=_digest(plan['intendedRows']):raise ValueError('persisted exact outcome/full original rows not confirmed')
     return {'status':'CONFIRMED_COMPONENT_OUTCOME','operationId':plan['operationId'],'outcomePlanHash':plan['outcomePlanHash'],'readbackHash':_digest(rows),'productionStatus':'BLOCKED'}

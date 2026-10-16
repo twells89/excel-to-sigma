@@ -439,6 +439,15 @@ SDK display → actual readback. When an edit mode was explicitly changed,
 restored. Recreated sequence IDs and immutable warehouse audit timestamps are
 qualified separately rather than falsely claimed identical.
 
+Generated rollback/outcome SDK programs use integer `datetime(...)` constructor
+literals; `datetime.fromisoformat` is not exposed by the actual MCP SDK. Parsing
+stays in the controller. Aware timestamps normalize to UTC, with every
+microsecond retained; typed timestamp readbacks must match that exact instant.
+Captured date-only values restore at midnight, while authored source-only dates
+retain the seeding policy of noon. Other fields and row IDs remain exact. Local
+constructor/effect-recorder tests do not establish actual storage precision or
+successful rollback: fresh complete row/display/action proof is still required.
+
 The parent observed a partially persisted native constructor at Operational v7:
 SDK typing succeeded, but a BoolFormula row selector failed `invalid_formula`
 after five controls, two buttons and Prepare/selection sequences persisted.
