@@ -64,7 +64,7 @@ def emit_python_programs(model_binding, *, column_maps=None):
     if not isinstance(model_binding,str) or not model_binding:
         raise PortError('MODEL_BINDING_REQUIRED')
     kernel=Path(__file__).with_name('custom_port_math.py').read_text()
-    maps=copy.deepcopy(column_maps or {})
+    maps=json.loads(json.dumps(column_maps or {},sort_keys=True))
     header=kernel+'\nCOLUMN_MAPS = '+repr(maps)+'\n'
     header+='''
 def read_rows(frame, title, required):
@@ -153,11 +153,29 @@ def read_model(actuals_frame, inputs_frame, definitions_frame):
                  ReadyToApply=False, ModelBinding=request.get('ModelBinding'),
                  ErrorCode=str(error) if isinstance(error, PortError) else 'RUNTIME_INPUT_ERROR')]
 '''
-        code+='COLUMNS = '+repr(columns)+'\n'
+        code+='COLUMNS = '+repr(columns)+'\nOUTPUT_TYPES = '+repr(dict(fields))+'\n'
         code+='''# Null-only failure columns need explicit types; never infer a schema.
-values = []
-for row in rows:
-    values.append([None if isinstance(row.get(k), (float, Decimal)) and not math.isfinite(float(row[k])) else row.get(k) for k in COLUMNS])
+def output_value(value, kind):
+    if value is None:
+        return None
+    if kind == 'DOUBLE':
+        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+            raise PortError('INVALID_OUTPUT_TYPE')
+        number = float(value)
+        return number if math.isfinite(number) else None
+    expected = {'INTEGER': int, 'BOOLEAN': bool, 'STRING': str}[kind]
+    if type(value) is not expected:
+        raise PortError('INVALID_OUTPUT_TYPE')
+    return value
+
+try:
+    values = [[output_value(row.get(k), OUTPUT_TYPES[k]) for k in COLUMNS] for row in rows]
+except Exception:
+    # Keep failure emission typed even if an invalid request value was copied
+    # into a diagnostic result field (for example a Boolean target).
+    fallback = dict(OperationId=request.get('OperationId') if isinstance(request.get('OperationId'), str) else None,
+                    Status='FAILURE', Converged=False, ReadyToApply=False, ErrorCode='RUNTIME_OUTPUT_TYPE_ERROR')
+    values = [[output_value(fallback.get(k), OUTPUT_TYPES[k]) for k in COLUMNS]]
 '''
         code+='output_frame = session.create_dataframe(values, schema='+repr(schema)+')\n'
         code+='sigma.output('+repr(OUTPUT_NAMES[name])+', output_frame)\n'
@@ -360,7 +378,7 @@ def validate_custom_port_completion(manifest):
     return True
 
 
-def build_port_fragments(model_binding,connection_id,*,column_maps=None,procedure_action=None):
+def _port_templates(model_binding,connection_id,*,column_maps=None,procedure_action=None):
     programs=emit_python_programs(model_binding,column_maps=column_maps)
     ids={'allocation':'task5Allocation','goalSeek':'task5GoalSeek','applyGuard':'task5GoalSeekApplyGuard'}
     titles={'allocation':'Allocation Result','goalSeek':'Goal Seek Result','applyGuard':'Goal Seek Apply Guard'}
@@ -370,7 +388,8 @@ def build_port_fragments(model_binding,connection_id,*,column_maps=None,procedur
         elements.append({'id':code_id,'kind':'code','connectionId':connection_id,'code':program['code']})
         elements.append({'id':prefix+'Result' if key!='applyGuard' else prefix,'kind':'table','name':titles[key],
             'source':{'kind':'code-output','elementId':code_id,'output':program['output']},
-            'columns':[{'id':prefix+'C'+str(i),'name':name,'formula':'[Code Output/'+name+']'}
+            'order':[prefix+'C'+str(i) for i in range(len(program['columns']))],
+            'columns':[{'id':prefix+'C'+str(i),'name':name}
                        for i,name in enumerate(program['columns'])]})
         # Running goal/apply guard requires the controller to set invocation state
         # beforehand. These hidden-toast computation actions never write assumptions.
@@ -420,12 +439,152 @@ def _connection_ids(element,elements,stack=()):
     return visit(element.get('source',{})) | ({element['connectionId']} if element.get('connectionId') else set())
 
 
-def prepare_port_update(manifest,receipt,current,sources,*,column_maps=None,procedure_action=None):
+PHASE_KEYS={'code-first':('allocation','goalSeek'),'solver-outputs':('allocation','goalSeek'),'guard-output':('applyGuard',)}
+PORT_PREFIX={'allocation':'task5Allocation','goalSeek':'task5GoalSeek','applyGuard':'task5GoalSeekApplyGuard'}
+
+
+def _phase_layout(elements,*,start=1):
+    cursor=start;placements=''
+    for element in elements:
+        height=8 if element['kind']=='button' else 14
+        placements+=f'<Element elementId="{element["id"]}" gridColumn="1 / 25" gridRow="{cursor} / {cursor+height}"/>'
+        cursor+=height
+    return placements
+
+
+def build_port_fragments(model_binding,connection_id,*,column_maps=None,procedure_action=None,phase='code-first'):
+    """Safe initial fragments only. Outputs require prepare_port_update evidence.
+
+    Code elements have no documented construction API in the current MCP SDK;
+    these are public REST fragments, never an executable SDK construction claim.
+    """
+    if phase!='code-first' or procedure_action is not None:raise PortError('PHASED_OUTPUT_EVIDENCE_OR_SEPARATE_PROCEDURE_ROUTE_REQUIRED')
+    templates=_port_templates(model_binding,connection_id,column_maps=column_maps)
+    elements=[e for e in templates['elements'] if e['id'] in {'task5AllocationPython','task5AllocationButton','task5GoalSeekPython','task5GoalSeekButton'}]
+    return {'pages':templates['pages'],'elements':elements,'layout':'<Page type="grid" id="task5Ports" gridTemplateColumns="repeat(24, 1fr)">'+_phase_layout(elements)+'</Page>',
+        'programs':{k:templates['programs'][k] for k in PHASE_KEYS['code-first']},'phase':'code-first','runtimeStatus':'UNRESOLVED','productionStatus':'BLOCKED'}
+
+
+def _phase_context(context,current,receipt_hash,owned_code_ids):
+    """Fresh actual controller observations; never label unsupported Code as SDK.
+
+    SDK inventory covers exactly non-Code elements. Only our exact known owned
+    code may use separate current public-schema/UI observations, since current
+    SDK list_elements omits Code and its public schema has no action events.
+    """
+    try:
+        from .action_inventory import validate_action_inventory
+    except ImportError:
+        from action_inventory import validate_action_inventory
+    if not isinstance(context,dict):raise PortError('CURRENT_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
+    fields={'documentId':current['workbookId'],'version':current['documentVersion'],'contentsHash':_digest(_snapshot(current)),'receiptHash':receipt_hash}
+    review=context.get('review',{});owner=str(review.get('owner') or '').strip()
+    if (context.get('origin')!='sigma-controller-actual' or not context.get('evidenceId') or any(context.get(k)!=v for k,v in fields.items())
+            or review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
+            or review.get('captureHash')!=_digest({k:v for k,v in context.items() if k!='review'})
+            or any(not re.fullmatch('[a-f0-9]{64}',str(context.get(k,''))) for k in ('inputValuesHash','schemaDisplayHash','rawCaptureHash'))):
+        raise PortError('FRESH_REVIEWED_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
+    codes={e['id']:e for e in _snapshot(current)['elements'] if e.get('kind')=='code'}
+    observations=context.get('codeObservations',{})
+    if set(codes)!=set(owned_code_ids) or set(observations)!=set(codes):raise PortError('UNKNOWN_OR_UNOBSERVED_UNSUPPORTED_CODE_ELEMENT')
+    for eid,element in codes.items():
+        observed=observations[eid]
+        if (element.get('actions') or observed.get('origin')!='sigma-code-rest-ui-readonly' or not observed.get('evidenceId')
+                or observed.get('documentId')!=current['workbookId'] or observed.get('version')!=current['documentVersion']
+                or observed.get('elementHash')!=_digest(element) or observed.get('codeHash')!=hashlib.sha256(element['code'].encode()).hexdigest()
+                or observed.get('inspection')!='public-code-schema-no-action-events'):
+            raise PortError('EXACT_CURRENT_CODE_REST_UI_OBSERVATION_REQUIRED')
+    supported=copy.deepcopy(current);supported['contents']=copy.deepcopy(_snapshot(current));supported['contents']['elements']=[e for e in supported['contents']['elements'] if e['id'] not in codes]
+    validate_action_inventory(context.get('sdkActions'),supported,require_recovery=True)
+    return context
+
+
+def _materialized_outputs(evidence,keys,manifest,receipt,current,previous,model_binding):
+    """Validate recorded actual executions plus actual typed paired output names.
+
+    The controller supplies observations, never infer metadata from expected
+    schemas. A completed Python failure row can materialize output schema, but
+    provides no successful computation/operation evidence.
+    """
+    if not isinstance(evidence,dict):raise PortError('ACTUAL_TYPED_OUTPUT_METADATA_REQUIRED')
+    fields={'documentId':current['workbookId'],'version':current['documentVersion'],'sourceHash':manifest['sourceHash'],
+        'planHash':manifest['planHash'],'modelBinding':model_binding,'contentsHash':_digest(_snapshot(current)),
+        'receiptHash':_digest(receipt),'installedProposalHash':previous['proposalHash']}
+    review=evidence.get('review',{});owner=str(review.get('owner') or '').strip()
+    if (evidence.get('origin')!='sigma-python-output-actual' or not evidence.get('evidenceId') or any(evidence.get(k)!=v for k,v in fields.items())
+            or review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
+            or review.get('captureHash')!=_digest({k:v for k,v in evidence.items() if k!='review'}) or set(evidence.get('outputs',{}))!=set(keys)):
+        raise PortError('FRESH_SOURCE_BOUND_ACTUAL_OUTPUT_REVIEW_REQUIRED')
+    installed=evidence.get('installation',{})
+    adoption=previous.get('restMutationRequired') is False
+    if (installed.get('status')!=('VERIFIED_COMPONENT_NATIVE_ADOPTION' if adoption else 'VERIFIED_COMPONENT_CONSTRUCTION') or installed.get('proposalHash')!=previous['proposalHash']
+            or installed.get('documentId')!=current['workbookId'] or not isinstance(installed.get('version'),int)
+            or not previous['documentVersion']+(0 if adoption else 1)<=installed['version']<=current['documentVersion'] or not installed.get('evidenceId')
+            or installed.get('contentsHash')!=_digest(previous['dryRunRequest']['contents'])):
+        raise PortError('ACTUAL_PREVIOUS_PHASE_INSTALLATION_PROOF_REQUIRED')
+    elements={e['id']:e for e in _snapshot(current)['elements']};result={}
+    for key in keys:
+        record=evidence['outputs'][key];prefix=PORT_PREFIX[key];code_id=prefix+'Python';code=elements.get(code_id,{})
+        if code.get('code')!=emit_python_programs(model_binding,column_maps=previous['runtimeColumnMaps'])[key]['code']:raise PortError('INSTALLED_CODE_DIFFERS_FROM_REVIEWED_PORT_SOURCE')
+        code_hash=hashlib.sha256(str(code.get('code','')).encode()).hexdigest();execution=record.get('execution',{})
+        if (code.get('kind')!='code' or record.get('codeElementId')!=code_id or record.get('codeHash')!=code_hash or record.get('outputName')!=OUTPUT_NAMES[key]
+                or execution.get('origin')!='sigma-run-python-actual' or execution.get('status')!='COMPLETED'
+                or not execution.get('executionId') or not execution.get('evidenceId') or execution.get('documentId')!=current['workbookId']
+                or type(execution.get('version')) is not int or not installed['version']<=execution['version']<=current['documentVersion']
+                or execution.get('codeElementId')!=code_id or execution.get('codeHash')!=code_hash
+                or record.get('connectionId')!=manifest['planProjection']['customPortArchitecture']['scope']['connectionId']):
+            raise PortError('COMPLETED_ACTUAL_EXACT_CODE_EXECUTION_REQUIRED')
+        metadata=record.get('metadata',{});mapping=record.get('columnMap',{})
+        expected={n:('text' if t in {'VARCHAR','STRING'} else 'boolean' if t=='BOOLEAN' else 'integer' if t=='INTEGER' else 'number') for n,t in OUTPUT_SCHEMAS[key]}
+        if (metadata.get('origin')!='sigma-python-output-metadata-actual' or not metadata.get('evidenceId')
+                or metadata.get('executionId')!=execution['executionId'] or metadata.get('outputName')!=OUTPUT_NAMES[key]
+                or metadata.get('documentId')!=current['workbookId'] or metadata.get('version')!=current['documentVersion']
+                or record.get('metadataHash')!=_digest(metadata) or not re.fullmatch('[a-f0-9]{64}',str(metadata.get('rawCaptureHash','')))
+                or set(mapping)!=set(expected) or not isinstance(metadata.get('observedFields'),list)):
+            raise PortError('ACTUAL_OBSERVED_TYPED_OUTPUT_FIELDS_REQUIRED')
+        observed=metadata['observedFields']
+        namespace=metadata.get('sourceNamespace')
+        if not isinstance(namespace,str) or not namespace or any(x in namespace for x in '[]/') or len(observed)!=len(expected) or any(not isinstance(c,dict) or set(c)!={'outputColumn','identifier','rowKey','type','formula'} for c in observed):raise PortError('EXACT_OBSERVED_OUTPUT_SCHEMA_AND_NAMESPACE_REQUIRED')
+        for field in ('outputColumn','identifier','rowKey'):
+            values=[c[field] for c in observed]
+            if any(not isinstance(v,str) or not v or any(x in v for x in '[]') for v in values) or len(values)!=len(set(values)):raise PortError('AMBIGUOUS_OUTPUT_COLUMN_IDENTIFIER_OR_ROW_KEY')
+        used=set()
+        for name,typ in expected.items():
+            pair=mapping[name]
+            if not isinstance(pair,dict) or set(pair)!={'outputColumn','identifier','rowKey','formula'}:raise PortError('ACTUAL_PAIRED_OUTPUT_COLUMN_MAP_REQUIRED')
+            if pair['formula']!='['+namespace+'/'+pair['outputColumn']+']':raise PortError('EXACT_OBSERVED_CODE_OUTPUT_FORMULA_REQUIRED')
+            matches=[i for i,c in enumerate(observed) if all(c[k]==v for k,v in pair.items()) and c['type']==typ]
+            if len(matches)!=1 or matches[0] in used:raise PortError('OUTPUT_FIELD_TYPE_OR_PAIRED_NAME_MISMATCH')
+            used.add(matches[0])
+        native=record.get('nativeChildObservation')
+        same=[e for e in elements.values() if e.get('source')=={'kind':'code-output','elementId':code_id,'output':OUTPUT_NAMES[key]}]
+        if native is not None:
+            child=elements.get(native.get('elementId'),{});typed=native.get('typedColumns',{});columns=typed.get('entries',[]);ids=native.get('columnIds',{})
+            title={'goalSeek':'Goal Seek Result','applyGuard':'Goal Seek Apply Guard'}.get(key)
+            if (native.get('origin')!='sigma-native-code-output-child-actual' or not native.get('evidenceId')
+                    or native.get('documentId')!=current['workbookId'] or native.get('version')!=current['documentVersion']
+                    or child.get('kind')!='table' or len(same)!=1 or same[0]['id']!=child.get('id') or native.get('elementHash')!=_digest(child)
+                    or (title and (child.get('name')!=title or sum(e.get('name')==title for e in elements.values())!=1))
+                    or native.get('typedColumnsHash')!=_digest(typed) or set(ids)!=set(expected) or not re.fullmatch('[a-f0-9]{64}',str(native.get('rawCaptureHash','')))
+                    or len(columns)!=len(expected) or typed.get('total')!=len(expected) or typed.get('nextPage') is not None
+                    or len(set(ids.values()))!=len(expected) or set(ids.values())!={c.get('id') for c in child.get('columns',[])}):
+                raise PortError('EXACT_ACTUAL_NATIVE_CHILD_ADOPTION_PROOF_REQUIRED')
+            for name,typ in expected.items():
+                observed=[c for c in columns if c.get('columnId')==ids[name]];physical=[c for c in child['columns'] if c['id']==ids[name]]
+                if (len(observed)!=1 or len(physical)!=1 or observed[0].get('label')!=mapping[name]['outputColumn']
+                        or observed[0].get('type')!={'type':typ} or observed[0].get('formula')!=mapping[name]['formula'] or physical[0].get('formula')!=mapping[name]['formula']):
+                    raise PortError('ACTUAL_NATIVE_CHILD_FORMULA_TYPE_OR_ASSIGNED_ID_CHANGED')
+        elif same:raise PortError('EXPLICIT_EXISTING_NATIVE_CHILD_ADOPTION_REQUIRED')
+        result[key]=copy.deepcopy(record)
+    return result
+
+
+def prepare_port_update(manifest,receipt,current,sources,*,column_maps=None,procedure_action=None,phase='code-first',previous_phase=None,output_evidence=None,phase_context=None,consumed_phases=(),adoption_evidence=None):
     validate_custom_port_plan(manifest)
     _approved_feature(manifest,receipt,'forecastBusinessInput',require_assigned=True)
     arch=manifest['planProjection']['customPortArchitecture'];scope=arch['scope']
     doc=_snapshot(current)
-    if (current.get('workbookId')!=scope['documentId'] or current.get('documentVersion')!=scope['version']
+    if (current.get('workbookId')!=scope['documentId'] or current.get('documentVersion')!=(manifest.get('target') or {}).get('version') or manifest.get('target',{}).get('documentId')!=scope['documentId']
             or current.get('folderId')!=scope['folderId']):
         raise PortError('STAGING_DOCUMENT_VERSION_FOLDER_MISMATCH')
     elements={e['id']:e for e in doc.get('elements',[])}
@@ -441,33 +600,107 @@ def prepare_port_update(manifest,receipt,current,sources,*,column_maps=None,proc
     model_binding=_digest({'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
         'files':arch['files'],'documentId':scope['documentId'],'sources':sources,
         'sourceGraph':_source_graph_hashes(elements,[v['elementId'] for v in sources.values()]),'equation':arch['equationVersion']})
-    fragments=build_port_fragments(model_binding,scope['connectionId'],column_maps=column_maps,procedure_action=procedure_action)
-    new_ids={e['id'] for e in fragments['elements']};new_names={e['name'] for e in fragments['elements'] if e.get('name')}
-    if (set(elements)&new_ids or any(e.get('name') in new_names for e in elements.values())
-            or any(p['id']=='task5Ports' for p in doc.get('pages',[]))):
-        raise PortError('EXISTING_PORT_OBJECT_REFUSED_NO_OVERWRITE')
-    contents=copy.deepcopy(doc)
-    contents['pages']+=fragments['pages'];contents['elements']+=fragments['elements']
-    contents['layout']=doc.get('layout','')+'\n'+fragments['layout']
-    proposal={'workbookId':scope['documentId'],'documentVersion':scope['version'],'folderId':scope['folderId'],
+    if phase not in PHASE_KEYS or procedure_action is not None:raise PortError('PHASED_OUTPUT_EVIDENCE_OR_SEPARATE_PROCEDURE_ROUTE_REQUIRED')
+    templates=_port_templates(model_binding,scope['connectionId'],column_maps=column_maps)
+    previous=previous_phase;owned=[];lineage=[];actual_outputs={};maps=copy.deepcopy(column_maps or {});adopted=[]
+    if phase=='code-first':
+        if previous is not None or output_evidence is not None:raise PortError('INITIAL_PHASE_CANNOT_REUSE_PRIOR_OUTPUTS')
+        fragments=build_port_fragments(model_binding,scope['connectionId'],column_maps=maps)
+        reserved={e['id'] for e in templates['elements']};names={e.get('name') for e in templates['elements'] if e.get('name')}
+        if adoption_evidence is not None:
+            review=adoption_evidence.get('review',{});owner=str(review.get('owner') or '').strip()
+            fields={'documentId':current['workbookId'],'version':current['documentVersion'],'contentsHash':_digest(doc),'receiptHash':_digest(receipt),
+                'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'modelBinding':model_binding,'elementHashes':{e['id']:_digest(e) for e in fragments['elements']}}
+            if (adoption_evidence.get('origin')!='sigma-code-first-native-adoption-actual' or not adoption_evidence.get('evidenceId')
+                    or review.get('status')!='APPROVED_STAGING' or not owner or re.match(r'(?i)^(pending|todo|tbd|unknown)\b',owner)
+                    or review.get('captureHash')!=_digest({k:v for k,v in adoption_evidence.items() if k!='review'}) or any(adoption_evidence.get(k)!=v for k,v in fields.items())
+                    or any(elements.get(e['id'])!=e for e in fragments['elements']) or sum(p['id']=='task5Ports' for p in doc['pages'])!=1):raise PortError('EXACT_CURRENT_CODE_FIRST_ADOPTION_REVIEW_REQUIRED')
+            import xml.etree.ElementTree as ET
+            try:
+                from .native_actions import _layout_element_owners
+            except ImportError:
+                from native_actions import _layout_element_owners
+            root=ET.fromstring('<Layout>'+re.sub(r'<\?xml[^?]*\?>','',doc.get('layout',''))+'</Layout>')
+            if any([p.get('id') for p in _layout_element_owners(root,e['id'])]!=['task5Ports'] for e in fragments['elements']):raise PortError('CODE_FIRST_ADOPTION_ASSIGNED_PAGE_CHANGED')
+            adopted=[e['id'] for e in fragments['elements']];owned=adopted[:];new=[];contents=copy.deepcopy(doc);added_pages=[]
+        else:
+            if set(elements)&reserved or any(e.get('name') in names for e in elements.values()) or any(p['id']=='task5Ports' for p in doc.get('pages',[])):raise PortError('EXISTING_PORT_OBJECT_REFUSED_NO_OVERWRITE')
+            new=fragments['elements'];contents=copy.deepcopy(doc);contents['pages']+=fragments['pages'];contents['elements']+=new;contents['layout']=doc.get('layout','')+'\n'+fragments['layout'];added_pages=['task5Ports']
+    else:
+        if adoption_evidence is not None:raise PortError('CODE_ADOPTION_ONLY_IN_INITIAL_PHASE')
+        expected_previous={'solver-outputs':'code-first','guard-output':'solver-outputs'}[phase]
+        if not isinstance(previous,dict) or previous.get('proposalHash')!=_digest({k:v for k,v in previous.items() if k!='proposalHash'}) or previous.get('phase')!=expected_previous:raise PortError('EXACT_ORDERED_PREVIOUS_PHASE_REQUIRED')
+        if (previous['workbookId']!=current['workbookId'] or previous['folderId']!=scope['folderId'] or not previous['documentVersion']+(0 if previous.get('restMutationRequired') is False else 1)<=current['documentVersion']
+                or previous['sourceHash']!=manifest['sourceHash'] or previous['planHash']!=manifest['planHash'] or previous['modelBinding']!=model_binding
+                or previous['sourceBindings']!=sources or previous['sourceGraph']!=_source_graph_hashes(elements,[v['elementId'] for v in sources.values()])):raise PortError('PREVIOUS_PHASE_SOURCE_MODEL_OR_VERSION_STALE')
+        owned=previous['ownedPortElementIds'];prior_elements={e['id']:e for e in previous['dryRunRequest']['contents']['elements']}
+        if any(elements.get(eid)!=prior_elements.get(eid) for eid in owned):raise PortError('INSTALLED_PORT_CODE_OR_OBJECT_CHANGED')
+        lineage=[*previous.get('phaseLineage',[]),previous['proposalHash']]
+        if column_maps is not None and column_maps!=previous['runtimeColumnMaps']:raise PortError('EXISTING_RUNTIME_COLUMN_MAP_CHANGED')
+        maps=copy.deepcopy(previous['runtimeColumnMaps']);actual_outputs=copy.deepcopy(previous.get('actualOutputBindings',{}))
+        observed=_materialized_outputs(output_evidence,PHASE_KEYS[phase],manifest,receipt,current,previous,model_binding);actual_outputs.update(observed)
+        if phase=='solver-outputs':maps['Goal Seek Result']={n:{k:pair[k] for k in ('identifier','rowKey')} for n,pair in observed['goalSeek']['columnMap'].items()}
+        templates=_port_templates(model_binding,scope['connectionId'],column_maps=maps)
+        ids={'solver-outputs':{'task5AllocationResult','task5GoalSeekResult','task5GoalSeekApplyGuardPython','task5GoalSeekApplyGuardButton'},'guard-output':{'task5GoalSeekApplyGuard'}}[phase]
+        new=[copy.deepcopy(e) for e in templates['elements'] if e['id'] in ids]
+        for key,record in observed.items():
+            eid=PORT_PREFIX[key]+'Result' if key!='applyGuard' else PORT_PREFIX[key]
+            table=next(e for e in new if e['id']==eid)
+            for col in table['columns']:col['formula']=record['columnMap'][col['name']]['formula']
+            if record.get('nativeChildObservation'):
+                adopted.append(record['nativeChildObservation']['elementId']);new.remove(table)
+        owned=[*owned,*adopted]
+        ids={e['id'] for e in new}
+        if set(elements)&ids or any(e.get('name')==n['name'] for e in elements.values() for n in new if n.get('name')):raise PortError('EXISTING_PHASE_OUTPUT_REFUSED_NO_OVERWRITE')
+        import xml.etree.ElementTree as ET
+        layout=doc.get('layout','');matches=list(re.finditer(r'<Page\b[^>]*\bid=["\']task5Ports["\'][^>]*>.*?</Page>',layout,re.S))
+        if len(matches)!=1 or sum(p['id']=='task5Ports' for p in doc['pages'])!=1:raise PortError('EXACT_EXISTING_PORT_PAGE_REQUIRED')
+        node=ET.fromstring(matches[0].group());cursor=1
+        for placement in node.iter('Element'):
+            row=re.fullmatch(r'(\d+) / (\d+)',placement.get('gridRow',''))
+            if not row:raise PortError('UNKNOWN_PORT_PAGE_PLACEMENT')
+            cursor=max(cursor,int(row[2]))
+        contents=copy.deepcopy(doc);contents['elements']+=new;pos=matches[0].end()-len('</Page>');contents['layout']=layout[:pos]+_phase_layout(new,start=cursor)+layout[pos:];added_pages=[]
+    owned_codes=[eid for eid in owned if elements[eid]['kind']=='code']
+    context=_phase_context(phase_context,current,_digest(receipt),owned_codes) if phase_context is not None or phase!='code-first' else None
+    phase_id=_digest({'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'modelBinding':model_binding,'phase':phase,'previous':lineage,'contentsHash':_digest(doc),'version':current['documentVersion']})
+    if phase_id in consumed_phases:raise PortError('CONSUMED_PHASE_REPLAY_REFUSED')
+    proposal={'phase':phase,'phaseId':phase_id,'phaseLineage':lineage,'previousProposalHash':previous['proposalHash'] if previous else None,
+        'workbookId':scope['documentId'],'documentVersion':current['documentVersion'],'folderId':scope['folderId'],
         'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'modelBinding':model_binding,
         'beforeHash':_digest(doc),'beforeContents':copy.deepcopy(doc),'sourceBindings':copy.deepcopy(sources),
-        'sourceGraph':_source_graph_hashes(elements,[v['elementId'] for v in sources.values()]),
-        'addedElementIds':sorted(new_ids),'addedPageIds':['task5Ports'],
-        'dryRunRequest':{'name':current.get('name','Reviewed custom ports staging'),'folderId':scope['folderId'],
-                         'contents':contents,'dryRun':True},'productionStatus':'BLOCKED'}
+        'sourceGraph':_source_graph_hashes(elements,[v['elementId'] for v in sources.values()]),'receiptHash':_digest(receipt),
+        'addedElementIds':[e['id'] for e in new],'ownedPortElementIds':[*owned,*[e['id'] for e in new]],'addedPageIds':added_pages,
+        'adoptedElementIds':adopted,'adoptionEvidence':copy.deepcopy(adoption_evidence),'restMutationRequired':bool(new),
+        'runtimeColumnMaps':maps,'actualOutputBindings':actual_outputs,'phaseContext':copy.deepcopy(context),
+        'outputEvidence':copy.deepcopy(output_evidence),'runtimeStatus':'UNRESOLVED','workflowComplete':False,
+        'constructionStatus':('READY_FOR_ACTUAL_DRY_RUN' if new else 'VERIFIED_NATIVE_ADOPTION_NO_REST_SEND') if context else 'PARTIAL_REQUIRES_CURRENT_INPUT_DISPLAY_ACTION_EVIDENCE',
+        'dryRunRequest':{'name':current.get('name','Reviewed custom ports staging'),'folderId':scope['folderId'],'contents':contents,'dryRun':True},'productionStatus':'BLOCKED'}
     proposal['proposalHash']=_digest(proposal)
     return proposal
 
 
-def finalize_port_update(proposal,fresh,dry_run,*,consumed_proposals=(),reviewed_warning_hash=None):
+def finalize_port_update(proposal,fresh,dry_run,*,consumed_proposals=(),reviewed_warning_hash=None,fresh_phase_context=None):
     if _digest({k:v for k,v in proposal.items() if k!='proposalHash'})!=proposal.get('proposalHash'):
         raise PortError('PROPOSAL_HASH_MISMATCH')
-    if proposal['proposalHash'] in consumed_proposals:raise PortError('CONSUMED_PROPOSAL_REPLAY_REFUSED')
+    if proposal['proposalHash'] in consumed_proposals or proposal.get('phaseId') in consumed_proposals:raise PortError('CONSUMED_PROPOSAL_REPLAY_REFUSED')
+    if proposal.get('restMutationRequired') is False:raise PortError('NATIVE_ADOPTION_REQUIRES_NO_REST_SEND')
     doc=_snapshot(fresh)
     if (fresh.get('workbookId')!=proposal['workbookId'] or fresh.get('documentVersion')!=proposal['documentVersion']
             or fresh.get('folderId')!=proposal['folderId'] or _digest(doc)!=proposal['beforeHash']):
         raise PortError('STALE_DOCUMENT_VERSION_OR_CONTENTS')
+    if proposal.get('phase'):
+        before=proposal.get('phaseContext')
+        if not before:raise PortError('CURRENT_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
+        code_ids=[e['id'] for e in doc['elements'] if e.get('kind')=='code']
+        context=_phase_context(fresh_phase_context,fresh,proposal['receiptHash'],code_ids)
+        if any(context[k]!=before[k] for k in ('inputValuesHash','schemaDisplayHash')):raise PortError('INPUT_OR_DISPLAY_CHANGED_SINCE_PHASE_REVIEW')
+        try:
+            from .action_inventory import verify_action_preservation
+        except ImportError:
+            from action_inventory import verify_action_preservation
+        supported=copy.deepcopy(fresh);supported['contents']=copy.deepcopy(doc);supported['contents']['elements']=[e for e in doc['elements'] if e['id'] not in code_ids]
+        verify_action_preservation(before['sdkActions'],context['sdkActions'],supported)
     if (dry_run.get('httpStatus')!=200 or dry_run.get('dryRun') is not True or dry_run.get('valid') is False or dry_run.get('errors')
             or not dry_run.get('evidenceId') or dry_run.get('proposalHash')!=proposal['proposalHash']):
         raise PortError('HASH_BOUND_ACTUAL_DRY_RUN_REQUIRED')
@@ -479,7 +712,13 @@ def finalize_port_update(proposal,fresh,dry_run,*,consumed_proposals=(),reviewed
 
 
 def audit_port_update(proposal,readback):
-    if (readback.get('workbookId')!=proposal['workbookId'] or readback.get('documentVersion')==proposal['documentVersion']
+    if proposal.get('proposalHash')!=_digest({k:v for k,v in proposal.items() if k!='proposalHash'}):raise PortError('PROPOSAL_HASH_MISMATCH')
+    if proposal.get('phase') and not proposal.get('phaseContext'):raise PortError('CURRENT_INPUT_DISPLAY_ACTION_CONTEXT_REQUIRED')
+    if proposal.get('restMutationRequired') is False:
+        if readback.get('workbookId')!=proposal['workbookId'] or readback.get('documentVersion')!=proposal['documentVersion'] or _snapshot(readback)!=proposal['beforeContents']:raise PortError('NATIVE_ADOPTION_READBACK_CHANGED')
+        return {'status':'VERIFIED_COMPONENT_NATIVE_ADOPTION','documentId':proposal['workbookId'],'version':readback['documentVersion'],
+            'elementIds':proposal['adoptedElementIds'],'proposalHash':proposal['proposalHash'],'restMutationRequired':False,'productionStatus':'BLOCKED'}
+    if (readback.get('workbookId')!=proposal['workbookId'] or type(readback.get('documentVersion')) is not int or readback['documentVersion']<=proposal['documentVersion']
             or _snapshot(readback)!=proposal['dryRunRequest']['contents']):
         raise PortError('PORT_UPDATE_READBACK_MISMATCH')
     return {'status':'VERIFIED_COMPONENT_CONSTRUCTION','documentId':proposal['workbookId'],
@@ -609,6 +848,7 @@ def prepare_goal_action_update(manifest,receipt,current,initial_proposal,binding
     validate_custom_port_plan(manifest)
     _approved_feature(manifest,receipt,'forecastBusinessInput',require_assigned=True)
     prior=initial_proposal
+    if prior.get('phase') and prior['phase']!='guard-output':raise PortError('FULL_ACTUAL_OUTPUT_PHASE_CHAIN_REQUIRED')
     if _digest({k:v for k,v in prior.items() if k!='proposalHash'})!=prior.get('proposalHash'):
         raise PortError('INITIAL_PROPOSAL_HASH_MISMATCH')
     if (current.get('workbookId')!=prior['workbookId'] or current.get('folderId')!=prior['folderId']
@@ -618,7 +858,8 @@ def prepare_goal_action_update(manifest,receipt,current,initial_proposal,binding
     graph=_source_graph_hashes(elements,[v['elementId'] for v in prior['sourceBindings'].values()])
     if graph!=prior.get('sourceGraph'):raise PortError('MODEL_SOURCE_GRAPH_CHANGED')
     prior_elements={e['id']:e for e in prior['dryRunRequest']['contents']['elements']}
-    if any(elements.get(eid)!=prior_elements[eid] for eid in prior['addedElementIds']):
+    owned=prior.get('ownedPortElementIds',prior['addedElementIds'])
+    if any(elements.get(eid)!=prior_elements[eid] for eid in owned):
         raise PortError('PORT_SOURCE_OBJECT_CHANGED')
     if len(elements)!=len(doc['elements']):raise PortError('DUPLICATE_ELEMENT_IDS')
     assigned=receipt['targetBindings']['forecastBusinessInput']
@@ -626,16 +867,18 @@ def prepare_goal_action_update(manifest,receipt,current,initial_proposal,binding
     expected_ids={'assumption':assigned['elementId'],
         'invocation':prior['sourceBindings']['Goal Seek Invocation']['elementId'],
         'inputView':prior['sourceBindings']['Forecast Inputs View']['elementId'],
-        'guard':'task5GoalSeekApplyGuard'}
+        'guard':prior.get('actualOutputBindings',{}).get('applyGuard',{}).get('nativeChildObservation',{}).get('elementId','task5GoalSeekApplyGuard')}
     if invocation_assigned['elementId']!=expected_ids['invocation']:
         raise PortError('ASSIGNED_INVOCATION_TARGET_MISMATCH')
     connection=manifest['planProjection']['customPortArchitecture']['scope']['connectionId']
     # Warehouse get_element and action Lookup both resolve titles. Protect every
     # original runtime source/output against compatible duplicate-title objects.
     runtime_ids={v['elementId'] for v in prior['sourceBindings'].values()} | {
-        eid for eid in prior['addedElementIds'] if prior_elements[eid].get('kind')=='table'}
+        eid for eid in owned if prior_elements[eid].get('kind')=='table'}
     for eid in runtime_ids:
         title=prior_elements[eid].get('name')
+        if not title and prior_elements[eid].get('source')=={'kind':'code-output','elementId':'task5AllocationPython','output':'AllocationResult'}:
+            continue  # This result is queried by assigned ID, never sigma.get_element(title).
         if not title or sum(e.get('name')==title for e in doc['elements'])!=1:
             raise PortError('AMBIGUOUS_RUNTIME_SOURCE_TITLE')
     for role in ('invocation','assumption','guard','inputView'):
@@ -653,6 +896,9 @@ def prepare_goal_action_update(manifest,receipt,current,initial_proposal,binding
                 'elementId':'task5GoalSeekApplyGuardPython','output':'GoalSeekApplyGuard'}:
             raise PortError('APPROVED_GUARD_CODE_OUTPUT_REQUIRED')
         columns={c.get('name'):c.get('id') for c in element.get('columns',[])}
+        if role=='guard':
+            adopted=prior.get('actualOutputBindings',{}).get('applyGuard',{}).get('nativeChildObservation')
+            if adopted and adopted.get('elementId')==eid and adopted.get('elementHash')==_digest(element):columns.update(adopted['columnIds'])
         target=invocation_assigned if role=='invocation' else assigned if role=='assumption' else None
         if target and any(value.get('columnIds',{}).get(n)!=cid
                 for n,cid in target['columnIds'].items() if n in value.get('columnIds',{})):

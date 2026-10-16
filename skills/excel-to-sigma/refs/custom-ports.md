@@ -25,10 +25,15 @@ The Hello World binary demonstrates extraction only.
   one `Goal Seek Invocation` row with `State=UNPREPARED`. All new tables use SDK
   string `editMode='published-explore'`. Existing companion modes stay unchanged.
 - `emit_python_programs(model_binding, column_maps=...)` returns standalone source,
-  output schema, column order and code hashes. `build_port_fragments` wraps it in
-  code elements, output tables and hidden-toast run buttons.
-- `prepare_port_update` checks the exact source/title/connection graph, builds an
-  append-only new page, and returns a `POST /v2/workbooks` dry-run body.
+  output schema, column order and code hashes. DOUBLE output cells become finite
+  Python floats, INTEGER excludes Boolean/Decimal, BOOLEAN stays bool and STRING
+  stays str; nonfinite numbers become null. A typed failure fallback prevents an
+  invalid diagnostic cell from breaking output emission. The math kernel stays
+  unchanged. `build_port_fragments` defaults to two code/run-button pairs only.
+- `prepare_port_update(..., phase='code-first')` checks the exact source/title/
+  connection graph, builds an append-only new page, and returns a
+  `POST /v2/workbooks` dry-run body. `solver-outputs` and `guard-output` require
+  previous_phase, output_evidence and phase_context. Atomic complete mode fails.
   `finalize_port_update` requires hash-bound actual HTTP 200/dryRun evidence and
   fresh unchanged contents/version before returning the versioned PUT request.
   Unknown existing IDs/titles are refused. `audit_port_update` compares readback.
@@ -76,18 +81,128 @@ and execution are separate; emitting an artifact does not authorize its submissi
 6. Inspect actual Snowpark `.columns`. Supply `column_maps` as title ->
    `{logical_display_name: actual_dataframe_column_name}`. Unmapped exact names
    are allowed; missing/duplicate names fail closed. No inferred case folding.
-   Call `prepare_port_update`; review its complete diff and hash. It retains all
-   original objects/layout and adds a dedicated page. Submit its dry-run body
+   Call `prepare_port_update`; review its complete diff and hash. The default
+   code-first phase adds exactly allocation/solver code and their run buttons,
+   with no output children, guard code, assumptions write or procedure action.
+   It retains all original objects/layout and adds a dedicated page. Submit its dry-run body
    through the supported POST path. Capture `{httpStatus:200,dryRun:true,warnings,
    evidenceId,proposalHash}`; independently review nonempty warnings by hash.
 7. GET immediately again, call `finalize_port_update`, and durably consume its
-   proposalHash **before** sending the PUT exactly once. After timeout inspect
+   proposalHash AND phaseId **before** sending the PUT exactly once. After timeout inspect
    actual state rather than replaying. This offline library takes a consumed-ID
    ledger; it cannot enforce concurrency against a caller that omits its ledger.
    Capture returned version/IDs and GET readback via `audit_port_update`.
    Server ID rewrites or any unexpected normalization stop for explicit rebinding.
    Full-contents REST may reset ordinary input display; apply final SDK display/
    visibility last, as a separately reviewed step.
+
+## Output materialization phases and actual evidence
+
+A successful Python execution is distinct from a successful business result.
+An UNPREPARED/invalid-operation failure row can materialize the explicit schema;
+it cannot qualify business parity. Python execution FAILED/old output never
+qualifies a new child. Output metadata must be actually observed, with explicit
+paired warehouse identifiers and Row.as_dict keys. Do not derive those pairs by
+unquoting labels. Supplied expected schemas are not runtime observations.
+
+`code-first` can emit a reviewable partial proposal without phase_context, but
+finalize refuses it. Every submitable phase requires a current phase_context:
+origin=sigma-controller-actual, evidenceId, documentId/version, contentsHash,
+receiptHash, inputValuesHash, schemaDisplayHash and rawCaptureHash. Those hashes
+refer to complete actual normalized input values/IDs and source-bound schema/
+display captures, with the raw capture retained. A named APPROVED_STAGING review
+binds captureHash of the entire context excluding review. sdkActions covers
+exactly every non-Code element and must be recovery-ready, including actual
+isolated known-artifact proof for actions omitted by REST. Current MCP omits Code;
+do not manufacture SDK Code observations. codeObservations instead covers only
+the exact owned Code IDs with origin=sigma-code-rest-ui-readonly, evidenceId,
+current documentId/version, exact elementHash/codeHash and
+inspection=public-code-schema-no-action-events. The current public Code schema
+has id/kind/code/connectionId and no action events; unknown Code or actions block.
+This explicitly scoped REST/UI qualification is separate from SDK provenance.
+
+After construction, capture actual execution IDs and actual output metadata.
+`solver-outputs` requires BOTH allocation and solver outputs from the installed
+code-first proposal; it proposes allocation/goal output children and guard code/
+run button. `guard-output` requires actual guard execution/metadata before its
+child. Each phase seals ownedPortElementIds and phaseLineage across all previous
+phases; later per-intent goal actions require the completed guard-output graph.
+No successful source rehash or metadata capture clears runtimeStatus UNRESOLVED,
+productionStatus BLOCKED or workflowComplete false.
+
+output_evidence has origin=sigma-python-output-actual, evidenceId, current
+documentId/version/contentsHash/receiptHash, sourceHash/planHash/modelBinding,
+installedProposalHash and outputs keyed exactly by allocation+goalSeek or
+applyGuard. Its named APPROVED_STAGING review binds captureHash excluding review.
+installation records VERIFIED_COMPONENT_CONSTRUCTION, the previous proposalHash,
+documentId, actual installed version/evidenceId and exact installed contentsHash.
+Each output record binds codeElementId/codeHash/outputName/connectionId, and:
+
+- execution: origin=sigma-run-python-actual, status=COMPLETED, actual executionId/
+  evidenceId/documentId/version and exact codeElementId/codeHash. The execution
+  version must be between actual installation and current capture. A business
+  FAILURE is allowed only as materialization, never acceptance.
+- metadata: origin=sigma-python-output-metadata-actual, evidenceId/executionId,
+  current documentId/version, outputName, rawCaptureHash and actual sourceNamespace.
+  observedFields contains exactly outputColumn, identifier, rowKey, type and
+  formula for each observed field. INTEGER remains integer (not generic number).
+  formula is the exact observed single-source reference from actual metadata;
+  the native example is `[Code: AllocationResult/OperationId]`. The compiler
+  copies it; it does not invent `[Code Output/...]` or infer a namespace.
+- metadataHash seals that metadata. columnMap explicitly maps each logical output
+  field to its observed outputColumn/identifier/rowKey/formula. Both names and
+  observed types must match actual metadata uniquely. Guard code receives only
+  actual Goal Seek Result identifier/rowKey pairs; no fabricated ninth map.
+
+`finalize_port_update(...,fresh_phase_context=...)` rechecks current input/display
+semantic hashes and complete SDK actions immediately before sending, alongside
+the existing exact dry-run/version/content/consumed gates. It refuses stale,
+missing, foreign, pending, failed and expected-only captures, changed owned code,
+wrong paired names/types, skipped phases, collisions and consumed phaseId replay.
+CLI prepare-update adds --phase, --previous-phase, --output-evidence,
+--phase-context and --consumed-phases; finalize-update also takes --phase-context.
+
+**Current platform limitation:** POST dry-run validates a scratch document and
+has actually returned HTTP400 output-not-found even after a target execution
+materialized AllocationResult. Phasing alone does not establish that route works.
+The current finalizer refuses every400; it never fabricates200. Target-bound actual
+metadata plus an explicitly reviewed supported native-child/adoption route is
+required. Unknown normalization or unavailable metadata stops construction.
+No HTTP400 exception is implemented. A remaining guard code/button installation
+blocked by scratch validation stays blocked; saved guard component adoption is
+outside this bounded implementation pending actual evidence.
+
+Native children can be adopted explicitly in each output record using
+nativeChildObservation: origin=sigma-native-code-output-child-actual, evidenceId,
+current documentId/version, assigned elementId/elementHash, rawCaptureHash,
+typedColumns (actual complete API entries/total/nextPage), typedColumnsHash and
+columnIds (logical field -> actual assigned ID). Every observed label/formula/type
+must match the explicit map and current native column; the exact code-output
+source must be unique. Goal/guard children require the actual unique titles
+`Goal Seek Result` / `Goal Seek Apply Guard` before runtime references them.
+Allocation may retain an unnamed native view because it is queried by assigned
+ID; no title is invented. The phase preserves all existing child objects/IDs/
+layout, reports adoptedElementIds separately, and never claims the earlier PUT
+created them. Later goal action bindings use the sealed native guard column-ID
+map when REST omits column names, and its actual assigned guard element ID.
+
+If the final phase only adopts a native child, restMutationRequired=false and
+constructionStatus=VERIFIED_NATIVE_ADOPTION_NO_REST_SEND. audit_port_update checks
+the same current version/contents and returns VERIFIED_COMPONENT_NATIVE_ADOPTION;
+finalize refuses a redundant PUT, even with200 evidence. This establishes actual
+component adoption, not computation/published business success.
+
+For previously installed exact code-first objects after an independently reviewed
+code repair, optional adoption_evidence uses origin=sigma-code-first-native-adoption-actual,
+evidenceId, current documentId/version/contentsHash/receiptHash, sourceHash/planHash/
+modelBinding and elementHashes for the exact two code/run-button pairs. A named
+APPROVED_STAGING review binds captureHash excluding review; exact compiled object
+bytes and assigned page ownership plus the complete current phase_context must
+match. It returns a no-send adoption record. Subsequent installation evidence then
+uses VERIFIED_COMPONENT_NATIVE_ADOPTION, not an invented executed PUT. Code bytes
+from a different version/hash cannot be adopted. CLI prepare-update exposes
+--adoption-evidence. No constructors, native edits, runtime runs or transport are
+executed by these helpers.
 
 ## Python execution and stale-output protocol
 

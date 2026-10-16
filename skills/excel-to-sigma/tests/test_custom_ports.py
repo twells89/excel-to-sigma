@@ -318,24 +318,26 @@ class PortGateTests(unittest.TestCase):
         p,m,receipt,current,sources=self.case()
         self.assertTrue(hasattr(p,'prepare_port_update'),'guarded REST authoring is missing')
         original=copy.deepcopy(current)
-        candidate=p.prepare_port_update(m,receipt,current,sources)
+        from port_phase_fixtures import context
+        captured=context(m,receipt,current)
+        candidate=p.prepare_port_update(m,receipt,current,sources,phase_context=captured)
         self.assertEqual(current,original)
         proposed=candidate['dryRunRequest']['contents']
         self.assertEqual(proposed['elements'][:len(current['contents']['elements'])],current['contents']['elements'])
         self.assertEqual(proposed['opaquePreserved'],{'keep':True})
         dry={'httpStatus':200,'dryRun':True,'warnings':[],'proposalHash':candidate['proposalHash'],'evidenceId':'actual-dry-run'}
-        req=p.finalize_port_update(candidate,current,dry)
+        req=p.finalize_port_update(candidate,current,dry,fresh_phase_context=captured)
         self.assertEqual(req['body']['documentVersion'],8)
         for fresh in [{**current,'documentVersion':9},{**current,'workbookId':'other'},
                 {**current,'contents':{**current['contents'],'opaquePreserved':{'keep':False}}}]:
-            with self.assertRaises(ValueError):p.finalize_port_update(candidate,fresh,dry)
-        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'proposalHash':'other'})
-        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,dry,consumed_proposals=[candidate['proposalHash']])
-        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'warnings':['review me']})
+            with self.assertRaises(ValueError):p.finalize_port_update(candidate,fresh,dry,fresh_phase_context=captured)
+        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'proposalHash':'other'},fresh_phase_context=captured)
+        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,dry,consumed_proposals=[candidate['proposalHash']],fresh_phase_context=captured)
+        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'warnings':['review me']},fresh_phase_context=captured)
         unrelated=copy.deepcopy(current);unrelated['contents']['elements'].append({'id':'task5AllocationPython','kind':'text','text':'unknown'})
         with self.assertRaises(ValueError):p.prepare_port_update(m,receipt,unrelated,sources)
         tampered=copy.deepcopy(candidate);tampered['dryRunRequest']['contents']['elements'][0]['source']['statement']='changed'
-        with self.assertRaises(ValueError):p.finalize_port_update(tampered,current,dry)
+        with self.assertRaises(ValueError):p.finalize_port_update(tampered,current,dry,fresh_phase_context=captured)
 
 class InvocationActionTests(unittest.TestCase):
     def test_invocation_actions_only_write_approved_single_assumption_after_guard(self):
@@ -421,8 +423,8 @@ class FollowupAuthoringTests(unittest.TestCase):
             receipt['targetBindings']['task5Invocation']['columnIds'][n]='inv-'+n
         receipt['artifacts']=build_artifact_records(m,m['planProjection']['sharedInputArchitecture'],receipt['targetBindings'])
         sources['Goal Seek Invocation']['elementHash']=p._digest(inv)
-        initial=p.prepare_port_update(m,receipt,current,sources)
-        created={**current,'documentVersion':9,'contents':initial['dryRunRequest']['contents']}
+        from port_phase_fixtures import complete
+        m,receipt,created,initial=complete(m,receipt,current,sources)
         model=json.loads((ROOT/'tests/fixtures/task5-controlled-model.json').read_text())
         request=dict(RequestKey='goal-seek',OperationId='op-A',State='APPLY_PENDING',Target=2000000,
             LowerBound=0,UpperBound=.25,ToleranceCents=1,MaxIterations=64,ModelBinding=initial['modelBinding'])
@@ -437,7 +439,7 @@ class FollowupAuthoringTests(unittest.TestCase):
     def test_followup_action_update_is_guarded_append_and_rejects_changed_model_or_foreign_action(self):
         p,m,receipt,created,initial,binding,request,model,result=self.setup_followup()
         follow=p.prepare_goal_action_update(m,receipt,created,initial,binding,request,model['actuals'],model['inputs'],model['definitions'],result)
-        self.assertEqual(follow['documentVersion'],9)
+        self.assertEqual(follow['documentVersion'],11)
         self.assertEqual(follow['dryRunRequest']['contents']['elements'][:-3],created['contents']['elements'])
         self.assertEqual(len(follow['addedElementIds']),3)
         # Failure must stop before accepting any unverified action target binding.
