@@ -194,6 +194,47 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('CONFIRMED',confirmed['program'])
         self.assertEqual(confirmed['productionStatus'],'BLOCKED')
 
+    def test_prepare_pending_count_defaults_only_missing_aggregate_to_zero(self):
+        import ast
+        p,d,current,b=self.candidate_fixture()
+        tree=ast.parse(p.render_snapshot_candidate(d,current,b,phase='prepare')['program'])
+        condition=next(n.value.args[0] for n in tree.body if isinstance(n,ast.Expr)
+                       and isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Attribute)
+                       and n.value.func.attr=='set_condition')
+        def leaves(node):
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='and_':
+                return [leaf for arg in node.args for leaf in leaves(arg)]
+            return [node]
+        guards=leaves(condition)
+        self.assertEqual(len(guards),375)
+        pending=next(n for n in guards if isinstance(n,ast.Call) and n.func.id=='eq'
+                     and ast.unparse(n.args[1])=='const_num(0)'
+                     and any(isinstance(v,ast.Call) and isinstance(v.func,ast.Name)
+                             and v.func.id=='count_if' for v in ast.walk(n)))
+        def evaluate(node, count):
+            if isinstance(node,ast.Constant): return node.value
+            name=node.func.id
+            if name=='count_if': return count
+            args=[evaluate(arg,count) for arg in node.args]
+            if name in ('const_num','as_num'): return args[0]
+            if name=='coalesce': return next((v for v in args if v is not None),None)
+            if name=='eq': return None if None in args else args[0]==args[1]
+            raise AssertionError('unexpected pending-count operation '+name)
+        # Characterize the emitted formula, using the observed empty-Ops NULL.
+        for count,expected in [(None,True),(0,True),(1,False),(2,False),(-1,False)]:
+            with self.subTest(count=count): self.assertIs(evaluate(pending,count),expected)
+        count_call=next(n for n in ast.walk(pending) if isinstance(n,ast.Call)
+                        and isinstance(n.func,ast.Name) and n.func.id=='count_if')
+        expected=ast.parse('eq(as_num(coalesce(count_if('+ast.unparse(count_call.args[0])+'), const_num(0))), const_num(0))',mode='eval').body
+        self.assertEqual(ast.dump(pending),ast.dump(expected))
+        self.assertIn("const_text('snapshot')",ast.unparse(count_call))
+        self.assertIn("const_text('PREPARED')",ast.unparse(count_call))
+        self.assertEqual(sum(isinstance(n,ast.Call) and isinstance(n.func,ast.Name)
+                             and n.func.id=='coalesce' for n in ast.walk(condition)),1)
+        insert=next(n for n in ast.walk(tree) if isinstance(n,ast.Call)
+                    and isinstance(n.func,ast.Name) and n.func.id=='insert_row')
+        self.assertEqual(len(insert.args[1].keys),219)
+
     def test_sdk_imports_and_numeric_lookup_types_match_documented_modules(self):
         import ast
         p,d,current,b=self.candidate_fixture()

@@ -229,7 +229,7 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
         'from sigma.action.inputTableEffects import insert_row',
         'from sigma.action.setControlValueEffect import set_control_value',
         'from sigma.action.controlFlow import if_else',
-        'from sigma.formula import const_text, const_num, eq, neq, and_, or_, not_, is_null, is_not_null, subtract, lookup, count_if, now, as_num, as_text']
+        'from sigma.formula import const_text, const_num, eq, neq, and_, or_, not_, is_null, is_not_null, subtract, lookup, count_if, coalesce, now, as_num, as_text']
     required_ops = {'Workflow':'text','Context':'text','State':'text','Created At':'datetime',
         'Source Hash':'text','Plan Hash':'text','Source Procedure Hash':'text','Replacement Decision ID':'text',
         'Snapshot Definition Hash':'text','Snapshot Capture Contract Hash':'text',
@@ -361,7 +361,7 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
         lines += [f'insert = insert_row({operation_table}, '+ '{'+', '.join(k+': '+v for k,v in values.items())+'}, name="Freeze complete forecast snapshot")',
             'returned = insert.returns()', 'sequence = button.on_click("Prepare complete snapshot", [insert, set_control_value(op, returned)])']
         pending=_join([f'eq({c("operations","Workflow")}, const_text("snapshot"))',f'eq({c("operations","State")}, const_text("PREPARED"))'])
-        guard=_join([*primary_guards,*finance_guards,'eq(op, const_text(""))',f'eq(count_if({pending}), const_num(0))'])
+        guard=_join([*primary_guards,*finance_guards,'eq(op, const_text(""))',f'eq(as_num(coalesce(count_if({pending}), const_num(0))), const_num(0))'])
         effect_count=1
     else:
         control=elements.get(operation_control_id,{})
