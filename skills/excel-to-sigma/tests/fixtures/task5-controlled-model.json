@@ -1,0 +1,1176 @@
+{
+  "origin": {
+    "workbookSha256": "40aca738a4d40cc94a5d5a181015e1bf974310f820aa7dfcf5b01a9ad7b6025e",
+    "contract": "controlled guarded fixture; not recovered macro behavior"
+  },
+  "actuals": [
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 225720
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 117040
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 75240
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 233874
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 121268
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 77958
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 248076
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 128632
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 82692
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 253638
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 131516
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 84546
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 268974
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 139468
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 89658
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 281394
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 145908
+    },
+    {
+      "Line Item": "Subscription Revenue",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 93798
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 41040
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 21280
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 13680
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 43686
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 22652
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 14562
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 52380
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 27160
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 17460
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 52434
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 27188
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 17478
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 62262
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 32284
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 20754
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 69174
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 35868
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 23058
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 37820
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Jan-26",
+      "Section": "Revenue",
+      "Amount": 24180
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 43310
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Feb-26",
+      "Section": "Revenue",
+      "Amount": 27690
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 35990
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Mar-26",
+      "Section": "Revenue",
+      "Amount": 23010
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 51240
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Apr-26",
+      "Section": "Revenue",
+      "Amount": 32760
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 42090
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "May-26",
+      "Section": "Revenue",
+      "Amount": 26910
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 58560
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Month": "Jun-26",
+      "Section": "Revenue",
+      "Amount": 37440
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Jan-26",
+      "Section": "Cost of Revenue",
+      "Amount": 27540
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Jan-26",
+      "Section": "Cost of Revenue",
+      "Amount": 14280
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Jan-26",
+      "Section": "Cost of Revenue",
+      "Amount": 9180
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Feb-26",
+      "Section": "Cost of Revenue",
+      "Amount": 28917
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Feb-26",
+      "Section": "Cost of Revenue",
+      "Amount": 14994
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Feb-26",
+      "Section": "Cost of Revenue",
+      "Amount": 9639
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Mar-26",
+      "Section": "Cost of Revenue",
+      "Amount": 29619
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Mar-26",
+      "Section": "Cost of Revenue",
+      "Amount": 15358
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Mar-26",
+      "Section": "Cost of Revenue",
+      "Amount": 9873
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Apr-26",
+      "Section": "Cost of Revenue",
+      "Amount": 31428
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Apr-26",
+      "Section": "Cost of Revenue",
+      "Amount": 16296
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Apr-26",
+      "Section": "Cost of Revenue",
+      "Amount": 10476
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "May-26",
+      "Section": "Cost of Revenue",
+      "Amount": 31968
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "May-26",
+      "Section": "Cost of Revenue",
+      "Amount": 16576
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "May-26",
+      "Section": "Cost of Revenue",
+      "Amount": 10656
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Jun-26",
+      "Section": "Cost of Revenue",
+      "Amount": 33885
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Jun-26",
+      "Section": "Cost of Revenue",
+      "Amount": 17570
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Month": "Jun-26",
+      "Section": "Cost of Revenue",
+      "Amount": 11295
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Jan-26",
+      "Section": "Cost of Revenue",
+      "Amount": 20435
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Jan-26",
+      "Section": "Cost of Revenue",
+      "Amount": 13065
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Feb-26",
+      "Section": "Cost of Revenue",
+      "Amount": 21228
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Feb-26",
+      "Section": "Cost of Revenue",
+      "Amount": 13572
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Mar-26",
+      "Section": "Cost of Revenue",
+      "Amount": 21259
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Mar-26",
+      "Section": "Cost of Revenue",
+      "Amount": 13591
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Apr-26",
+      "Section": "Cost of Revenue",
+      "Amount": 22540
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Apr-26",
+      "Section": "Cost of Revenue",
+      "Amount": 14410
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "May-26",
+      "Section": "Cost of Revenue",
+      "Amount": 22387
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "May-26",
+      "Section": "Cost of Revenue",
+      "Amount": 14313
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Jun-26",
+      "Section": "Cost of Revenue",
+      "Amount": 23790
+    },
+    {
+      "Line Item": "Customer Support",
+      "Month": "Jun-26",
+      "Section": "Cost of Revenue",
+      "Amount": 15210
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Jan-26",
+      "Section": "Cost of Revenue",
+      "Amount": 21960
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Jan-26",
+      "Section": "Cost of Revenue",
+      "Amount": 14040
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Feb-26",
+      "Section": "Cost of Revenue",
+      "Amount": 24705
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Feb-26",
+      "Section": "Cost of Revenue",
+      "Amount": 15795
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Mar-26",
+      "Section": "Cost of Revenue",
+      "Amount": 21350
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Mar-26",
+      "Section": "Cost of Revenue",
+      "Amount": 13650
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Apr-26",
+      "Section": "Cost of Revenue",
+      "Amount": 28670
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Apr-26",
+      "Section": "Cost of Revenue",
+      "Amount": 18330
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "May-26",
+      "Section": "Cost of Revenue",
+      "Amount": 23790
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "May-26",
+      "Section": "Cost of Revenue",
+      "Amount": 15210
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Jun-26",
+      "Section": "Cost of Revenue",
+      "Amount": 32330
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Month": "Jun-26",
+      "Section": "Cost of Revenue",
+      "Amount": 20670
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 85320
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 44240
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 28440
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 88560
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 45920
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 29520
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 92340
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 47880
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 30780
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 90180
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 46760
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 30060
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 96120
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 49840
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 32040
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 100440
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 52080
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 33480
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 104920
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 67080
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 107696
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 68854
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 109709
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 70141
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 112972
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 72228
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 114802
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 73398
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 118188
+    },
+    {
+      "Line Item": "Research & Development",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 75562
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 46710
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 24220
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 15570
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 47763
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 24766
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 15921
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 48141
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 24962
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 16047
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 49626
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 25732
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 16542
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 49842
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 25844
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 16614
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 51435
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 26670
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 17145
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 11590
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Jan-26",
+      "Section": "Operating Expenses",
+      "Amount": 7410
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 14030
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Feb-26",
+      "Section": "Operating Expenses",
+      "Amount": 8970
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 10370
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Mar-26",
+      "Section": "Operating Expenses",
+      "Amount": 6630
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 17080
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Apr-26",
+      "Section": "Operating Expenses",
+      "Amount": 10920
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 12810
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "May-26",
+      "Section": "Operating Expenses",
+      "Amount": 8190
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 15860
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Month": "Jun-26",
+      "Section": "Operating Expenses",
+      "Amount": 10140
+    },
+    {
+      "Line Item": "Depreciation & Amort.",
+      "Month": "Jan-26",
+      "Section": "Below the Line",
+      "Amount": 13800
+    },
+    {
+      "Line Item": "Depreciation & Amort.",
+      "Month": "Feb-26",
+      "Section": "Below the Line",
+      "Amount": 14250
+    },
+    {
+      "Line Item": "Depreciation & Amort.",
+      "Month": "Mar-26",
+      "Section": "Below the Line",
+      "Amount": 13450
+    },
+    {
+      "Line Item": "Depreciation & Amort.",
+      "Month": "Apr-26",
+      "Section": "Below the Line",
+      "Amount": 14700
+    },
+    {
+      "Line Item": "Depreciation & Amort.",
+      "Month": "May-26",
+      "Section": "Below the Line",
+      "Amount": 13600
+    },
+    {
+      "Line Item": "Depreciation & Amort.",
+      "Month": "Jun-26",
+      "Section": "Below the Line",
+      "Amount": 15050
+    },
+    {
+      "Line Item": "Interest Expense",
+      "Month": "Jan-26",
+      "Section": "Below the Line",
+      "Amount": 5600
+    },
+    {
+      "Line Item": "Interest Expense",
+      "Month": "Feb-26",
+      "Section": "Below the Line",
+      "Amount": 5600
+    },
+    {
+      "Line Item": "Interest Expense",
+      "Month": "Mar-26",
+      "Section": "Below the Line",
+      "Amount": 5500
+    },
+    {
+      "Line Item": "Interest Expense",
+      "Month": "Apr-26",
+      "Section": "Below the Line",
+      "Amount": 5500
+    },
+    {
+      "Line Item": "Interest Expense",
+      "Month": "May-26",
+      "Section": "Below the Line",
+      "Amount": 5400
+    },
+    {
+      "Line Item": "Interest Expense",
+      "Month": "Jun-26",
+      "Section": "Below the Line",
+      "Amount": 5400
+    }
+  ],
+  "inputs": [
+    {
+      "Input Row ID": "controlled-row-1",
+      "Line Item": "Subscription Revenue",
+      "Method": "growth",
+      "Monthly Growth": 0.032,
+      "Jul-26": null,
+      "Aug-26": null,
+      "Sep-26": null,
+      "Oct-26": null,
+      "Nov-26": null,
+      "Dec-26": null
+    },
+    {
+      "Input Row ID": "controlled-row-2",
+      "Line Item": "Usage Revenue",
+      "Method": "growth",
+      "Monthly Growth": 0.0475,
+      "Jul-26": null,
+      "Aug-26": null,
+      "Sep-26": null,
+      "Oct-26": null,
+      "Nov-26": null,
+      "Dec-26": null
+    },
+    {
+      "Input Row ID": "controlled-row-3",
+      "Line Item": "Professional Services Rev",
+      "Method": "manual",
+      "Monthly Growth": null,
+      "Jul-26": 91000,
+      "Aug-26": 64000,
+      "Sep-26": 101000,
+      "Oct-26": 73000,
+      "Nov-26": 88000,
+      "Dec-26": 126000
+    },
+    {
+      "Input Row ID": "controlled-row-4",
+      "Line Item": "Hosting & Infrastructure",
+      "Method": "growth",
+      "Monthly Growth": 0.021,
+      "Jul-26": null,
+      "Aug-26": null,
+      "Sep-26": null,
+      "Oct-26": null,
+      "Nov-26": null,
+      "Dec-26": null
+    },
+    {
+      "Input Row ID": "controlled-row-5",
+      "Line Item": "Customer Support",
+      "Method": "growth",
+      "Monthly Growth": 0.0125,
+      "Jul-26": null,
+      "Aug-26": null,
+      "Sep-26": null,
+      "Oct-26": null,
+      "Nov-26": null,
+      "Dec-26": null
+    },
+    {
+      "Input Row ID": "controlled-row-6",
+      "Line Item": "Services Delivery",
+      "Method": "manual",
+      "Monthly Growth": null,
+      "Jul-26": 53500,
+      "Aug-26": 39000,
+      "Sep-26": 60500,
+      "Oct-26": 44000,
+      "Nov-26": 52000,
+      "Dec-26": 72000
+    },
+    {
+      "Input Row ID": "controlled-row-7",
+      "Line Item": "Sales & Marketing",
+      "Method": "manual",
+      "Monthly Growth": null,
+      "Jul-26": 181000,
+      "Aug-26": 176000,
+      "Sep-26": 204000,
+      "Oct-26": 188000,
+      "Nov-26": 232000,
+      "Dec-26": 195000
+    },
+    {
+      "Input Row ID": "controlled-row-8",
+      "Line Item": "Research & Development",
+      "Method": "growth",
+      "Monthly Growth": 0.014,
+      "Jul-26": null,
+      "Aug-26": null,
+      "Sep-26": null,
+      "Oct-26": null,
+      "Nov-26": null,
+      "Dec-26": null
+    },
+    {
+      "Input Row ID": "controlled-row-9",
+      "Line Item": "General & Administrative",
+      "Method": "growth",
+      "Monthly Growth": 0.0065,
+      "Jul-26": null,
+      "Aug-26": null,
+      "Sep-26": null,
+      "Oct-26": null,
+      "Nov-26": null,
+      "Dec-26": null
+    },
+    {
+      "Input Row ID": "controlled-row-10",
+      "Line Item": "People / Recruiting",
+      "Method": "manual",
+      "Monthly Growth": null,
+      "Jul-26": 24000,
+      "Aug-26": 0,
+      "Sep-26": 31000,
+      "Oct-26": 18000,
+      "Nov-26": 42000,
+      "Dec-26": 21000
+    },
+    {
+      "Input Row ID": "controlled-row-11",
+      "Line Item": "Depreciation & Amort.",
+      "Method": "flat",
+      "Monthly Growth": null,
+      "Jul-26": null,
+      "Aug-26": null,
+      "Sep-26": null,
+      "Oct-26": null,
+      "Nov-26": null,
+      "Dec-26": null
+    },
+    {
+      "Input Row ID": "controlled-row-12",
+      "Line Item": "Interest Expense",
+      "Method": "manual",
+      "Monthly Growth": null,
+      "Jul-26": 5200,
+      "Aug-26": 5200,
+      "Sep-26": 5000,
+      "Oct-26": 5000,
+      "Nov-26": 4800,
+      "Dec-26": 4800
+    }
+  ],
+  "definitions": [
+    {
+      "Line Item": "Subscription Revenue",
+      "Section": "Revenue"
+    },
+    {
+      "Line Item": "Usage Revenue",
+      "Section": "Revenue"
+    },
+    {
+      "Line Item": "Professional Services Rev",
+      "Section": "Revenue"
+    },
+    {
+      "Line Item": "Hosting & Infrastructure",
+      "Section": "Cost of Revenue"
+    },
+    {
+      "Line Item": "Customer Support",
+      "Section": "Cost of Revenue"
+    },
+    {
+      "Line Item": "Services Delivery",
+      "Section": "Cost of Revenue"
+    },
+    {
+      "Line Item": "Sales & Marketing",
+      "Section": "Operating Expenses"
+    },
+    {
+      "Line Item": "Research & Development",
+      "Section": "Operating Expenses"
+    },
+    {
+      "Line Item": "General & Administrative",
+      "Section": "Operating Expenses"
+    },
+    {
+      "Line Item": "People / Recruiting",
+      "Section": "Operating Expenses"
+    },
+    {
+      "Line Item": "Depreciation & Amort.",
+      "Section": "Below the Line"
+    },
+    {
+      "Line Item": "Interest Expense",
+      "Section": "Below the Line"
+    }
+  ]
+}

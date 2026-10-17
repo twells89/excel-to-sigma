@@ -31,7 +31,7 @@ DATEF = {"kind": "datetime", "formatString": "%b-%y"}
 def q(s): return "'" + str(s).replace("'", "''") + "'"
 
 
-def forecast_layout(editable):
+def forecast_layout(editable, extra_model_ids=()):
     """Dense four-page layout: overview, detail, editable inputs, hidden plumbing."""
     pages = [
         ("pnl", [
@@ -53,6 +53,7 @@ def forecast_layout(editable):
             ("spineWrap", 1, 25, 13, 25),
             ("forecast", 1, 25, 25, 37),
             ("pnlCombined", 1, 25, 37, 49),
+            *[(element_id, 1, 25, 49+i*12, 61+i*12) for i, element_id in enumerate(extra_model_ids)],
         ]),
     ]
     blocks = []
@@ -171,9 +172,19 @@ def seed_csvs(P, outdir):
     return rate_p, man_p
 
 # ---------- workbook ----------
-def build_wb_spec(P, dm_id, els):
+def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     U = "Union of 2 Sources"
+    if approved_inputs is not None:
+        manifest, receipt = approved_inputs["manifest"], approved_inputs["receipt"]
+        architecture = manifest.get("planProjection", {}).get("sharedInputArchitecture", {})
+        if (P.get("sourceSha256") != manifest.get("sourceHash")
+                or architecture.get("presentationInputFeature") != "forecastBusinessInput"
+                or architecture.get("targetScope", {}).get("connectionId") != conn):
+            raise ValueError("approved forecast adapter source/connection is stale")
+        from input_sync import emit_workbook_wiring
+        approved_graph = emit_workbook_wiring(manifest, receipt)["wiring"]
+        editable = False  # Assigned wide input is the only editable surface.
     cur = CUR(P)
     def dm(elid): return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
     elements = []
@@ -224,6 +235,10 @@ def build_wb_spec(P, dm_id, els):
             {"id":"c_cogs","name":"COGS Amt","formula":f'If([{U}/Section] = "Cost of Revenue", [{U}/Amount], 0)'},
             {"id":"c_opex","name":"OpEx Amt","formula":f'If([{U}/Section] = "Operating Expenses", [{U}/Amount], 0)'},
             {"id":"c_below","name":"Below Amt","formula":f'If([{U}/Section] = "Below the Line", [{U}/Amount], 0)'}]}
+    if approved_inputs is not None:
+        approved_nodes = {node["id"]: node for node in approved_graph["elements"]}
+        actuals, spineWrap, forecast, pnlCombined = (
+            approved_nodes[key] for key in ("actuals", "spineWrap", "forecast", "pnlCombined"))
     REV=f"Sum([{C}/Revenue Amt])"; COGS=f"Sum([{C}/COGS Amt])"; OPEX=f"Sum([{C}/OpEx Amt])"; BELOW=f"Sum([{C}/Below Amt])"
     card_style = {"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}
     def kpi(eid,name,f,fmt): return {"id":eid,"kind":"kpi-chart","name":name,"source":{"kind":"table","elementId":"pnlCombined"},"columns":[{"id":"v","formula":f,"format":fmt}],"value":{"columnId":"v"},"style":dict(card_style)}
@@ -261,6 +276,11 @@ def build_wb_spec(P, dm_id, els):
     detail_els=[glTable]
     input_els=[assumpTable]
     hidden_els=[actuals,spineWrap,forecast,pnlCombined]
+    extra_model_ids = []
+    if approved_inputs is not None:
+        extra = [e for e in approved_graph["elements"] if e["id"] not in {n["id"] for n in hidden_els}]
+        hidden_els += extra
+        extra_model_ids = [e["id"] for e in extra]
     if editable: input_els+=[rateInput,manualInput]
     pages=[{"id":"pnl","name":"P&L Overview","elements":main_els},
            {"id":"detail","name":"Detail","elements":detail_els},
@@ -268,7 +288,7 @@ def build_wb_spec(P, dm_id, els):
            {"id":"model","name":"Model (sources)","visibility":"hidden","elements":hidden_els}]
     # Nested draft; wire_workbook flattens + wraps at the POST / dry-run boundary.
     return {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],
-            "pages":pages,"layout":forecast_layout(editable)}
+            "pages":pages,"layout":forecast_layout(editable, extra_model_ids)}
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)

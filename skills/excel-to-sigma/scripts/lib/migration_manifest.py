@@ -8,10 +8,10 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 try:
-    from .excel_expression import UnsupportedExpression, extract_references, parse_expression
+    from .excel_expression import ExpressionError, extract_references, parse_expression
     from .formula_graph import FormulaGraph
 except ImportError:  # standalone tests/scripts that place lib directly on sys.path
-    from excel_expression import UnsupportedExpression, extract_references, parse_expression
+    from excel_expression import ExpressionError, extract_references, parse_expression
     from formula_graph import FormulaGraph
 
 
@@ -25,7 +25,7 @@ class ManifestError(ValueError):
 _ROOT_EXCLUDED = {"source", "sourcePath", "sourceSha256", "migrationManifest",
                   "evidence", "runtimeEvidence", "execution", "executionState",
                   "verification", "targetVersions", "targetVersion", "targetBinding",
-                  "actualTarget", "runtime", "formulaCells"}
+                  "actualTarget", "runtime", "formulaCells", "sourceReviewEvidence"}
 _RECORD_RUNTIME_FIELDS = {"evidence", "runtimeEvidence", "execution", "executionState",
                           "verification", "targetVersions", "targetVersion", "targetBinding",
                           "actualTarget", "runtime"}
@@ -43,7 +43,7 @@ def _sha256(path):
 
 def _formula_projection(formulas):
     keys = ("id", "sheet", "address", "originalFormula", "dependencies",
-            "mappingStatus", "targetMapping", "unresolvedReason")
+            "mappingStatus", "targetMapping", "unresolvedReason", "reviewedReplacement")
     return [{key: item.get(key) for key in keys if key in item}
             for item in sorted(formulas, key=lambda value: value.get("id", ""))]
 
@@ -92,6 +92,21 @@ def _validate_target_mapping(mapping, formula_id):
         )
 
 
+def _valid_reviewed_replacement(record, original_formula):
+    replacement = record.get("reviewedReplacement")
+    return (
+        record.get("mappingStatus") == "live"
+        and isinstance(record.get("targetMapping"), dict)
+        and isinstance(replacement, dict)
+        and replacement.get("originalFormula") == original_formula
+        and isinstance(replacement.get("replacementFormula"), str)
+        and bool(replacement["replacementFormula"].strip())
+        and isinstance(replacement.get("reviewer"), str)
+        and bool(replacement["reviewer"].strip())
+        and replacement.get("reviewStatus") == "approved"
+    )
+
+
 def _plan_hash(source_hash, projection, formulas):
     logical = {"sourceHash": source_hash, "plan": projection,
                "formulaCells": _formula_projection(formulas)}
@@ -108,8 +123,22 @@ def build_manifest(source_path, plan=None) -> dict:
     cached = load_workbook(source, data_only=True, read_only=False)
     graph = FormulaGraph.from_workbook(workbook)
     cycle_members = {cell for component in graph.cycles() for cell in component}
-    unresolved_nodes = graph.unresolved_formula_nodes()
     plan_cells = _plan_cell_index(plan or {})
+    reviewed_roots = {
+        identity for identity, formula in graph.formulas.items()
+        if identity in graph.unsupported_formulas
+        and _valid_reviewed_replacement(plan_cells.get(identity.id, {}), formula)
+    }
+    unresolved_nodes = (
+        set(graph.unresolved_references) | set(graph.unresolved_names)
+        | (set(graph.unsupported_formulas) - reviewed_roots) | cycle_members)
+    changed = True
+    while changed:
+        changed = False
+        for node, dependencies in graph.dependencies.items():
+            if node not in unresolved_nodes and any(dep in unresolved_nodes for dep in dependencies):
+                unresolved_nodes.add(node)
+                changed = True
     formulas = []
     for identity in sorted(graph.formulas):
         formula = graph.formulas[identity]
@@ -121,7 +150,7 @@ def build_manifest(source_path, plan=None) -> dict:
             named_refs = [_reference_id(ref) for ref in extract_references(expression) if ref.name]
             refs = sorted({cell.id for cell in graph.dependencies.get(identity, ())} | set(named_refs))
             parse_error = None
-        except UnsupportedExpression as error:
+        except ExpressionError as error:
             refs, parse_error = [], str(error)
         item = {
             "id": identity.id,
@@ -134,13 +163,17 @@ def build_manifest(source_path, plan=None) -> dict:
             "evidence": list(record.get("evidence") or []),
             "verification": record.get("verification"),
         }
+        if record.get("reviewedReplacement") is not None:
+            item["reviewedReplacement"] = record["reviewedReplacement"]
         cached_value = cached[identity.sheet][identity.address].value
         if record.get("mappingStatus") == "cached":
             item["cachedFallback"] = cached_value
-        if parse_error:
+        if parse_error and not _valid_reviewed_replacement(record, formula):
             item["mappingStatus"] = "unresolved"
             item["unresolvedReason"] = parse_error
-        if parse_error:
+        if parse_error and _valid_reviewed_replacement(record, formula):
+            item["dependencies"] = list(record.get("dependencies") or [])
+        elif parse_error:
             pass
         elif identity in cycle_members:
             item["mappingStatus"] = "unresolved"
@@ -283,7 +316,58 @@ def validate_completion(manifest):
         if target and (evidence.get("targetVersion") != target.get("version") or
                        evidence.get("targetDocumentId") != target.get("documentId")):
             raise ManifestError(f"verification evidence target version is stale for {item['id']}")
+    _validate_source_issue_completion(manifest)
+    if manifest.get("planProjection", {}).get("customPortArchitecture"):
+        try:
+            from .custom_ports import validate_custom_port_completion
+        except ImportError:
+            from custom_ports import validate_custom_port_completion
+        validate_custom_port_completion(manifest)
+    if manifest.get('planProjection', {}).get('workflowRepairArchitecture'):
+        try:
+            from .workflow_repairs import validate_workflow_completion
+        except ImportError:
+            from workflow_repairs import validate_workflow_completion
+        validate_workflow_completion(manifest)
     return True
+
+
+def _validate_source_issue_completion(manifest):
+    # Import here to avoid the gate/manifest import cycle. Re-audit source bytes
+    # rather than trusting a caller-editable staging receipt's pending list.
+    try:
+        from .migration_gate import gate_plan_staging_source, source_issue_hash, MigrationGateError
+    except ImportError:
+        from migration_gate import gate_plan_staging_source, source_issue_hash, MigrationGateError
+    plan = {**manifest["planProjection"], "sourceSha256": manifest["sourceHash"]}
+    try:
+        _source, audit = gate_plan_staging_source(
+            plan, source_arg=manifest["source"]["path"])
+    except MigrationGateError as error:
+        raise ManifestError(f"source issue audit prevents completion: {error}") from error
+    issues = audit.get("issues") or []
+    records = manifest.get("sourceReviewEvidence") or []
+    if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+        raise ManifestError("source issue runtime evidence must be an array of records")
+    indexed = {record.get("issueHash"): record for record in records}
+    expected = {source_issue_hash(issue) for issue in issues}
+    if len(indexed) != len(records) or set(indexed) != expected:
+        raise ManifestError("source issue runtime evidence must exactly cover audited pending features")
+    target = manifest["target"]
+    for issue in issues:
+        record = indexed[source_issue_hash(issue)]
+        binding = record.get("targetBinding") or {}
+        expected_target = binding.get("columnId") or binding.get("checkId") or binding.get("elementId")
+        if (record.get("code") != issue["code"] or record.get("status") != "passed"
+                or not record.get("evidenceId") or not record.get("targetId")
+                or record.get("targetId") != expected_target or not binding.get("elementId")
+                or binding.get("documentId") != target["documentId"]
+                or binding.get("version") != target["version"]
+                or record.get("sourceHash") != manifest["sourceHash"]
+                or record.get("planHash") != manifest["planHash"]
+                or record.get("targetDocumentId") != target["documentId"]
+                or record.get("targetVersion") != target["version"]):
+            raise ManifestError(f"source issue runtime evidence is incomplete or stale: {issue['code']}")
 
 
 def _digest(value):

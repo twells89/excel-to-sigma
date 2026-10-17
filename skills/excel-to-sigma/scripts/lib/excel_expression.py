@@ -229,8 +229,8 @@ class _Parser:
 
     def _power(self):
         node = self._unary()
-        if self._accept("^"):
-            node = Binary("^", node, self._power())
+        while self._accept("^"):
+            node = Binary("^", node, self._unary())
         return node
 
     def _unary(self):
@@ -363,10 +363,16 @@ def evaluate(expression, resolver: Callable[[CellReference], object]):
             return operations[node.operator]()
         if isinstance(node, Function):
             if node.name == "IF":
+                if len(node.arguments) not in (2, 3):
+                    raise ExpressionError("IF requires two or three arguments")
                 condition = run(node.arguments[0])
-                return run(node.arguments[1]) if condition else run(node.arguments[2])
+                if condition:
+                    return run(node.arguments[1])
+                return run(node.arguments[2]) if len(node.arguments) == 3 else False
             args = [run(arg) for arg in node.arguments]
             if node.name == "ROUND":
+                if len(args) != 2:
+                    raise ExpressionError("ROUND requires two arguments")
                 places = int(args[1])
                 quantum = Decimal("1").scaleb(-places)
                 return float(Decimal(str(args[0])).quantize(quantum, rounding=ROUND_HALF_UP))
@@ -418,6 +424,8 @@ def emit_sigma(expression, reference_renderer: Callable[[CellReference], str],
         if isinstance(node, Unary): return f"{node.operator}{render(node.operand)}"
         if isinstance(node, Percent): return f"({render(node.operand)} * 0.01)"
         if isinstance(node, Binary):
+            if node.operator == "^":
+                return f"Power({render(node.left)}, {render(node.right)})"
             operator = "!=" if node.operator == "<>" else node.operator
             return f"{render(node.left)} {operator} {render(node.right)}"
         if isinstance(node, Function):
