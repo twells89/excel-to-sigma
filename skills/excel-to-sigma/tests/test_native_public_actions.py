@@ -468,4 +468,150 @@ class PublicNativeActionsTests(unittest.TestCase):
         with self.assertRaises(ValueError):repair.repair_research_edit_layout(crowded,**{**args,'layout_hash':_digest(crowded['layout'])})
         taller=copy.deepcopy(c);taller['layout']=taller['layout'].replace('4 / 10','4 / 28')
         with self.assertRaises(ValueError):repair.shrink_input_layout(taller,{'input':{'elementHash':args['input_element_hash'],'pageId':'research-edit','fromGridRow':'4 / 28','toGridRow':'4 / 10'}})
+    def approval_guard_evaluator(self,expense,operations,controls,empty_count=None):
+        """Evaluate emitted AST under explicit null rules; no Sigma runtime claim."""
+        tables={'expenseBusinessInput':expense,'workflowOperations':operations}
+        def column(node):
+            if node.id.startswith('rid_'):return node.id[4:],'__id__'
+            feature,encoded=node.id[2:].split('_',1)
+            return feature,bytes.fromhex(encoded).decode()
+        def evaluate(node,row=None):
+            if isinstance(node,ast.Constant):return node.value
+            if isinstance(node,ast.Name):
+                if node.id in controls:return controls[node.id]
+                feature,field=column(node)
+                return None if row is None else row.get((feature,field))
+            name=node.func.id
+            if name=='lookup':
+                feature,field=column(node.args[0]);id_feature,id_field=column(node.args[2])
+                self.assertEqual(feature,id_feature)
+                key=evaluate(node.args[1],row)
+                found=[r.get(field) for r in tables[feature] if r.get(id_field)==key]
+                return found[0] if len(found)==1 else None
+            if name=='count_if':
+                def sources(n):
+                    if isinstance(n,ast.Call) and n.func.id=='lookup':return set()
+                    if isinstance(n,ast.Name) and n.id.startswith(('c_','rid_')):return {column(n)[0]}
+                    return set().union(*(sources(v) for v in ast.iter_child_nodes(n)))
+                source=sources(node.args[0]);self.assertEqual(len(source),1)
+                feature=next(iter(source));records=tables[feature]
+                if not records:return empty_count
+                return sum(evaluate(node.args[0],{(feature,k):v for k,v in r.items()}) is True for r in records)
+            args=[evaluate(a,row) for a in node.args]
+            if name in {'const_text','const_num','as_text','as_num'}:return args[0]
+            if name=='coalesce':return next((a for a in args if a is not None),None)
+            if name=='is_null':return args[0] is None
+            if name=='eq':return None if any(a is None for a in args) else args[0]==args[1]
+            if name=='neq':return None if any(a is None for a in args) else args[0]!=args[1]
+            if name=='and_':return False if False in args else None if None in args else True
+            if name=='or_':return True if True in args else None if None in args else False
+            if name=='not_':return None if args[0] is None else not args[0]
+            if name=='contains':return None if None in args else args[1] in args[0]
+            if name=='ampersand':return None if None in args else args[0]+args[1]
+            self.fail('unsupported emitted contract operation '+name)
+        return evaluate
+
+    def approval_guard_rows(self,m):
+        expense={'__id__':'physical-A','Expense ID':'EXP-A','Date':None,'Employee':'Ada',
+            'Department':'Sales','Category':'Meals','Vendor':None,'Amount':12.34,
+            'Receipt Status':'Attached','Approval Status':'Pending','Card Amount':12.34,
+            'Ledger Amount':12.34,'Applied Approval Operation IDs':'|old-A||old-B|'}
+        operation={'__id__':'op-new','Workflow':'approval','Context':'expense-edit',
+            'Source Hash':m['sourceHash'],'Plan Hash':m['planHash'],'State':'PREPARED',
+            'Target Row ID':'physical-A','Target Business Key':'EXP-A',
+            **{'Before:'+k:expense[k] for k in self.APPROVAL_FIELDS}}
+        controls={'approval_count':1,'approval_context':'expense-edit','approval_row':'physical-A',
+            'approval_key':'EXP-A','approval_operation':'op-new','approval_next_history':'poison'}
+        return expense,operation,controls
+
+    def test_prepare_empty_aggregate_permits_only_valid_context_and_no_pending_intent(self):
+        # Removing the count-only default breaks empty-NULL; coalescing the
+        # entire guard instead breaks the NULL-context sentinel.
+        m,r,b,c=self.fixture();tree=ast.parse(native.emit_native_action_program(m,r,b,current_contents=c)['program'])
+        pending=next(n.value for n in tree.body if isinstance(n,ast.Assign) and
+                     any(isinstance(t,ast.Name) and t.id=='pending_intent_count' for t in n.targets))
+        condition=next(n.value.args[0] for n in tree.body if isinstance(n,ast.Expr) and
+            isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Attribute) and
+            ast.unparse(n.value.func)=='prepare_sequence.set_condition')
+        expense,operation,controls=self.approval_guard_rows(m);controls['approval_operation']=''
+        for rows,empty,want in [([],None,True),([],0,True),([operation],None,False),
+                                ([operation,{**operation,'__id__':'other-op'}],None,False)]:
+            with self.subTest(pending_rows=len(rows),empty=empty):
+                env=dict(controls);evaluate=self.approval_guard_evaluator([expense],rows,env,empty)
+                env['pending_intent_count']=evaluate(pending)
+                self.assertIs(evaluate(condition),want)
+        for context,want in [('wrong',False),(None,None)]:
+            with self.subTest(context=context):
+                env={**controls,'approval_context':context};evaluate=self.approval_guard_evaluator([expense],[],env)
+                env['pending_intent_count']=evaluate(pending)
+                self.assertIs(evaluate(condition),want)
+        # A different-source row is not an outstanding intent for this source;
+        # retain the complete predicate instead of counting every stored row.
+        env=dict(controls);evaluate=self.approval_guard_evaluator([expense],[{**operation,'Source Hash':'foreign'}],env)
+        env['pending_intent_count']=evaluate(pending);self.assertIs(evaluate(condition),True)
+
+    def test_target_local_history_freshness_blocks_poison_and_preserves_complete_prior_history(self):
+        # Removing freshness permits lost prior History; substituting a scalar
+        # selected-row lookup for target-local History misses the intervening change.
+        m,r,b,c=self.fixture();routes=native.emit_native_action_program(m,r,b,current_contents=c)
+        requirement=next(q for q in routes['publicActionRequirements'] if q['workflow']=='approval' and q['role']=='confirm')
+        call=ast.parse(requirement['call'],mode='eval').body
+        capture,update=call.args[1].elts
+        selector=update.args[1];capture_value=capture.args[1]
+        expense,operation,controls=self.approval_guard_rows(m)
+        local=lambda row:{('expenseBusinessInput',k):v for k,v in row.items()}
+        evaluate=self.approval_guard_evaluator([expense],[operation],controls)
+        self.assertIs(evaluate(selector,local(expense)),False,'poison helper must not write')
+        controls['approval_next_history']='|op-new|'
+        self.assertIs(evaluate(selector,local(expense)),False,'token alone must not discard prior entries')
+        controls['approval_next_history']=evaluate(capture_value)
+        self.assertEqual(controls['approval_next_history'],'|old-A||old-B||op-new|')
+        self.assertIs(evaluate(selector,local(expense)),True)
+        # The target row can be newer than the scalar lookup's read context;
+        # compare against that row, rather than trusting the selected lookup.
+        newer_target={**expense,'Applied Approval Operation IDs':'|old-A||old-B||concurrent|'}
+        self.assertIs(evaluate(selector,local(newer_target)),False)
+        expense['Applied Approval Operation IDs']='|old-A||old-B||concurrent|'
+        self.assertIs(evaluate(selector,local(expense)),False)
+        controls['approval_next_history']=evaluate(capture_value)
+        self.assertEqual(controls['approval_next_history'],'|old-A||old-B||concurrent||op-new|')
+        self.assertIs(evaluate(selector,local(expense)),True)
+        self.assertIs(evaluate(selector,local({**expense,'__id__':'physical-B'})),False)
+        for field in self.APPROVAL_FIELDS:
+            with self.subTest(frozen=field):
+                # A mismatched nullable pair can remain NULL; it must never
+                # become an eligible True through a broad guard default.
+                self.assertIs(evaluate(selector,local({**expense,field:'changed'})),
+                              None if expense[field] is None else False)
+        for history,wanted in [(None,'|op-new|'),('','|op-new|'),('|op-new|','|op-new||op-new|')]:
+            with self.subTest(history=history):
+                expense['Applied Approval Operation IDs']=history
+                controls['approval_next_history']=evaluate(capture_value)
+                self.assertEqual(controls['approval_next_history'],wanted)
+                self.assertIs(evaluate(selector,local(expense)),history!='|op-new|')
+        for native_id in (False,True):
+            _,_,_,_,_,_,fragment=self.public_fixture(native_expense=native_id)
+            action=next(e['afterAction'] for e in fragment['actionEdits'] if e['role']=='confirm')
+            write=action['effects'][1]
+            self.assertIn('([approval-next-history] = (((Coalesce([Applied Approval Operation IDs], "") & "|") & [approval-operation]) & "|"))',write['whichRows']['formula'])
+            self.assertNotIn('update_rows(t_expenseBusinessInput',routes['program'])
+            self.assertEqual(action['state'],'disabled')
+
+    def test_generated_program_loads_only_imported_assigned_builtin_or_runtime_names(self):
+        # A formula call may pass our behavioral evaluator yet still raise a
+        # NameError when the emitted module forgot its real import binding.
+        import builtins,symtable
+        m,r,b,c=self.fixture()
+        program=native.emit_native_action_program(m,r,b,current_contents=c)['program']
+        symbols=symtable.symtable(program,'generated-native-actions','exec')
+        bound={symbol.get_name() for symbol in symbols.get_symbols()
+               if symbol.is_imported() or symbol.is_assigned()}
+        allowed=bound | set(dir(builtins)) | {'sigma'}
+        def unresolved(table):
+            result={symbol.get_name() for symbol in table.get_symbols()
+                    if symbol.is_referenced() and symbol.is_global()
+                    and symbol.get_name() not in allowed}
+            return result.union(*(unresolved(child) for child in table.get_children()))
+        self.assertEqual(unresolved(symbols),set(),'generated module would load unbound names')
+
 if __name__=='__main__':unittest.main()

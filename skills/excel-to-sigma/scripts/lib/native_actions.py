@@ -491,7 +491,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
         'from sigma.action.navigateEffect import navigate_to',
         'from sigma.action.setControlValueEffect import set_control_value',
         'from sigma.action.controlFlow import if_else',
-        'from sigma.formula import const_text, const_num, const_bool, eq, neq, and_, or_, not_, is_null, now, contains, ampersand, coalesce, as_text, count_if, count_distinct, lookup, if_, text']
+        'from sigma.formula import const_text, const_num, const_bool, eq, neq, and_, or_, not_, is_null, now, contains, ampersand, coalesce, as_text, as_num, count_if, count_distinct, lookup, if_, text']
     for i,(page,page_id) in enumerate(sorted(binding['pages'].items())):
         lines += [f'p{i} = sigma.workbook.get_page({page_id!r})',f'if not isinstance(p{i}, Page):',
                   "    raise RuntimeError('expected assigned page')"]
@@ -650,7 +650,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
             f'eq({_c("workflowOperations","Target Row ID")}, {rowid})',
             f'eq({_c("workflowOperations","Target Business Key")}, {key})',
             f'eq({_c("workflowOperations","State")}, const_text("PREPARED"))']
-        lines += [f'pending_intent_count = count_if({_conjoin(pending_predicates)})']
+        lines += [f'pending_intent_count = as_num(coalesce(count_if({_conjoin(pending_predicates)}), const_num(0)))']
         lines += [f'prepare_insert = insert_row(t_workflowOperations, {{{values}}}, name="Prepare intent")',
             'prepared_id = prepare_insert.returns()',f'prepare_button = {host}.add_button({("Prepare "+workflow)!r})',
             'prepare_button.set_frame(1, cursor, min(24, prepare_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
@@ -701,8 +701,10 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
                 f'eq(lookup({_c("workflowOperations","State")}, {op}, rid_workflowOperations), const_text("PREPARED"))',
                 f'not_(contains(as_text(coalesce({selected_history}, const_text(""))), {token}))',
                 *scalar_before_guards])
+            target_next_history=f'ampersand(ampersand(ampersand(as_text(coalesce({history}, const_text(""))), const_text("|")), {op}), const_text("|"))'
             selector=_conjoin([f'eq(rid_expenseBusinessInput, {rowid})',f'eq({_c("expenseBusinessInput","Expense ID")}, {key})',
-                f'not_(contains(as_text(coalesce({history}, const_text(""))), {token}))']+before_guards)
+                f'not_(contains(as_text(coalesce({history}, const_text(""))), {token}))',
+                f'eq({next_history}, {target_next_history})']+before_guards)
             vals={ 'Approval Status':repr('Approved'),'ApprovedAt':'now()',
                 'Last Approval Operation ID':op,'Applied Approval Operation IDs':next_history }
             # Native UpdateRows scalar History formulas failed validation even
