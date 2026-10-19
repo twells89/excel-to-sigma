@@ -434,7 +434,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("const_text('operation-A')",mark['program'])
         self.assertIn("const_text('SNAPSHOT_COMPONENT_COMPLETE')",mark['program'])
         self.assertIn('for i in range(108):',mark['program'])
-        self.assertIn('eq(count_if(matching), const_num(1))',mark['program'])
+        self.assertIn('eq(count_if(key), const_num(1))',mark['program'])
         self.assertIn('not_(allowed_parts[0])',mark['program'])
         self.assertEqual(mark['insertEffectCount'],0)
         self.assertEqual(mark['productionStatus'],'BLOCKED')
@@ -472,6 +472,79 @@ class SnapshotTests(unittest.TestCase):
             k:v for k,v in wrong_native_target['reconciliation'].items() if k!='reconciliationHash'})
         with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
             operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=wrong_native_target)
+
+    def test_existing_snapshot_guard_uses_exact_composite_scalar_lookups(self):
+        import ast
+        p,d,current,b=self.candidate_fixture()
+        prepared=p.render_snapshot_candidate(d,current,b,phase='prepare')
+        self.assertEqual(prepared['programHash'],'02bd94836aaf2b22de11b08247df4ade47dbe6207f84189a248e35a222925cfc')
+        current['contents']['elements'].append({'id':'op-control','kind':'control','controlType':'text',
+                                                  'controlId':'forecast-snapshot-operation','value':''})
+        current['contents']['layout']=current['contents']['layout'].replace(
+            '<Element elementId="operations" />','<Element elementId="op-control" /><Element elementId="operations" />')
+        _,_,_,operations,snapshots,target=self.completion_fixture()
+        for capture in (operations,snapshots):capture['version']=19
+        target['version']=19
+        for role,capture in [('operations',operations),('snapshots',snapshots)]:
+            native_id=next(col['id'] for col in b[role]['columns'] if col['class']=='InputTableIDColumn')
+            capture['rowIdColumnId']=native_id;target[role+'RowIdColumnId']=native_id
+        mark_plan=p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value='operation-A')
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']=p.SNAPSHOT_TERMINAL_STATE
+        clear_plan=p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='operation-A')
+        snapshot_index=list(b).index('snapshots')
+        snapshot_vars={column['name']:'c'+str(snapshot_index)+'_'+str(i)
+                       for i,column in enumerate(b['snapshots']['columns'])}
+        for phase,plan in [('confirm',None),('completion-mark',mark_plan),('completion-clear',clear_plan)]:
+            with self.subTest(phase=phase):
+                program=p.render_snapshot_candidate(d,current,b,phase=phase,operation_control_id='op-control',
+                    prepared_contract=prepared['preparedContract'],completion_plan=plan)['program']
+                tree=ast.parse(program)
+                loop=next(node for node in ast.walk(tree) if isinstance(node,ast.For)
+                          and isinstance(node.target,ast.Name) and node.target.id=='i'
+                          and ast.unparse(node.iter)=='range(108)')
+                matching=next(node.value for node in loop.body if isinstance(node,ast.Assign)
+                              and any(isinstance(t,ast.Name) and t.id=='matching' for t in node.targets))
+                calls=[node for node in ast.walk(matching) if isinstance(node,ast.Call)
+                       and isinstance(node.func,ast.Name) and node.func.id=='lookup'
+                       and len(node.args)==4]
+                self.assertEqual(len(calls),14)
+                self.assertEqual({ast.unparse(call.args[0]) for call in calls},
+                                 {snapshot_vars[name] for name in p.SNAPSHOT_FIELDS})
+                for call in calls:
+                    self.assertEqual(len(call.args),4)
+                    self.assertIsInstance(call.args[3],ast.Tuple)
+                    self.assertEqual(len(call.args[3].elts),2)
+                    self.assertEqual(ast.unparse(call.args[1]),'op')
+                    self.assertEqual(ast.unparse(call.args[2]),snapshot_vars['Operation ID'])
+                    self.assertEqual(ast.unparse(call.args[3].elts[0]),'const_text(snapshot_keys[i])')
+                    self.assertEqual(ast.unparse(call.args[3].elts[1]),snapshot_vars['Snapshot Key'])
+                self.assertNotIn('count_if(matching)',program)
+                for count in (node for node in ast.walk(tree) if isinstance(node,ast.Call)
+                              and isinstance(node.func,ast.Name) and node.func.id=='count_if'):
+                    self.assertFalse(any(isinstance(child,ast.Call) and isinstance(child.func,ast.Name)
+                        and child.func.id=='lookup' for child in ast.walk(count)))
+                self.assertIn('eq(count_if(key), const_num(1))',program)
+                self.assertIn('not_(allowed_parts[0])',program)
+
+    def test_completion_rejects_each_payload_conflict_and_ignores_foreign_operation_same_key(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        own=snapshots['rows']
+        foreign={**own[0],'nativeRowId':'foreign-row','Operation ID':'operation-old'}
+        retained=copy.deepcopy(snapshots);retained['rows'].append(foreign);retained['rowCount']=109
+        self.assertEqual(p.plan_snapshot_completion(d,'operation-A',operations,retained,target,
+                         control_value='operation-A')['reconciliation']['existingCount'],108)
+        for field in p.SNAPSHOT_FIELDS:
+            changed=copy.deepcopy(snapshots)
+            value=changed['rows'][0][field]
+            changed['rows'][0][field]=value+1 if type(value) in (int,float) else 'wrong'
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',operations,changed,target,control_value='operation-A')
+        missing=copy.deepcopy(retained);missing['rows'].pop(0);missing['rowCount']=108
+        with self.assertRaises(ValueError):
+            p.plan_snapshot_completion(d,'operation-A',operations,missing,target,control_value='operation-A')
+        duplicate=copy.deepcopy(retained);duplicate['rows'].append({**own[0],'nativeRowId':'duplicate-row'});duplicate['rowCount']=110
+        with self.assertRaises(ValueError):
+            p.plan_snapshot_completion(d,'operation-A',operations,duplicate,target,control_value='operation-A')
 
     def test_rest_export_adapter_preserves_transport_and_all_108_actual_rows(self):
         import json,tempfile

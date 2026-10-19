@@ -36,6 +36,15 @@ condition setter rejected the depth-220 fold and accepted equivalent depth-23
 grouping while the existing sequence remained disabled. This is condition-setter
 admission only; it establishes no general engine depth limit or event acceptance.
 
+For an existing snapshot key, the native guard first requires exactly one row
+for both the operation ID and key. It then compares all 14 stored fields with
+scalar `lookup` calls keyed by that same pair, outside `CountIf`. This preserves
+the missing-key zero default and every conflict/duplicate/foreign-key blocker.
+In a published read-only diagnostic, `CountIf` with a cross-element `Lookup`
+inside its predicate returned zero for a known matching row, while the
+composite-key scalar comparisons returned true. The repaired action guard
+still requires disabled native admission and a fresh full readback.
+
 `reconcile_snapshot_rows` is a pure PREPARED-only insertion planner; its unit
 data is not live evidence. `plan_snapshot_reconciliation` requires complete
 captures bound to the same document/version/source/plan, table IDs, and native

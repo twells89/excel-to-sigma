@@ -659,13 +659,18 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
             'Line Item':'const_text(line_items[i])','Section':'const_text(sections[i])',
             'Period':'const_text(periods[i])','Value':'frozen','Captured At':'capture_time',
             **{n:op_lookup(n) for n in ('Source Hash','Plan Hash','Source Procedure Hash','Replacement Decision ID')}}
-        matching=_join([f'eq({c("snapshots",name)}, {value})' for name,value in payload.items()])
-        lines.append(f'    matching = and_(key, {matching})')
+        # The native runtime does not evaluate a cross-element Lookup nested
+        # inside CountIf on existing rows. Exact key cardinality is checked
+        # separately, then each of the 14 stored fields is read by both keys
+        # and compared as a scalar outside the aggregate.
+        snapshot_lookup=lambda name:f'lookup({c("snapshots",name)}, op, {c("snapshots","Operation ID")}, (const_text(snapshot_keys[i]), {c("snapshots","Snapshot Key")}))'
+        matching=_join([f'eq({snapshot_lookup(name)}, {value})' for name,value in payload.items()])
+        lines.append(f'    matching = {matching}')
         if phase=='confirm':
-            lines += [f'    confirm_guard_parts.append(and_({finite("frozen")}, or_(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1))))))',
+            lines += [f'    confirm_guard_parts.append(and_({finite("frozen")}, or_(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), and_(eq(count_if(key), const_num(1)), matching))))',
                 '    effects.append(if_else([(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), [insert_row('+snapshot_table+', {'+', '.join(c('snapshots',n)+': '+v for n,v in payload.items())+'})])], []))']
         else:
-            lines.append(f'    confirm_guard_parts.append(and_({finite("frozen")}, and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1)))))')
+            lines.append(f'    confirm_guard_parts.append(and_({finite("frozen")}, and_(eq(count_if(key), const_num(1)), matching)))')
         # Deep left folds were rejected by the live condition setter. Balance
         # only associative booleans; every nullable/conflict/foreign-key guard
         # and all frozen-value arithmetic remain unchanged.
