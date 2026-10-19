@@ -20,7 +20,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(len(marketplace["plugins"]), 1)
         entry = marketplace["plugins"][0]
         self.assertEqual(entry["name"], manifest["name"])
-        self.assertEqual(entry["source"], {"source": "github", "repo": "twells89/excel-to-sigma"})
+        self.assertEqual(entry["source"], "./")
         self.assertNotIn("skills", manifest)  # The default skills/ discovery is canonical.
 
     def test_skill_is_complete_when_copied_alone(self):
