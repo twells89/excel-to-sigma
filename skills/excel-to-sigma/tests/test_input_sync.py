@@ -532,6 +532,11 @@ class TestInputOrchestration(unittest.TestCase):
         architecture = build_shared_input_architecture(
             shared_plan(), connection_id="conn", folder_id="folder",
             workflows=["sales", "expense", "research"])
+        architecture["inputs"]["workflowOperations"] = {
+            "kind": "input-table", "name": "Workflow Operations",
+            "keyColumns": [], "connectionId": "conn", "rows": [],
+            "columns": [{"name": "Workflow", "type": "text"}],
+        }
         bindings = {name: {"documentId": "doc", "version": 3,
                            "pageId": "p-" + name, "elementId": "e-" + name,
                            "columnIds": {c["name"]: "c-" + str(i)

@@ -594,6 +594,9 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
                 selection=_conjoin([selection,f'eq(count_if({_conjoin(predicates)}), const_num(1))'])
                 prep_values['Captured:'+a['name']]=_lookup_assumption(a)
         values=', '.join(_c('workflowOperations',k)+': '+v for k,v in prep_values.items())
+        prepared_row=_conjoin([f'eq({_c("workflowOperations","Workflow")}, {_lit(workflow)})',
+            f'eq({_c("workflowOperations","State")}, const_text("PREPARED"))'])
+        prepared_operation=_conjoin([f'eq(rid_workflowOperations, {op})',prepared_row])
         pending_predicates=[f'eq({_c("workflowOperations","Workflow")}, {_lit(workflow)})',
             f'eq({_c("workflowOperations","Context")}, {_lit(decision["page"])})',
             f'eq({_c("workflowOperations","Source Hash")}, {_lit(manifest["sourceHash"])})',
@@ -611,7 +614,7 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             f'new_button = {host}.add_button({("Start new "+workflow)!r})',
             'new_button.set_frame(1, cursor, min(24, new_button.parent_grid_width()), 2)', 'cursor = cursor + 2',
             f'new_sequence = new_button.on_click("Start a new intentional operation", [update_rows(t_workflowOperations, eq(rid_workflowOperations, {op}), {{{_c("workflowOperations","State")}: "SUPERSEDED_NEW_INTENT"}}), set_control_value({op}, "")])',
-            f'new_sequence.set_condition(eq(count_if(eq(rid_workflowOperations, {op})), const_num(1)))',
+            f'new_sequence.set_condition(eq(count_if({prepared_operation}), const_num(1)))',
             f'new_sequence.set_disabled({not enabled!r})']
         # Recover a prepared operation by selecting its durable metadata row.
         # Physical ID + workflow + source/plan + context are rechecked on Apply.
@@ -621,6 +624,7 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             f'set_control_value({ctx}, {_c("workflowOperations","Context")})',
             f'set_control_value({n}, count_distinct(rid_workflowOperations))']
         lines += [f'recover = t_workflowOperations.on_select({("Recover "+workflow+" intent")!r}, [{", ".join(recovery)}])',
+            f'recover.set_condition({prepared_row})',
             f'recover.set_disabled({not enabled!r})']
         op_predicates=[f'eq(rid_workflowOperations, {op})',
             f'eq({_c("workflowOperations","Workflow")}, {_lit(workflow)})',
@@ -629,8 +633,7 @@ def emit_native_action_program(manifest,receipt,action_bindings,*,current_conten
             f'eq({_c("workflowOperations","Plan Hash")}, {_lit(manifest["planHash"])})',
             f'eq({_c("workflowOperations","Target Row ID")}, {rowid})',
             f'eq({_c("workflowOperations","Target Business Key")}, {key})']
-        if workflow=='applyScenario':
-            op_predicates.append(f'eq({_c("workflowOperations","State")}, const_text("PREPARED"))')
+        op_predicates.append(f'eq({_c("workflowOperations","State")}, const_text("PREPARED"))')
         operation_guard=f'eq(count_if({_conjoin(op_predicates)}), const_num(1))'
         guard=_conjoin([selection,operation_guard,f'neq({op}, const_text(""))',f'not_(contains({op}, const_text("|")))'])
         effects=[]

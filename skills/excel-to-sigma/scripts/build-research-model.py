@@ -228,6 +228,10 @@ def build_wb(plan, dm_id, els, data_lines, folder, name):
                 {"id": "mb_" + item["col_id"], "name": item["col_id"],
                  "formula": f"[{DMP}/{item['col_id']}]"}
                 for item in data_lines
+            ] + [
+                {"id": "mb_" + item["id"], "name": item["id"],
+                 "formula": f"[{DMP}/{item['id']}]"}
+                for item in source_inputs
             ],
         }
         calc_source = {

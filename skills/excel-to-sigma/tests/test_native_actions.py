@@ -409,6 +409,13 @@ class TestNativeActions(unittest.TestCase):
         self.assertIn('insert_row(t_forecastSnapshots',program)
         self.assertIn('Start new saveScenario',program)
         self.assertIn('Captured:Subscription Revenue Jul-26',program)
+        self.assertEqual(program.count('recover.set_condition('),3)
+        for workflow in ('applyScenario','saveScenario','snapshot'):
+            self.assertIn(
+                "recover.set_condition(and_(eq(c_workflowOperations['Workflow'], "
+                f"const_text('{workflow}')), eq(c_workflowOperations['State'], "
+                'const_text("PREPARED"))))',
+                program)
         ap,ar,ab,ac=self.bound_approval()
         self.assertIn('Before:',emit_native_action_program(ap,ar,ab,current_contents=ac)['program'])
         self.assertIn('sourceOverwrites',plan['planProjection']['nativeActionArchitecture']['workflows']['snapshot'])

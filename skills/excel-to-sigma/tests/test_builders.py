@@ -321,9 +321,16 @@ class TestWorkbookBuilders(unittest.TestCase):
             "folder", "Research")
         sql = dm_spec["pages"][0]["elements"][0]["source"]["statement"]
         calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        model_base = next(node for node in all_dicts(workbook)
+                          if node.get("id") == "modelBase")
 
         self.assertIn("i_model_inputs_c2", sql)
         self.assertIn("0.050000", sql)
+        self.assertEqual(
+            next(column["formula"] for column in model_base["columns"]
+                 if column["name"] == "i_model_inputs_c2"),
+            "[Custom SQL/i_model_inputs_c2]",
+        )
         self.assertEqual(
             next(column["formula"] for column in calc["columns"]
                  if column["id"] == "i_model_inputs_c2"),

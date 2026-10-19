@@ -156,7 +156,7 @@ def gate_input_completion(manifest, staging_receipt, runtime_evidence):
         if item.get("keyColumns") != spec.get("keyColumns"):
             raise ValueError(f"runtime key columns are stale for {name}")
         expected_count = len(spec.get("rows") or [])
-        if (expected_count < 1 or type(item.get("rows")) is not int
+        if (type(item.get("rows")) is not int
                 or type(item.get("distinct")) is not int
                 or item["rows"] != expected_count or item["distinct"] != expected_count):
             raise ValueError(f"runtime evidence does not match approved row count for {name}")
