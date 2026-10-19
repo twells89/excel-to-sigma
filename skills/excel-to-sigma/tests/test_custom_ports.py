@@ -247,6 +247,21 @@ class ConstructionTests(unittest.TestCase):
         exec(bad['allocation']['code'],{'sigma':sigma,'session':session})
         self.assertEqual(output[-1][0][1:3],['FAILURE','RUNTIME_ROW_KEY_MISMATCH'])
 
+    def test_procedure_datetime_argument_preserves_api_date_constant_and_milliseconds(self):
+        p=self.module();contract=p.controlled_procedure_contract('conn')
+        contract.update(signature='TASK5_TYPED_ECHO(VARCHAR, NUMBER, NUMBER, BOOLEAN, TIMESTAMP_NTZ)',
+            catalogObjectId='catalog-object',lookupEvidenceId='actual-lookup',callerEvidenceId='caller-grants',
+            scalarMappingEvidenceId='actual-editor-output',datetimeEvidenceId='actual-timestamp')
+        contract['lookup']={'connectionId':'conn','path':list(p.PROCEDURE_PATH),'signature':contract['signature'],
+            'returnType':'VARCHAR','parameters':list(p.PROCEDURE_TYPES),'overloads':1,'defaults':False}
+        timestamp='2026-10-19T14:30:12.123'
+        action=p.build_procedure_action(contract,['timestamp-operation',1234.56,7,True,timestamp])
+        # OpenAPI Actions / call-stored-procedure / arguments: the parameter
+        # type is datetime, while its fixed timestamp constant uses date.
+        self.assertEqual(action['effects'][0]['arguments'][4],{
+            'parameterIndex':4,'type':'datetime',
+            'value':{'type':'constant','value':{'type':'date','value':timestamp+'Z'}}})
+
     def test_typed_procedure_rejects_pending_signature_bad_order_types_and_changed_retry(self):
         p=self.module();self.assertTrue(hasattr(p,'build_procedure_action'),'typed procedure mapper is missing')
         contract=p.controlled_procedure_contract('conn')
