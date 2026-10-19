@@ -473,4 +473,111 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
             operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=wrong_native_target)
 
+    def test_rest_export_adapter_preserves_transport_and_all_108_actual_rows(self):
+        import json,tempfile
+        p,d,current,b=self.candidate_fixture();_,op=self.operation()
+        op[d['cells'][0]['operationFrozenColumn']]=537775.2000000001
+        for role in ('operations','snapshots'):
+            b[role]['columns'][-1]['name']='ID'
+            next(e for e in current['contents']['elements'] if e['id']==role)['columns'][-1]['name']='ID'
+        op['Created At']='2026-10-16T12:00:00+00:00'
+        for name in ('Snapshot Capture Contract Hash','Authoring Baseline Document Version',
+                     'Authoring Baseline Contents Hash','Source Graph Hash','Primary Identity Contract Hash',
+                     'Snapshot Schema Contract Hash'):
+            op[name]=19 if name.endswith('Version') else 'f'*64
+        rows=p.reconcile_snapshot_rows(d,op,[])['missingRows']
+        target={'documentId':current['workbookId'],'version':current['documentVersion'],
+                'operationsElementId':b['operations']['elementId'],'operationsRowIdColumnId':'ID',
+                'snapshotsElementId':b['snapshots']['elementId'],'snapshotsRowIdColumnId':'ID'}
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            def save(name,value):
+                path=base/name;path.write_text(json.dumps(value));return str(path)
+            before=save('source-before.json',current);after=save('source-after.json',current)
+            bindings=save('bindings.json',b);timezone=save('timezone.json',{'timezone':'UTC'})
+            def files(role,raw,*,row_limit=1000):
+                query='query-'+role
+                return {'request_path':save(role+'-request.json',{'method':'POST','path':'/v2/workbooks/stage/export',
+                    'body':{'elementId':role,'format':{'type':'json'},'rowLimit':row_limit}}),
+                    'job_path':save(role+'-job.json',{'jobComplete':False,'queryId':query}),
+                    'download_request_path':save(role+'-download.json',{'method':'GET','path':'/v2/query/'+query+'/download'}),
+                    'rows_path':save(role+'-rows.json',raw),'timezone_path':timezone,
+                    'request_provenance_path':save(role+'-provenance.json',{role:{'queryId':query,
+                        'actualExportInvocation':'recorded POST helper call',
+                        'actualDownloadInvocation':'recorded GET helper call'},
+                        'qualification':'Reconstructed from recorded helper invocations, not a wire capture.'}),
+                    'source_before_path':before,'source_after_path':after,'bindings_path':bindings}
+            raw_op={k:v for k,v in op.items() if k!='nativeRowId'}
+            raw_op['ID']=op['nativeRowId'];raw_op['Created At']='2026-10-16 12:00:00.000'
+            raw_rows=[]
+            for i,row in enumerate(rows):
+                raw={**row,'ID':'row-'+str(i),'Captured At':'2026-10-16 12:00:00.000'}
+                raw_rows.append(raw)
+            op_files=files('operations',[raw_op]);snap_files=files('snapshots',raw_rows)
+            ops=p.adapt_rest_json_export_capture(d,role='operations',target=target,**op_files)
+            snaps=p.adapt_rest_json_export_capture(d,role='snapshots',target=target,**snap_files)
+            self.assertEqual((ops['origin'],snaps['origin']),('sigma-rest-json-export',)*2)
+            self.assertEqual((ops['rows'][0]['Created At'],snaps['rows'][0]['Captured At']),
+                             ('2026-10-16T12:00:00.000+00:00',)*2)
+            self.assertNotIn('ID',ops['rows'][0]);self.assertEqual(ops['rows'][0]['nativeRowId'],'operation-A')
+            self.assertEqual(snaps['rows'][0]['Value'],537775.2000000001)
+            self.assertNotIn('Frozen Assumption / source row 6 / Monthly Growth',ops['rows'][0])
+            self.assertEqual(ops['restEvidence']['timezone']['observed'],'UTC')
+            self.assertEqual(ops['restEvidence']['job']['queryId'],'query-operations')
+            self.assertIn('not a wire capture',ops['restEvidence']['requestProvenance']['qualification'])
+            self.assertTrue(ops['restEvidence']['knownSchemaOmissions'][0]['knownSchemaFieldsOmitted'])
+            self.assertEqual(p.plan_snapshot_completion(d,'operation-A',ops,snaps,target,
+                                                        control_value='operation-A')['nextAction'],'MARK_TERMINAL')
+            self.assertEqual(p.plan_snapshot_reconciliation(d,'operation-A',ops,snaps,target)['existingCount'],108)
+            changed_source=copy.deepcopy(current)
+            changed_source['contents']['layout'] += '<Page id="unrelated" />'
+            different_before=save('different-before.json',changed_source)
+            different_after=save('different-after.json',changed_source)
+            different=p.adapt_rest_json_export_capture(d,role='snapshots',target=target,
+                **{**snap_files,'source_before_path':different_before,'source_after_path':different_after})
+            with self.assertRaisesRegex(ValueError,'same saved source'):
+                p.plan_snapshot_completion(d,'operation-A',ops,different,target,control_value='operation-A')
+            bad=copy.deepcopy(snaps);bad['restEvidence']['files']['rows']['sha256']='0'*64
+            with self.assertRaises(ValueError):p.plan_snapshot_completion(d,'operation-A',ops,bad,target,
+                                                                           control_value='operation-A')
+            request=json.loads(Path(snap_files['request_path']).read_text())
+            download=json.loads(Path(snap_files['download_request_path']).read_text())
+            for name,changed,path in [
+                ('offset',{**request,'body':{**request['body'],'offset':1}},snap_files['request_path']),
+                ('parameters',{**request,'body':{**request['body'],'parameters':{'Region':'West'}}},snap_files['request_path']),
+                ('tag',{**request,'body':{**request['body'],'tag':'other-version'}},snap_files['request_path']),
+                ('export-as',{**request,'body':{**request['body'],'exportAs':'other-user'}},snap_files['request_path']),
+                ('top-level-query',{**request,'query':{'offset':1}},snap_files['request_path']),
+                ('download-query',{**download,'query':{'offset':1}},snap_files['download_request_path'])]:
+                with self.subTest(name=name),self.assertRaisesRegex(ValueError,'exact JSON element-export request|result-download request'):
+                    save(Path(path).name,changed)
+                    p.adapt_rest_json_export_capture(d,role='snapshots',target=target,**snap_files)
+                save(Path(path).name,request if path==snap_files['request_path'] else download)
+            for name,changed_rows in [('partial',raw_rows[:-1]),
+                                      ('foreign',[{**raw_rows[0],'Snapshot Key':'foreign'},*raw_rows[1:]])]:
+                with self.subTest(name=name),self.assertRaises(ValueError):
+                    changed=p.adapt_rest_json_export_capture(d,role='snapshots',target=target,
+                        **files('snapshots',changed_rows))
+                    p.plan_snapshot_completion(d,'operation-A',ops,changed,target,control_value='operation-A')
+            for name,mutation,message in [
+                ('wrong-timezone',lambda:save('timezone.json',{'timezone':'America/New_York'}),'UTC organization'),
+                ('missing-job',lambda:Path(snap_files['job_path']).unlink(),'retained absolute REST evidence'),
+                ('at-limit',lambda:files('snapshots',raw_rows,row_limit=108),'below-limit'),
+                ('unexpected-field',lambda:files('snapshots',[{**raw_rows[0],'Surprise':1},*raw_rows[1:]]),'unexpected'),
+                ('precision-loss',lambda:files('snapshots',[{**raw_rows[0],
+                    'Captured At':'2026-10-16 12:00:00.1234567'},*raw_rows[1:]]),'lossless'),
+                ('job-mismatch',lambda:save('snapshots-job.json',{'jobComplete':False,'queryId':'different'}),'matching real job'),
+                ('stale-bracket',lambda:save('source-after.json',{**current,'documentVersion':20}),'before/after')]:
+                save('timezone.json',{'timezone':'UTC'})
+                save('snapshots-job.json',{'jobComplete':False,'queryId':'query-snapshots'})
+                save('source-after.json',current)
+                with self.subTest(name=name),self.assertRaisesRegex(ValueError,message):
+                    changed=mutation()
+                    p.adapt_rest_json_export_capture(d,role='snapshots',target=target,
+                        **(changed if isinstance(changed,dict) else snap_files))
+            save('timezone.json',{'timezone':'UTC'})
+            save('snapshots-job.json',{'jobComplete':False,'queryId':'query-snapshots'})
+            with self.assertRaises(ValueError):p.adapt_rest_json_export_capture(d,role='snapshots',
+                target={**target,'snapshotsRowIdColumnId':'wrong-native-id'},**snap_files)
+
 if __name__ == '__main__':unittest.main()

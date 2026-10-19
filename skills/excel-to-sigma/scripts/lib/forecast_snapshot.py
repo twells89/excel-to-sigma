@@ -154,6 +154,143 @@ def _reconcile_snapshot_rows(definition, operation, rows, *, completion=False):
         'operationHash':digest(operation),'snapshotRowsHash':digest(rows),'productionStatus':'BLOCKED'}
 
 
+def adapt_rest_json_export_capture(definition, *, role, target, bindings_path, request_path, job_path,
+                                   download_request_path, request_provenance_path, rows_path, timezone_path,
+                                   source_before_path, source_after_path):
+    """Bind a saved REST export to its raw evidence without claiming SDK origin.
+
+    The caller must retain the actual request, job, download request, results,
+    request provenance, UTC organization setting, and same-version source GET
+    bracket as files. Reconstructed request metadata stays labeled as such.
+    File consistency cannot prove that a remote request ran; the controller
+    must review that provenance and the current client control independently.
+    """
+    _definition(definition)
+    if role not in ('operations','snapshots') or not isinstance(target,dict):
+        raise ValueError('one assigned hidden input role and target required')
+    paths={'bindings':bindings_path,'request':request_path,'job':job_path,
+        'downloadRequest':download_request_path,'requestProvenance':request_provenance_path,
+        'rows':rows_path,'timezone':timezone_path,
+        'sourceBefore':source_before_path,'sourceAfter':source_after_path}
+    files={};data={}
+    for name,value in paths.items():
+        path=Path(value)
+        if not path.is_absolute() or not path.is_file():
+            raise ValueError('retained absolute REST evidence file required: '+name)
+        raw=path.read_bytes()
+        try:data[name]=json.loads(raw.decode('utf-8'))
+        except (UnicodeError,json.JSONDecodeError):raise ValueError('UTF-8 JSON REST evidence required: '+name)
+        files[name]={'path':str(path),'sha256':hashlib.sha256(raw).hexdigest()}
+    workbook_id=target.get('documentId');version=target.get('version')
+    if (not isinstance(workbook_id,str) or not workbook_id.strip()
+            or type(version) is not int or version<=0):
+        raise ValueError('exact current document and version required')
+    before,after=data['sourceBefore'],data['sourceAfter']
+    if (any(not isinstance(source,dict) or source.get('workbookId')!=workbook_id
+            or source.get('documentVersion')!=version or not isinstance(source.get('contents'),dict)
+            for source in (before,after)) or digest(before['contents'])!=digest(after['contents'])):
+        raise ValueError('same-version identical before/after source GET bracket required')
+    bindings=data['bindings'];binding=bindings.get(role) if isinstance(bindings,dict) else None
+    columns=binding.get('columns') if isinstance(binding,dict) else None
+    if (not isinstance(columns,list) or not columns
+            or binding.get('elementId')!=target.get(role+'ElementId')):
+        raise ValueError('actual assigned element and schema required')
+    native=[c for c in columns if c.get('class')=='InputTableIDColumn' and c.get('kind')=='row_id']
+    if (len(native)!=1 or native[0].get('id')!=target.get(role+'RowIdColumnId')
+            or native[0].get('name')!='ID'):
+        raise ValueError('exact assigned native ID column required')
+    element=next((e for e in before['contents'].get('elements',[])
+        if e.get('id')==binding['elementId']),None)
+    if (not isinstance(element,dict) or element.get('kind')!='input-table'
+            or element.get('name')!=binding.get('name')):
+        raise ValueError('assigned input table missing from saved source')
+    public={c.get('id'):c for c in element.get('columns',[])}
+    expected_ids={c.get('id') for c in columns if c not in native}|{'ID'}
+    if len(public)!=len(columns) or set(public)!=expected_ids:
+        raise ValueError('assigned schema differs from saved public source')
+    known_names={c.get('name') for c in columns if c not in native}
+    if len(known_names)!=len(columns)-1 or not all(isinstance(n,str) and n for n in known_names):
+        raise ValueError('unique complete assigned column names required')
+    for column in columns:
+        public_column=public.get('ID' if column in native else column['id'],{})
+        if any(public_column.get(k)!=column.get(k) for k in ('name','type') if k in public_column):
+            raise ValueError('assigned column differs from saved source')
+    request=data['request'];job=data['job'];download=data['downloadRequest']
+    if (not isinstance(request,dict) or set(request)!={'method','path','body'}
+            or request.get('method')!='POST'
+            or request.get('path')!='/v2/workbooks/'+workbook_id+'/export'
+            or not isinstance(request.get('body'),dict)
+            or set(request['body'])!={'elementId','format','rowLimit'}
+            or request['body'].get('elementId')!=binding['elementId']
+            or request['body'].get('format')!={'type':'json'}
+            or type(request['body'].get('rowLimit')) is not int
+            or request['body']['rowLimit']<=0):
+        raise ValueError('actual exact JSON element-export request required')
+    query_id=job.get('queryId') if isinstance(job,dict) else None
+    if (not isinstance(query_id,str) or not query_id.strip()
+            or type(job.get('jobComplete')) is not bool
+            or not isinstance(download,dict) or set(download)!={'method','path'}
+            or download.get('method')!='GET'
+            or download.get('path')!='/v2/query/'+query_id+'/download'):
+        raise ValueError('matching real job and result-download request required')
+    provenance=data['requestProvenance']
+    entry=provenance.get(role) if isinstance(provenance,dict) else None
+    if (not isinstance(entry,dict) or entry.get('queryId')!=query_id
+            or any(not isinstance(entry.get(k),str) or not entry[k].strip()
+                for k in ('actualExportInvocation','actualDownloadInvocation'))
+            or not isinstance(provenance.get('qualification'),str)
+            or not provenance['qualification'].strip()):
+        raise ValueError('exact query-bound request provenance required')
+    timezone=data['timezone']
+    if not isinstance(timezone,dict) or timezone.get('timezone')!='UTC':
+        raise ValueError('actual UTC organization setting required for naive export timestamps')
+    raw_rows=data['rows'];limit=request['body']['rowLimit']
+    if not isinstance(raw_rows,list) or len(raw_rows)>=limit:
+        raise ValueError('complete below-limit JSON row array required')
+    mandatory={'ID','Workflow','Context','State','Created At','Source Hash','Plan Hash',
+        'Source Procedure Hash','Replacement Decision ID','Snapshot Definition Hash',
+        'Snapshot Capture Contract Hash','Authoring Baseline Document Version',
+        'Authoring Baseline Contents Hash','Source Graph Hash','Primary Identity Contract Hash',
+        'Snapshot Schema Contract Hash'}|{c['operationFrozenColumn'] for c in definition['cells']}
+    allowed={'ID'}|known_names
+    expected_snapshot={'ID'}|set(SNAPSHOT_FIELDS)
+    normalized=[];omitted=[];seen=set()
+    for raw_row in raw_rows:
+        if not isinstance(raw_row,dict) or ('ID' not in raw_row):
+            raise ValueError('stored native ID required in each raw export row')
+        keys=set(raw_row)
+        if (not keys<=allowed or (role=='snapshots' and keys!=expected_snapshot)
+                or (role=='operations' and not mandatory<=keys)):
+            raise ValueError('raw export row has missing or unexpected assigned fields')
+        row_id=raw_row['ID']
+        if not isinstance(row_id,str) or not row_id.strip() or row_id in seen:
+            raise ValueError('unique nonempty actual native row IDs required')
+        seen.add(row_id)
+        time_field='Created At' if role=='operations' else 'Captured At'
+        raw_time=raw_row[time_field]
+        if (not isinstance(raw_time,str) or not re.fullmatch(
+                r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{1,6}',raw_time)):
+            raise ValueError('exact lossless UTC-naive timestamp spelling required')
+        aware=raw_time.replace(' ','T')+'+00:00';_time(aware)
+        row={k:v for k,v in raw_row.items() if k!='ID'}
+        row['nativeRowId']=row_id;row[time_field]=aware
+        normalized.append(row)
+        omitted.append({'nativeRowId':row_id,'knownSchemaFieldsOmitted':sorted(known_names-keys)})
+    evidence={'transport':'sigma-rest-json-export','files':files,'job':{'queryId':query_id,
+        'initialJobComplete':job['jobComplete']},'request':{'method':'POST','path':request['path'],
+        'elementId':binding['elementId'],'format':'json','rowLimit':limit},
+        'timezone':{'observed':'UTC','normalization':'preserve raw fractional digits; append +00:00'},
+        'requestProvenance':{'queryId':query_id,'qualification':provenance['qualification'],
+            'actualExportInvocation':entry['actualExportInvocation'],
+            'actualDownloadInvocation':entry['actualDownloadInvocation']},
+        'knownSchemaOmissions':omitted,'sourceContentsHash':digest(before['contents'])}
+    return {'origin':'sigma-rest-json-export','documentId':workbook_id,'version':version,
+        'sourceHash':definition['sourceHash'],'planHash':definition['planHash'],
+        'complete':True,'rowCount':len(normalized),'evidenceId':digest(evidence),
+        'executionId':query_id,'elementId':binding['elementId'],
+        'rowIdColumnId':native[0]['id'],'rows':normalized,'restEvidence':evidence}
+
+
 def plan_snapshot_reconciliation(definition, operation_id, operations, snapshots, target):
     """Require fresh complete actual destination-bound captures before planning."""
     return _plan_snapshot_reconciliation(definition,operation_id,operations,snapshots,target)
@@ -167,7 +304,7 @@ def _plan_snapshot_reconciliation(definition, operation_id, operations, snapshot
             or type(target.get('version')) is not int or target['version']<=0):
         raise ValueError('nonempty target document/native IDs and strict positive integer version required')
     for role,capture in [('operations',operations),('snapshots',snapshots)]:
-        if (capture.get('origin')!='sigma-query' or capture.get('complete') is not True
+        if (capture.get('origin') not in ('sigma-query','sigma-rest-json-export') or capture.get('complete') is not True
                 or type(capture.get('version')) is not int or capture['version']<=0
                 or type(capture.get('rowCount')) is not int or capture['rowCount']<0
                 or not capture.get('evidenceId') or not capture.get('executionId')
@@ -178,6 +315,27 @@ def _plan_snapshot_reconciliation(definition, operation_id, operations, snapshot
                 or any(capture.get(k)!=target.get(k) for k in ('documentId','version'))
                 or any(capture.get(k)!=definition[k] for k in ('sourceHash','planHash'))):
             raise ValueError('fresh complete actual source/plan/document/version/native-ID-bound '+role+' capture required')
+        if capture['origin']=='sigma-rest-json-export':
+            evidence=capture.get('restEvidence')
+            files=evidence.get('files') if isinstance(evidence,dict) else None
+            if not isinstance(files,dict) or set(files)!={'bindings','request','job','downloadRequest','requestProvenance',
+                    'rows','timezone','sourceBefore','sourceAfter'}:
+                raise ValueError('complete retained REST export provenance required')
+            try:
+                expected=adapt_rest_json_export_capture(definition,role=role,target=target,
+                    **{name+'_path':files[key]['path'] for name,key in [('bindings','bindings'),
+                    ('request','request'),('job','job'),('download_request','downloadRequest'),
+                    ('request_provenance','requestProvenance'),
+                    ('rows','rows'),('timezone','timezone'),('source_before','sourceBefore'),
+                    ('source_after','sourceAfter')]})
+            except (KeyError,TypeError,FileNotFoundError) as exc:
+                raise ValueError('invalid retained REST export provenance') from exc
+            if capture!=expected:
+                raise ValueError('REST capture differs from its retained raw evidence')
+    if operations['origin']=='sigma-rest-json-export' and snapshots['origin']=='sigma-rest-json-export':
+        if (operations['restEvidence']['sourceContentsHash']!=snapshots['restEvidence']['sourceContentsHash']
+                or operations['executionId']==snapshots['executionId']):
+            raise ValueError('REST operation and snapshot exports require the same saved source and distinct query jobs')
     found = [r for r in operations['rows'] if r.get('nativeRowId')==operation_id]
     if len(found)!=1:raise ValueError('exactly one stored native operation row required')
     result = _reconcile_snapshot_rows(definition,found[0],snapshots['rows'],completion=completion)
