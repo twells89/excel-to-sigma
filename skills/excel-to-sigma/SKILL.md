@@ -6,9 +6,8 @@ description: >-
   an Excel file (formal Tables, pivots, charts, or a cell-formula budget model)
   and wants to recreate it in Sigma. Covers formal-Table discovery, Excel-formula
   translation, and the input-table → warehouse-view → data-model pattern that
-  preserves data entry. Requires a Sigma SIGMA_API_TOKEN and (for the data-entry
+  preserves data entry. Requires Sigma client credentials and (for the data-entry
   half) a write-enabled Sigma connection.
-user-invocable: true
 ---
 
 # Excel → Sigma Conversion
@@ -34,7 +33,7 @@ user-invocable: true
 - `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
 - `refs/presentation-migration.md` — source-bound native charts, validation, conditional formatting, semantic formats, three-view layout, ordinary business inputs, and repeat-safe full-contents integration.
 - `refs/acceptance-and-promotion.md` — source-bound secondary workflow repairs, mandatory five-fixture actual evidence, persisted outcomes, original-URL promotion and row/document/SDK rollback.
-- `~/sigma-skills/sigma-workbooks/SKILL.md` + the Sigma OpenAPI — canonical workbook spec.
+- The `sigma-workbooks` companion skill, if installed, plus the Sigma OpenAPI — canonical workbook spec. Find it through the agent's skill loader; use `refs/sigma-build-gotchas.md` when it is unavailable.
 
 ---
 
@@ -124,7 +123,7 @@ back to a `SIGDS_` schema). Confirm via `GET /v2/connections` → `writeAccess: 
 Verified write connection on tj-wells-1989: `cb2f5180-…` (Snowflake ymb68310).
 
 ### Python
-Install the pinned dependencies from the plugin root:
+From this skill directory, install its pinned dependencies:
 `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 
 ### Optional: `snow` CLI
@@ -314,7 +313,7 @@ as Phase 2.
 ## Phase 5 — Build / repoint the workbook, layout last, parity
 
 Build the dashboard pages (Forecast Summary pivot + KPIs, trend charts) per
-`~/sigma-skills/sigma-workbooks`, sourced from the DM. Builders author a nested
+the `sigma-workbooks` companion skill when available, sourced from the DM. Builders author a nested
 `pages[].elements` draft; **`scripts/lib/workbook_wire.py` assembles layout XML
 as the last write**, then wraps via `code_rep` into
 `{ name, folderId, contents: { schemaVersion, kind, pages, elements, layout } }`.

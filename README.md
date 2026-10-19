@@ -1,14 +1,47 @@
 # Excel → Sigma
 
-A Claude Code skill that migrates **Excel (`.xlsx`) planning / budget / forecast
+A coding-agent skill that migrates **Excel (`.xlsx`) planning / budget / forecast
 models** to Sigma — preserving the part that matters most about a spreadsheet:
 **data entry**.
 
-> **Private staging repo.** This is the development home for the `excel-to-sigma`
-> skill. It is laid out as a plugin (`.claude-plugin/plugin.json` +
-> `skills/excel-to-sigma/`) so it drops straight into the
-> [`sigma-migration-skills`](https://github.com/twells89/sigma-migration-skills)
-> monorepo (`plugins/excel-to-sigma/`) when it's ready to ship.
+The repository is a Claude Code plugin marketplace and also contains a standalone,
+agent-neutral `SKILL.md` with its own scripts, refs, and Python requirements.
+
+## Install
+
+### Claude Code
+
+In Claude Code, add this repository as a marketplace and install its plugin:
+
+```text
+/plugin marketplace add twells89/excel-to-sigma
+/plugin install excel-to-sigma@excel-to-sigma
+```
+
+Invoke `/excel-to-sigma:excel-to-sigma` or ask Claude to migrate an Excel model.
+The plugin contains the same skill directory used by every other agent. If you
+are developing a local checkout, `claude --plugin-dir /path/to/excel-to-sigma`
+loads it for one session. An installed plugin does not install Python dependencies
+or connect to Sigma for you; complete the requirements below before posting.
+
+### Codex, Cursor, Cortex Code, and other coding agents
+
+Clone this repository and point your agent at
+[`skills/excel-to-sigma/SKILL.md`](skills/excel-to-sigma/SKILL.md). The root
+[`AGENTS.md`](AGENTS.md) routes Excel migration requests to that skill. For a
+project or user skill installation, copy the **entire**
+`skills/excel-to-sigma/` directory into the agent's skill location, keeping
+`SKILL.md`, `refs/`, `scripts/`, and `requirements.txt` together. For example:
+
+```bash
+git clone https://github.com/twells89/excel-to-sigma.git
+cp -R excel-to-sigma/skills/excel-to-sigma /path/to/agent/skills/
+```
+
+In a full clone, read `AGENTS.md`; with a standalone skill installation, open
+its `SKILL.md` directly. Run commands from the skill directory so `scripts/`
+and `refs/` resolve the same way in either form. In Cortex Code, a clone can
+also be registered with `cortex skill add excel-to-sigma/skills/excel-to-sigma`.
 
 ## What it does
 
@@ -49,10 +82,13 @@ a runnable walkthrough on the bundled sample fixture.
 ## Layout
 
 ```
-.claude-plugin/plugin.json          plugin manifest
+.claude-plugin/plugin.json          Claude Code plugin manifest
+.claude-plugin/marketplace.json     Claude Code marketplace entry
+AGENTS.md                          agent-neutral request routing
 skills/excel-to-sigma/
   SKILL.md                          phased workflow (read first)
   QUICKSTART.md                     runnable end-to-end on the sample fixture
+  requirements.txt                  pinned Python dependencies
   refs/
     input-tables.md                 the validated input-table workflow + API/UI split
     excel-translation.md            translation surface, formal-Table rule, converter design
@@ -70,10 +106,17 @@ skills/excel-to-sigma/
 
 ## Requirements
 
-- A Sigma `SIGMA_API_TOKEN` (creds in `~/.sigma-migration/env`).
+- Sigma client credentials: `SIGMA_BASE_URL`, `SIGMA_CLIENT_ID`, and
+  `SIGMA_CLIENT_SECRET` in `~/.sigma-migration/env` for the bundled REST builders.
 - A **write-enabled** Sigma connection for the data-entry half (input tables write
   back to a `SIGDS_` schema).
-- Python dependencies from `requirements.txt`.
+- Python 3 and the pinned dependencies. From the skill directory, run
+  `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
+- Sigma MCP Code Mode for the documented programmatic input-table seeding and
+  query/parity steps, or the documented UI fallback where available. REST scripts
+  handle workbook/data-model construction; the skill does not bundle an MCP
+  server. The optional `sigma-workbooks` companion skill helps with advanced
+  workbook authoring and is located through the agent's skill loader.
 
 ## License
 
