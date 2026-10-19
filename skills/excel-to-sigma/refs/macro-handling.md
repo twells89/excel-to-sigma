@@ -102,6 +102,12 @@ validated on the full taxonomy above (2026-06-17).
 
 ## Source-bound native action candidates
 
+For Forecast `SaveScenario_Click`, continue through
+[forecast-scenario.md](forecast-scenario.md) after the source-bound native
+mapping review. It requires a complete, hash-bound Operations/Saved audit
+schema receipt and the versioned nullable `Scenario Name` policy before a
+disabled lifecycle completion proposal can be emitted.
+
 `macro-classify.py --json module.bas` includes static behavior facts and exact
 raw-module/procedure hashes. Procedure names and comments never authorize an
 append. Helpers are expanded transitively; missing helpers, refresh, email and
