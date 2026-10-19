@@ -110,8 +110,8 @@ class BalancedSnapshotGuardTests(unittest.TestCase):
         # Reviewed pre-balancing baseline. Constants, lookup keys, 96 nullable
         # equality guards, 108 duplicate/conflict guards, and the foreign-key
         # blocker are all covered. Reassociation may not alter any operand.
-        self.assertEqual(fingerprint(condition), 'bf45531bb374c3a77ca0c64d52e426410881d177485ca819a97c0217da1858be')
-        self.assertEqual(fingerprint(tuple(effects)), 'd7099a257a5a05daf55254ac04541f860f60c499d95761be527d7331b600b1f9')
+        self.assertEqual(fingerprint(condition), 'db2a45c7e10f04c4b6b37aad2856c03661ad221512e77a8a025ab1dd239a186a')
+        self.assertEqual(fingerprint(tuple(effects)), '7b6f4d8a5337b07492b45ab5d905ddf32cf1ea567bbb46a78feed1a4dcc1efd3')
 
 
 if __name__ == '__main__':

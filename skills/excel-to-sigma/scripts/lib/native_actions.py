@@ -732,7 +732,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
             vals={'Operation ID':op,'Scenario Name':captured_name,'Saved At':'now()',
                   'Source Hash':repr(manifest['sourceHash']),'Plan Hash':repr(manifest['planHash'])}
             vals.update({a['name']:f'lookup({_c("workflowOperations","Captured:"+a["name"])}, {op}, rid_workflowOperations)' for a in decision['assumptions']})
-            guard=_conjoin([guard,f'eq(count_if(eq({_c("savedScenarios","Operation ID")}, {op})), const_num(0))'])
+            guard=_conjoin([guard,f'eq(as_num(coalesce(count_if(eq({_c("savedScenarios","Operation ID")}, {op})), const_num(0))), const_num(0))'])
             effects=['insert_row(t_savedScenarios, {'+', '.join(_c('savedScenarios',k)+': '+v for k,v in vals.items())+'})']
         elif workflow=='snapshot':
             vals={'Operation ID':op,'Captured At':'now()','Source Hash':repr(manifest['sourceHash']),
@@ -744,7 +744,7 @@ def _native_action_authoring_plan(manifest,receipt,action_bindings,*,current_con
                 a={'feature':p['feature'],'keyColumn':p['keyColumn'],'key':p['key'],'valueColumn':p['valueColumn']}
                 if a['feature'] not in {**binding['tables'],**binding.get('readTargets',{})}:raise NativeActionError('snapshot live projection target absent')
                 vals[p['name']]=f'lookup({_c("workflowOperations","Captured:"+p["name"])}, {op}, rid_workflowOperations)'
-            guard=_conjoin([guard,f'eq(count_if(eq({_c("forecastSnapshots","Operation ID")}, {op})), const_num(0))'])
+            guard=_conjoin([guard,f'eq(as_num(coalesce(count_if(eq({_c("forecastSnapshots","Operation ID")}, {op})), const_num(0))), const_num(0))'])
             effects=['insert_row(t_forecastSnapshots, {'+', '.join(_c('forecastSnapshots',k)+': '+v for k,v in vals.items())+'})']
         # IfElseAction cannot nest inside IfElseAction (ActionEffect-only lists).
         # ApplyScenario's one branch block is valid at sequence top level.

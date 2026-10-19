@@ -436,6 +436,8 @@ class TestNativeActions(unittest.TestCase):
         self.assertIn('insert_row(t_forecastSnapshots',program)
         self.assertIn('Start new saveScenario',program)
         self.assertIn('Captured:Subscription Revenue Jul-26',program)
+        self.assertIn(f'eq(as_num(coalesce(count_if(eq({_c("savedScenarios","Operation ID")}, saveScenario_operation)), const_num(0))), const_num(0))',program)
+        self.assertIn(f'eq(as_num(coalesce(count_if(eq({_c("forecastSnapshots","Operation ID")}, snapshot_operation)), const_num(0))), const_num(0))',program)
         ap,ar,ab,ac=self.bound_approval()
         self.assertIn('Before:',emit_native_action_program(ap,ar,ab,current_contents=ac)['program'])
         self.assertIn('sourceOverwrites',plan['planProjection']['nativeActionArchitecture']['workflows']['snapshot'])

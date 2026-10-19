@@ -194,6 +194,33 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('CONFIRMED',confirmed['program'])
         self.assertEqual(confirmed['productionStatus'],'BLOCKED')
 
+    def test_confirm_empty_snapshot_counts_default_to_zero(self):
+        import ast
+        p,d,current,b=self.candidate_fixture()
+        prepared=p.render_snapshot_candidate(d,current,b,phase='prepare')
+        current['contents']['elements'].append({'id':'op-control','kind':'control','controlType':'text','controlId':'forecast-snapshot-operation','value':''})
+        current['contents']['layout']=current['contents']['layout'].replace('<Element elementId="operations" />','<Element elementId="op-control" /><Element elementId="operations" />')
+        tree=ast.parse(p.render_snapshot_candidate(d,current,b,phase='confirm',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'])['program'])
+        zero_checks=[n for n in ast.walk(tree) if isinstance(n,ast.Call)
+            and isinstance(n.func,ast.Name) and n.func.id=='eq'
+            and ast.unparse(n.args[1])=='const_num(0)'
+            and any(isinstance(v,ast.Call) and isinstance(v.func,ast.Name)
+                    and v.func.id=='count_if' for v in ast.walk(n.args[0]))]
+        self.assertEqual(len(zero_checks),3)
+        def evaluate(node):
+            if isinstance(node,ast.Constant):return node.value
+            name=node.func.id
+            if name=='count_if':return None
+            args=[evaluate(arg) for arg in node.args]
+            if name in ('const_num','as_num'):return args[0]
+            if name=='coalesce':return next((value for value in args if value is not None),None)
+            if name=='eq':return None if None in args else args[0]==args[1]
+            raise AssertionError('unexpected zero-check operation '+name)
+        for check in zero_checks:
+            self.assertTrue(ast.unparse(check.args[0]).startswith('as_num(coalesce(count_if('))
+            self.assertIs(evaluate(check),True)
+
     def test_prepare_pending_count_defaults_only_missing_aggregate_to_zero(self):
         import ast
         p,d,current,b=self.candidate_fixture()

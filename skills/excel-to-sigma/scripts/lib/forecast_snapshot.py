@@ -412,13 +412,13 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
             **{n:op_lookup(n) for n in ('Source Hash','Plan Hash','Source Procedure Hash','Replacement Decision ID')}}
         matching=_join([f'eq({c("snapshots",name)}, {value})' for name,value in payload.items()])
         lines += [f'    matching = and_(key, {matching})',
-            f'    confirm_guard_parts.append(and_({finite("frozen")}, or_(eq(count_if(key), const_num(0)), and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1))))))',
-            '    effects.append(if_else([(eq(count_if(key), const_num(0)), [insert_row('+snapshot_table+', {'+', '.join(c('snapshots',n)+': '+v for n,v in payload.items())+'})])], []))']
+            f'    confirm_guard_parts.append(and_({finite("frozen")}, or_(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1))))))',
+            '    effects.append(if_else([(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), [insert_row('+snapshot_table+', {'+', '.join(c('snapshots',n)+': '+v for n,v in payload.items())+'})])], []))']
         # Deep left folds were rejected by the live condition setter. Balance
         # only associative booleans; every nullable/conflict/foreign-key guard
         # and all frozen-value arithmetic remain unchanged.
         lines += _balance_lines('allowed_parts', 'or_', 109)
-        lines += [f'confirm_guard_parts.append(eq(count_if(and_(eq({c("snapshots","Operation ID")}, op), not_(allowed_parts[0]))), const_num(0)))']
+        lines += [f'confirm_guard_parts.append(eq(as_num(coalesce(count_if(and_(eq({c("snapshots","Operation ID")}, op), not_(allowed_parts[0]))), const_num(0))), const_num(0)))']
         lines += _balance_lines('confirm_guard_parts', 'and_', 206)
         lines += [
             f'button = {ui_page}.add_button("Commit prepared forecast snapshot")',
