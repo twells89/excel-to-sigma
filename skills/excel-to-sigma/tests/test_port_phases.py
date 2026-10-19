@@ -200,7 +200,7 @@ class PortPhaseTests(unittest.TestCase):
         self.assertEqual(last['phase'],'guard-output');self.assertEqual(len(last['ownedPortElementIds']),9)
         self.assertEqual(last['addedElementIds'],['task5GoalSeekApplyGuard'])
         self.assertEqual(c['contents']['elements'][:len(original['contents']['elements'])],original['contents']['elements'])
-        self.assertEqual(last['runtimeColumnMaps']['Goal Seek Result']['Target'],{'identifier':'"Target"','rowKey':'Target'})
+        self.assertEqual(last['runtimeColumnMaps']['GoalSeekResult']['Target'],{'identifier':'"Target"','rowKey':'Target'})
         for e in c['contents']['elements']:
             if e.get('source',{}).get('kind')=='code-output':
                 self.assertTrue(all(col['formula'].startswith('[Code: ') for col in e['columns']))
