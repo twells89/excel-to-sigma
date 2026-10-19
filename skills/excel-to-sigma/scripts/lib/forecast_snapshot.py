@@ -18,6 +18,7 @@ SNAPSHOT_FIELDS = {'Operation ID':'text', 'Snapshot Key':'text', 'Source Sheet':
     'Source Cell':'text', 'Source Row':'number', 'Line Item':'text', 'Section':'text',
     'Period':'text', 'Value':'number', 'Captured At':'datetime', 'Source Hash':'text',
     'Plan Hash':'text', 'Source Procedure Hash':'text', 'Replacement Decision ID':'text'}
+SNAPSHOT_TERMINAL_STATE = 'SNAPSHOT_COMPONENT_COMPLETE'
 
 
 def digest(value):
@@ -106,13 +107,18 @@ def reconcile_snapshot_rows(definition, operation, rows):
     same row; a deliberate new commit supplies a new prepared operation row.
     This pure function makes no claim that its arguments are actual captures.
     """
+    return _reconcile_snapshot_rows(definition,operation,rows)
+
+
+def _reconcile_snapshot_rows(definition, operation, rows, *, completion=False):
+    states=('PREPARED',SNAPSHOT_TERMINAL_STATE) if completion else ('PREPARED',)
     _definition(definition)
     op = operation.get('nativeRowId')
     if not isinstance(op,str) or not op.strip():raise ValueError('stored native operation row ID required')
     metadata = {'Source Hash':definition['sourceHash'], 'Plan Hash':definition['planHash'],
         'Source Procedure Hash':definition['procedureHash'], 'Replacement Decision ID':definition['decisionId']}
     if (any(operation.get(k)!=v for k,v in metadata.items()) or operation.get('Workflow')!='snapshot'
-            or operation.get('Context')!='forecast-edit' or operation.get('State')!='PREPARED'
+            or operation.get('Context')!='forecast-edit' or operation.get('State') not in states
             or operation.get('Snapshot Definition Hash')!=definition['definitionHash']):
         raise ValueError('prepared source/plan/decision-bound snapshot operation required')
     timestamp = operation.get('Created At');_time(timestamp)
@@ -141,6 +147,8 @@ def reconcile_snapshot_rows(definition, operation, rows):
         _number(actual['Source Row'])
         if any(actual[k]!=wanted[k] for k in wanted):raise ValueError('snapshot conflict; no overwrite or recomputed retry permitted')
     missing = [row for key,row in expected.items() if key not in seen]
+    if completion and operation['State']==SNAPSHOT_TERMINAL_STATE and missing:
+        raise ValueError('terminal snapshot operation requires all 108 exact existing rows')
     return {'status':'COMPONENT_RECONCILIATION_ONLY','operationId':op,'missingRows':missing,
         'existingCount':len(seen),'expectedCount':108,'complete':not missing,
         'operationHash':digest(operation),'snapshotRowsHash':digest(rows),'productionStatus':'BLOCKED'}
@@ -148,6 +156,10 @@ def reconcile_snapshot_rows(definition, operation, rows):
 
 def plan_snapshot_reconciliation(definition, operation_id, operations, snapshots, target):
     """Require fresh complete actual destination-bound captures before planning."""
+    return _plan_snapshot_reconciliation(definition,operation_id,operations,snapshots,target)
+
+
+def _plan_snapshot_reconciliation(definition, operation_id, operations, snapshots, target, *, completion=False):
     required_ids=('documentId','operationsElementId','operationsRowIdColumnId',
                   'snapshotsElementId','snapshotsRowIdColumnId')
     if (not isinstance(target,dict)
@@ -168,9 +180,47 @@ def plan_snapshot_reconciliation(definition, operation_id, operations, snapshots
             raise ValueError('fresh complete actual source/plan/document/version/native-ID-bound '+role+' capture required')
     found = [r for r in operations['rows'] if r.get('nativeRowId')==operation_id]
     if len(found)!=1:raise ValueError('exactly one stored native operation row required')
-    result = reconcile_snapshot_rows(definition,found[0],snapshots['rows'])
-    result.update(operationReadbackHash=digest(operations),snapshotReadbackHash=digest(snapshots),target=copy.deepcopy(target))
+    result = _reconcile_snapshot_rows(definition,found[0],snapshots['rows'],completion=completion)
+    if completion and (not result['complete'] or result['existingCount']!=108):
+        raise ValueError('all 108 exact frozen snapshot rows required before completion')
+    result.update(observedOperationState=found[0]['State'],operationReadbackHash=digest(operations),
+        snapshotReadbackHash=digest(snapshots),target=copy.deepcopy(target))
     result['reconciliationHash'] = digest(result)
+    return result
+
+
+def plan_snapshot_completion(definition, operation_id, operations, snapshots, target, *, control_value):
+    """Choose one component transition from fresh complete actual captures.
+
+    Marking and clearing are separate events. A failed mark cannot clear the
+    control; a persisted mark with a failed clear can resume the clear alone.
+    The returned plan is an evidence-bound proposal, never an event receipt.
+    """
+    if not isinstance(operation_id,str) or not operation_id.strip() or not isinstance(control_value,str):
+        raise ValueError('exact physical operation ID and text control readback required')
+    receipt = _plan_snapshot_reconciliation(definition,operation_id,operations,snapshots,target,completion=True)
+    operation = next(row for row in operations['rows'] if row.get('nativeRowId')==operation_id)
+    if any(row.get('nativeRowId')!=operation_id and row.get('Workflow')=='snapshot'
+           and row.get('State')=='PREPARED' for row in operations['rows']):
+        raise ValueError('another prepared snapshot intent blocks completion')
+    if operation['State']=='PREPARED':
+        if control_value!=operation_id:raise ValueError('prepared operation control must hold exact physical ID')
+        next_action='MARK_TERMINAL'
+    else:
+        if control_value==operation_id:next_action='CLEAR_CONTROL'
+        elif control_value=='':next_action='NONE'
+        else:raise ValueError('terminal operation control belongs to another intent')
+    result = {'status':'COMPONENT_COMPLETION_PLAN_ONLY','nextAction':next_action,
+        'operationId':operation_id,'terminalState':SNAPSHOT_TERMINAL_STATE,
+        'observedOperationState':operation['State'],'controlValue':control_value,
+        'operationHash':receipt['operationHash'],
+        'operationReadbackHash':receipt['operationReadbackHash'],
+        'snapshotReadbackHash':receipt['snapshotReadbackHash'],
+        'reconciliationHash':receipt['reconciliationHash'],
+        'definitionHash':definition['definitionHash'],'sourceHash':definition['sourceHash'],
+        'planHash':definition['planHash'],'decisionId':definition['decisionId'],
+        'reconciliation':receipt,'productionStatus':'BLOCKED'}
+    result['completionPlanHash']=digest(result)
     return result
 
 
@@ -195,21 +245,55 @@ def _balance_lines(name, operator, count):
         f'if len({name}) != 1: raise RuntimeError("guard balance count")']
 
 
-def render_snapshot_candidate(definition, current, bindings, *, phase, operation_control_id=None, prepared_contract=None):
+def render_snapshot_candidate(definition, current, bindings, *, phase, operation_control_id=None,
+                              prepared_contract=None, completion_plan=None):
     """Render one disabled, guarded native action construction phase.
 
     `bindings` records the full assigned SDK schemas and original input row IDs.
     The caller must tie those records to actual captured evidence. The returned
     controller precondition requires a fresh exact public source before submit;
-    SDK exposes no version CAS. Both phases use the same definition and never
-    enable/click actions. Confirm requires Prepare's actual assigned TextControl.
+    SDK exposes no version CAS. All phases use the same definition and never
+    enable/click actions. Later phases require Prepare's actual assigned TextControl.
     """
     import xml.etree.ElementTree as ET
     _definition(definition)
-    if phase not in ('prepare','confirm'):raise ValueError('explicit prepare or confirm phase required')
+    if phase not in ('prepare','confirm','completion-mark','completion-clear'):
+        raise ValueError('explicit snapshot action phase required')
     if (not current.get('workbookId') or type(current.get('documentVersion')) is not int
             or current['documentVersion']<1 or set(bindings)!={'primary','finance','operations','snapshots'}):
         raise ValueError('current saved target and four complete assigned bindings required')
+    completion=phase.startswith('completion-')
+    if completion:
+        expected_action='MARK_TERMINAL' if phase=='completion-mark' else 'CLEAR_CONTROL'
+        expected_state='PREPARED' if phase=='completion-mark' else SNAPSHOT_TERMINAL_STATE
+        plan=completion_plan if isinstance(completion_plan,dict) else {}
+        receipt=plan.get('reconciliation') if isinstance(plan.get('reconciliation'),dict) else {}
+        op_id=plan.get('operationId')
+        if (plan.get('status')!='COMPONENT_COMPLETION_PLAN_ONLY' or plan.get('nextAction')!=expected_action
+                or plan.get('terminalState')!=SNAPSHOT_TERMINAL_STATE or plan.get('productionStatus')!='BLOCKED'
+                or not isinstance(op_id,str) or not op_id.strip()
+                or plan.get('observedOperationState')!=expected_state
+                or plan.get('controlValue')!=op_id
+                or receipt.get('observedOperationState')!=expected_state
+                or any(plan.get(k)!=receipt.get(k) for k in ('operationHash','operationReadbackHash',
+                    'snapshotReadbackHash','reconciliationHash'))
+                or any(not re.fullmatch('[0-9a-f]{64}',str(plan.get(k) or '')) for k in
+                    ('operationHash','operationReadbackHash','snapshotReadbackHash','reconciliationHash'))
+                or plan.get('completionPlanHash')!=digest({k:v for k,v in plan.items() if k!='completionPlanHash'})
+                or any(plan.get(k)!=definition[v] for k,v in [('definitionHash','definitionHash'),
+                    ('sourceHash','sourceHash'),('planHash','planHash'),('decisionId','decisionId')])
+                or receipt.get('operationId')!=op_id or receipt.get('complete') is not True
+                or receipt.get('existingCount')!=108 or receipt.get('expectedCount')!=108
+                or receipt.get('missingRows')!=[] or receipt.get('productionStatus')!='BLOCKED'
+                or not isinstance(receipt.get('target'),dict)
+                or receipt['target'].get('documentId')!=current['workbookId']
+                or receipt['target'].get('version')!=current['documentVersion']
+                or any(receipt['target'].get(role+'ElementId')!=bindings[role].get('elementId')
+                    or not any(c.get('class')=='InputTableIDColumn' and c.get('kind')=='row_id'
+                        and c.get('id')==receipt['target'].get(role+'RowIdColumnId')
+                        for c in bindings[role].get('columns',[])) for role in ('operations','snapshots'))
+                or receipt.get('reconciliationHash')!=digest({k:v for k,v in receipt.items() if k!='reconciliationHash'})):
+            raise ValueError('fresh exact complete snapshot reconciliation plan required')
     contents = current['contents'];elements = {e['id']:e for e in contents['elements']}
     pages = {p['id']:p for p in contents['pages']}
     root = ET.fromstring('<Layout>'+re.sub(r'<\?xml[^?]*\?>','',contents['layout'])+'</Layout>')
@@ -226,7 +310,7 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
         'from sigma.inputTable import InputTable, LiteralEditableColumn, SingleSelectEditableColumn, InputTableIDColumn',
         'from sigma.column import FormulaColumn', 'from sigma.levelTable import LevelTable',
         'from sigma.control import add_text_control', 'from sigma.controlHandle import TextControl',
-        'from sigma.action.inputTableEffects import insert_row',
+        'from sigma.action.inputTableEffects import insert_row'+(', update_rows' if phase=='completion-mark' else ''),
         'from sigma.action.setControlValueEffect import set_control_value',
         'from sigma.action.controlFlow import if_else',
         'from sigma.formula import const_text, const_num, eq, neq, and_, or_, not_, is_null, is_not_null, subtract, lookup, count_if, coalesce, now, as_num, as_text']
@@ -272,7 +356,7 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
             system=[c for c in schema if c.get('class')=='InputTableIDColumn' and c.get('kind')=='row_id']
             if len(system)!=1:raise ValueError('actual native system row_id column required')
             if any(c.get('class')!='LiteralEditableColumn' for c in schema if c not in system):raise ValueError('ordinary audit input literal columns required')
-        if role=='finance' and phase=='confirm':continue
+        if role=='finance' and phase!='prepare':continue
         page_var='p'+str(index);table='t'+str(index)
         lines += [f'{page_var} = sigma.workbook.get_page({pid!r})',f'if not isinstance({page_var}, Page): raise RuntimeError("page")',
             f'{table} = {page_var}.get_element({b["elementId"]!r})',
@@ -371,7 +455,9 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
         lines += [f'op = {op_page}.get_element({operation_control_id!r})',
             'if not isinstance(op, TextControl): raise RuntimeError("operation control")',
             'if op.variable_name() != "forecast-snapshot-operation": raise RuntimeError("operation control variable")']
-        guard_parts=[*primary_guards,'neq(op, const_text(""))',f'eq(count_if(eq({rid}, op)), const_num(1))']
+        guard_parts=[*primary_guards,'neq(op, const_text(""))',f'eq(count_if(eq({rid}, op)), const_num(1))'] if phase=='confirm' else [
+            'neq(op, const_text(""))',f'eq(op, const_text({op_id!r}))',f'eq(count_if(eq({rid}, op)), const_num(1))',
+            f'eq(as_num(coalesce(count_if(and_(and_(eq({c("operations","Workflow")}, const_text("snapshot")), eq({c("operations","State")}, const_text("PREPARED"))), neq({rid}, op))), const_num(0))), const_num(0))']
         # Authoring version/hash belong to the Prepare operation, whose source
         # contract must be supplied unchanged by the caller after readback.
         prepare_contract=prepared_contract
@@ -384,10 +470,12 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
         else:
             raise ValueError('actual Prepare source metadata contract required for Confirm')
         for name,value in constants.items():
+            if name=='State' and phase=='completion-clear':value=SNAPSHOT_TERMINAL_STATE
             literal='const_num('+str(value)+')' if type(value) in (int,float) else 'const_text('+repr(value)+')'
             guard_parts.append(f'eq({op_lookup(name)}, {literal})')
-        lines += ['frozen_assumptions = ['+', '.join(c('operations',field['operationColumn']) for field in definition['inputFields'])+']',
-            'current_assumptions = ['+', '.join(source_values[field['operationColumn']] for field in definition['inputFields'])+']']
+        if phase=='confirm':
+            lines += ['frozen_assumptions = ['+', '.join(c('operations',field['operationColumn']) for field in definition['inputFields'])+']',
+                'current_assumptions = ['+', '.join(source_values[field['operationColumn']] for field in definition['inputFields'])+']']
         # A typed loop keeps all 108 identical guards/effects within Code
         # Mode's request size; data arrays contain identities, never values.
         lines += ['frozen_columns = ['+', '.join(columns[('operations',cell['operationFrozenColumn'])] for cell in definition['cells'])+']',
@@ -399,9 +487,12 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
             f'periods = {[cell["period"] for cell in definition["cells"]]!r}',
             f'capture_time = {op_lookup("Created At")}',
             f'confirm_guard_parts = [{_join([*guard_parts, "is_not_null(capture_time)"])}]',
-            'for i in range(96):', f'    before = lookup(frozen_assumptions[i], op, {rid})',
-            '    actual = current_assumptions[i]', f'    confirm_guard_parts.append({nullsame("actual","before")})',
-            'allowed_parts = [eq(const_num(0), const_num(1))]', 'effects = []', 'for i in range(108):',
+            'allowed_parts = [eq(const_num(0), const_num(1))]']
+        if phase=='confirm':
+            lines += ['for i in range(96):', f'    before = lookup(frozen_assumptions[i], op, {rid})',
+                '    actual = current_assumptions[i]', f'    confirm_guard_parts.append({nullsame("actual","before")})',
+                'effects = []']
+        lines += ['for i in range(108):',
             f'    frozen = as_num(lookup(frozen_columns[i], op, {rid}))',
             f'    key = and_(eq({c("snapshots","Operation ID")}, op), eq({c("snapshots","Snapshot Key")}, const_text(snapshot_keys[i])))',
             f'    allowed_parts.append(eq({c("snapshots","Snapshot Key")}, const_text(snapshot_keys[i])))']
@@ -411,21 +502,32 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
             'Period':'const_text(periods[i])','Value':'frozen','Captured At':'capture_time',
             **{n:op_lookup(n) for n in ('Source Hash','Plan Hash','Source Procedure Hash','Replacement Decision ID')}}
         matching=_join([f'eq({c("snapshots",name)}, {value})' for name,value in payload.items()])
-        lines += [f'    matching = and_(key, {matching})',
-            f'    confirm_guard_parts.append(and_({finite("frozen")}, or_(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1))))))',
-            '    effects.append(if_else([(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), [insert_row('+snapshot_table+', {'+', '.join(c('snapshots',n)+': '+v for n,v in payload.items())+'})])], []))']
+        lines.append(f'    matching = and_(key, {matching})')
+        if phase=='confirm':
+            lines += [f'    confirm_guard_parts.append(and_({finite("frozen")}, or_(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1))))))',
+                '    effects.append(if_else([(eq(as_num(coalesce(count_if(key), const_num(0))), const_num(0)), [insert_row('+snapshot_table+', {'+', '.join(c('snapshots',n)+': '+v for n,v in payload.items())+'})])], []))']
+        else:
+            lines.append(f'    confirm_guard_parts.append(and_({finite("frozen")}, and_(eq(count_if(key), const_num(1)), eq(count_if(matching), const_num(1)))))')
         # Deep left folds were rejected by the live condition setter. Balance
         # only associative booleans; every nullable/conflict/foreign-key guard
         # and all frozen-value arithmetic remain unchanged.
         lines += _balance_lines('allowed_parts', 'or_', 109)
         lines += [f'confirm_guard_parts.append(eq(as_num(coalesce(count_if(and_(eq({c("snapshots","Operation ID")}, op), not_(allowed_parts[0]))), const_num(0))), const_num(0)))']
-        lines += _balance_lines('confirm_guard_parts', 'and_', 206)
-        lines += [
-            f'button = {ui_page}.add_button("Commit prepared forecast snapshot")',
-            'button.set_frame(1, ui_cursor, min(12, button.parent_grid_width()), 2)',
-            'sequence = button.on_click("Fill missing frozen snapshot values", effects)']
+        lines += _balance_lines('confirm_guard_parts', 'and_', 206 if phase=='confirm' else 110)
+        if phase=='confirm':
+            lines += [f'button = {ui_page}.add_button("Commit prepared forecast snapshot")',
+                'button.set_frame(1, ui_cursor, min(12, button.parent_grid_width()), 2)',
+                'sequence = button.on_click("Fill missing frozen snapshot values", effects)']
+        elif phase=='completion-mark':
+            lines += [f'button = {ui_page}.add_button("Mark snapshot component complete")',
+                'button.set_frame(1, ui_cursor, min(12, button.parent_grid_width()), 2)',
+                f'sequence = button.on_click("Mark exact snapshot operation terminal", [update_rows({operation_table}, {{{rid}: op}}, {{{c("operations","State")}: const_text({SNAPSHOT_TERMINAL_STATE!r})}})])']
+        else:
+            lines += [f'button = {ui_page}.add_button("Clear completed snapshot intent")',
+                'button.set_frame(1, ui_cursor, min(12, button.parent_grid_width()), 2)',
+                'sequence = button.on_click("Clear exact terminal snapshot control", [set_control_value(op, "")])']
         guard='confirm_guard_parts[0]'
-        effect_count=108
+        effect_count=108 if phase=='confirm' else 0
     lines += ['sequence.set_disabled(True)', f'sequence.set_condition({guard})','sequence.remove_success_toast()',
         'sequence.set_disabled(True)', 'if not sequence.is_disabled(): raise RuntimeError("disabled")',
         'print({"snapshotPhase": '+repr(phase)+', "buttonId": button.id(), "sequenceId": sequence.id(), "operationControlId": op.id(), "enabled": False, "businessWrites": False})']
@@ -434,6 +536,7 @@ def render_snapshot_candidate(definition, current, bindings, *, phase, operation
         'controllerPrecondition':{'documentId':current['workbookId'],'version':current['documentVersion'],'contentsHash':digest(contents)},
         'preparedContract':constants,'captureContract':contract,'frozenValueCount':204,'insertEffectCount':effect_count,
         'definitionHash':definition['definitionHash'],'status':'DISABLED_COMPONENT_CANDIDATE','productionStatus':'BLOCKED',
-        'limitations':['backend type admission pending','source/row preflight must be fresh before submit','no version CAS or multi-effect atomicity',
+        'limitations':['backend type admission pending','update_rows physical-ID selector has not passed native UI binding',
+            'source/row preflight must be fresh before submit','no version CAS or multi-effect atomicity',
             'published roles/recovery/concurrency and full persisted readback pending','no optimistic success or automatic outcome update']}
     return result

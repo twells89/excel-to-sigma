@@ -320,4 +320,157 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaises(ValueError):p.build_snapshot_definition(Path(__file__).parent/'fixtures/fixture-forecast-model.xlsx',
             plan_hash='a'*64,procedure_hash='b'*64,decision={'decisionId':'old','status':'PENDING','scope':{}})
 
+    def completion_fixture(self):
+        p=self.module();d,op=self.operation()
+        rows=[{**row,'nativeRowId':'snapshot-'+str(i)} for i,row in enumerate(p.reconcile_snapshot_rows(d,op,[])['missingRows'])]
+        base={'origin':'sigma-query','documentId':'stage','version':28,'sourceHash':d['sourceHash'],
+              'planHash':d['planHash'],'complete':True,'evidenceId':'read','executionId':'run'}
+        operations={**base,'elementId':'operations','rowIdColumnId':'native-ops-id',
+                    'rowCount':1,'rows':[op]}
+        snapshots={**base,'elementId':'snapshots','rowIdColumnId':'native-snapshot-id',
+                   'rowCount':108,'rows':rows}
+        target={'documentId':'stage','version':28,'operationsElementId':'operations',
+                'operationsRowIdColumnId':'native-ops-id','snapshotsElementId':'snapshots',
+                'snapshotsRowIdColumnId':'native-snapshot-id'}
+        return p,d,op,operations,snapshots,target
+
+    def test_completion_marks_only_exact_prepared_operation_then_resumes_clear(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        planned=p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value='operation-A')
+        self.assertEqual(planned['nextAction'],'MARK_TERMINAL')
+        self.assertEqual(planned['observedOperationState'],'PREPARED')
+        self.assertEqual(planned['operationReadbackHash'],p.digest(operations))
+        self.assertEqual(planned['snapshotReadbackHash'],p.digest(snapshots))
+        self.assertEqual(planned['reconciliationHash'],planned['reconciliation']['reconciliationHash'])
+        self.assertEqual(planned['completionPlanHash'],p.digest({k:v for k,v in planned.items() if k!='completionPlanHash'}))
+        self.assertEqual(planned['operationId'],'operation-A')
+        self.assertEqual(planned['terminalState'],'SNAPSHOT_COMPONENT_COMPLETE')
+        self.assertEqual(planned['reconciliation']['existingCount'],108)
+        self.assertEqual(planned['productionStatus'],'BLOCKED')
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']='SNAPSHOT_COMPONENT_COMPLETE'
+        resumed=p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='operation-A')
+        self.assertEqual(resumed['nextAction'],'CLEAR_CONTROL')
+        self.assertEqual(resumed['observedOperationState'],p.SNAPSHOT_TERMINAL_STATE)
+        self.assertNotEqual(resumed['operationReadbackHash'],planned['operationReadbackHash'])
+        self.assertEqual(p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='')['nextAction'],'NONE')
+        self.assertEqual(operations['rows'][0]['State'],'PREPARED')
+        self.assertEqual(len(snapshots['rows']),108)
+
+    def test_deliberate_second_intent_has_distinct_id_and_retains_old_snapshots(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']=p.SNAPSHOT_TERMINAL_STATE
+        self.assertEqual(p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,
+                                                    control_value='')['nextAction'],'NONE')
+        new_op=copy.deepcopy(op)
+        new_op['nativeRowId']='operation-B'
+        new_op['Created At']='2026-10-16T00:00:00+00:00'
+        retry=p.reconcile_snapshot_rows(d,new_op,snapshots['rows'])
+        self.assertEqual(retry['operationId'],'operation-B')
+        self.assertEqual(retry['existingCount'],0)
+        self.assertEqual(len(retry['missingRows']),108)
+        self.assertEqual({row['Operation ID'] for row in retry['missingRows']},{'operation-B'})
+        self.assertEqual({row['Operation ID'] for row in snapshots['rows']},{'operation-A'})
+
+    def test_completion_blocks_incomplete_conflicting_or_foreign_snapshot(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        incomplete=copy.deepcopy(snapshots);incomplete['rows'].pop();incomplete['rowCount']=107
+        conflicting=copy.deepcopy(snapshots);conflicting['rows'][0]['Value']=999
+        duplicate=copy.deepcopy(snapshots);duplicate['rows'].append({**duplicate['rows'][0],'nativeRowId':'extra'});duplicate['rowCount']=109
+        foreign=copy.deepcopy(snapshots);foreign['rows'][0]['Snapshot Key']='foreign'
+        for name,rows in [('incomplete',incomplete),('conflicting',conflicting),('duplicate',duplicate),('foreign',foreign)]:
+            with self.subTest(name=name),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',operations,rows,target,control_value='operation-A')
+
+    def test_public_insert_reconciliation_remains_prepared_only(self):
+        import inspect
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        self.assertNotIn('allowed_states',inspect.signature(p.reconcile_snapshot_rows).parameters)
+        self.assertNotIn('allowed_states',inspect.signature(p.plan_snapshot_reconciliation).parameters)
+        empty=copy.deepcopy(snapshots);empty['rows']=[];empty['rowCount']=0
+        for state in ('FAILED',p.SNAPSHOT_TERMINAL_STATE):
+            changed=copy.deepcopy(operations);changed['rows'][0]['State']=state
+            with self.subTest(state=state),self.assertRaises(ValueError):
+                p.reconcile_snapshot_rows(d,changed['rows'][0],[])
+            with self.subTest(state=state),self.assertRaises(ValueError):
+                p.plan_snapshot_reconciliation(d,'operation-A',changed,empty,target)
+            with self.subTest(state=state),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',changed,empty,target,control_value='operation-A')
+
+    def test_completion_blocks_other_pending_intent_wrong_control_and_stale_capture(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        other=copy.deepcopy(operations);other['rows'].append({**op,'nativeRowId':'operation-B'});other['rowCount']=2
+        with self.assertRaises(ValueError):p.plan_snapshot_completion(d,'operation-A',other,snapshots,target,control_value='operation-A')
+        for control in ('', 'operation-B', None):
+            with self.subTest(control=control),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value=control)
+        stale=copy.deepcopy(snapshots);stale['version']=27
+        with self.assertRaises(ValueError):p.plan_snapshot_completion(d,'operation-A',operations,stale,target,control_value='operation-A')
+
+    def test_completion_renderer_separates_exact_id_mark_from_verified_clear(self):
+        import ast
+        p,d,current,b=self.candidate_fixture()
+        prepared=p.render_snapshot_candidate(d,current,b,phase='prepare')
+        current['contents']['elements'].append({'id':'op-control','kind':'control','controlType':'text',
+                                                  'controlId':'forecast-snapshot-operation','value':''})
+        current['contents']['layout']=current['contents']['layout'].replace(
+            '<Element elementId="operations" />','<Element elementId="op-control" /><Element elementId="operations" />')
+        _,_,_,operations,snapshots,target=self.completion_fixture()
+        for capture in (operations,snapshots):capture['version']=19
+        target['version']=19
+        for role,capture in [('operations',operations),('snapshots',snapshots)]:
+            native_id=next(col['id'] for col in b[role]['columns'] if col['class']=='InputTableIDColumn')
+            capture['rowIdColumnId']=native_id
+            target[role+'RowIdColumnId']=native_id
+        mark_plan=p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value='operation-A')
+        mark=p.render_snapshot_candidate(d,current,b,phase='completion-mark',operation_control_id='op-control',
+                                         prepared_contract=prepared['preparedContract'],completion_plan=mark_plan)
+        tree=ast.parse(mark['program'])
+        updates=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='update_rows']
+        self.assertEqual(len(updates),1)
+        self.assertIsInstance(updates[0].args[1],ast.Dict)
+        self.assertEqual(len(updates[0].args[1].keys),1)
+        self.assertEqual(ast.unparse(updates[0].args[1].values[0]),'op')
+        self.assertNotIn('set_control_value(op, "")',mark['program'])
+        self.assertIn("const_text('operation-A')",mark['program'])
+        self.assertIn("const_text('SNAPSHOT_COMPONENT_COMPLETE')",mark['program'])
+        self.assertIn('for i in range(108):',mark['program'])
+        self.assertIn('eq(count_if(matching), const_num(1))',mark['program'])
+        self.assertIn('not_(allowed_parts[0])',mark['program'])
+        self.assertEqual(mark['insertEffectCount'],0)
+        self.assertEqual(mark['productionStatus'],'BLOCKED')
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']='SNAPSHOT_COMPONENT_COMPLETE'
+        clear_plan=p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='operation-A')
+        cleared=p.render_snapshot_candidate(d,current,b,phase='completion-clear',operation_control_id='op-control',
+                                            prepared_contract=prepared['preparedContract'],completion_plan=clear_plan)
+        clear_tree=ast.parse(cleared['program'])
+        self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='update_rows'
+                             for n in ast.walk(clear_tree)))
+        self.assertIn('set_control_value(op, "")',cleared['program'])
+        self.assertIn("const_text('operation-A')",cleared['program'])
+        self.assertIn("const_text('SNAPSHOT_COMPONENT_COMPLETE')",cleared['program'])
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=mark_plan)
+        forged_action=copy.deepcopy(mark_plan);forged_action['nextAction']='CLEAR_CONTROL'
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=forged_action)
+        forged_action['completionPlanHash']=p.digest({k:v for k,v in forged_action.items() if k!='completionPlanHash'})
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=forged_action)
+        forged_readback=copy.deepcopy(clear_plan);forged_readback['operationReadbackHash']='f'*64
+        forged_readback['completionPlanHash']=p.digest({k:v for k,v in forged_readback.items() if k!='completionPlanHash'})
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=forged_readback)
+        tampered=copy.deepcopy(mark_plan);tampered['reconciliation']['existingCount']=107
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=tampered)
+        malformed=copy.deepcopy(mark_plan);malformed['reconciliation']['target']=None
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=malformed)
+        wrong_native_target=copy.deepcopy(mark_plan)
+        wrong_native_target['reconciliation']['target']['operationsRowIdColumnId']='unrelated-native-id'
+        wrong_native_target['reconciliation']['reconciliationHash']=p.digest({
+            k:v for k,v in wrong_native_target['reconciliation'].items() if k!='reconciliationHash'})
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=wrong_native_target)
+
 if __name__ == '__main__':unittest.main()
