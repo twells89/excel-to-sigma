@@ -38,7 +38,7 @@ def main(argv=None):
     parser.add_argument("--contents", help="GET-back workbook response or contents JSON")
     parser.add_argument("--manifest", help="immutable source/plan/target migration manifest")
     parser.add_argument("--staging-receipt", help="APPROVED_STAGING receipt bound to the manifest")
-    parser.add_argument("--document-version", help="required with --contents")
+    parser.add_argument("--document-version", type=int, help="required with --contents")
     parser.add_argument("--plan-out", help="write extraction plan JSON")
     parser.add_argument("--openapi", help="current Sigma OpenAPI JSON to audit before emission")
     parser.add_argument("--out", required=True, help="write artifact or PUT body JSON")
