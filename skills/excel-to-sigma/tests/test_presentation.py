@@ -171,6 +171,102 @@ class TestPresentationExtraction(unittest.TestCase):
 
 
 class TestPresentationEmission(unittest.TestCase):
+    def test_cli_contents_uses_integer_document_version_after_staging_gate(self):
+        source = FIXTURES / "fixture-research-model.xlsx"
+        plan = presentation.extract_presentation(source)
+        runtime_plan = research_runtime_plan()
+        architecture = presentation.build_business_input_architecture(
+            plan, connection_id="conn", folder_id="folder", research_plan=runtime_plan)
+        feature = "researchModelInputs"
+        columns = architecture["inputs"][feature]["columns"]
+        column_ids = {column["name"]: f"id-{index}"
+                      for index, column in enumerate(columns)}
+        target_binding = {"documentId": "doc", "version": 7, "pageId": "inputs",
+                          "elementId": "input-live", "columnIds": column_ids}
+        manifest = {"sourceHash": plan["source"]["sha256"], "planHash": "a" * 64,
+                    "target": {"documentId": "doc", "version": 7},
+                    "planProjection": {**copy.deepcopy(runtime_plan),
+                                       "sharedInputArchitecture": architecture}}
+        _source, evidence = gate_plan_staging_source(
+            {**copy.deepcopy(runtime_plan), "sourcePath": plan["source"]["path"],
+             "sourceSha256": plan["source"]["sha256"]},
+            source_arg=plan["source"]["path"])
+        issues = evidence.get("issues") or []
+        receipt = {"status": "APPROVED_STAGING", "sourceHash": manifest["sourceHash"],
+                   "planHash": manifest["planHash"],
+                   "sourceReviewStatus": "PENDING_STAGING" if issues else "NOT_REQUIRED",
+                   "pendingSourceIssues": issues,
+                   "sourceReviewRequirements": [
+                       {"issue": issue, "issueHash": source_issue_hash(issue)} for issue in issues],
+                   "targetBindings": {feature: target_binding}}
+        receipt["artifacts"] = build_artifact_records(
+            manifest, architecture, receipt["targetBindings"])
+        bindings = presentation.fixture_bindings(plan)
+        bindings.update({"planHash": manifest["planHash"], "documentId": "doc",
+                         "documentVersion": 7, "editElementId": "input-live"})
+        bindings["businessInput"].update({
+            "elementId": "input-live",
+            "currentColumns": [{"name": column["name"], "type": column["type"],
+                                "id": column_ids[column["name"]]}
+                               for column in columns],
+        })
+        bindings["stagingReceiptHash"] = presentation._digest(receipt)
+        for rule in plan["validations"]:
+            if rule["sheet"] == "Model Inputs":
+                bindings["validationTargets"][rule["id"]] = [
+                    {"elementId": "input-live", "columnId": column_ids[f"i_model_inputs_c{row}"]}
+                    for row in range(2, 8)]
+
+        artifact = presentation.emit_presentation(plan, bindings, manifest, receipt)
+        current = {"contents": {
+            "pages": [], "layout": "", "elements": [
+                {"id": element_id,
+                 "description": {"text": artifact["ownershipMarker"]}
+                                if element_id in {item["id"] for item in artifact["elements"]} else {},
+                 "name": artifact.get("calculationSource", {}).get("name")
+                         if element_id == artifact.get("calculationSource", {}).get("elementId")
+                         else element_id,
+                 "columns": [{"id": column_id} for column_id in
+                             artifact["elementPatches"].get(element_id, {}).get("columnUpdates", {})]}
+                for element_id in set(artifact["referencedElementIds"]) | set(artifact["elementPatches"])
+            ],
+        }}
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            paths = {name: tmp / f"{name}.json"
+                     for name in ("bindings", "manifest", "receipt", "contents")}
+            for name, value in (("bindings", bindings), ("manifest", manifest),
+                                ("receipt", receipt), ("contents", current)):
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+            out = tmp / "put.json"
+            command = [sys.executable, str(SCRIPTS / "build-presentation.py"), str(source),
+                       "--bindings", str(paths["bindings"]), "--manifest", str(paths["manifest"]),
+                       "--staging-receipt", str(paths["receipt"]), "--contents", str(paths["contents"]),
+                       "--document-version", "7", "--out", str(out)]
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            put = json.loads(out.read_text())
+            self.assertEqual(put["documentVersion"], 7)
+            self.assertIsInstance(put["documentVersion"], int)
+            self.assertEqual(put["sourceHash"], manifest["sourceHash"])
+            self.assertGreater(len(put["contents"]["elements"]), len(current["contents"]["elements"]))
+
+            out.unlink()
+            paths["manifest"].write_text(json.dumps({**manifest, "sourceHash": "0" * 64}),
+                                         encoding="utf-8")
+            stale = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(stale.returncode, 0)
+            self.assertIn("source", stale.stderr.lower())
+            self.assertFalse(out.exists())
+            paths["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+            invalid = subprocess.run(command[:command.index("7")] + ["not-an-integer"]
+                                     + command[command.index("7") + 1:],
+                                     capture_output=True, text=True)
+            self.assertEqual(invalid.returncode, 2)
+            self.assertIn("invalid int value", invalid.stderr)
+            self.assertFalse(out.exists())
+
     def test_business_input_programs_seed_only_literal_columns(self):
         expectations = {
             "fixture-forecast-model.xlsx": ("Line Item", None),

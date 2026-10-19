@@ -254,19 +254,30 @@ def _parse_datetime(value, date_only=False):
     return value
 
 
-def _sdk_literal(value, column_type=None):
-    if column_type == "datetime":
+def _sdk_literal(value, column_type=None, *, date_only_hour=12):
+    """Emit constructor literals admitted by the MCP SDK, never parser calls.
+
+    Authored source dates use noon; captured warehouse timestamps/date strings
+    use hour0 explicitly so rollback does not shift midnight. Aware instants
+    normalize to UTC before their timezone-free warehouse constructor is emitted.
+    """
+    if date_only_hour not in (0, 12):
+        raise InputSyncError('date-only SDK literal policy must be midnight or noon')
+    if column_type == "datetime" or isinstance(value, (dt.datetime, dt.date)):
         date_only = (isinstance(value, dt.date) and not isinstance(value, dt.datetime)) or (
             isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
         )
         value = _parse_datetime(value)
         if date_only:
-            return f"datetime({value.year}, {value.month}, {value.day}, 12)"
+            if date_only_hour == 12:
+                return f"datetime({value.year}, {value.month}, {value.day}, 12)"
+            value = value.replace(hour=0)
+        if value is not None and not isinstance(value, dt.datetime):
+            raise InputSyncError('datetime SDK literal requires an actual timestamp')
     if isinstance(value, dt.datetime):
+        fraction=f", {value.microsecond}" if value.microsecond else ""
         return (f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, "
-                f"{value.minute}, {value.second})")
-    if isinstance(value, dt.date):
-        return f"datetime({value.year}, {value.month}, {value.day}, 12)"
+                f"{value.minute}, {value.second}{fraction})")
     if value is None:
         return "None"
     return repr(value)
@@ -309,7 +320,11 @@ def evaluate_expense_exception(row, policy_limit):
     if policy_limit is None:
         return {"policyExcess": None, "exception": None}
     excess = max(row["Amount"] - policy_limit, 0)
-    if abs(row["Card Amount"] - row["Ledger Amount"]) > 0.01:
+    try:
+        from .workflow_repairs import reconciliation_required
+    except ImportError:
+        from workflow_repairs import reconciliation_required
+    if reconciliation_required(row["Card Amount"], row["Ledger Amount"]):
         status = "RECON"
     elif excess > 0:
         status = "OVER LIMIT"
@@ -858,6 +873,7 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
         plan_seed(source["rows"], [], ["Setting"], "Row ID")
         architecture["inputs"]["salesSettings"] = {
             "kind": "input-table", "name": "Sales Settings", "keyColumns": ["Setting"],
+            "editMode": "published-explore", "frame": [1, 4, 24, 10],
             "connectionId": connection_id, "sourceBinding": source["sourceBinding"],
             "rows": source["rows"],
             "columns": [{"name": "Setting", "type": "text", "provenance": "source"},
@@ -897,6 +913,7 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
         plan_seed(source["rows"], [], ["Category"], "Row ID")
         architecture["inputs"]["expensePolicy"] = {
             "kind": "input-table", "name": "Expense Policy", "keyColumns": ["Category"],
+            "editMode": "published-explore", "frame": [1, 4, 24, 12],
             "connectionId": connection_id, "sourceRange": source["sourceRange"],
             "rows": source["rows"],
             "columns": [{"name": "Category", "type": "text", "provenance": "source"},
@@ -919,6 +936,11 @@ def build_shared_input_architecture(plan, *, connection_id, folder_id, workflows
         architecture["acceptance"]["expense"] = (
             "edit source-derived Meals limit 90 to 400, verify all matching rows/counts, restore")
         architecture["acceptanceChecks"].append("expense-meals-limit-propagation")
+        architecture["provenance"]["expense-cent-comparison"] = {
+            "mappingKind": "reviewed-currency-replacement", "sourcePrecision": 2,
+            "sourceComparison": "Abs(Recon Variance)>0.01",
+            "replacement": "Abs(Round(Card Amount*100,0)-Round(Ledger Amount*100,0))>1",
+            "storedAmounts": "preserved", "runtimeStatus": "PENDING_CENT_BOUNDARY_AND_NULL_UI_ACCEPTANCE"}
     if "research" in selected:
         source_inputs = list(plan.get("sourceInputs") or [])
         ids = [item.get("id") for item in source_inputs]
@@ -1082,7 +1104,7 @@ def build_operational_input_elements(architecture, target_bindings=None):
                   "formula": "If(IsNull([Policy/Category]), Null, Greatest([ExpenseJoin/Amount] - [Policy/Per-item Limit], 0))"},
                  {"id": "expense_exception", "name": "Exception",
                   "formula": ('If(IsNull([Policy/Category]), Null, '
-                              'If(Abs([Recon Variance]) > 0.01, "RECON", '
+                              'If(Abs(Round([ExpenseJoin/Card Amount] * 100, 0) - Round([ExpenseJoin/Ledger Amount] * 100, 0)) > 1, "RECON", '
                               'If([PolicyExcess] > 0, "OVER LIMIT", '
                               'If([ExpenseJoin/Receipt Status] = "Missing", "MISSING RECEIPT", '
                               'If([ExpenseJoin/Approval Status] <> "Approved", "PENDING", "CLEAR")))))')}]},

@@ -323,6 +323,12 @@ def validate_completion(manifest):
         except ImportError:
             from custom_ports import validate_custom_port_completion
         validate_custom_port_completion(manifest)
+    if manifest.get('planProjection', {}).get('workflowRepairArchitecture'):
+        try:
+            from .workflow_repairs import validate_workflow_completion
+        except ImportError:
+            from workflow_repairs import validate_workflow_completion
+        validate_workflow_completion(manifest)
     return True
 
 

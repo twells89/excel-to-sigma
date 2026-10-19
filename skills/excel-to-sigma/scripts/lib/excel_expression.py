@@ -229,8 +229,8 @@ class _Parser:
 
     def _power(self):
         node = self._unary()
-        if self._accept("^"):
-            node = Binary("^", node, self._power())
+        while self._accept("^"):
+            node = Binary("^", node, self._unary())
         return node
 
     def _unary(self):
@@ -424,6 +424,8 @@ def emit_sigma(expression, reference_renderer: Callable[[CellReference], str],
         if isinstance(node, Unary): return f"{node.operator}{render(node.operand)}"
         if isinstance(node, Percent): return f"({render(node.operand)} * 0.01)"
         if isinstance(node, Binary):
+            if node.operator == "^":
+                return f"Power({render(node.left)}, {render(node.right)})"
             operator = "!=" if node.operator == "<>" else node.operator
             return f"{render(node.left)} {operator} {render(node.right)}"
         if isinstance(node, Function):

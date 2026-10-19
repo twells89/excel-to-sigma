@@ -513,6 +513,93 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("MIGRATION GATE: AUTO", output.getvalue())
 
+    def test_research_cli_routes_inferred_editable_inputs_to_selected_connection(self):
+        source = ROOT / "tests" / "fixtures" / "fixture-research-model.xlsx"
+        plan = INFER.infer(source)
+        self.assertTrue(plan["sourceInputs"])
+        plan["targetScope"] = {"connectionId": "old-connection", "folderId": "saved-folder"}
+
+        # The real fixture has reviewable source features. Disposition their
+        # audited issues so the CLI reaches workbook emission through its gate.
+        try:
+            RESEARCH.gate_plan_source(plan, source_arg=str(source))
+        except RESEARCH.MigrationGateError as error:
+            issues = error.report["issues"]
+        else:
+            self.fail("research fixture unexpectedly has no source review issues")
+        self.assertTrue(issues)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plan_path = tmp_path / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            dispositions = tmp_path / "review.json"
+            dispositions.write_text(json.dumps({
+                "sourceSha256": plan["sourceSha256"],
+                "issues": [{"code": issue["code"], "owner": "Migration test",
+                            "disposition": "Reviewed fixture source feature",
+                            "verified": True} for issue in issues],
+            }), encoding="utf-8")
+            output_dir = tmp_path / "output"
+            output = io.StringIO()
+            with mock.patch.object(RESEARCH, "OUTDIR", str(output_dir)), \
+                    mock.patch.object(RESEARCH, "build_wb", wraps=RESEARCH.build_wb) as build_wb, \
+                    mock.patch("sys.stdout", output):
+                exit_code = RESEARCH.main([
+                    str(plan_path), "--source", str(source),
+                    "--review-dispositions", str(dispositions),
+                    "--conn", "selected-connection", "--folder", "selected-folder",
+                ])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(build_wb.call_args.args[0]["targetScope"],
+                             {"connectionId": "selected-connection", "folderId": "saved-folder"})
+            self.assertIn("MIGRATION GATE: REVIEW_REQUIRED", output.getvalue())
+            dm = json.loads((output_dir / "dm_spec.json").read_text())
+            wb = json.loads((output_dir / "wb_spec.json").read_text())
+            input_table = next(node for node in all_dicts(wb)
+                               if node.get("id") == "researchInputs")
+            self.assertEqual(input_table["source"],
+                             {"kind": "empty", "connectionId": "selected-connection"})
+            self.assertGreater(len(input_table["columns"]), 1)
+            self.assertEqual(wb["folderId"], "selected-folder")
+            self.assertEqual(dm["pages"][0]["elements"][0]["source"]["connectionId"],
+                             "selected-connection")
+            self.assertEqual(json.loads(plan_path.read_text())["targetScope"],
+                             {"connectionId": "old-connection", "folderId": "saved-folder"})
+
+            no_scope_plan = {key: value for key, value in plan.items() if key != "targetScope"}
+            no_scope_path = tmp_path / "no-scope-plan.json"
+            no_scope_path.write_text(json.dumps(no_scope_plan), encoding="utf-8")
+            no_scope_output = tmp_path / "no-scope-output"
+            with mock.patch.object(RESEARCH, "OUTDIR", str(no_scope_output)), \
+                    mock.patch("sys.stdout", io.StringIO()):
+                no_scope_exit = RESEARCH.main([
+                    str(no_scope_path), "--source", str(source),
+                    "--review-dispositions", str(dispositions),
+                    "--conn", "selected-connection", "--folder", "selected-folder",
+                ])
+            self.assertEqual(no_scope_exit, 0)
+            no_scope_wb = json.loads((no_scope_output / "wb_spec.json").read_text())
+            no_scope_input = next(node for node in all_dicts(no_scope_wb)
+                                  if node.get("id") == "researchInputs")
+            self.assertEqual(no_scope_input["source"]["connectionId"], "selected-connection")
+            self.assertNotIn("targetScope", json.loads(no_scope_path.read_text()))
+
+            stale_plan = tmp_path / "stale-plan.json"
+            stale_plan.write_text(json.dumps({**plan, "sourceSha256": "0" * 64}),
+                                  encoding="utf-8")
+            stale_output = tmp_path / "stale-output"
+            with mock.patch.object(RESEARCH, "OUTDIR", str(stale_output)), \
+                    mock.patch("sys.stderr", io.StringIO()) as errors:
+                stale_exit = RESEARCH.main([
+                    str(stale_plan), "--source", str(source),
+                    "--review-dispositions", str(dispositions),
+                    "--conn", "selected-connection", "--folder", "selected-folder",
+                ])
+            self.assertEqual(stale_exit, 1)
+            self.assertIn("SHA256 does not match", errors.getvalue())
+            self.assertFalse(stale_output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

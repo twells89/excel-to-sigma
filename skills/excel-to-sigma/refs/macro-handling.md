@@ -144,7 +144,7 @@ The selection-count formula's selected-row scope is a published runtime gate; if
 it aggregates the full input table, the candidate fails closed. The parent must
 verify no/one/multiple selection, deletion, selection changes and page transitions.
 
-Approval uses one `update_rows` effect, combining actual row ID, business key,
+Approval uses one row-update effect with actual row ID, business key,
 prepared original-field guards, and exact operation-history membership. It changes
 only Approval Status, ApprovedAt and safeguard metadata. Receipt/reconciliation/
 policy exception precedence remains intact. A reserved `|` token delimiter is
@@ -153,9 +153,16 @@ after a later approval preserve the timestamp. Concurrent history lost updates
 and read-then-insert races remain unresolved without warehouse ownership/uniqueness.
 Sequential scenario writes preserve the VBA ordering and may partially fail.
 
-Programs default to disabled candidates. A named `APPROVED_STAGING` review bound
-to the exact test document/version and `bindingHash` can enable staging buttons
-for actual acceptance. This does not enable production. The SDK offers no affected
+Programs are disabled construction candidates. An exact named `APPROVED_STAGING`
+construction review binds sourceHash, planHash, bindingHash, documentId, version
+and candidateProgramHash; it cannot enable or replay saved constructors. Current
+SDK output is explicitly `PARTIAL_REQUIRES_PUBLIC_ACTIONS`: Selection namespace
+expressions and normalized FormulaColumn row IDs require the guarded public route
+in [acceptance-and-promotion.md](acceptance-and-promotion.md). Native-ID SDK updates
+use an InputTableIDColumn dictionary selector; the complete original predicate
+remains in the trigger as CountIf(predicate)=1. Public single-row updates preserve
+the same guard. These are serialized staging safeguards with a check/write TOCTOU
+race. No transaction guarantee is inferred. The SDK offers no affected
 row count on `update_rows`; candidates emit no optimistic success toast or APPLIED
 claim. Independent current before/after readbacks must confirm the operation and
 all expected values. `audit-readback` reports component evidence and still returns

@@ -4,7 +4,9 @@ import json
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +30,77 @@ class TestInputDisplay(unittest.TestCase):
         manifest=build_manifest(source,logical)
         manifest['target']={'documentId':'doc','version':8}
         return source,plan,manifest,receipt(manifest)
+
+    def native_id_fixture(self, directory):
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+        from input_sync import build_artifact_records
+        schemas=json.loads((ROOT/'tests/fixtures/native-id-column-schemas.json').read_text())['schemas']
+        book=Workbook();book.remove(book.active);inputs={};targets={}
+        for i,schema in enumerate(schemas):
+            sheet=book.create_sheet('Input'+str(i));editable=schema['columns'][:-1];sheet.append([c['name'] for c in editable])
+            values={'text':'test','number':1,'datetime':'2026-10-15T08:45:12.123456Z','boolean':False}
+            sheet.append([values[c['type']] for c in editable]);feature='input'+str(i)
+            inputs[feature]={'kind':'input-table','name':schema['name'],'connectionId':'conn','editMode':'draft',
+                'keyColumns':[editable[0]['name']],'sourceRange':f'A1:{get_column_letter(len(editable))}2',
+                'columns':[{'name':c['name'],'type':c['type'],'sourceColumn':sheet.title+'!'+get_column_letter(j+1),'provenance':'controlled input'} for j,c in enumerate(editable)],
+                'rows':[dict(zip([c['name'] for c in editable],[values[c['type']] for c in editable]))]}
+            native={k:v for k,v in schema['columns'][-1].items() if k not in ('visible','format')}
+            targets[feature]={'documentId':'doc','version':8,'pageId':schema['pageId'],'elementId':schema['elementId'],
+                'columnIds':{c['name']:c['id'] for c in editable},'rowIdColumnId':native['id'],
+                'systemColumn':{**native,'sdkEvidenceHash':'a'*64}}
+        source=Path(directory)/'source.xlsx';book.save(source);book.close()
+        architecture={'targetScope':{'connectionId':'conn','folderId':'folder'},'inputs':inputs,
+            'mappedFeatures':[],'featureToInput':{},'nativeWiring':{'elements':[]},'presentationInputFeature':'input0'}
+        manifest=build_manifest(source,{'sharedInputArchitecture':architecture});manifest['target']={'documentId':'doc','version':8}
+        staging={'status':'APPROVED_STAGING','sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
+            'targetBindings':targets,'artifacts':build_artifact_records(manifest,architecture,targets)}
+        return {'source':{'path':str(source),'sha256':manifest['sourceHash']},'workflow':'diagnostic'},manifest,staging,schemas
+
+    def test_actual_native_id_schemas_display_without_renaming_stored_id_columns(self):
+        from input_display import build_input_display
+        from test_sdk_program_admission import fake_sdk
+        with tempfile.TemporaryDirectory() as directory:
+            plan,manifest,staging,schemas=self.native_id_fixture(directory)
+            for i,schema in enumerate(schemas):
+                with self.subTest(table=schema['elementId']):
+                    try:display=build_input_display(plan,manifest,staging,'input'+str(i))
+                    except ValueError as error:self.fail('actual native ID schema refused: '+str(error))
+                    binding={**staging['targetBindings']['input'+str(i)],'sdkColumns':schema['columns']}
+                    sigma,table,effects,modules=fake_sdk(binding,table_name=schema['name'])
+                    with patch.dict(sys.modules,modules):exec(display['program'],{'sigma':sigma})
+                    self.assertEqual(effects[0][0],'visible-columns')
+                    self.assertEqual(table.columns[-1].name(),'ID')
+                    self.assertEqual(table.columns[-1].id(),['DJOZ0EAHWI','KR28O4MONK'][i])
+                    self.assertNotIn(table.columns[-1].id(),effects[0][1])
+
+    def test_reviewed_native_id_descriptor_and_runtime_drift_fail_before_display_effects(self):
+        from input_display import build_input_display,_system_column_contract
+        from test_sdk_program_admission import fake_sdk
+        with tempfile.TemporaryDirectory() as directory:
+            plan,manifest,staging,schemas=self.native_id_fixture(directory)
+            target=staging['targetBindings']['input0']
+            for field,value in [('id','foreign'),('name','Other ID'),('columnClass','FormulaColumn'),('type','text'),
+                                ('systemKind','created_at'),('formula','[Other/ID]'),('elementId','foreign'),('sdkEvidenceHash','pending')]:
+                bad=copy.deepcopy(target);bad['systemColumn'][field]=value
+                with self.subTest(descriptor=field),self.assertRaises(ValueError):_system_column_contract(bad)
+            for change in ['missing-evidence','extra-key','target-id','editable-id-collision']:
+                bad=copy.deepcopy(target)
+                if change=='missing-evidence':bad['systemColumn'].pop('sdkEvidenceHash')
+                elif change=='extra-key':bad['systemColumn']['unreviewed']=True
+                elif change=='target-id':bad['rowIdColumnId']='foreign'
+                else:
+                    bad['rowIdColumnId']=next(iter(bad['columnIds'].values()))
+                    bad['systemColumn']['id']=bad['rowIdColumnId']
+                with self.subTest(descriptor=change),self.assertRaises(ValueError):_system_column_contract(bad)
+            display=build_input_display(plan,manifest,staging,'input0')
+            binding={**target,'sdkColumns':schemas[0]['columns']}
+            for program in ['program','readbackProgram']:
+                for field,value in [('id','foreign'),('name','Row ID'),('elementId','foreign'),('systemKind','created_at'),('columnClass','FormulaColumn')]:
+                    bad=copy.deepcopy(binding);bad['sdkColumns'][-1][field]=value
+                    sigma,table,effects,modules=fake_sdk(bad,table_name=schemas[0]['name'])
+                    with self.subTest(program=program,runtime=field),patch.dict(sys.modules,modules),self.assertRaises(RuntimeError):exec(display[program],{'sigma':sigma})
+                    self.assertEqual(effects,[])
 
     def test_public_display_emission_covers_five_assigned_schemas_without_data_or_validation_writes(self):
         for workflow in ['research','forecast','sales','inventory','expense']:
@@ -279,6 +352,13 @@ class TestInputDisplay(unittest.TestCase):
         context={'sigma':Sigma(),'Page':Page,'InputTable':Table,'LiteralEditableColumn':LiteralColumn,
                  'FormulaColumn':FormulaColumn,'InputTableIDColumn':SystemColumn,'SingleSelectEditableColumn':SelectColumn,'MultiSelectEditableColumn':SelectColumn,
                  'print':lambda value:outputs.append(value)}
+        # Generated programs import their public SDK classes explicitly. Keep the
+        # effect-recording adapter honest about that standalone entry contract.
+        modules={name:types.ModuleType(name) for name in ('sigma','sigma.page','sigma.inputTable','sigma.column')}
+        modules['sigma.page'].Page=Page;modules['sigma.column'].FormulaColumn=FormulaColumn
+        for name in ('InputTable','LiteralEditableColumn','InputTableIDColumn','SingleSelectEditableColumn','MultiSelectEditableColumn'):
+            setattr(modules['sigma.inputTable'],name,context[name])
+        mocked=patch.dict(sys.modules,modules);mocked.start();self.addCleanup(mocked.stop)
         return context,state,outputs
 
     def test_generated_program_and_fresh_observation_contract_detect_metadata_noops(self):

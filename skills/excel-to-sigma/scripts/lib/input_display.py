@@ -49,7 +49,7 @@ def currency_pattern(raw, precision):
 
 
 def _system_column_contract(target):
-    """Only an explicitly approved, evidenced post-REST alias can widen the route.
+    """Default Row ID, evidenced native ID, or an evidenced post-REST alias.
 
     FormulaColumn exposes formula()/element_id(), not a documented type() or
     system kind getter. Its row-ID identity/type comes from independent reviewed
@@ -59,6 +59,18 @@ def _system_column_contract(target):
     if alias is None:
         return {'name':'Row ID','columnClass':'InputTableIDColumn','type':None,
                 'systemKind':'row_id','formula':None,'elementId':target['elementId']}
+    if isinstance(alias,dict) and alias.get('columnClass')=='InputTableIDColumn':
+        fields={'id','name','columnClass','type','systemKind','formula','elementId','sdkEvidenceHash'}
+        if (set(alias)!=fields or alias.get('name')!='ID'
+                or not isinstance(alias.get('id'),str) or not alias['id']
+                or alias['id']!=target.get('rowIdColumnId')
+                or alias['id'] in target.get('columnIds',{}).values()
+                or alias.get('type') is not None or alias.get('systemKind')!='row_id'
+                or alias.get('formula') is not None or alias.get('elementId')!=target['elementId']
+                or not re.fullmatch(r'[0-9a-f]{64}',str(alias.get('sdkEvidenceHash') or ''))):
+            raise ValueError('native ID requires exact reviewed ID/name/class/kind/type/owner and SDK evidence')
+        # Provenance is receipt-bound; it is not an SDK column getter field.
+        return {k:copy.deepcopy(v) for k,v in alias.items() if k!='sdkEvidenceHash'}
     keys={'id','name','columnClass','type','systemKind','formula','elementId','rowIdBinding'}
     identity=alias.get('rowIdBinding') if isinstance(alias,dict) else None
     if (not isinstance(alias,dict) or set(alias)!=keys
@@ -165,7 +177,8 @@ def build_input_display(plan,manifest,receipt,feature=None):
               'receiptHash':_hash(receipt),'artifactHash':artifact['artifactHash'],'feature':feature,
               'target':copy.deepcopy(target),'tableName':spec['name'],'columns':records,'systemColumn':system_column}
     contract_hash=_hash(contract)
-    header=[f'# sourceHash={manifest["sourceHash"]}',f'# planHash={manifest["planHash"]}',
+    header=['from sigma.page import Page','from sigma.inputTable import InputTable, LiteralEditableColumn, InputTableIDColumn',
+            'from sigma.column import FormulaColumn',f'# sourceHash={manifest["sourceHash"]}',f'# planHash={manifest["planHash"]}',
             f'# displayContractHash={contract_hash}',f'# execute only in document={target["documentId"]} version={target["version"]}',
             f'host = sigma.workbook.get_page({target["pageId"]!r})',
             "if not isinstance(host, Page): raise RuntimeError('expected approved page')",
@@ -178,17 +191,21 @@ def build_input_display(plan,manifest,receipt,feature=None):
         header += [f'c{i} = table.get_column({c["id"]!r})',
                    f"if not isinstance(c{i}, {c['columnClass']}): raise RuntimeError('expected approved editable column class')",
                    f"if c{i}.type() != {c['type']!r}: raise RuntimeError('approved column type is stale')",
-                   f"if c{i}.name() != {c['name']!r}: raise RuntimeError('approved column name is stale')"]
+                   f"if c{i}.name() != {c['name']!r}: raise RuntimeError('approved column name is stale')",
+                   f"if c{i}.element_id() != {target['elementId']!r}: raise RuntimeError('foreign editable column owner')"]
     for i,c in enumerate(records):
         if c['columnClass']=='SingleSelectEditableColumn':
             header.append(f"if c{i}.allowed_values() != {c['allowedValues']!r}: raise RuntimeError('source-list options changed')")
     # Validate the complete set before any setter, in both SDK programs.
     header += [f'approved_ids = {[c["id"] for c in records]!r}',
                'all_columns = table.list_columns()',
-               'observed_ids = [column.id() for column in all_columns]',
-               "if len(set(observed_ids)) != len(observed_ids): raise RuntimeError('duplicate input columns')",
-               "if not set(approved_ids).issubset(set(observed_ids)): raise RuntimeError('missing approved input columns')",
-               'system_columns = [column for column in all_columns if column.id() not in approved_ids]',
+               'observed_ids = {}', 'system_columns = []',
+               'for column in all_columns:',
+               "    if column.id() in observed_ids: raise RuntimeError('duplicate input columns')",
+               '    observed_ids[column.id()] = True',
+               '    if column.id() not in approved_ids: system_columns.append(column)',
+               'for approved_id in approved_ids:',
+               "    if approved_id not in observed_ids: raise RuntimeError('missing approved input columns')",
                "if len(system_columns) != 1: raise RuntimeError('expected exactly one system row ID column')",
                'system_column = system_columns[0]',
                f"if system_column.element_id() != {target['elementId']!r}: raise RuntimeError('foreign system column owner')",
@@ -200,6 +217,8 @@ def build_input_display(plan,manifest,receipt,feature=None):
     else:
         header += ["if not isinstance(system_column, InputTableIDColumn): raise RuntimeError('expected system row ID column class')",
                    "if system_column.kind() != 'row_id': raise RuntimeError('expected system row_id kind')"]
+    if system_column['columnClass']=='InputTableIDColumn' and 'id' in system_column:
+        header.append(f"if system_column.id() != {system_column['id']!r}: raise RuntimeError('foreign native row ID column')")
     program=list(header)
     program.append('table.set_visible_columns(['+', '.join(f'c{i}' for i,c in enumerate(records) if c['visible'])+'])')
     for i,c in enumerate(records):
@@ -209,14 +228,19 @@ def build_input_display(plan,manifest,receipt,feature=None):
         elif 'decimals' in fmt: program.append(f'c{i}.set_format({fmt["kind"]!r}, decimals={fmt["decimals"]})')
         else: program.append(f'c{i}.set_format({fmt["kind"]!r})')
     program.append(f"print({{'source': 'sdk-display-execution', 'contractHash': {contract_hash!r}, 'elementId': table.id()}})")
-    readback=[line for line in header if not line.startswith('# execute only')]+['observations = []','for column in table.list_columns():',
-        '    fmt = column.format()',
-        "    observations.append({'id': column.id(), 'name': column.name(), 'visible': column.is_visible(), 'elementId': column.element_id(), 'formula': column.formula() if isinstance(column, FormulaColumn) else None, 'columnClass': 'LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else ('FormulaColumn' if isinstance(column, FormulaColumn) else 'InputTableIDColumn'), 'type': column.type() if isinstance(column, LiteralEditableColumn) else None, 'systemKind': column.kind() if isinstance(column, InputTableIDColumn) else None, 'format': None if fmt is None else {'kind': fmt.kind(), 'decimals': fmt.decimal_places(), 'currency': fmt.currency(), 'pattern': fmt.pattern()}})",
+    readback=[line for line in header if not line.startswith('# execute only')]+['observations = []','for column in table.list_columns():','    fmt = column.format()']
+    has_select=any(c['columnClass']=='SingleSelectEditableColumn' for c in records)
+    classes=(['SingleSelectEditableColumn'] if has_select else [])+['LiteralEditableColumn','FormulaColumn','InputTableIDColumn']
+    for index,cls in enumerate(classes):
+        fields=["'id': column.id()", "'name': column.name()", "'visible': column.is_visible()", "'elementId': column.element_id()",
+            f"'columnClass': {cls!r}", "'type': "+('column.type()' if cls in {'LiteralEditableColumn','SingleSelectEditableColumn'} else 'None'),
+            "'formula': "+('column.formula()' if cls=='FormulaColumn' else 'None'),
+            "'systemKind': "+('column.kind()' if cls=='InputTableIDColumn' else 'None'),
+            "'format': None if fmt is None else {'kind': fmt.kind(), 'decimals': fmt.decimal_places(), 'currency': fmt.currency(), 'pattern': fmt.pattern()}"]
+        if has_select:fields.append("'allowedValues': "+('column.allowed_values()' if cls=='SingleSelectEditableColumn' else 'None'))
+        readback += [('    if' if index==0 else '    elif')+f' isinstance(column, {cls}):', '        observations.append({'+', '.join(fields)+'})']
+    readback += ["    else: raise RuntimeError('unreviewed input column class')",
         f"print({{'source': 'sdk-column-readback', 'contractHash': {contract_hash!r}, 'elementId': table.id(), 'columns': observations}})"]
-    if any(c['columnClass']=='SingleSelectEditableColumn' for c in records):
-        readback=[line.replace("'LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else ('FormulaColumn'", "'SingleSelectEditableColumn' if isinstance(column, SingleSelectEditableColumn) else ('LiteralEditableColumn' if isinstance(column, LiteralEditableColumn) else ('FormulaColumn'")
-            .replace("else 'InputTableIDColumn'), 'type':", "else 'InputTableIDColumn')), 'allowedValues': column.allowed_values() if isinstance(column, SingleSelectEditableColumn) else None, 'type':")
-            .replace("column.type() if isinstance(column, LiteralEditableColumn) else None", "column.type() if isinstance(column, (LiteralEditableColumn, SingleSelectEditableColumn)) else None") for line in readback]
     return {**contract,'contractHash':contract_hash,'status':'PENDING_SDK_READBACK',
             'executionBinding':{'workbookId':target['documentId'],'documentVersion':target['version']},
             'limitations':['SDK system aliases require explicit reviewed row-ID identity evidence in the receipt; no formula type getter or automatic alias-by-name inference is used.',

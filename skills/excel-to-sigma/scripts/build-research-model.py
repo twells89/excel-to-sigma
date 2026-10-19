@@ -405,6 +405,8 @@ def main(argv=None):
         f"source={source_path.name} sha256={gate_report['sourceSha256']}"
     )
     conn = args.conn; folder = args.folder
+    if conn:
+        plan.setdefault("targetScope", {})["connectionId"] = conn
     source_name = plan.get("source") or source_path.name
     name = args.name or (os.path.splitext(source_name)[0][:60] + " (auto)")
     do_post = args.post

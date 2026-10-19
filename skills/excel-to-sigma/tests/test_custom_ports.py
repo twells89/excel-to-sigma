@@ -32,6 +32,23 @@ class CustomPortTests(unittest.TestCase):
         return self.port.solve_forecast(self.model['actuals'], self.model['inputs'],
             self.model['definitions'], {**self.request, **kwargs}, expected_binding='reviewed-model-1')
 
+    def test_warehouse_sigma_accessors_and_output_names_are_compile_time_literals(self):
+        import ast
+        for port,artifact in self.port.emit_python_programs('reviewed-model-1').items():
+            tree=ast.parse(artifact['code'])
+            for node in ast.walk(tree):
+                if not isinstance(node,ast.Call) or not isinstance(node.func,ast.Attribute) or not isinstance(node.func.value,ast.Name) or node.func.value.id!='sigma':continue
+                if node.func.attr in {'get_element','get_control_value','output'}:
+                    self.assertTrue(node.args and isinstance(node.args[0],ast.Constant) and isinstance(node.args[0].value,str),(port,ast.unparse(node)))
+            for function in [n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]:
+                self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Name) and n.func.value.id=='sigma' for n in ast.walk(function)),function.name)
+
+    def test_port_buttons_emit_explicit_observed_filled_appearance(self):
+        fragment=self.port.build_port_fragments('binding','connection')
+        buttons=[e for e in fragment['elements'] if e['kind']=='button']
+        self.assertTrue(buttons)
+        self.assertTrue(all(e.get('appearance')=='filled' for e in buttons))
+
     def test_allocation_one_based_radians_unrounded_and_not_normalized(self):
         rows=self.port.allocate_overhead([40,30,20,10],100000,'allocation-A')
         golden=[56829.41969615794,43639.46140238523,21411.20008059867,6215.987523460359]
@@ -211,6 +228,25 @@ class ConstructionTests(unittest.TestCase):
         exec(programs['allocation']['code'],{'sigma':sigma,'session':session})
         self.assertEqual(len(output[-1][1]),1);self.assertEqual(output[-1][1][0][1],'FAILURE')
 
+    def test_runtime_column_identifier_and_collected_row_key_are_separately_explicit(self):
+        from types import SimpleNamespace
+        maps={'Goal Seek Invocation':{'RequestKey':{'identifier':'"RequestKey"','rowKey':'RequestKey'}}}
+        programs=self.module().emit_python_programs('binding',column_maps=maps)
+        # Real metadata can quote frame identifiers while Row.as_dict keys differ.
+        request={'RequestKey':'goal-seek','OperationId':'allocation','State':'PENDING','Target':1,'LowerBound':0,'UpperBound':.25,'ToleranceCents':1,'MaxIterations':64,'ModelBinding':'binding'}
+        data={'Goal Seek Invocation':[request],'Task 5 Headcount Inputs':[{'Department':d,'Headcount':h} for d,h in zip(['Eng','Sales','G&A','Support'],[40,30,20,10])],'Task 5 Allocation Assumptions':[{'Key':'Overhead','Value':100000}]}
+        class Frame:
+            def __init__(self,title):
+                self.rows=data[title];self.columns=['"RequestKey"' if title=='Goal Seek Invocation' and k=='RequestKey' else k for k in self.rows[0]]
+            def collect(self):return [SimpleNamespace(as_dict=lambda r=r:r) for r in self.rows]
+        output=[];sigma=SimpleNamespace(get_element=Frame,output=lambda name,rows:output.append(rows));session=SimpleNamespace(create_dataframe=lambda rows,schema:rows)
+        exec(programs['allocation']['code'],{'sigma':sigma,'session':session})
+        self.assertEqual(len(output[-1]),4)
+        wrong={'Goal Seek Invocation':{'RequestKey':{'identifier':'"RequestKey"','rowKey':'wrong'}}}
+        bad=self.module().emit_python_programs('binding',column_maps=wrong)
+        exec(bad['allocation']['code'],{'sigma':sigma,'session':session})
+        self.assertEqual(output[-1][0][1:3],['FAILURE','RUNTIME_ROW_KEY_MISMATCH'])
+
     def test_procedure_datetime_argument_preserves_api_date_constant_and_milliseconds(self):
         p=self.module();contract=p.controlled_procedure_contract('conn')
         contract.update(signature='TASK5_TYPED_ECHO(VARCHAR, NUMBER, NUMBER, BOOLEAN, TIMESTAMP_NTZ)',
@@ -297,24 +333,26 @@ class PortGateTests(unittest.TestCase):
         p,m,receipt,current,sources=self.case()
         self.assertTrue(hasattr(p,'prepare_port_update'),'guarded REST authoring is missing')
         original=copy.deepcopy(current)
-        candidate=p.prepare_port_update(m,receipt,current,sources)
+        from port_phase_fixtures import context
+        captured=context(m,receipt,current)
+        candidate=p.prepare_port_update(m,receipt,current,sources,phase_context=captured)
         self.assertEqual(current,original)
         proposed=candidate['dryRunRequest']['contents']
         self.assertEqual(proposed['elements'][:len(current['contents']['elements'])],current['contents']['elements'])
         self.assertEqual(proposed['opaquePreserved'],{'keep':True})
         dry={'httpStatus':200,'dryRun':True,'warnings':[],'proposalHash':candidate['proposalHash'],'evidenceId':'actual-dry-run'}
-        req=p.finalize_port_update(candidate,current,dry)
+        req=p.finalize_port_update(candidate,current,dry,fresh_phase_context=captured)
         self.assertEqual(req['body']['documentVersion'],8)
         for fresh in [{**current,'documentVersion':9},{**current,'workbookId':'other'},
                 {**current,'contents':{**current['contents'],'opaquePreserved':{'keep':False}}}]:
-            with self.assertRaises(ValueError):p.finalize_port_update(candidate,fresh,dry)
-        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'proposalHash':'other'})
-        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,dry,consumed_proposals=[candidate['proposalHash']])
-        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'warnings':['review me']})
+            with self.assertRaises(ValueError):p.finalize_port_update(candidate,fresh,dry,fresh_phase_context=captured)
+        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'proposalHash':'other'},fresh_phase_context=captured)
+        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,dry,consumed_proposals=[candidate['proposalHash']],fresh_phase_context=captured)
+        with self.assertRaises(ValueError):p.finalize_port_update(candidate,current,{**dry,'warnings':['review me']},fresh_phase_context=captured)
         unrelated=copy.deepcopy(current);unrelated['contents']['elements'].append({'id':'task5AllocationPython','kind':'text','text':'unknown'})
         with self.assertRaises(ValueError):p.prepare_port_update(m,receipt,unrelated,sources)
         tampered=copy.deepcopy(candidate);tampered['dryRunRequest']['contents']['elements'][0]['source']['statement']='changed'
-        with self.assertRaises(ValueError):p.finalize_port_update(tampered,current,dry)
+        with self.assertRaises(ValueError):p.finalize_port_update(tampered,current,dry,fresh_phase_context=captured)
 
 class InvocationActionTests(unittest.TestCase):
     def test_invocation_actions_only_write_approved_single_assumption_after_guard(self):
@@ -400,8 +438,8 @@ class FollowupAuthoringTests(unittest.TestCase):
             receipt['targetBindings']['task5Invocation']['columnIds'][n]='inv-'+n
         receipt['artifacts']=build_artifact_records(m,m['planProjection']['sharedInputArchitecture'],receipt['targetBindings'])
         sources['Goal Seek Invocation']['elementHash']=p._digest(inv)
-        initial=p.prepare_port_update(m,receipt,current,sources)
-        created={**current,'documentVersion':9,'contents':initial['dryRunRequest']['contents']}
+        from port_phase_fixtures import complete
+        m,receipt,created,initial=complete(m,receipt,current,sources)
         model=json.loads((ROOT/'tests/fixtures/task5-controlled-model.json').read_text())
         request=dict(RequestKey='goal-seek',OperationId='op-A',State='APPLY_PENDING',Target=2000000,
             LowerBound=0,UpperBound=.25,ToleranceCents=1,MaxIterations=64,ModelBinding=initial['modelBinding'])
@@ -416,7 +454,7 @@ class FollowupAuthoringTests(unittest.TestCase):
     def test_followup_action_update_is_guarded_append_and_rejects_changed_model_or_foreign_action(self):
         p,m,receipt,created,initial,binding,request,model,result=self.setup_followup()
         follow=p.prepare_goal_action_update(m,receipt,created,initial,binding,request,model['actuals'],model['inputs'],model['definitions'],result)
-        self.assertEqual(follow['documentVersion'],9)
+        self.assertEqual(follow['documentVersion'],11)
         self.assertEqual(follow['dryRunRequest']['contents']['elements'][:-3],created['contents']['elements'])
         self.assertEqual(len(follow['addedElementIds']),3)
         # Failure must stop before accepting any unverified action target binding.

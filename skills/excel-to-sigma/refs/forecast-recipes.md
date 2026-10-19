@@ -107,3 +107,11 @@ across pages fine.
   referenced in a calc formula is rejected (`Invalid kind: control`); a true parameter
   needs a data-model control + `parameters` binding. Use an **editable input table** for
   adjustable rates instead (proven), unless/until you wire DM parameters.
+
+## Corrected July–December snapshot
+
+For the explicitly approved 18-line/108-value replacement of the broken source
+snapshot macro, use the source-bound definition, disabled native constructors,
+and native-ID retry reconciliation in [forecast-snapshot.md](forecast-snapshot.md).
+These are component authoring tools; actual published and persisted evidence
+remains a separate acceptance gate.
