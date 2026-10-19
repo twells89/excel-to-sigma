@@ -249,7 +249,7 @@ def build_procedure_action(contract, arguments, *, prior_invocation=None):
     if prior_invocation and prior_invocation.get('operationId')==op and prior_invocation!=invocation:
         raise PortError('OPERATION_RETRY_INPUT_MISMATCH')
     typed=[op,amount,count,enabled,timestamp+'Z']
-    kinds=['text','number','number','boolean','date']
+    kinds=['text','number','number','boolean','datetime']
     return {'id':'task5-call-typed-echo','trigger':'on-click','effects':[{'effect':'call-stored-procedure',
         'storedProcedure':{k:copy.deepcopy(contract[k]) for k in ('connectionId','path','signature')},
         'arguments':[{'parameterIndex':i,'type':typ,'value':{'type':'constant','value':{'type':kind,'value':value}}}
