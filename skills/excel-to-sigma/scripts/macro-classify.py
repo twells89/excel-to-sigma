@@ -18,6 +18,7 @@ Never silent: every macro is surfaced with a disposition. A dropped macro the us
 assumes still works is the FP&A equivalent of dropping row-level security.
 """
 import sys, os, re
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def extract_vba(path):
     """Return list of (proc_source) blocks' container code. Uses olevba for office
@@ -146,20 +147,27 @@ OPAQUE_OVERRIDABLE = {
     "WHATIF_SCENARIO", "TRANSFORM_ROLLUP", "NAVIGATION",
     "FORMAT_COSMETIC", "RECALC",
 }
-ACTION_VERB = re.compile(r"(Commit|Save|Submit|Post|Archive|Snapshot|Freeze)", re.I)
+
 
 def classify(name, body):
+    from lib.macro_behavior import _strip_comments, _analyze_body
+    body = _strip_comments(body)
+    # Header names are metadata, never executable routing evidence.
+    body = "\n".join(line for line in body.splitlines()
+                     if not PROC_RE.match(line) and not re.match(r"\s*End (Sub|Function)", line))
+    behavior = _analyze_body(body)
+    if (behavior['selectedRecord'] and behavior['writes']
+            and not behavior['externalSideEffects']
+            and not any(w['kind'] == 'append' for w in behavior['writes'])):
+        return ('SELECTED_RECORD_UPDATE', 'ACTION',
+                'Sigma Action → update selected input-table record',
+                'Body updates selected record; bind real row ID, key, context, guards and outcome.',
+                [w['target'] for w in behavior['writes'] if 'target' in w])
     hits = {}
     for label, status, sigs, target, note in RULES:
         matched = [s for s in sigs if re.search(s, body, re.I)]
         if matched:
             hits[label] = (status, target, note, matched)
-    # action-verb signal is matched on the procedure NAME only (avoids e.g. a called
-    # helper "PostToGrid" tripping "Post" inside an unrelated body)
-    if ACTION_VERB.search(name):
-        st, tg, nt = RULES_MAP["ACTION_WRITEBACK"]
-        prev = hits.get("ACTION_WRITEBACK", (st, tg, nt, []))
-        hits["ACTION_WRITEBACK"] = (st, tg, nt, prev[3] + [f"name~{name}"])
     is_event = bool(re.match(r"(Workbook_|Worksheet_)", name))
     if hits:
         primary = min(hits, key=lambda l: RULE_ORDER[l])
@@ -200,11 +208,19 @@ def main():
     procs = list(split_procedures(code))
     if as_json:
         import json
+        from lib.macro_behavior import analyze_macro_source
+        analysis = analyze_macro_source(path, source_kind=(
+            "raw-module" if os.path.splitext(path)[1].lower() in
+            (".bas", ".cls", ".frm", ".vba", ".txt") else "office-container-extraction"))
+        by_name = {p['name']: p for p in analysis['procedures']}
         recs = []
         for name, kind, body in procs:
             cls, status, target, note, sigs = classify(name, body)
             recs.append({"name": name, "kind": kind, "class": cls, "status": status,
-                         "sigmaTarget": target, "note": note, "signals": sigs})
+                         "sigmaTarget": target, "note": note, "signals": sigs,
+                         "operation": by_name[name]['disposition']['operation'],
+                         "analysis": {**{k: v for k, v in analysis.items() if k != 'procedures'},
+                                      "procedure": by_name[name]}})
         print(json.dumps(recs, indent=2)); return
     print(f"# Macro inventory — {os.path.basename(path)}  ({len(procs)} procedures)\n")
     tally = {}
