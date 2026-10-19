@@ -320,4 +320,337 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaises(ValueError):p.build_snapshot_definition(Path(__file__).parent/'fixtures/fixture-forecast-model.xlsx',
             plan_hash='a'*64,procedure_hash='b'*64,decision={'decisionId':'old','status':'PENDING','scope':{}})
 
+    def completion_fixture(self):
+        p=self.module();d,op=self.operation()
+        rows=[{**row,'nativeRowId':'snapshot-'+str(i)} for i,row in enumerate(p.reconcile_snapshot_rows(d,op,[])['missingRows'])]
+        base={'origin':'sigma-query','documentId':'stage','version':28,'sourceHash':d['sourceHash'],
+              'planHash':d['planHash'],'complete':True,'evidenceId':'read','executionId':'run'}
+        operations={**base,'elementId':'operations','rowIdColumnId':'native-ops-id',
+                    'rowCount':1,'rows':[op]}
+        snapshots={**base,'elementId':'snapshots','rowIdColumnId':'native-snapshot-id',
+                   'rowCount':108,'rows':rows}
+        target={'documentId':'stage','version':28,'operationsElementId':'operations',
+                'operationsRowIdColumnId':'native-ops-id','snapshotsElementId':'snapshots',
+                'snapshotsRowIdColumnId':'native-snapshot-id'}
+        return p,d,op,operations,snapshots,target
+
+    def test_completion_marks_only_exact_prepared_operation_then_resumes_clear(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        planned=p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value='operation-A')
+        self.assertEqual(planned['nextAction'],'MARK_TERMINAL')
+        self.assertEqual(planned['observedOperationState'],'PREPARED')
+        self.assertEqual(planned['operationReadbackHash'],p.digest(operations))
+        self.assertEqual(planned['snapshotReadbackHash'],p.digest(snapshots))
+        self.assertEqual(planned['reconciliationHash'],planned['reconciliation']['reconciliationHash'])
+        self.assertEqual(planned['completionPlanHash'],p.digest({k:v for k,v in planned.items() if k!='completionPlanHash'}))
+        self.assertEqual(planned['operationId'],'operation-A')
+        self.assertEqual(planned['terminalState'],'SNAPSHOT_COMPONENT_COMPLETE')
+        self.assertEqual(planned['reconciliation']['existingCount'],108)
+        self.assertEqual(planned['productionStatus'],'BLOCKED')
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']='SNAPSHOT_COMPONENT_COMPLETE'
+        resumed=p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='operation-A')
+        self.assertEqual(resumed['nextAction'],'CLEAR_CONTROL')
+        self.assertEqual(resumed['observedOperationState'],p.SNAPSHOT_TERMINAL_STATE)
+        self.assertNotEqual(resumed['operationReadbackHash'],planned['operationReadbackHash'])
+        self.assertEqual(p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='')['nextAction'],'NONE')
+        self.assertEqual(operations['rows'][0]['State'],'PREPARED')
+        self.assertEqual(len(snapshots['rows']),108)
+
+    def test_deliberate_second_intent_has_distinct_id_and_retains_old_snapshots(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']=p.SNAPSHOT_TERMINAL_STATE
+        self.assertEqual(p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,
+                                                    control_value='')['nextAction'],'NONE')
+        new_op=copy.deepcopy(op)
+        new_op['nativeRowId']='operation-B'
+        new_op['Created At']='2026-10-16T00:00:00+00:00'
+        retry=p.reconcile_snapshot_rows(d,new_op,snapshots['rows'])
+        self.assertEqual(retry['operationId'],'operation-B')
+        self.assertEqual(retry['existingCount'],0)
+        self.assertEqual(len(retry['missingRows']),108)
+        self.assertEqual({row['Operation ID'] for row in retry['missingRows']},{'operation-B'})
+        self.assertEqual({row['Operation ID'] for row in snapshots['rows']},{'operation-A'})
+
+    def test_completion_blocks_incomplete_conflicting_or_foreign_snapshot(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        incomplete=copy.deepcopy(snapshots);incomplete['rows'].pop();incomplete['rowCount']=107
+        conflicting=copy.deepcopy(snapshots);conflicting['rows'][0]['Value']=999
+        duplicate=copy.deepcopy(snapshots);duplicate['rows'].append({**duplicate['rows'][0],'nativeRowId':'extra'});duplicate['rowCount']=109
+        foreign=copy.deepcopy(snapshots);foreign['rows'][0]['Snapshot Key']='foreign'
+        for name,rows in [('incomplete',incomplete),('conflicting',conflicting),('duplicate',duplicate),('foreign',foreign)]:
+            with self.subTest(name=name),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',operations,rows,target,control_value='operation-A')
+
+    def test_public_insert_reconciliation_remains_prepared_only(self):
+        import inspect
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        self.assertNotIn('allowed_states',inspect.signature(p.reconcile_snapshot_rows).parameters)
+        self.assertNotIn('allowed_states',inspect.signature(p.plan_snapshot_reconciliation).parameters)
+        empty=copy.deepcopy(snapshots);empty['rows']=[];empty['rowCount']=0
+        for state in ('FAILED',p.SNAPSHOT_TERMINAL_STATE):
+            changed=copy.deepcopy(operations);changed['rows'][0]['State']=state
+            with self.subTest(state=state),self.assertRaises(ValueError):
+                p.reconcile_snapshot_rows(d,changed['rows'][0],[])
+            with self.subTest(state=state),self.assertRaises(ValueError):
+                p.plan_snapshot_reconciliation(d,'operation-A',changed,empty,target)
+            with self.subTest(state=state),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',changed,empty,target,control_value='operation-A')
+
+    def test_completion_blocks_other_pending_intent_wrong_control_and_stale_capture(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        other=copy.deepcopy(operations);other['rows'].append({**op,'nativeRowId':'operation-B'});other['rowCount']=2
+        with self.assertRaises(ValueError):p.plan_snapshot_completion(d,'operation-A',other,snapshots,target,control_value='operation-A')
+        for control in ('', 'operation-B', None):
+            with self.subTest(control=control),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value=control)
+        stale=copy.deepcopy(snapshots);stale['version']=27
+        with self.assertRaises(ValueError):p.plan_snapshot_completion(d,'operation-A',operations,stale,target,control_value='operation-A')
+
+    def test_completion_renderer_separates_exact_id_mark_from_verified_clear(self):
+        import ast
+        p,d,current,b=self.candidate_fixture()
+        prepared=p.render_snapshot_candidate(d,current,b,phase='prepare')
+        current['contents']['elements'].append({'id':'op-control','kind':'control','controlType':'text',
+                                                  'controlId':'forecast-snapshot-operation','value':''})
+        current['contents']['layout']=current['contents']['layout'].replace(
+            '<Element elementId="operations" />','<Element elementId="op-control" /><Element elementId="operations" />')
+        _,_,_,operations,snapshots,target=self.completion_fixture()
+        for capture in (operations,snapshots):capture['version']=19
+        target['version']=19
+        for role,capture in [('operations',operations),('snapshots',snapshots)]:
+            native_id=next(col['id'] for col in b[role]['columns'] if col['class']=='InputTableIDColumn')
+            capture['rowIdColumnId']=native_id
+            target[role+'RowIdColumnId']=native_id
+        mark_plan=p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value='operation-A')
+        mark=p.render_snapshot_candidate(d,current,b,phase='completion-mark',operation_control_id='op-control',
+                                         prepared_contract=prepared['preparedContract'],completion_plan=mark_plan)
+        tree=ast.parse(mark['program'])
+        updates=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='update_rows']
+        self.assertEqual(len(updates),1)
+        self.assertIsInstance(updates[0].args[1],ast.Dict)
+        self.assertEqual(len(updates[0].args[1].keys),1)
+        self.assertEqual(ast.unparse(updates[0].args[1].values[0]),'op')
+        self.assertNotIn('set_control_value(op, "")',mark['program'])
+        self.assertIn("const_text('operation-A')",mark['program'])
+        self.assertIn("const_text('SNAPSHOT_COMPONENT_COMPLETE')",mark['program'])
+        self.assertIn('for i in range(108):',mark['program'])
+        self.assertIn('eq(count_if(key), const_num(1))',mark['program'])
+        self.assertIn('not_(allowed_parts[0])',mark['program'])
+        self.assertEqual(mark['insertEffectCount'],0)
+        self.assertEqual(mark['productionStatus'],'BLOCKED')
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']='SNAPSHOT_COMPONENT_COMPLETE'
+        clear_plan=p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='operation-A')
+        cleared=p.render_snapshot_candidate(d,current,b,phase='completion-clear',operation_control_id='op-control',
+                                            prepared_contract=prepared['preparedContract'],completion_plan=clear_plan)
+        clear_tree=ast.parse(cleared['program'])
+        self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='update_rows'
+                             for n in ast.walk(clear_tree)))
+        self.assertIn('set_control_value(op, "")',cleared['program'])
+        self.assertIn("const_text('operation-A')",cleared['program'])
+        self.assertIn("const_text('SNAPSHOT_COMPONENT_COMPLETE')",cleared['program'])
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=mark_plan)
+        forged_action=copy.deepcopy(mark_plan);forged_action['nextAction']='CLEAR_CONTROL'
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=forged_action)
+        forged_action['completionPlanHash']=p.digest({k:v for k,v in forged_action.items() if k!='completionPlanHash'})
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=forged_action)
+        forged_readback=copy.deepcopy(clear_plan);forged_readback['operationReadbackHash']='f'*64
+        forged_readback['completionPlanHash']=p.digest({k:v for k,v in forged_readback.items() if k!='completionPlanHash'})
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-clear',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=forged_readback)
+        tampered=copy.deepcopy(mark_plan);tampered['reconciliation']['existingCount']=107
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=tampered)
+        malformed=copy.deepcopy(mark_plan);malformed['reconciliation']['target']=None
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=malformed)
+        wrong_native_target=copy.deepcopy(mark_plan)
+        wrong_native_target['reconciliation']['target']['operationsRowIdColumnId']='unrelated-native-id'
+        wrong_native_target['reconciliation']['reconciliationHash']=p.digest({
+            k:v for k,v in wrong_native_target['reconciliation'].items() if k!='reconciliationHash'})
+        with self.assertRaises(ValueError):p.render_snapshot_candidate(d,current,b,phase='completion-mark',
+            operation_control_id='op-control',prepared_contract=prepared['preparedContract'],completion_plan=wrong_native_target)
+
+    def test_existing_snapshot_guard_uses_exact_composite_scalar_lookups(self):
+        import ast
+        p,d,current,b=self.candidate_fixture()
+        prepared=p.render_snapshot_candidate(d,current,b,phase='prepare')
+        self.assertEqual(prepared['programHash'],'02bd94836aaf2b22de11b08247df4ade47dbe6207f84189a248e35a222925cfc')
+        current['contents']['elements'].append({'id':'op-control','kind':'control','controlType':'text',
+                                                  'controlId':'forecast-snapshot-operation','value':''})
+        current['contents']['layout']=current['contents']['layout'].replace(
+            '<Element elementId="operations" />','<Element elementId="op-control" /><Element elementId="operations" />')
+        _,_,_,operations,snapshots,target=self.completion_fixture()
+        for capture in (operations,snapshots):capture['version']=19
+        target['version']=19
+        for role,capture in [('operations',operations),('snapshots',snapshots)]:
+            native_id=next(col['id'] for col in b[role]['columns'] if col['class']=='InputTableIDColumn')
+            capture['rowIdColumnId']=native_id;target[role+'RowIdColumnId']=native_id
+        mark_plan=p.plan_snapshot_completion(d,'operation-A',operations,snapshots,target,control_value='operation-A')
+        terminal=copy.deepcopy(operations);terminal['rows'][0]['State']=p.SNAPSHOT_TERMINAL_STATE
+        clear_plan=p.plan_snapshot_completion(d,'operation-A',terminal,snapshots,target,control_value='operation-A')
+        snapshot_index=list(b).index('snapshots')
+        snapshot_vars={column['name']:'c'+str(snapshot_index)+'_'+str(i)
+                       for i,column in enumerate(b['snapshots']['columns'])}
+        for phase,plan in [('confirm',None),('completion-mark',mark_plan),('completion-clear',clear_plan)]:
+            with self.subTest(phase=phase):
+                program=p.render_snapshot_candidate(d,current,b,phase=phase,operation_control_id='op-control',
+                    prepared_contract=prepared['preparedContract'],completion_plan=plan)['program']
+                tree=ast.parse(program)
+                loop=next(node for node in ast.walk(tree) if isinstance(node,ast.For)
+                          and isinstance(node.target,ast.Name) and node.target.id=='i'
+                          and ast.unparse(node.iter)=='range(108)')
+                matching=next(node.value for node in loop.body if isinstance(node,ast.Assign)
+                              and any(isinstance(t,ast.Name) and t.id=='matching' for t in node.targets))
+                calls=[node for node in ast.walk(matching) if isinstance(node,ast.Call)
+                       and isinstance(node.func,ast.Name) and node.func.id=='lookup'
+                       and len(node.args)==4]
+                self.assertEqual(len(calls),14)
+                self.assertEqual({ast.unparse(call.args[0]) for call in calls},
+                                 {snapshot_vars[name] for name in p.SNAPSHOT_FIELDS})
+                for call in calls:
+                    self.assertEqual(len(call.args),4)
+                    self.assertIsInstance(call.args[3],ast.Tuple)
+                    self.assertEqual(len(call.args[3].elts),2)
+                    self.assertEqual(ast.unparse(call.args[1]),'op')
+                    self.assertEqual(ast.unparse(call.args[2]),snapshot_vars['Operation ID'])
+                    self.assertEqual(ast.unparse(call.args[3].elts[0]),'const_text(snapshot_keys[i])')
+                    self.assertEqual(ast.unparse(call.args[3].elts[1]),snapshot_vars['Snapshot Key'])
+                self.assertNotIn('count_if(matching)',program)
+                for count in (node for node in ast.walk(tree) if isinstance(node,ast.Call)
+                              and isinstance(node.func,ast.Name) and node.func.id=='count_if'):
+                    self.assertFalse(any(isinstance(child,ast.Call) and isinstance(child.func,ast.Name)
+                        and child.func.id=='lookup' for child in ast.walk(count)))
+                self.assertIn('eq(count_if(key), const_num(1))',program)
+                self.assertIn('not_(allowed_parts[0])',program)
+
+    def test_completion_rejects_each_payload_conflict_and_ignores_foreign_operation_same_key(self):
+        p,d,op,operations,snapshots,target=self.completion_fixture()
+        own=snapshots['rows']
+        foreign={**own[0],'nativeRowId':'foreign-row','Operation ID':'operation-old'}
+        retained=copy.deepcopy(snapshots);retained['rows'].append(foreign);retained['rowCount']=109
+        self.assertEqual(p.plan_snapshot_completion(d,'operation-A',operations,retained,target,
+                         control_value='operation-A')['reconciliation']['existingCount'],108)
+        for field in p.SNAPSHOT_FIELDS:
+            changed=copy.deepcopy(snapshots)
+            value=changed['rows'][0][field]
+            changed['rows'][0][field]=value+1 if type(value) in (int,float) else 'wrong'
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                p.plan_snapshot_completion(d,'operation-A',operations,changed,target,control_value='operation-A')
+        missing=copy.deepcopy(retained);missing['rows'].pop(0);missing['rowCount']=108
+        with self.assertRaises(ValueError):
+            p.plan_snapshot_completion(d,'operation-A',operations,missing,target,control_value='operation-A')
+        duplicate=copy.deepcopy(retained);duplicate['rows'].append({**own[0],'nativeRowId':'duplicate-row'});duplicate['rowCount']=110
+        with self.assertRaises(ValueError):
+            p.plan_snapshot_completion(d,'operation-A',operations,duplicate,target,control_value='operation-A')
+
+    def test_rest_export_adapter_preserves_transport_and_all_108_actual_rows(self):
+        import json,tempfile
+        p,d,current,b=self.candidate_fixture();_,op=self.operation()
+        op[d['cells'][0]['operationFrozenColumn']]=537775.2000000001
+        for role in ('operations','snapshots'):
+            b[role]['columns'][-1]['name']='ID'
+            next(e for e in current['contents']['elements'] if e['id']==role)['columns'][-1]['name']='ID'
+        op['Created At']='2026-10-16T12:00:00+00:00'
+        for name in ('Snapshot Capture Contract Hash','Authoring Baseline Document Version',
+                     'Authoring Baseline Contents Hash','Source Graph Hash','Primary Identity Contract Hash',
+                     'Snapshot Schema Contract Hash'):
+            op[name]=19 if name.endswith('Version') else 'f'*64
+        rows=p.reconcile_snapshot_rows(d,op,[])['missingRows']
+        target={'documentId':current['workbookId'],'version':current['documentVersion'],
+                'operationsElementId':b['operations']['elementId'],'operationsRowIdColumnId':'ID',
+                'snapshotsElementId':b['snapshots']['elementId'],'snapshotsRowIdColumnId':'ID'}
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            def save(name,value):
+                path=base/name;path.write_text(json.dumps(value));return str(path)
+            before=save('source-before.json',current);after=save('source-after.json',current)
+            bindings=save('bindings.json',b);timezone=save('timezone.json',{'timezone':'UTC'})
+            def files(role,raw,*,row_limit=1000):
+                query='query-'+role
+                return {'request_path':save(role+'-request.json',{'method':'POST','path':'/v2/workbooks/stage/export',
+                    'body':{'elementId':role,'format':{'type':'json'},'rowLimit':row_limit}}),
+                    'job_path':save(role+'-job.json',{'jobComplete':False,'queryId':query}),
+                    'download_request_path':save(role+'-download.json',{'method':'GET','path':'/v2/query/'+query+'/download'}),
+                    'rows_path':save(role+'-rows.json',raw),'timezone_path':timezone,
+                    'request_provenance_path':save(role+'-provenance.json',{role:{'queryId':query,
+                        'actualExportInvocation':'recorded POST helper call',
+                        'actualDownloadInvocation':'recorded GET helper call'},
+                        'qualification':'Reconstructed from recorded helper invocations, not a wire capture.'}),
+                    'source_before_path':before,'source_after_path':after,'bindings_path':bindings}
+            raw_op={k:v for k,v in op.items() if k!='nativeRowId'}
+            raw_op['ID']=op['nativeRowId'];raw_op['Created At']='2026-10-16 12:00:00.000'
+            raw_rows=[]
+            for i,row in enumerate(rows):
+                raw={**row,'ID':'row-'+str(i),'Captured At':'2026-10-16 12:00:00.000'}
+                raw_rows.append(raw)
+            op_files=files('operations',[raw_op]);snap_files=files('snapshots',raw_rows)
+            ops=p.adapt_rest_json_export_capture(d,role='operations',target=target,**op_files)
+            snaps=p.adapt_rest_json_export_capture(d,role='snapshots',target=target,**snap_files)
+            self.assertEqual((ops['origin'],snaps['origin']),('sigma-rest-json-export',)*2)
+            self.assertEqual((ops['rows'][0]['Created At'],snaps['rows'][0]['Captured At']),
+                             ('2026-10-16T12:00:00.000+00:00',)*2)
+            self.assertNotIn('ID',ops['rows'][0]);self.assertEqual(ops['rows'][0]['nativeRowId'],'operation-A')
+            self.assertEqual(snaps['rows'][0]['Value'],537775.2000000001)
+            self.assertNotIn('Frozen Assumption / source row 6 / Monthly Growth',ops['rows'][0])
+            self.assertEqual(ops['restEvidence']['timezone']['observed'],'UTC')
+            self.assertEqual(ops['restEvidence']['job']['queryId'],'query-operations')
+            self.assertIn('not a wire capture',ops['restEvidence']['requestProvenance']['qualification'])
+            self.assertTrue(ops['restEvidence']['knownSchemaOmissions'][0]['knownSchemaFieldsOmitted'])
+            self.assertEqual(p.plan_snapshot_completion(d,'operation-A',ops,snaps,target,
+                                                        control_value='operation-A')['nextAction'],'MARK_TERMINAL')
+            self.assertEqual(p.plan_snapshot_reconciliation(d,'operation-A',ops,snaps,target)['existingCount'],108)
+            changed_source=copy.deepcopy(current)
+            changed_source['contents']['layout'] += '<Page id="unrelated" />'
+            different_before=save('different-before.json',changed_source)
+            different_after=save('different-after.json',changed_source)
+            different=p.adapt_rest_json_export_capture(d,role='snapshots',target=target,
+                **{**snap_files,'source_before_path':different_before,'source_after_path':different_after})
+            with self.assertRaisesRegex(ValueError,'same saved source'):
+                p.plan_snapshot_completion(d,'operation-A',ops,different,target,control_value='operation-A')
+            bad=copy.deepcopy(snaps);bad['restEvidence']['files']['rows']['sha256']='0'*64
+            with self.assertRaises(ValueError):p.plan_snapshot_completion(d,'operation-A',ops,bad,target,
+                                                                           control_value='operation-A')
+            request=json.loads(Path(snap_files['request_path']).read_text())
+            download=json.loads(Path(snap_files['download_request_path']).read_text())
+            for name,changed,path in [
+                ('offset',{**request,'body':{**request['body'],'offset':1}},snap_files['request_path']),
+                ('parameters',{**request,'body':{**request['body'],'parameters':{'Region':'West'}}},snap_files['request_path']),
+                ('tag',{**request,'body':{**request['body'],'tag':'other-version'}},snap_files['request_path']),
+                ('export-as',{**request,'body':{**request['body'],'exportAs':'other-user'}},snap_files['request_path']),
+                ('top-level-query',{**request,'query':{'offset':1}},snap_files['request_path']),
+                ('download-query',{**download,'query':{'offset':1}},snap_files['download_request_path'])]:
+                with self.subTest(name=name),self.assertRaisesRegex(ValueError,'exact JSON element-export request|result-download request'):
+                    save(Path(path).name,changed)
+                    p.adapt_rest_json_export_capture(d,role='snapshots',target=target,**snap_files)
+                save(Path(path).name,request if path==snap_files['request_path'] else download)
+            for name,changed_rows in [('partial',raw_rows[:-1]),
+                                      ('foreign',[{**raw_rows[0],'Snapshot Key':'foreign'},*raw_rows[1:]])]:
+                with self.subTest(name=name),self.assertRaises(ValueError):
+                    changed=p.adapt_rest_json_export_capture(d,role='snapshots',target=target,
+                        **files('snapshots',changed_rows))
+                    p.plan_snapshot_completion(d,'operation-A',ops,changed,target,control_value='operation-A')
+            for name,mutation,message in [
+                ('wrong-timezone',lambda:save('timezone.json',{'timezone':'America/New_York'}),'UTC organization'),
+                ('missing-job',lambda:Path(snap_files['job_path']).unlink(),'retained absolute REST evidence'),
+                ('at-limit',lambda:files('snapshots',raw_rows,row_limit=108),'below-limit'),
+                ('unexpected-field',lambda:files('snapshots',[{**raw_rows[0],'Surprise':1},*raw_rows[1:]]),'unexpected'),
+                ('precision-loss',lambda:files('snapshots',[{**raw_rows[0],
+                    'Captured At':'2026-10-16 12:00:00.1234567'},*raw_rows[1:]]),'lossless'),
+                ('job-mismatch',lambda:save('snapshots-job.json',{'jobComplete':False,'queryId':'different'}),'matching real job'),
+                ('stale-bracket',lambda:save('source-after.json',{**current,'documentVersion':20}),'before/after')]:
+                save('timezone.json',{'timezone':'UTC'})
+                save('snapshots-job.json',{'jobComplete':False,'queryId':'query-snapshots'})
+                save('source-after.json',current)
+                with self.subTest(name=name),self.assertRaisesRegex(ValueError,message):
+                    changed=mutation()
+                    p.adapt_rest_json_export_capture(d,role='snapshots',target=target,
+                        **(changed if isinstance(changed,dict) else snap_files))
+            save('timezone.json',{'timezone':'UTC'})
+            save('snapshots-job.json',{'jobComplete':False,'queryId':'query-snapshots'})
+            with self.assertRaises(ValueError):p.adapt_rest_json_export_capture(d,role='snapshots',
+                target={**target,'snapshotsRowIdColumnId':'wrong-native-id'},**snap_files)
+
 if __name__ == '__main__':unittest.main()

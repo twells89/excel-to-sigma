@@ -107,10 +107,10 @@ class BalancedSnapshotGuardTests(unittest.TestCase):
 
     def test_boolean_reassociation_preserves_every_ordered_guard_and_effect(self):
         condition, effects = self.condition()
-        # Reviewed pre-balancing baseline. Constants, lookup keys, 96 nullable
-        # equality guards, 108 duplicate/conflict guards, and the foreign-key
-        # blocker are all covered. Reassociation may not alter any operand.
-        self.assertEqual(fingerprint(condition), 'db2a45c7e10f04c4b6b37aad2856c03661ad221512e77a8a025ab1dd239a186a')
+        # Reviewed scalar-composite baseline. Constants, two-key snapshot
+        # lookups outside CountIf, 96 nullable checks, 108 exact key/payload
+        # guards, and the foreign-key blocker are covered. Effects are unchanged.
+        self.assertEqual(fingerprint(condition), '23ea53689a5877e85692c7ef66062d2e8eb61cc27d05b0413c0d4a7cab3520bd')
         self.assertEqual(fingerprint(tuple(effects)), '7b6f4d8a5337b07492b45ab5d905ddf32cf1ea567bbb46a78feed1a4dcc1efd3')
 
 
