@@ -16,6 +16,7 @@ if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
 from excel_expression import (  # noqa: E402
+    ExpressionError,
     UnsupportedExpression,
     emit_sigma,
     evaluate,
@@ -91,6 +92,15 @@ class TestExcelExpression(unittest.TestCase):
             evaluate(expression, lambda ref: values[(ref.sheet, ref.address)]), "PASS"
         )
 
+    def test_two_argument_if_defaults_false_and_short_round_is_rejected(self):
+        true_expression = parse_expression("=IF(1,42)", sheet="Sheet1")
+        false_expression = parse_expression("=IF(0,42)", sheet="Sheet1")
+
+        self.assertEqual(evaluate(true_expression, lambda _ref: None), 42)
+        self.assertIs(evaluate(false_expression, lambda _ref: None), False)
+        with self.assertRaisesRegex(ExpressionError, "ROUND requires two arguments"):
+            evaluate(parse_expression("=ROUND(1)", sheet="Sheet1"), lambda _ref: None)
+
 
 class TestFormulaGraph(unittest.TestCase):
     def test_cell_period_graph_does_not_invent_a_row_cycle(self):
@@ -162,11 +172,19 @@ class TestFormulaGraph(unittest.TestCase):
                          (CellIdentity("Inputs", "A2"),))
         self.assertEqual(graph.evaluate()[CellIdentity("Model", "A1")], 11)
 
+    def test_malformed_formulas_are_unresolved_and_do_not_block_evaluation(self):
+        wb = Workbook(); ws = wb.active; ws.title = "Model"
+        ws["A1"] = "="; ws["B1"] = "=IF(0,42)"; ws["C1"] = "=ROUND(1)"
+
+        graph = FormulaGraph.from_workbook(wb)
+
+        self.assertIn(CellIdentity("Model", "A1"), graph.unresolved_formula_nodes())
+        self.assertEqual(graph.evaluate()[CellIdentity("Model", "B1")], False)
+        self.assertNotIn(CellIdentity("Model", "C1"), graph.evaluate())
+
     def test_fixture_graph_evaluates_all_display_and_audit_formulas(self):
         fixture = ROOT / "tests" / "fixtures" / "fixture-research-model.xlsx"
         expected_path = ROOT / "tests" / "fixtures" / "fixture-research-expected.json"
-        if not fixture.exists() or not expected_path.exists():
-            self.skipTest("research fixture not installed")
         expected = json.loads(expected_path.read_text(encoding="utf-8"))
         from openpyxl import load_workbook
         wb = load_workbook(fixture, data_only=False)
@@ -272,6 +290,69 @@ class TestMigrationManifest(unittest.TestCase):
 
         self.assertEqual(item["mappingStatus"], "unresolved")
         self.assertIn("unsupported", item["unresolvedReason"])
+
+    def test_malformed_source_formula_is_explicitly_unresolved(self):
+        from openpyxl import load_workbook
+        workbook = load_workbook(self.path)
+        workbook["FY results"]["D1"] = "="
+        workbook.save(self.path)
+
+        manifest = build_manifest(self.path)
+        item = next(item for item in manifest["formulaCells"] if item["id"] == "FY results!D1")
+
+        self.assertEqual(item["mappingStatus"], "unresolved")
+        self.assertEqual(item["unresolvedReason"], "empty formula")
+
+    def test_unsupported_formula_needs_exact_hash_bound_reviewed_replacement(self):
+        from openpyxl import load_workbook
+        workbook = load_workbook(self.path)
+        workbook["FY results"]["D1"] = "={1,2,3}"
+        workbook.save(self.path)
+        replacement = {
+            "id": "FY results!D1", "mappingStatus": "live",
+            "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "d1"},
+            "reviewedReplacement": {
+                "originalFormula": "={1,2,3}", "replacementFormula": "[Input/Value]",
+                "reviewer": "Migration Owner", "reviewStatus": "approved",
+            },
+        }
+        manifest = build_manifest(self.path, {"formulaCells": [replacement]})
+        item = next(item for item in manifest["formulaCells"] if item["id"] == "FY results!D1")
+        self.assertEqual(item["mappingStatus"], "live")
+        self.assertEqual(item["reviewedReplacement"]["originalFormula"], "={1,2,3}")
+
+        stale = copy.deepcopy(replacement)
+        stale["reviewedReplacement"]["originalFormula"] = "={9,9,9}"
+        stale_manifest = build_manifest(self.path, {"formulaCells": [stale]})
+        stale_item = next(i for i in stale_manifest["formulaCells"] if i["id"] == "FY results!D1")
+        self.assertEqual(stale_item["mappingStatus"], "unresolved")
+
+        swapped = copy.deepcopy(replacement)
+        swapped["reviewedReplacement"]["replacementFormula"] = "[Other/Value]"
+        swapped_manifest = build_manifest(self.path, {"formulaCells": [swapped]})
+        self.assertNotEqual(manifest["planHash"], swapped_manifest["planHash"])
+
+    def test_reviewed_unsupported_root_releases_its_live_transitive_consumer(self):
+        from openpyxl import load_workbook
+        workbook = load_workbook(self.path)
+        workbook["FY results"]["D1"] = "={1,2,3}"
+        workbook["FY results"]["E1"] = "=D1*2"
+        workbook.save(self.path)
+        plan = {"formulaCells": [
+            {"id": "FY results!D1", "mappingStatus": "live",
+             "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "d1"},
+             "reviewedReplacement": {
+                 "originalFormula": "={1,2,3}", "replacementFormula": "[Input/Value]",
+                 "reviewer": "Migration Owner", "reviewStatus": "approved"}},
+            {"id": "FY results!E1", "mappingStatus": "live",
+             "targetMapping": {"logicalElementId": "calc", "logicalColumnId": "e1"}},
+        ]}
+
+        manifest = build_manifest(self.path, plan)
+
+        statuses = {item["id"]: item["mappingStatus"] for item in manifest["formulaCells"]}
+        self.assertEqual(statuses["FY results!D1"], "live")
+        self.assertEqual(statuses["FY results!E1"], "live")
 
     def test_staging_review_and_completion_have_separate_evidence_contracts(self):
         plan = {"formulaCells": [

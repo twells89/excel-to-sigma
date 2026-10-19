@@ -31,6 +31,7 @@ def load_script(filename: str, module_name: str):
 
 FORECAST = load_script("build-forecast-model.py", "forecast_builder")
 RESEARCH = load_script("build-research-model.py", "research_builder")
+INFER = load_script("infer-canonical-formulas.py", "research_inference")
 
 
 def forecast_plan():
@@ -294,10 +295,23 @@ class TestWorkbookBuilders(unittest.TestCase):
 
     def test_research_builder_exposes_source_bound_cross_sheet_input_defaults(self):
         plan = research_plan()
-        plan["sourceInputs"] = [{
-            "id": "i_model_inputs_c2", "sourceCellId": "Model Inputs!C2",
-            "defaultValue": 0.05, "values": {"2024": 0.05}, "mappingStatus": "live",
-        }]
+        plan["sheet"] = "FY results"
+        plan["periods"][0]["col"] = "B"
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [
+            {
+                "id": "i_model_inputs_c2", "sourceCellId": "Model Inputs!C2",
+                "sheet": "Model Inputs", "address": "C2", "defaultValue": 0.05,
+                "values": {"2024": 0.05}, "mappingStatus": "live",
+                "role": "cross_sheet_driver",
+            },
+            {
+                "id": "i_fy_results_b8", "sourceCellId": "FY results!B8",
+                "sheet": "FY results", "address": "B8", "defaultValue": 100.0,
+                "values": {"2024": 100.0}, "mappingStatus": "live",
+                "role": "source_literal",
+            },
+        ]
         plan["lines"][2]["periodFormulas"] = {
             "2024": "[c8] * (1 + [i_model_inputs_c2])",
         }
@@ -313,8 +327,111 @@ class TestWorkbookBuilders(unittest.TestCase):
         self.assertEqual(
             next(column["formula"] for column in calc["columns"]
                  if column["id"] == "i_model_inputs_c2"),
-            "[Custom SQL/i_model_inputs_c2]",
+            "If(IsNull([Inputs/Scope]), [CJ/i_model_inputs_c2], [Inputs/i_model_inputs_c2])",
         )
+        self.assertIn("[i_fy_results_b8]", next(
+            column["formula"] for column in calc["columns"] if column["id"] == "c8"))
+        input_table = next(node for node in all_dicts(workbook)
+                           if node.get("id") == "researchInputs")
+        self.assertEqual(input_table["source"],
+                         {"kind": "empty", "connectionId": "write-connection"})
+        self.assertEqual(input_table["columns"][0],
+                         {"id": "SCOPE", "type": "text", "name": "Scope"})
+        self.assertNotIn("ID", [column["id"] for column in input_table["columns"]])
+        self.assertEqual(calc["source"]["joins"][0]["columns"],
+                         [{"left": "[Scope]", "right": "[Scope]"}])
+
+    def test_research_declared_source_literal_rejects_incomplete_period_metadata(self):
+        plan = research_plan()
+        plan["sheet"] = "FY results"
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [{
+            "id": "i_fy_results_b8", "sourceCellId": "FY results!B8",
+            "sheet": "FY results", "address": "B8", "defaultValue": 100.0,
+            "values": {"2024": 100.0}, "mappingStatus": "live", "role": "source_literal",
+        }]
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        with self.assertRaisesRegex(ValueError, "period column metadata"):
+            RESEARCH.build_wb(
+                plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+                "folder", "Research")
+
+    def test_research_source_literal_binds_only_its_actual_period_and_preserves_formulas(self):
+        plan = research_plan()
+        plan["sheet"] = "FY results"
+        plan["periods"] = [
+            {"year": 2019, "col": "B"}, {"year": 2020, "col": "C"},
+            {"year": 2021, "col": "D"}, {"year": 2022, "col": "E"},
+            {"year": 2023, "col": "F"}, {"year": 2024, "col": "G"},
+            {"year": 2025, "col": "H"},
+        ]
+        revenue = next(line for line in plan["lines"] if line["row"] == 8)
+        revenue["periodFormulas"] = {"2025": "[c8] * (1 + [i_model_inputs_c2])"}
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [
+            {
+                "id": "i_fy_results_g8", "sourceCellId": "FY results!G8",
+                "sheet": "FY results", "address": "G8", "defaultValue": 1158,
+                # Inference evaluation may carry this source value through later
+                # years; those values do not make G8 the source cell for them.
+                "values": {str(year): 1158 for year in range(2024, 2031)},
+                "mappingStatus": "live", "role": "source_literal",
+            },
+            {
+                "id": "i_model_inputs_c8", "sourceCellId": "Model Inputs!C8",
+                "sheet": "Model Inputs", "address": "C8", "defaultValue": 0.05,
+                "values": {"2025": 0.05}, "mappingStatus": "live",
+                "role": "cross_sheet_driver",
+            },
+        ]
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        formula = next(column["formula"] for column in calc["columns"] if column["id"] == "c8")
+
+        self.assertIn("If([Year] = 2024, [i_fy_results_g8]", formula)
+        self.assertIn("If([Year] = 2025, [c8] * (1 + [i_model_inputs_c2])", formula)
+        self.assertNotIn("If([Year] = 2026, [i_fy_results_g8]", formula)
+        self.assertNotIn("[i_model_inputs_c8]", formula)
+
+    def test_research_equity_literals_are_live_year_specific_inputs(self):
+        plan = INFER.infer(ROOT / "tests" / "fixtures" / "fixture-research-model.xlsx")
+        RESEARCH.include_research_line_input_literals(plan)
+        plan["targetScope"] = {"connectionId": "connection", "folderId": "folder"}
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        inputs = next(node for node in all_dicts(workbook) if node.get("id") == "researchInputs")
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        equity = next(column["formula"] for column in calc["columns"] if column["id"] == "c56")
+
+        self.assertEqual(len(inputs["columns"]), 146)
+        for column in "bcdefghijklm":
+            self.assertIn(f"[i_fy_results_{column}56]", equity)
+
+    def test_research_input_types_match_approved_mapping_and_null_is_not_coalesced(self):
+        plan = research_plan()
+        plan["targetScope"] = {"connectionId": "write-connection", "folderId": "folder"}
+        plan["sourceInputs"] = [
+            {"id": "n", "sourceCellId": "Inputs!A1", "defaultValue": None, "values": {}},
+            {"id": "b", "sourceCellId": "Inputs!A2", "defaultValue": True, "values": {}},
+            {"id": "t", "sourceCellId": "Inputs!A3", "defaultValue": "label", "values": {}},
+        ]
+        _dm_spec, data_lines = RESEARCH.build_dm(plan, "connection", "folder", "Research")
+        workbook = RESEARCH.build_wb(
+            plan, "dm", {"data": "data", "linedim": "linedim"}, data_lines,
+            "folder", "Research")
+        input_table = next(node for node in all_dicts(workbook)
+                           if node.get("id") == "researchInputs")
+        self.assertEqual([c["type"] for c in input_table["columns"]],
+                         ["text", "text", "boolean", "text"])
+        calc = next(node for node in all_dicts(workbook) if node.get("id") == "calc")
+        formula = next(c["formula"] for c in calc["columns"] if c["id"] == "n")
+        self.assertIn("IsNull([Inputs/Scope])", formula)
+        self.assertNotIn("Coalesce", formula)
 
     def test_forecast_cli_rejects_a_plan_without_a_resolvable_source(self):
         with tempfile.TemporaryDirectory() as tmp:
