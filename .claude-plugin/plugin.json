@@ -6,6 +6,5 @@
   "description": "Migrate Excel (.xlsx/.xlsm) planning and analytical models to Sigma with fail-loud capability routing, editable input preservation, and current workbook contents/dry-run APIs.",
   "author": { "name": "Thomas Wells" },
   "license": "MIT",
-  "keywords": ["excel", "xlsx", "input-tables", "forecast", "planning", "sigma", "migration", "bi", "converter"],
-  "skills": "./skills/"
+  "keywords": ["excel", "xlsx", "input-tables", "forecast", "planning", "sigma", "migration", "bi", "converter"]
 }

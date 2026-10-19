@@ -5,7 +5,7 @@ End-to-end on the bundled sample fixture. ~10 min; three of the steps are clicks
 ## 0. Setup
 ```bash
 cd <this skill>/scripts
-python3 -m venv .venv && .venv/bin/pip install -r ../../../requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r ../requirements.txt
 # Sigma creds in ~/.sigma-migration/env  (SIGMA_BASE_URL / SIGMA_CLIENT_ID / SIGMA_CLIENT_SECRET)
 ```
 

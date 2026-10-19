@@ -1,0 +1,12 @@
+{
+  "name": "excel-to-sigma",
+  "description": "Excel planning and analytical model migration to Sigma",
+  "owner": { "name": "Thomas Wells" },
+  "plugins": [
+    {
+      "name": "excel-to-sigma",
+      "source": "./",
+      "description": "Audit and migrate Excel models to editable Sigma workbooks and data models"
+    }
+  ]
+}
