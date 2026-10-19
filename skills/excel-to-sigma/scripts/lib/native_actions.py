@@ -117,6 +117,7 @@ def _check_preservation(before, after, contract, additions):
 
 def _spec(template,name,fields):
     return {**{k:copy.deepcopy(template[k]) for k in ('connectionId','writebackSchemaId','editMode','frame') if k in template},
+            'editMode':'published-explore',
             'name':name,'keyColumns':['Operation ID'] if name!='Workflow Operations' else [],
             'columns':[{'name':n,'type':t,'provenance':'task4-reviewed-workflow'} for n,t in fields], 'rows':[]}
 

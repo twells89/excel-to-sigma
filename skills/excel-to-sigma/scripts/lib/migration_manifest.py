@@ -317,6 +317,12 @@ def validate_completion(manifest):
                        evidence.get("targetDocumentId") != target.get("documentId")):
             raise ManifestError(f"verification evidence target version is stale for {item['id']}")
     _validate_source_issue_completion(manifest)
+    if manifest.get("planProjection", {}).get("customPortArchitecture"):
+        try:
+            from .custom_ports import validate_custom_port_completion
+        except ImportError:
+            from custom_ports import validate_custom_port_completion
+        validate_custom_port_completion(manifest)
     return True
 
 
