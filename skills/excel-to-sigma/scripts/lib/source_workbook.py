@@ -269,7 +269,9 @@ def build_source_model(source_path, *, block_decisions=None) -> dict:
             sheets.append({"id": _id("sheet", sheet.title), "name": sheet.title,
                            "kind": "chartsheet" if chart_only else "worksheet",
                            "state": sheet_states.get(sheet.title, sheet.sheet_state),
-                           "protected": None if chart_only else bool(sheet.protection.sheet),
+                           "protected": (bool(sheet.sheetProtection and
+                                              (sheet.sheetProtection.content or sheet.sheetProtection.objects))
+                                         if chart_only else bool(sheet.protection.sheet)),
                            "mergedRanges": [] if chart_only else sorted(str(r) for r in sheet.merged_cells.ranges),
                            "chartCount": len(sheet._charts),
                            "validationRuleCount": 0 if chart_only else len(sheet.data_validations.dataValidation),
@@ -362,12 +364,10 @@ def validate_source_model(model, source_path=None) -> None:
                 any(type(sheet.get(key)) is not int or sheet[key] < 0 for key in
                     ("chartCount", "validationRuleCount", "conditionalFormattingCount"))):
             raise ValueError("invalid source sheet facts")
+        if type(sheet.get("protected")) is not bool:
+            raise ValueError("invalid sheet protection state")
         if kind == "worksheet":
-            if type(sheet.get("protected")) is not bool:
-                raise ValueError("invalid worksheet protection state")
             worksheet_names.add(name)
-        elif sheet.get("protected", False) is not None:
-            raise ValueError("invalid chartsheet protection state")
         sheet_names.add(name)
     cell_ids = set()
     formula_ids = set()

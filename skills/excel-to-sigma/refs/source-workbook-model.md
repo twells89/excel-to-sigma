@@ -13,7 +13,7 @@ The model records the source basename and SHA256, worksheet and chart-only sheet
 
 Cell and table IDs encode their sheet/name components as JSON arrays, so punctuation in a sheet name cannot collide with another identity. Formula dependencies point to source cell IDs. `targetKind: "blank"` identifies a referenced empty cell that need not appear among populated cells. Bounded ranges expand to each interior cell. Cycles remain as directed source edges.
 
-The validator requires source type/format fields on cells and complete table header, body, totals, and per-column provenance fields. Chart-only sheets contribute to the chart total; their protection is `null` because worksheet protection does not apply. Source chart-sheet visibility comes from the OOXML workbook manifest, which retains hidden state when openpyxl does not.
+The validator requires source type/format fields on cells and complete table header, body, totals, and per-column provenance fields. Chart-only sheets contribute to the chart total; their protection flag is true when the source protects chart content or objects. Source chart-sheet visibility comes from the OOXML workbook manifest, which retains hidden state when openpyxl does not.
 
 The shared `excel_expression` parser supplies reference analysis. A formula with unsupported syntax, an unresolved name, a missing sheet, or an oversized range has `dependencyStatus: "unresolved"` and a reason in `unresolved`; its empty or partial `dependencies` list is **not** a verified no-dependency result. Defined names distinguish resolved single-cell references from unresolved constants, ranges, and unsupported expressions. Formula cached results are not entered data or live calculation evidence.
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
+from openpyxl.chartsheet.protection import ChartsheetProtection
 from openpyxl.styles import Font
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -197,10 +198,24 @@ class SourceWorkbookTests(unittest.TestCase):
         self.assertEqual([(s["name"], s["kind"]) for s in model["sheets"]],
                          [("Sheet", "worksheet"), ("Plot", "chartsheet")])
         self.assertEqual(model["sheets"][1]["state"], "hidden")
-        self.assertIsNone(model["sheets"][1]["protected"])
+        self.assertIs(model["sheets"][1]["protected"], False)
         self.assertEqual(model["sheets"][1]["chartCount"], 1)
         self.assertEqual(model["counts"]["charts"], 1)
         validate_source_model(model, self.source)
+
+    def test_chartsheet_protection_uses_content_or_objects_flags(self):
+        for content, objects, expected in ((True, True, True), (True, False, True),
+                                           (False, True, True), (False, False, False)):
+            with self.subTest(content=content, objects=objects):
+                wb = Workbook()
+                chart_sheet = wb.create_chartsheet("Plot")
+                chart_sheet.add_chart(BarChart())
+                chart_sheet.sheetProtection = ChartsheetProtection(content=content, objects=objects)
+                self.save(wb)
+                model = build_source_model(self.source)
+                self.assertIs(model["sheets"][1]["protected"], expected)
+                self.assertEqual(model["counts"]["charts"], 1)
+                validate_source_model(model, self.source)
 
     def test_reviewed_blocks_keep_cells_and_reject_invalid_decisions(self):
         wb = Workbook()
