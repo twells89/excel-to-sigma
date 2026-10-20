@@ -1,0 +1,134 @@
+# Reviewed ordinary source inputs and explicit unpivot
+
+`scripts/source-inputs.py` constructs local, source-bound records. It reads the
+workbook without saving it or evaluating formulas. Its output is a plan for
+review and later staging, not approval or runtime verification.
+
+## Input decisions
+
+Provide a JSON object with the exact workbook SHA256 and at least one reviewed
+feature. Each feature selects one formal table (`sheet` + `table`) or bounded
+cell block (`sheet` + `range` + ordered `headers`). Selection does not imply
+editability; `role` must be `input` or maintained `reference` and `reviewed`
+must be `true`.
+
+```json
+{
+  "sourceSha256": "<exact 64-character lowercase SHA256>",
+  "features": [{
+    "featureId": "sales-forecast",
+    "sheet": "Forecast Input",
+    "table": "tblSalesForecast",
+    "role": "input",
+    "reviewed": true,
+    "keyColumns": ["Region", "Product Line", "Month"],
+    "literalColumns": ["Region", "Product Line", "Month", "Units", "Avg Price"],
+    "columnTypes": {
+      "Region": "text", "Product Line": "text", "Month": "datetime",
+      "Units": "number", "Avg Price": "number"
+    }
+  }]
+}
+```
+
+Types are `text`, `number`, `datetime`, and `boolean`. A natural key must be
+unique, present, immutable by review, and separate from Sigma's physical row ID.
+The planner refuses duplicate/missing keys, type disagreements, formula cells
+selected for literal seeding, and unreviewed all-blank columns. All formula
+cells across the workbook remain `formulaObligations`, including those outside
+selected inputs. Reviewed external replacements have a distinct
+`reviewed-replacement-input` status. The plan records source row numbers and exact source cells for
+every seeded value; displayed names remain intact.
+
+For a single-row cell-drawn assumption block, use `range: "B2:C2"` and
+`headers: ["Setting", "Value"]`. For a literal override in an otherwise
+computed column, include the column in `literalColumns` and list its exact
+literal addresses in `overrideCells`, such as `{"Adjustment": ["F17"]}`.
+Formula cells in that column remain live calculation obligations and are
+omitted from seed rows. An empty formal table can supply a schema only when
+`emptySchema: true`, `reviewedBlankColumns` exactly names all editable columns,
+and `typeReviewEvidence` explains the source of each explicit type. It seeds
+zero rows and still needs separate runtime evidence before completion.
+
+For a user-approved replacement of an external formula, add a separate
+`role: "replacement"` feature with `displayName`, `replacementFor`,
+`replacementReview: {"approved": true, "basis": "..."}`, one natural key,
+one editable value, and explicit `suppliedRows`. Each row needs a matching
+`replacementBindings` entry with the exact key, source cells for both fields,
+the original source label, and the original external formula. For example:
+
+```json
+{
+  "featureId": "corporate-allocations",
+  "role": "replacement", "reviewed": true,
+  "displayName": "Corporate Allocations",
+  "replacementFor": "FY26 Corporate Allocations external workbook",
+  "keyColumns": ["Period"],
+  "literalColumns": ["Period", "Allocation"],
+  "columnTypes": {"Period": "text", "Allocation": "number"},
+  "suppliedRows": [{"Period": "FY26-Q3", "Allocation": 61000}],
+  "replacementBindings": [{
+    "key": {"Period": "FY26-Q3"},
+    "sourceCells": {"Period": "Budget!F4", "Allocation": "Budget!F21"},
+    "sourceLabel": "Q3 FY26 Bud",
+    "originalFormula": "='[FY26 Corporate Allocations.xlsx]Alloc'!$C$4"
+  }],
+  "replacementReview": {
+    "approved": true,
+    "basis": "User-approved persistent editable replacement of current allocation"
+  }
+}
+```
+
+The supplied amount is read from the decision, never from a formula cache.
+The planner checks the source label and exact formula against current source
+bytes. The ordinary staging receipt and target binding are still required to
+emit construction or writes.
+
+Run:
+
+```sh
+python3 scripts/source-inputs.py plan --source SOURCE.xlsx --decisions decisions.json \
+  --connection WRITE_CONNECTION_ID --folder TARGET_FOLDER_ID --out source-input-plan.json
+```
+
+`build_source_input_plan(source_path, decisions, *, connection_id, folder_id)`
+returns the plan. `validate_source_input_plan(plan, source_path=None)` checks
+its digest and optionally rebuilds against exact source bytes.
+`plan_source_seed(plan, feature_id, current_rows, *, row_id_column,
+prior_seed=None)` delegates to `input_sync.plan_seed`. Query target rows first;
+pass the real system row-ID column and retain prior seed checkpoints. This
+uses the existing three-way comparison to preserve user edits and refuses
+duplicate natural keys. Date-only source values use ISO dates plus the
+`datetime` column type; queried midnight/noon datetimes for those keys are
+normalized to the same calendar date. Other key times are rejected.
+
+The plan's `sharedInputArchitecture` is compatible with the existing
+`input_sync` artifact constructor. Build a source manifest from the plan,
+complete the source/formula review and approved staging gate, and only then
+use the existing `emit_construction_program` or `emit_write_programs`. Both
+emitters require an `APPROVED_STAGING` receipt bound to exact source, plan,
+feature artifact and target. A reviewed role alone cannot emit a write.
+The manifest version and production gate are unchanged.
+
+## Explicit unpivot
+
+`unpivot_source_table(source_path, *, sheet, table, key_columns,
+value_columns, axis_name, value_name, axis_values=None)` returns long `rows`,
+key columns, and reverse cell provenance. It refuses overlapping or unknown
+columns, duplicate resulting keys, and conflicting axis mappings. Month-like
+headers require explicit `axis_values` with full dates: `Jan` never implies a
+year. `tblDeptBudget` can use Department plus a reviewed 2026 month mapping
+to produce 60 rows. `tblHistory` can use Month with the three SKU headers as
+axis values to produce 108 observations. The result is a read-only reshape
+artifact; it is not automatically classified as an editable input feature.
+
+```sh
+python3 scripts/source-inputs.py unpivot --source SOURCE.xlsx \
+  --sheet 'Dept Budget' --table tblDeptBudget --key-column Department \
+  --value-column Jan --value-column Feb --axis-name Month --value-name Budget \
+  --axis-values months-2026.json --out budget-long.json
+```
+
+`months-2026.json` must cover every selected month header exactly. Both CLI
+commands refuse an output path that aliases the source workbook.
