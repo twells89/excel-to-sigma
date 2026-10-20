@@ -827,8 +827,8 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
             return f"({rendered})" if target in graph.formulas else rendered
 
         def render_arithmetic_reference(reference):
-            # Preserve numeric context through formula links, down to typed
-            # source literals; never coalesce a derived formula's result.
+            # Coerce typed source leaves, never derived formula errors. Each
+            # nested formula also computes its own numeric reference result.
             return render_reference(reference, True)
 
         def render_range(value):
@@ -836,7 +836,9 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
                                       for reference in expand_range(value)) + ")"
         return emit_expression_sigma(expression, render_reference, render_range,
                                      arithmetic_reference_renderer=render_arithmetic_reference,
-                                     arithmetic_context=arithmetic)
+                                     # Excel formula =A1 returns zero for a blank
+                                     # numeric A1; raw input projections stay NULL.
+                                     arithmetic_context=True)
 
     for row, row_data in rows.items():
         line = lines[row]

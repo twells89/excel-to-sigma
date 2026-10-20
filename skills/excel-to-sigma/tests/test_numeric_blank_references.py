@@ -104,7 +104,7 @@ class NumericBlankReferenceTests(unittest.TestCase):
             with self.assertRaises(UnsupportedExpression):
                 parse_expression(f"={name}(A1,B1)", sheet="Model")
 
-    def test_formula_links_carry_numeric_blank_context_without_coercing_raw_or_errors(self):
+    def test_formula_links_compute_zero_for_blank_source_without_coercing_raw_inputs_or_errors(self):
         source = Workbook()
         ws = source.active
         ws.title = "Model"
@@ -118,9 +118,14 @@ class NumericBlankReferenceTests(unittest.TestCase):
         ws["D1"] = "=1/0"
         ws["E1"] = "=D1"
         other["D1"] = "='Model'!E1+A1"
+        other["E1"] = "=MIN(A1,5)"
+        ws["F1"] = "=MIN(A1,5)"
         values = FormulaGraph.from_workbook(source).evaluate({CellIdentity("Model", "A1"): None})
-        for sheet, address in (("Model", "A1"), ("Model", "B1"), ("Other", "A1")):
-            self.assertIsNone(values[CellIdentity(sheet, address)])
+        self.assertIsNone(values[CellIdentity("Model", "A1")])
+        for sheet, address in (("Model", "B1"), ("Other", "A1"), ("Other", "E1")):
+            with self.subTest(sheet=sheet, address=address):
+                self.assertEqual(values[CellIdentity(sheet, address)], 0)
+        self.assertEqual(values[CellIdentity("Model", "F1")], 5)
         for sheet, address in (("Model", "C1"), ("Other", "B1"), ("Other", "C1")):
             with self.subTest(sheet=sheet, address=address):
                 self.assertEqual(values.get(CellIdentity(sheet, address)), 1)
@@ -131,7 +136,7 @@ class NumericBlankReferenceTests(unittest.TestCase):
         source["Model Inputs"]["D3"] = "=C3"
         source["FY results"]["I8"] = "=H8*(1+'Model Inputs'!$D$3)"
         values = FormulaGraph.from_workbook(source).evaluate({CellIdentity("Model Inputs", "C3"): None})
-        self.assertIsNone(values[CellIdentity("Model Inputs", "D3")])
+        self.assertEqual(values[CellIdentity("Model Inputs", "D3")], 0)
         with self.subTest(path="source evaluation"):
             self.assertEqual(values.get(CellIdentity("FY results", "I8")), 1241.955)
         with tempfile.TemporaryDirectory() as directory:
@@ -145,6 +150,26 @@ class NumericBlankReferenceTests(unittest.TestCase):
                                         "i_model_inputs_c3": None})
         self.assertIsNotNone(native_value)
         self.assertAlmostEqual(native_value, 1241.955)
+
+    def test_research_projected_alias_is_zero_and_aggregates_distinguish_literal_blank(self):
+        for formula, expected in (("='Model Inputs'!D3", 0),
+                                  ("=MIN('Model Inputs'!D3,5)", 0),
+                                  ("=MIN('Model Inputs'!C3,5)", 5)):
+            with self.subTest(formula=formula):
+                source = load_workbook(FIXTURE, data_only=False)
+                source["Model Inputs"]["D3"] = "=C3"
+                source["FY results"]["I8"] = formula
+                values = FormulaGraph.from_workbook(source).evaluate({CellIdentity("Model Inputs", "C3"): None})
+                self.assertIsNone(values[CellIdentity("Model Inputs", "C3")])
+                with self.subTest(path="source formula result"):
+                    self.assertEqual(values.get(CellIdentity("FY results", "I8")), expected)
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "projected-alias.xlsx"
+                    source.save(path)
+                    plan = INFER.infer(path, sheet="FY results")
+                revenue = next(line for line in plan["lines"] if line["row"] == 8)
+                emitted = revenue["periodFormulas"]["2026"]
+                self.assertEqual(scalar(emitted, {"i_model_inputs_c3": None}), expected)
 
     def test_aggregates_propagate_derived_errors_but_ignore_true_blank_literals(self):
         source = Workbook()
