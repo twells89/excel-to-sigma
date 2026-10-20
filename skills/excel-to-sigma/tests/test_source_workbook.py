@@ -173,6 +173,35 @@ class SourceWorkbookTests(unittest.TestCase):
         self.assertGreaterEqual(len(model["unresolved"]), 5)
         validate_source_model(model, self.source)
 
+    def test_long_additive_formula_keeps_its_dependency_and_validates(self):
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = 1
+        expression = "=" + "+".join(["A1"] * 1200)
+        ws["B1"] = expression
+        self.save(wb)
+        model = build_source_model(self.source)
+        formula = self.cells(model)[("Sheet", "B1")]
+        self.assertEqual(formula["expression"], expression)
+        self.assertEqual(formula["dependencyStatus"], "resolved")
+        self.assertEqual([(d["sheet"], d["address"]) for d in formula["dependencies"]], [("Sheet", "A1")])
+        validate_source_model(model, self.source)
+
+    def test_chart_only_sheet_is_in_sheet_facts_and_chart_total(self):
+        wb = Workbook()
+        chart_sheet = wb.create_chartsheet("Plot")
+        chart_sheet.sheet_state = "hidden"
+        chart_sheet.add_chart(BarChart())
+        self.save(wb)
+        model = build_source_model(self.source)
+        self.assertEqual([(s["name"], s["kind"]) for s in model["sheets"]],
+                         [("Sheet", "worksheet"), ("Plot", "chartsheet")])
+        self.assertEqual(model["sheets"][1]["state"], "hidden")
+        self.assertIsNone(model["sheets"][1]["protected"])
+        self.assertEqual(model["sheets"][1]["chartCount"], 1)
+        self.assertEqual(model["counts"]["charts"], 1)
+        validate_source_model(model, self.source)
+
     def test_reviewed_blocks_keep_cells_and_reject_invalid_decisions(self):
         wb = Workbook()
         ws = wb.active
@@ -290,6 +319,38 @@ class SourceWorkbookTests(unittest.TestCase):
                                   "reviewed": True, "sourceSha256": sha})
         with self.assertRaises(ValueError):
             validate_source_model(overlap)
+
+    def test_validator_requires_record_fields_and_exact_types(self):
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Amount"
+        ws["A2"] = 1
+        ws["A3"] = "=A2"
+        ws.add_table(Table(displayName="tbl", ref="A1:A3", totalsRowCount=1))
+        self.save(wb)
+        model = build_source_model(self.source)
+        changes = [
+            lambda m: m.update(modelVersion=True),
+            lambda m: m["cells"][0].pop("dataType"),
+            lambda m: m["cells"][0].update(dataType=None),
+            lambda m: m["cells"][0].pop("numberFormat"),
+            lambda m: m["cells"][0].update(numberFormat=5),
+            lambda m: m["sheets"][0].pop("kind"),
+            lambda m: m["tables"][0].pop("headers"),
+            lambda m: m["tables"][0].update(headers="Amount"),
+            lambda m: m["tables"][0].pop("columns"),
+            lambda m: m["tables"][0].update(columns=[]),
+            lambda m: m["tables"][0].pop("headerRange"),
+            lambda m: m["tables"][0].pop("bodyRange"),
+            lambda m: m["tables"][0].pop("totalsRange"),
+            lambda m: m["tables"][0]["columns"][0].pop("literalCells"),
+            lambda m: m["tables"][0]["columns"][0].update(formulaCells="A2"),
+        ]
+        for change in changes:
+            bad = copy.deepcopy(model)
+            change(bad)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_source_model(bad, self.source)
 
 
 if __name__ == "__main__":

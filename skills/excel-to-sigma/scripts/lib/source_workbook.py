@@ -8,9 +8,13 @@ from io import BytesIO
 import json
 from pathlib import Path
 import re
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 from openpyxl import load_workbook
-from openpyxl.utils.cell import get_column_letter, range_boundaries
+from openpyxl.chartsheet import Chartsheet
+from openpyxl.utils.cell import (column_index_from_string, coordinate_from_string,
+                                 get_column_letter, range_boundaries)
 from openpyxl.worksheet.formula import ArrayFormula
 
 from excel_expression import (
@@ -39,6 +43,16 @@ def _hash(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sheet_states(source_bytes):
+    # openpyxl currently reloads a hidden chartsheet as visible. The workbook
+    # manifest retains the authoritative source visibility for every sheet.
+    with ZipFile(BytesIO(source_bytes)) as archive:
+        root = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    sheets = root.find(namespace + "sheets")
+    return {item.get("name"): item.get("state", "visible") for item in sheets}
 
 
 def _literal(value, number_format=None):
@@ -86,27 +100,27 @@ def _range_string(left, top, right, bottom):
 
 
 def _walk_references(node):
-    if isinstance(node, Reference):
-        yield node.value
-    elif isinstance(node, Range):
-        bounds = _bounds(_range_string(*_reference_bounds(node)))
-        if (bounds[2] - bounds[0] + 1) * (bounds[3] - bounds[1] + 1) > _MAX_EXPANSION:
-            raise ValueError("range expansion exceeds inventory limit")
-        yield from expand_range(node)
-    elif isinstance(node, Group):
-        yield from _walk_references(node.expression)
-    elif isinstance(node, (Unary, Percent)):
-        yield from _walk_references(node.operand)
-    elif isinstance(node, Binary):
-        yield from _walk_references(node.left)
-        yield from _walk_references(node.right)
-    elif isinstance(node, Function):
-        for argument in node.arguments:
-            yield from _walk_references(argument)
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Reference):
+            yield current.value
+        elif isinstance(current, Range):
+            bounds = _bounds(_range_string(*_reference_bounds(current)))
+            if (bounds[2] - bounds[0] + 1) * (bounds[3] - bounds[1] + 1) > _MAX_EXPANSION:
+                raise ValueError("range expansion exceeds inventory limit")
+            yield from expand_range(current)
+        elif isinstance(current, Group):
+            pending.append(current.expression)
+        elif isinstance(current, (Unary, Percent)):
+            pending.append(current.operand)
+        elif isinstance(current, Binary):
+            pending.extend((current.right, current.left))
+        elif isinstance(current, Function):
+            pending.extend(reversed(current.arguments))
 
 
 def _reference_bounds(node):
-    from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
     if node.start.sheet != node.end.sheet:
         raise ValueError("range crosses sheets")
     start_col, start_row = coordinate_from_string(node.start.address)
@@ -120,6 +134,7 @@ def _reference_bounds(node):
 def _defined_names(workbook):
     result = []
     lookup = {}
+    worksheet_names = {sheet.title for sheet in workbook.worksheets}
     scopes = [(None, workbook.defined_names)] + [(sheet.title, sheet.defined_names) for sheet in workbook.worksheets]
     for scope, container in scopes:
         for defined in sorted(container.values(), key=lambda item: item.name):
@@ -132,7 +147,7 @@ def _defined_names(workbook):
                                           sheet=scope)
                 if isinstance(parsed, Reference) and parsed.value.name is None:
                     target_sheet = parsed.value.sheet or scope
-                    if target_sheet not in workbook.sheetnames:
+                    if target_sheet not in worksheet_names:
                         record["reason"] = f"missing sheet {target_sheet!r}"
                     else:
                         record["resolution"] = "cell"
@@ -154,6 +169,8 @@ def _dependencies(expression, sheet, names, sheet_names, populated, formula_obje
     try:
         parsed = parse_expression(expression, sheet=sheet)
         references = tuple(_walk_references(parsed))
+    except RecursionError:
+        return [], ["expression nesting exceeds analysis limit"]
     except (ExpressionError, ValueError) as exc:
         return [], [str(exc)]
     for ref in references:
@@ -239,20 +256,26 @@ def build_source_model(source_path, *, block_decisions=None) -> dict:
     source_path = Path(source_path)
     source_bytes = source_path.read_bytes()
     sha = hashlib.sha256(source_bytes).hexdigest()
+    sheet_states = _sheet_states(source_bytes)
     workbook = load_workbook(BytesIO(source_bytes), data_only=False, read_only=False, keep_links=True)
     try:
         sheets = []
         cells = []
         tables = []
         blocks = []
-        sheet_names = set(workbook.sheetnames)
-        for sheet in workbook.worksheets:
+        worksheet_names = {sheet.title for sheet in workbook.worksheets}
+        for sheet in workbook._sheets:
+            chart_only = isinstance(sheet, Chartsheet)
             sheets.append({"id": _id("sheet", sheet.title), "name": sheet.title,
-                           "state": sheet.sheet_state, "protected": bool(sheet.protection.sheet),
-                           "mergedRanges": sorted(str(r) for r in sheet.merged_cells.ranges),
+                           "kind": "chartsheet" if chart_only else "worksheet",
+                           "state": sheet_states.get(sheet.title, sheet.sheet_state),
+                           "protected": None if chart_only else bool(sheet.protection.sheet),
+                           "mergedRanges": [] if chart_only else sorted(str(r) for r in sheet.merged_cells.ranges),
                            "chartCount": len(sheet._charts),
-                           "validationRuleCount": len(sheet.data_validations.dataValidation),
-                           "conditionalFormattingCount": len(sheet.conditional_formatting)})
+                           "validationRuleCount": 0 if chart_only else len(sheet.data_validations.dataValidation),
+                           "conditionalFormattingCount": 0 if chart_only else len(sheet.conditional_formatting)})
+            if chart_only:
+                continue
             for cell in sorted(sheet._cells.values(), key=lambda item: (item.row, item.column)):
                 if cell.value is None and cell.data_type != "inlineStr":
                     continue
@@ -284,14 +307,14 @@ def build_source_model(source_path, *, block_decisions=None) -> dict:
         for cell in cells:
             if cell["kind"] != "formula":
                 continue
-            deps, reasons = _dependencies(cell["expression"], cell["sheet"], name_lookup, sheet_names,
+            deps, reasons = _dependencies(cell["expression"], cell["sheet"], name_lookup, worksheet_names,
                                           populated, cell.get("formulaObjectType"))
             cell["dependencies"] = deps
             cell["dependencyStatus"] = "unresolved" if reasons else "resolved"
             for index, reason in enumerate(reasons):
                 unresolved.append({"id": _id("unresolved", cell["id"], index),
                                    "cellId": cell["id"], "reason": reason})
-        blocks.extend(_reviewed_blocks(block_decisions, sha, sheet_names))
+        blocks.extend(_reviewed_blocks(block_decisions, sha, worksheet_names))
         model = {"modelVersion": 1, "sourceSha256": sha, "sourceName": source_path.name,
                  "sheets": sheets, "cells": cells, "tables": tables, "blocks": blocks,
                  "definedNames": names, "unresolved": unresolved,
@@ -306,7 +329,7 @@ def build_source_model(source_path, *, block_decisions=None) -> dict:
 
 def validate_source_model(model, source_path=None) -> None:
     """Check structure and source binding; this does not certify migration support."""
-    if not isinstance(model, dict) or model.get("modelVersion") != 1:
+    if not isinstance(model, dict) or type(model.get("modelVersion")) is not int or model["modelVersion"] != 1:
         raise ValueError("invalid source model version")
     if (not isinstance(model.get("sourceName"), str) or
             not model["sourceName"] or Path(model["sourceName"]).name != model["sourceName"] or
@@ -326,19 +349,35 @@ def validate_source_model(model, source_path=None) -> None:
     if len(all_ids) != len(set(all_ids)):
         raise ValueError("duplicate model identity")
     sheet_names = set()
+    worksheet_names = set()
     for sheet in model["sheets"]:
         name = sheet.get("name")
         if not isinstance(name, str) or sheet["id"] != _id("sheet", name) or name in sheet_names:
             raise ValueError("malformed sheet identity")
-        if type(sheet.get("chartCount")) is not int or sheet["chartCount"] < 0:
-            raise ValueError("invalid chart count")
+        kind = sheet.get("kind")
+        if (kind not in {"worksheet", "chartsheet"} or
+                sheet.get("state") not in {"visible", "hidden", "veryHidden"} or
+                not isinstance(sheet.get("mergedRanges"), list) or
+                any(not isinstance(item, str) for item in sheet["mergedRanges"]) or
+                any(type(sheet.get(key)) is not int or sheet[key] < 0 for key in
+                    ("chartCount", "validationRuleCount", "conditionalFormattingCount"))):
+            raise ValueError("invalid source sheet facts")
+        if kind == "worksheet":
+            if type(sheet.get("protected")) is not bool:
+                raise ValueError("invalid worksheet protection state")
+            worksheet_names.add(name)
+        elif sheet.get("protected", False) is not None:
+            raise ValueError("invalid chartsheet protection state")
         sheet_names.add(name)
     cell_ids = set()
     formula_ids = set()
     for cell in model["cells"]:
         sheet, address = cell.get("sheet"), cell.get("address")
-        if sheet not in sheet_names or not isinstance(address, str) or not _ADDRESS.fullmatch(address) or cell["id"] != _cell_id(sheet, address):
+        if sheet not in worksheet_names or not isinstance(address, str) or not _ADDRESS.fullmatch(address) or cell["id"] != _cell_id(sheet, address):
             raise ValueError("malformed cell identity")
+        if (not isinstance(cell.get("dataType"), str) or not cell["dataType"] or
+                not isinstance(cell.get("numberFormat"), str)):
+            raise ValueError("missing source cell type or number format")
         cell_ids.add(cell["id"])
         if cell.get("dataType") == "f":
             expression = cell.get("expression")
@@ -351,7 +390,7 @@ def validate_source_model(model, source_path=None) -> None:
             if cell.get("dependencyStatus") not in {"resolved", "unresolved"} or not isinstance(cell.get("dependencies"), list):
                 raise ValueError("invalid formula dependency status")
             for dep in cell["dependencies"]:
-                if (dep.get("sheet") not in sheet_names or
+                if (dep.get("sheet") not in worksheet_names or
                         not isinstance(dep.get("address"), str) or not _ADDRESS.fullmatch(dep["address"]) or
                         dep.get("targetId") != _cell_id(dep["sheet"], dep["address"])):
                     raise ValueError("broken dependency identity")
@@ -376,12 +415,60 @@ def validate_source_model(model, source_path=None) -> None:
         if cell["kind"] == "formula" and (cell["dependencyStatus"] == "unresolved") != (cell["id"] in unresolved_ids):
             raise ValueError("unresolved formula lacks explicit reason")
     for table in model["tables"]:
-        if table.get("sheet") not in sheet_names or table.get("id") != _id("table", table.get("sheet"), table.get("name")):
+        if (table.get("sheet") not in worksheet_names or
+                not isinstance(table.get("name"), str) or not table["name"] or
+                table.get("id") != _id("table", table["sheet"], table["name"])):
             raise ValueError("malformed table identity")
-        _bounds(table.get("range"))
+        left, top, right, bottom = _bounds(table.get("range"))
+        width = right - left + 1
+        headers, columns = table.get("headers"), table.get("columns")
+        if (not isinstance(headers, list) or len(headers) != width or
+                any(not isinstance(header, str) for header in headers) or
+                not isinstance(columns, list) or len(columns) != width):
+            raise ValueError("invalid table headers or columns")
+        next_row = top
+        body_bounds = None
+        for field in ("headerRange", "bodyRange", "totalsRange"):
+            if field not in table:
+                raise ValueError("missing table boundary")
+            source_range = table[field]
+            if source_range is None:
+                continue
+            if not isinstance(source_range, str):
+                raise ValueError("invalid table boundary")
+            section = _bounds(source_range)
+            if section[0] != left or section[2] != right or section[1] != next_row:
+                raise ValueError("invalid table boundary partition")
+            next_row = section[3] + 1
+            if field == "bodyRange":
+                body_bounds = section
+        if next_row != bottom + 1:
+            raise ValueError("incomplete table boundary partition")
+        body_height = 0 if body_bounds is None else body_bounds[3] - body_bounds[1] + 1
+        for offset, column in enumerate(columns):
+            if (not isinstance(column, dict) or column.get("header") != headers[offset] or
+                    type(column.get("index")) is not int or column["index"] != offset + 1 or
+                    column.get("intent") != "ambiguous"):
+                raise ValueError("invalid table column facts")
+            seen = set()
+            for field in ("literalCells", "formulaCells", "blankCells"):
+                addresses = column.get(field)
+                if not isinstance(addresses, list):
+                    raise ValueError("missing table column provenance")
+                for address in addresses:
+                    if not isinstance(address, str) or not _ADDRESS.fullmatch(address):
+                        raise ValueError("invalid table column address")
+                    col_text, row = coordinate_from_string(address)
+                    if (column_index_from_string(col_text) != left + offset or
+                            body_bounds is None or not body_bounds[1] <= row <= body_bounds[3] or
+                            address in seen):
+                        raise ValueError("invalid table body provenance")
+                    seen.add(address)
+            if len(seen) != body_height:
+                raise ValueError("incomplete table body provenance")
     reviewed_bounds = {}
     for block in model["blocks"]:
-        if block.get("sheet") not in sheet_names or block.get("role") not in (_ROLES | {"unreviewed"}):
+        if block.get("sheet") not in worksheet_names or block.get("role") not in (_ROLES | {"unreviewed"}):
             raise ValueError("invalid block binding")
         bounds = _bounds(block.get("range"))
         source_range = _range_string(*bounds)
@@ -396,7 +483,7 @@ def validate_source_model(model, source_path=None) -> None:
                     raise ValueError("reviewed block ranges overlap")
             reviewed_bounds.setdefault(block["sheet"], []).append(bounds)
     for name in model["definedNames"]:
-        if name.get("id") != _id("name", name.get("scope"), name.get("name")) or name.get("scope") not in (sheet_names | {None}):
+        if name.get("id") != _id("name", name.get("scope"), name.get("name")) or name.get("scope") not in (worksheet_names | {None}):
             raise ValueError("malformed defined name identity")
         if name.get("resolution") == "cell":
             if not isinstance(name.get("targetId"), str) or not name["targetId"].startswith("cell:"):
@@ -405,7 +492,7 @@ def validate_source_model(model, source_path=None) -> None:
                 target_sheet, target_address = json.loads(name["targetId"][len("cell:"):])
             except (TypeError, ValueError) as exc:
                 raise ValueError("broken defined name target") from exc
-            if (target_sheet not in sheet_names or not isinstance(target_address, str) or
+            if (target_sheet not in worksheet_names or not isinstance(target_address, str) or
                     not _ADDRESS.fullmatch(target_address) or
                     name["targetId"] != _cell_id(target_sheet, target_address)):
                 raise ValueError("broken defined name target")
@@ -419,7 +506,7 @@ def validate_source_model(model, source_path=None) -> None:
         if cell["kind"] != "formula":
             continue
         expected_deps, expected_reasons = _dependencies(cell["expression"], cell["sheet"],
-                                                        name_lookup, sheet_names, cell_ids,
+                                                        name_lookup, worksheet_names, cell_ids,
                                                         cell.get("formulaObjectType"))
         if (cell["dependencies"] != expected_deps or
                 reasons_by_cell.get(cell["id"], []) != expected_reasons or
