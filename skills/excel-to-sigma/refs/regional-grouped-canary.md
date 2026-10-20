@@ -12,7 +12,7 @@ Run `scripts/regional-grouped-canary.py` with the exact original workbook,
 reviewed v2 input plan, native v2 plan, and independent Excel oracle JSONL.
 It emits `candidate.json`, including all 144 Revenue source-cell mappings,
 the distinct B4 five-lane mapping, complete B4 dependency list, the actual
-source formula SHA, 3 logical elements, 27 formula columns, and unresolved
+source formula SHA, 3 logical elements, 30 formula columns, and unresolved
 qualifications. The hard canary cap is 8 tables / 128 formula columns. The
 source AST uses `table:tblSalesForecast:#data` with rows 2:145, so **appended
 sales rows remain in scope**. The candidate cannot be interpreted as a closed
@@ -25,7 +25,9 @@ The logical construction is:
    staging the canary, add two metadata fields to each input row: immutable
    `Source Key = Forecast Input!row:N` and `Source Ordinal = N-1`. These are
    migration metadata, not extra Excel literals or fake Sigma IDs. Reconcile
-   all 144 physical row IDs after seed. New appended rows need a reviewed
+   all 144 physical row IDs after seed. A second ordinary input holds the four
+   `Summary!A4:A7` Region labels, with exact source-cell lineage and physical
+   row-ID reconciliation. New appended rows need a reviewed
    monotonic ordinal before error-order parity can be accepted.
 2. A calculated table sourced from that input. The existing typed native
    compiler emits one shared Revenue row template with five public lanes
@@ -43,38 +45,44 @@ The logical construction is:
 
 ## Minimal staging sequence and exact contracts
 
-1. Take a fresh full document GET, input-row query, original-layout backup,
-   and assigned input/page ID receipt. Confirm the saved source/input/native
-   hashes in `candidate.json`. The input plan currently lacks `Source Key` and
-   `Source Ordinal`; update and review the staging input architecture, seed
-   receipt, and manifest before building. Do not substitute a test UUID or a
-   guessed row ID. Query the actual row-ID column alias after each REST build;
-   the prior virtual alias may normalize to `ID`.
+1. Generate and review `canary-inputs.json` with
+   `scripts/regional-canary-inputs.py`. Its source-hash-bound projection has
+   status `CANARY_QUALIFICATION_ONLY`: two input tables, 144 sales rows,
+   four Summary region rows, and exact source-cell mappings. It records the
+   other three source inputs as omitted and all 214 source formulas as pending.
+   This isolated fixture cannot satisfy the full five-input staging gate or
+   authorize production promotion. Take a fresh full document GET and layout
+   backup. For each fixture input call `prepare_input_create_program`, execute
+   its SDK code, GET assigned element/column IDs, bind the actual row-ID system
+   column, and query the empty input. Call `prepare_input_seed_program`, seed,
+   then query all physical rows and run `reconcile_input_rows`. It checks every
+   authored value and metadata value against its original source cell, and
+   records each assigned physical row ID. Query the actual row-ID column alias
+   after each REST build; a virtual alias may normalize to `ID`.
 2. Call `prepare_scaffold_program(candidate, element_kind="calculated-table",
    page_id=<observed>, source_element_id=<observed sales input>, grid_row=<free>)`.
    It emits one documented `get_page` / `add_table(source.element(...))` /
    `add_column(..., const_number(0))` SDK program. Execute only in a disposable
    staging document. Read back its actual element ID and every column ID, and
    check the full document/layout for foreign changes.
-3. Build an assigned receipt with `sourceSha256`, `documentId`,
-   `documentVersion`, `elements[regional_sales_rows] = {elementId, name,
-   columns: {logicalColumnId: actualColumnId}}`, and
-   `namespaces.Sales = {name: actual input element name, columns: {logical
-   field name: actual field name}}`. Run
+3. Build an assigned receipt with `sourceSha256`, `canaryInputPlanHash`,
+   `documentId`, `documentVersion`, scaffold element/column IDs, and namespace
+   element IDs, names, and column IDs/names taken from fresh full-document
+   readback. Include both reconciled input bindings and queries. Run
    `prepare_contents_patch(candidate, fresh_document, receipt,
-   element_kind="calculated-table")`. Its `contents` is a full-document PUT
-   body; use `ifMatchDocumentVersion`, then GET and
-   `confirm_contents_patch(packet, readback)`. The preparer rejects a changed
-   placeholder, unknown reference, stale version, or formula over 6,000 chars.
-   The confirmer checks exact saved full contents. A structural readback is
-   **not runtime parity**.
-4. Obtain the row table handle in an MCP session, call
-   `set_groupings([[group_key_column]])`, then
-   `grouping.set_calculation("Revenue Sum", sigma.formula.sum(revenue_number))`.
-   Qualify the SDK constructor for `Min(First Error Ordinal)` against the actual
-   SDK before adding it; `Min` is documented as a Sigma formula, but the cached
-   SDK reference only establishes `set_calculation` and the `sum` example.
-   Call `grouping.to_source()` and add one flat grouped table. GET the saved
+   element_kind="calculated-table", source_path=..., base_input_plan=...,
+   canary_input_plan=..., observed_inputs=...)`. Its `contents` is a
+   full-document PUT body; use `ifMatchDocumentVersion`, then GET and
+   `confirm_contents_patch`. The preparer checks complete input rowsets,
+   namespace/source-column lineage, scaffold source, placeholders, and
+   formula references. The confirmer checks exact saved full contents.
+4. Call `prepare_grouping_program` with the confirmed row-patch readback,
+   observed row element/page IDs, and free grid row. The emitted SDK program
+   calls `set_groupings([[group_key_column]])`,
+   `grouping.set_calculation("Revenue Sum", sigma.formula.sum(revenue_number))`,
+   `grouping.set_calculation("First Error Ordinal", sigma.formula.min(error_ordinal))`,
+   then `grouping.to_source()` and adds one flat grouped table. Both `sum` and
+   `min` constructors are present in the cached SDK `formula.py`. GET the saved
    grouping, actual grouped element/column IDs, and query grouped rows.
    Verify year/quarter date semantics, `Sum`, `Min`, and source edit propagation.
 5. Use `prepare_scaffold_program(..., element_kind="summary-table",
@@ -84,8 +92,10 @@ The logical construction is:
    `Revenue Sum`, and `First Error Ordinal`; `Rows` resolves `Revenue Error`
    and `Source Ordinal`. Patch every formula with an exact version guard and
    confirm saved full contents. Bind B4 to the first summary-regions source
-   row through its observed row ID; other summary rows in the table are not
-   accepted as migrated formula cells here.
+   row through its reconciled physical row ID; other summary rows are outside
+   this formula-cell canary. Run `observe_b4_query` on a fresh output query;
+   it checks that output Source Key and Source Row ID resolve `Summary!A4`
+   exactly, then returns five lanes as `B4_QUERY_OBSERVED_UNVERIFIED`.
 6. Query B4 number/text/logical/kind/error baseline and compare with Excel.
    Edit one ordinary sales `Units`, `Avg Price`, `Month`, and `Region`; query
    after each edit and reopen. Check zero, blank, no-match A4, duplicate group
@@ -105,7 +115,9 @@ retain its source mapping. The other 51 Regional `SUMIFS`, four source
 this canary.
 
 Cached SDK references: `work/native-grouped-docs-20261020/grouping.md`,
-`levelTable.md`, `source.md`, and `tables-skill.md`. Sigma formula references:
+`levelTable.md`, `source.md`, `tables-skill.md`, and `formula.py`. The saved
+grouped-source representation and formula runtime still require live
+qualification; the binder fails closed if row lineage is absent. Sigma formula references:
 [DatePart](https://help.sigmacomputing.com/docs/datepart),
 [Concat](https://help.sigmacomputing.com/docs/concat),
 [Min](https://help.sigmacomputing.com/docs/min).

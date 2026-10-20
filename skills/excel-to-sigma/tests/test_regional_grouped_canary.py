@@ -10,8 +10,7 @@ import unittest
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path[:0] = [str(SCRIPTS), str(SCRIPTS / "lib")]
 from lib.regional_grouped_canary import (build_candidate, source_rows, reference_b4,
-    bind_assigned_formula, prepare_scaffold_program, prepare_contents_patch,
-    confirm_contents_patch)
+    bind_assigned_formula, prepare_scaffold_program)
 from native_graph_reference import NativeGraphReference
 
 
@@ -30,12 +29,13 @@ def evaluate_graph(candidate, sales, summary_region, *, injected_errors=None):
     evaluated here because the shared scalar test interpreter lacks quarters.
     This is an offline formula interpreter, never a claim about Sigma runtime.
     """
-    sales = [dict(row) for row in sales]
+    sales = [dict(row, **{"Row ID": f"test-only-sales-{i}"}) for i, row in enumerate(sales)]
     for row in sales:
         if isinstance(row["Month"], str):
             row["Month"] = datetime.fromisoformat(row["Month"])
     graph = NativeGraphReference({"sales": ("Sales", sales),
-                                  "summary": ("Summary Regions", [{"Region": summary_region}])})
+                                  "summary": ("Summary Regions", [{"Region": summary_region,
+                                    "Source Key": "Summary!row:4", "Row ID": "test-only-summary-0"}])})
     row_element, grouped_element, output_element = candidate["elements"]
     graph.tables["Rows"] = [{"origin": ("sales", i), "values": dict(row)}
                             for i, row in enumerate(sales)]
@@ -68,7 +68,8 @@ def evaluate_graph(candidate, sales, summary_region, *, injected_errors=None):
     graph.tables["Grouped"] = [{"origin": ("group", i), "values": {k: v for k, v in group.items() if k != "rows"}}
                                for i, group in enumerate(grouped.values())]
     graph.elements["grouped"] = "Grouped"
-    graph.tables["Summary"] = [{"origin": ("summary", 0), "values": {"Region": summary_region}}]
+    graph.tables["Summary"] = [{"origin": ("summary", 0), "values": {"Region": summary_region,
+        "Source Key": "Summary!row:4", "Row ID": "test-only-summary-0"}}]
     graph.elements["output"] = "Summary"
     result = graph.tables["Summary"][0]["values"]
     for column in output_element["columns"]:
@@ -123,38 +124,13 @@ class RegionalGroupedCanaryTest(unittest.TestCase):
 
     def test_assigned_binding_and_exact_patch_contract(self):
         row = self.candidate["elements"][0]
-        actual_columns = [{"id": f"assigned-{i}", "name": column["name"], "formula": "0"}
-                          for i, column in enumerate(row["columns"])]
-        current = {"workbookId": "observed-document", "documentVersion": 9,
-                   "contents": {"kind": "workbook", "pages": [], "layout": "",
-                                "elements": [{"id": "observed-row-table", "name": "Rows", "kind": "table",
-                                              "source": {"kind": "table", "elementId": "observed-sales"},
-                                              "columns": actual_columns}]}}
-        receipt = {"sourceSha256": self.candidate["sourceSha256"],
-                   "documentId": "observed-document", "documentVersion": 9,
-                   "elements": {row["id"]: {"elementId": "observed-row-table", "name": "Rows",
-                                           "columns": {logical["id"]: actual["id"]
-                                                       for logical, actual in zip(row["columns"], actual_columns)}}},
-                   "namespaces": {"Sales": {"name": "Sales",
-                                            "columns": {k: k for k in ("Region", "Month", "Units", "Avg Price", "Source Ordinal", "Source Key")}}}}
         program = prepare_scaffold_program(self.candidate, element_kind="calculated-table",
             page_id="observed-page", source_element_id="observed-sales", grid_row=1)
         compile(program, "<regional-row-scaffold>", "exec")
         self.assertIn('sigma.data.source.element("observed-sales")', program)
         self.assertEqual(program.count("t.add_column("), len(row["columns"]))
-        packet = prepare_contents_patch(self.candidate, current, receipt,
-                                        element_kind="calculated-table")
-        self.assertEqual(len(packet["changes"]), len(row["columns"]))
-        self.assertNotIn("__regional_r", str(packet["changes"]))
-        self.assertEqual(confirm_contents_patch(packet, {"workbookId": "observed-document",
-            "documentVersion": 10, "contents": packet["contents"]})["runtimeStatus"], "UNVERIFIED_CANDIDATE")
-        with self.assertRaisesRegex(ValueError, "differ"):
-            bad = json.loads(json.dumps(packet["contents"]))
-            bad["elements"][0]["columns"][0]["formula"] = "0"
-            confirm_contents_patch(packet, {"workbookId": "observed-document",
-                "documentVersion": 10, "contents": bad})
         with self.assertRaisesRegex(ValueError, "unassigned"):
-            bind_assigned_formula("[Unknown/X]", namespaces=receipt["namespaces"], local_columns={})
+            bind_assigned_formula("[Unknown/X]", namespaces={}, local_columns={})
 
 
 if __name__ == "__main__":

@@ -124,6 +124,8 @@ def build_candidate(source_path, input_plan, native_plan, oracle):
          "formula": "[Sales/Source Ordinal]"},
         {"id": "source_key", "name": "Source Key",
          "formula": "[Sales/Source Key]"},
+        {"id": "source_row_id", "name": "Source Row ID",
+         "formula": "[Sales/Row ID]"},
         {"id": "first_error_ordinal", "name": "First Error Ordinal",
          "formula": 'If([Revenue Error] != "", [Source Ordinal], Null)'},
     ]
@@ -148,6 +150,10 @@ def build_candidate(source_path, input_plan, native_plan, oracle):
         {"id": "regional_summary_b4", "kind": "summary-table",
          "sourceFeature": "summary-regions",
          "columns": [
+             {"id": "source_key", "name": "Source Key",
+              "formula": "[Summary Regions/Source Key]"},
+             {"id": "source_row_id", "name": "Source Row ID",
+              "formula": "[Summary Regions/Row ID]"},
              {"id": "group_key", "name": "Group Key",
               "formula": 'Concat(Lower([Summary Regions/Region]), "|2026|1")'},
              {"id": "matched_revenue", "name": "Matched Revenue",
@@ -246,7 +252,7 @@ def bind_assigned_formula(formula, *, namespaces, local_columns):
                 binding = namespaces.get(namespace)
                 _require(binding is not None and column in binding.get("columns", {}),
                          f"unassigned native reference [{key}]")
-                result.append(f'[{binding["name"]}/{binding["columns"][column]}]')
+                result.append(f'[{binding["name"]}/{binding["columns"][column]["name"]}]')
             else:
                 _require(key in local_columns, f"unassigned local column [{key}]")
                 result.append(f'[{local_columns[key]}]')
@@ -292,7 +298,112 @@ def json_quote(value):
     return json.dumps(value, ensure_ascii=False)
 
 
-def prepare_contents_patch(candidate, current, receipt, *, element_kind):
+def prepare_grouping_program(candidate, current, row_patch_confirmation, *,
+                             row_element_id, page_id, grid_row):
+    """Emit the documented SDK grouping phase from a saved row-formula readback."""
+    _require(candidate.get("status") == "OFFLINE_GROUPED_CANARY_PENDING_STAGING" and
+             row_patch_confirmation.get("status") == "CONFIRMED_FORMULA_PATCH_STRUCTURE_ONLY" and
+             row_patch_confirmation.get("sourceSha256") == candidate.get("sourceSha256") and
+             row_patch_confirmation.get("documentId") == current.get("workbookId") and
+             row_patch_confirmation.get("documentVersion") == current.get("documentVersion") and
+             row_patch_confirmation.get("contentsHash") == digest(current.get("contents")),
+             "saved calculated-row patch readback required before grouping")
+    _require(isinstance(grid_row, int) and grid_row >= 1 and
+             any(p.get("id") == page_id for p in current["contents"].get("pages", [])),
+             "observed page and placement required")
+    elements = current["contents"]["elements"]
+    rows = [e for e in elements if e.get("id") == row_element_id]
+    _require(len(rows) == 1 and rows[0].get("kind") == "table" and
+             rows[0].get("name") == "Regional Sales Rows", "observed calculated rows missing")
+    needed = {"Group Key", "Revenue Number", "First Error Ordinal"}
+    columns = rows[0].get("columns", [])
+    _require(needed <= {c.get("name") for c in columns} and
+             len({c.get("name") for c in columns}) == len(columns) and
+             all(c.get("formula") != "0" for c in columns if c.get("name") in needed),
+             "saved group-key and aggregate source formulas required")
+    _require(all(e.get("name") != "Regional Sales Region Quarter" for e in elements),
+             "grouped flat table already exists")
+    lines = [
+        "# CANARY_QUALIFICATION_ONLY. Re-read the full document and assigned IDs after this mutation.",
+        f'p = sigma.workbook.get_page({json_quote(page_id)})',
+        f'rows = p.get_element({json_quote(row_element_id)})',
+        'key = rows.get_column_by_name("Group Key")',
+        'revenue = rows.get_column_by_name("Revenue Number")',
+        'error_ordinal = rows.get_column_by_name("First Error Ordinal")',
+        'grouping = rows.set_groupings([[key]])[0]',
+        'sum_column = grouping.set_calculation("Revenue Sum", sigma.formula.sum(revenue))',
+        'min_column = grouping.set_calculation("First Error Ordinal", sigma.formula.min(error_ordinal))',
+        'flat = p.add_table(grouping.to_source())',
+        'flat.set_name("Regional Sales Region Quarter")',
+        f'flat.set_frame(1, {grid_row}, 24, 12)',
+        'print({"rowElementId": rows.id(), '
+        '"sumColumnId": sum_column.id(), "minColumnId": min_column.id(), '
+        '"flatElementId": flat.id(), "flatColumns": '
+        '[{"id": c.id(), "name": c.name()} for c in flat.list_columns()]})',
+    ]
+    return {"status": "CANARY_GROUPING_PENDING_EXECUTION", "sourceSha256": candidate["sourceSha256"],
+            "documentId": current["workbookId"], "documentVersion": current["documentVersion"],
+            "contentsHash": digest(current["contents"]), "rowElementId": row_element_id,
+            "pageId": page_id, "program": "\n".join(lines) + "\n"}
+
+
+def _verified_namespaces(current, namespaces, observed_inputs, *, element_kind):
+    elements = current["contents"]["elements"]
+    required = ({"Sales", "Summary Regions", "Rows"} if element_kind == "calculated-table"
+                else {"Sales", "Summary Regions", "Rows", "Grouped"})
+    _require(set(namespaces) == required, "exact assigned namespaces required")
+    result = {}
+    for alias, binding in namespaces.items():
+        _require(isinstance(binding.get("elementId"), str) and binding["elementId"] and
+                 isinstance(binding.get("name"), str) and binding["name"] and
+                 isinstance(binding.get("columns"), dict) and binding["columns"],
+                 f"assigned namespace identity missing: {alias}")
+        matches = [e for e in elements if e.get("id") == binding["elementId"]]
+        _require(len(matches) == 1 and matches[0].get("name") == binding["name"] and
+                 sum(e.get("name") == binding["name"] for e in elements) == 1,
+                 f"assigned namespace absent or ambiguous: {alias}")
+        element = matches[0]
+        columns = element.get("columns", [])
+        _require(len({c.get("id") for c in columns}) == len(columns) and
+                 len({c.get("name") for c in columns}) == len(columns),
+                 f"actual namespace column IDs/names ambiguous: {alias}")
+        by_id = {c.get("id"): c for c in columns}
+        for logical, assigned in binding["columns"].items():
+            _require(isinstance(assigned, dict) and
+                     isinstance(assigned.get("id"), str) and assigned["id"] and
+                     isinstance(assigned.get("name"), str) and assigned["name"] and
+                     by_id.get(assigned["id"], {}).get("name") == assigned["name"],
+                     f"actual source column lineage differs: {alias}/{logical}")
+        result[alias] = element
+    _require(len({e["id"] for e in result.values()}) == len(result),
+             "native namespace elements must be distinct")
+    for alias, feature in (("Sales", "sales-forecast"), ("Summary Regions", "summary-regions")):
+        observed = observed_inputs[feature]["receipt"]
+        binding = namespaces[alias]
+        _require(result[alias].get("kind") == "input-table" and
+                 binding["elementId"] == observed["elementId"] and
+                 binding["name"] == observed["name"] and
+                 all(binding["columns"].get(name) == {"id": column_id, "name": name}
+                     for name, column_id in observed["columnIds"].items()) and
+                 binding["columns"].get("Row ID") == {
+                     "id": observed["rowIdColumnId"], "name": observed["rowIdColumn"]},
+                 f"source namespace does not match reconciled input: {alias}")
+    _require(result["Rows"].get("kind") == "table" and
+             result["Rows"].get("source") == {"kind": "table", "elementId": result["Sales"]["id"]},
+             "calculated rows are not sourced from reconciled sales input")
+    # The Grouping.to_source() representation is SDK-owned. Require the saved
+    # grouped source to carry the exact observed row element ID; a new SDK
+    # representation must be reviewed rather than guessed by this binder.
+    if element_kind == "summary-table":
+        _require(result["Grouped"].get("kind") == "table" and
+                 result["Rows"]["id"] in json.dumps(result["Grouped"].get("source", {}), sort_keys=True),
+                 "grouped source does not carry the observed calculated-row lineage")
+    return result
+
+
+def prepare_contents_patch(candidate, current, receipt, *, element_kind,
+                           source_path, base_input_plan, canary_input_plan,
+                           observed_inputs):
     """Prepare an exact, one-element formula patch against fresh scaffold IDs.
 
     The caller owns REST transport and must use the returned document version as
@@ -307,6 +418,18 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind):
     _require(isinstance(current.get("documentVersion"), int) and
              isinstance(current.get("contents", {}).get("elements"), list),
              "fresh full document readback required")
+    from .regional_canary_inputs import validate_canary_input_plan, validate_reconciled_receipt
+    validate_canary_input_plan(canary_input_plan, source_path, base_input_plan, candidate)
+    _require(set(observed_inputs) == {"sales-forecast", "summary-regions"},
+             "both actual canary input queries are required")
+    for feature, evidence in observed_inputs.items():
+        validate_reconciled_receipt(canary_input_plan, current, feature=feature,
+                                    binding=evidence["binding"], query=evidence["query"],
+                                    receipt=evidence["receipt"])
+    _require(receipt.get("canaryInputPlanHash") == canary_input_plan["canaryInputPlanHash"],
+             "canary input extension receipt is stale")
+    namespace_elements = _verified_namespaces(current, receipt.get("namespaces") or {},
+                                               observed_inputs, element_kind=element_kind)
     logical = next(e for e in candidate["elements"] if e["kind"] == element_kind)
     binding = receipt.get("elements", {}).get(logical["id"], {})
     _require(binding.get("elementId") and binding.get("name") and
@@ -318,10 +441,13 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind):
     _require(len(matches) == 1 and matches[0].get("name") == binding["name"],
              "assigned scaffold element changed")
     target = matches[0]
+    expected_source = namespace_elements["Sales"] if element_kind == "calculated-table" else namespace_elements["Summary Regions"]
+    _require(target.get("source") == {"kind": "table", "elementId": expected_source["id"]},
+             "scaffold source does not match reconciled input element")
     actual = {c.get("id"): c for c in target.get("columns", [])}
     _require(set(actual) == set(binding["columns"].values()),
              "assigned scaffold columns changed")
-    namespaces = receipt.get("namespaces", {})
+    namespaces = receipt["namespaces"]
     local = {c["name"]: actual[binding["columns"][c["id"]]]["name"]
              for c in logical["columns"]}
     changes = []
@@ -335,9 +461,18 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind):
         changes.append({"logicalColumnId": column["id"], "actualColumnId": actual_column["id"],
                         "formula": bound})
     packet = {"status": "REST_FORMULA_PATCH_PENDING_EXECUTION", "sourceSha256": candidate["sourceSha256"],
+              "canaryInputPlanHash": canary_input_plan["canaryInputPlanHash"],
               "documentId": current["workbookId"], "ifMatchDocumentVersion": current["documentVersion"],
               "elementId": binding["elementId"], "beforeContentsHash": digest(original),
               "afterContentsHash": digest(updated), "contents": updated, "changes": changes}
+    if element_kind == "summary-table":
+        a4 = observed_inputs["summary-regions"]["receipt"]["rows"]["0"]
+        _require(a4["sourceCells"] == {"Region": "Summary!A4"} and
+                 a4["sourceKey"] == "Summary!row:4" and a4["rowId"],
+                 "B4 source A4 physical row identity is missing")
+        packet["b4Source"] = {"cell": "Summary!A4", "sourceKey": a4["sourceKey"],
+                              "sourceRowId": a4["rowId"],
+                              "region": canary_input_plan["features"]["summary-regions"]["rows"][0]["Region"]}
     return packet
 
 
@@ -353,3 +488,30 @@ def confirm_contents_patch(packet, readback):
             "sourceSha256": packet["sourceSha256"], "documentId": packet["documentId"],
             "documentVersion": readback["documentVersion"], "contentsHash": packet["afterContentsHash"],
             "runtimeStatus": "UNVERIFIED_CANDIDATE"}
+
+
+def observe_b4_query(packet, readback, query):
+    """Tie a runtime query row to physical Summary!A4; parity is a later check."""
+    _require(packet.get("b4Source", {}).get("cell") == "Summary!A4" and
+             packet.get("status") == "REST_FORMULA_PATCH_PENDING_EXECUTION",
+             "summary B4 patch and A4 source row required")
+    confirmed = confirm_contents_patch(packet, readback)
+    _require(query.get("elementId") == packet["elementId"] and
+             query.get("documentVersion") == confirmed["documentVersion"] and
+             isinstance(query.get("snapshotId"), str) and query["snapshotId"] and
+             isinstance(query.get("rows"), list),
+             "fresh B4 output query required")
+    a4 = packet["b4Source"]
+    matches = [r for r in query["rows"] if r.get("Source Key") == a4["sourceKey"]]
+    _require(len(matches) == 1 and matches[0].get("Source Row ID") == a4["sourceRowId"],
+             "B4 output does not resolve the observed Summary A4 physical row")
+    row = matches[0]
+    lanes = {}
+    for lane in ("Number", "Text", "Logical", "Kind", "Error"):
+        _require(f"B4 {lane}" in row, f"B4 {lane} lane absent from query")
+        lanes[lane.lower()] = row[f"B4 {lane}"]
+    return {"status": "B4_QUERY_OBSERVED_UNVERIFIED", "runtimeStatus": "UNVERIFIED_CANDIDATE",
+            "sourceSha256": packet["sourceSha256"], "documentId": packet["documentId"],
+            "documentVersion": confirmed["documentVersion"], "querySnapshotId": query["snapshotId"],
+            "sourceCell": "Summary!B4", "sourceA4RowId": a4["sourceRowId"],
+            "outputElementId": packet["elementId"], "lanes": lanes}
