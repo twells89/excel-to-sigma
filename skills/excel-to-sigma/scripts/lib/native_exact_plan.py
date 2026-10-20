@@ -27,6 +27,29 @@ except ImportError:
 
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
 
+def _map_helpers(formula,prefix,callback):
+    """Internal bare tokens cannot collide with source text or column names."""
+    parts=[];start=0;i=0
+    while i<len(formula):
+        if formula[i] in ('"','['):
+            if start<i:parts.append(re.sub(re.escape(prefix)+r'\d+__',callback,formula[start:i]))
+            end='"' if formula[i]=='"' else ']';j=i+1
+            while j<len(formula):
+                if end=='"' and formula[j]=='\\':j+=2;continue
+                if formula[j]==end:j+=1;break
+                j+=1
+            parts.append(formula[i:j]);i=j;start=j
+        else:i+=1
+    parts.append(re.sub(re.escape(prefix)+r'\d+__',callback,formula[start:]))
+    return ''.join(parts)
+
+def _helper_tokens(formula,prefix):
+    tokens=[]
+    def record(match):tokens.append(match.group());return match.group()
+    _map_helpers(formula,prefix,record)
+    return set(tokens)
+
+
 def build_exact_native_calculation_plan(source_path,source_input_plan=None):
     try:from .native_calculations import _ast,_input_bindings,_replacement_external_inputs,_symbol
     except ImportError:from native_calculations import _ast,_input_bindings,_replacement_external_inputs,_symbol
@@ -177,7 +200,7 @@ class HelperGraph:
 
             start,end=max(candidates,key=lambda p:p[1]-p[0]);token=self.emit(formula[start:end]);formula=formula[:start]+token+formula[end:]
 
-        token=f'{self.prefix}{len(self.nodes)}__';deps=[int(x) for x in re.findall(re.escape(self.prefix)+r'(\d+)__',formula)]
+        token=f'{self.prefix}{len(self.nodes)}__';deps=[int(x[len(self.prefix):-2]) for x in _helper_tokens(formula,self.prefix)]
         depth=max((self.nodes[d]['depth'] for d in deps),default=-1)+1
         self.nodes.append({'token':token,'formula':formula,'depth':depth});self.index[formula]=token;return token
 
@@ -243,8 +266,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
             compiled.append(signature);first_graph=rg
         a=assigned_rows[feature];prefix='Native Rows '+digest(identity)[:10];row_handles={};new=[]
         def row_formula(formula):
-            for token in set(re.findall(r'__native_r\d+__',formula)):formula=formula.replace(token,row_handles[token])
-            return formula
+            return _map_helpers(formula,'__native_r',lambda m:row_handles[m.group()])
         for start in range(0,len(first_graph.nodes),max_columns-1):
             batch=first_graph.nodes[start:start+max_columns-1];name=prefix+' '+str(len(new)+1);columns=[{'id':'native_row_id','name':'native_row_id','formula':f'[{a["name"]}/{a["rowIdColumn"]}]'}]
             for i,node in enumerate(batch,start):
@@ -324,8 +346,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
                 order=row_emit(iff(f'([{a["name"]}/{a["rowIdColumn"]}] = {q(a["rows"][str(b["rowIndex"])])})',str(ordinal),order))
         row_handles={};row_nodes=[]
         def materialize_rows(formula):
-            for token in set(re.findall(r'__native_r\d+__',formula)):formula=formula.replace(token,row_handles[token])
-            return formula
+            return _map_helpers(formula,'__native_r',lambda m:row_handles[m.group()])
         for start in range(0,len(row_graph.nodes),max_columns-1):
             batch=row_graph.nodes[start:start+max_columns-1];name=prefix+' Criteria '+str(start//(max_columns-1)+1)
             columns=[{'id':'native_row_id','name':'native_row_id','formula':f'[{a["name"]}/{a["rowIdColumn"]}]'}]
@@ -370,7 +391,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
     external_by_name={e['name']:e for e in aggregate_elements}
     dependency_edges={};node_depths={};node_active=set()
     def dependencies(formula):
-        edges=set(re.findall(r'__native_h\d+__',formula))
+        edges=_helper_tokens(formula,'__native_h')
         for name in re.findall(r'\[([^\[\]/]+)/[^\[\]]+\]',formula):
             if name in external_by_name:edges.add(external_by_name[name]['id'])
         return edges
@@ -393,15 +414,14 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
             columns=[{'id':'native_key','name':'native_key','formula':'1'}]
             for i,n in batch:
                 formula=n['formula']
-                for token in set(re.findall(r'__native_h\d+__',formula)):formula=formula.replace(token,handles[token])
+                formula=_map_helpers(formula,'__native_h',lambda m:handles[m.group()])
                 columns.append({'id':f'h{i}','name':f'h{i}','formula':formula})
                 handles[n['token']]=f'Lookup([{name}/h{i}], 1, [{name}/native_key])'
             shards.append({'id':f'native_exact_{plan["sourceSha256"][:8]}_{number}','kind':'table','name':name,
                            'source':{'kind':'sql','connectionId':plan['targetScope']['connectionId'],'statement':'SELECT 1 AS C0'},
                            'columns':columns,'sourceFormulaCells':[]})
     def materialize(formula):
-        for token in set(re.findall(r'__native_h\d+__',formula)):formula=formula.replace(token,handles[token])
-        return formula
+        return _map_helpers(formula,'__native_h',lambda m:handles[m.group()])
     for e in aggregate_elements:
         for c in e['columns']:c['formula']=materialize(c['formula'])
     formula_outputs={};public=[]

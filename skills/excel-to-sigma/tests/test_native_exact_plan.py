@@ -57,6 +57,15 @@ class ExactPlanningTests(unittest.TestCase):
         self.assertEqual(domains[0]['appendPolicy'],'live-formal-table')
         self.assertEqual(lower['formalTemplateObligations'],[])
 
+    def test_formula_text_that_looks_like_internal_helper_is_literal(self):
+        path,inputs=self.source();book=load_workbook(path);book['Summary Renamed']['A2']='="__native_h0__"';book.save(path)
+        decisions=copy.deepcopy(inputs['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        inputs=build_source_input_plan(path,decisions,connection_id='connection',folder_id='folder')
+        p=build_exact_native_calculation_plan(path,inputs)
+        assigned={'ledger':{'elementId':'actual-input','name':'tblLedger','rowIdColumn':'Row ID','rows':{'0':'actual-a','1':'actual-b'}}}
+        lower=lower_exact_native_calculations(p,assigned)
+        self.assertEqual(lower['formulas']['Summary Renamed!A2']['lanes']['text'],'"__native_h0__"')
+
     def test_source_excel_error_remains_disclosed_candidate_error_class(self):
         path=Path(self.temp.name)/'errors.xlsx';book=Workbook();book.active['A1']='=1/0';book.active['A2']='=IFERROR(A1,5)';book.save(path)
         p=build_exact_native_calculation_plan(path)
