@@ -15,6 +15,7 @@ from collections import Counter
 from datetime import date, datetime
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from lib.excel_expression import ExpressionError, Reference, parse_expression
 
 # functions we translate today (see refs/excel-translation.md)
 TRANSLATABLE = {
@@ -151,9 +152,21 @@ def analyze_table(headers, body_rows, nrows, referenced_by_others):
 
 SHEET_REF_RE = re.compile(r"(?:'([^']+)'|([A-Za-z0-9_]+))!\$?[A-Z]+\$?\d+")
 GROWTH_RE = re.compile(r"^=\s*\$?[A-Z]+\$?\d+\s*\*\s*\(\s*1\s*[+\-]", re.I)   # prior*(1±rate)
-DIRECT_REF_RE = re.compile(r"^=\s*(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?(\$?[A-Z]+\$?\d+)\s*$", re.I)
 SUMIFS_RE = re.compile(r"\bSUMIFS?\b|\bSUMPRODUCT\b", re.I)
 ARITH_RE  = re.compile(r"[A-Z]+\$?\d+\s*[-+*/]\s*\$?[A-Z]+\$?\d+|^=IF\(", re.I)
+
+
+def direct_reference(formula, sheet):
+    """Return a local cell reference only when the whole formula is that edge."""
+    if not isinstance(formula, str) or not formula.startswith("="):
+        return None
+    try:
+        expression = parse_expression(formula, sheet=sheet)
+    except ExpressionError:
+        return None
+    if isinstance(expression, Reference) and expression.value.address:
+        return expression.value
+    return None
 
 def classify_report_cells(wb):
     """Cell-level model map for 'report drawn in cells' sheets (no formal Table).
@@ -189,7 +202,7 @@ def classify_report_cells(wb):
                     counts["DRIVER_GROWTH"] += 1
                     for m in SHEET_REF_RE.finditer(v):
                         driver_sheets[m.group(1) or m.group(2)] += 1
-                elif DIRECT_REF_RE.match(v):
+                elif direct_reference(v, ws.title):
                     counts["DEPENDENCY_LINK"] += 1
                 elif ARITH_RE.search(v):
                     counts["DERIVED"] += 1
@@ -214,11 +227,11 @@ def dependency_links(wb):
         sheet_links = []
         for row in ws.iter_rows():
             for cell in row:
-                match = DIRECT_REF_RE.match(cell.value) if isinstance(cell.value, str) else None
-                if match:
+                ref = direct_reference(cell.value, ws.title)
+                if ref:
                     sheet_links.append({"cell": cell.coordinate,
-                                        "sourceSheet": match.group(1) or match.group(2) or ws.title,
-                                        "sourceCell": match.group(3).replace("$", "").upper()})
+                                        "sourceSheet": ref.sheet,
+                                        "sourceCell": ref.address})
         if sheet_links:
             links[ws.title] = sheet_links
     return links
@@ -345,7 +358,7 @@ def main(path, json_output=False):
         print("\n## Model map (cell-level) — for report sheets drawn in cells")
         ICON = {"ACTUAL": "📥 ACTUAL (live source)", "DRIVER_GROWTH": "📈 DRIVER-grown",
                 "MANUAL": "✏️  MANUAL input", "DERIVED": "🧮 DERIVED", "DEPENDENCY_LINK": "🔗 live dependency",
-                "OTHER_FORMULA": "· other"}
+                "OTHER_FORMULA": "❓ review formula"}
         for sheet, counts in sheetmap.items():
             parts = [f"{ICON.get(k,k)}={v}" for k, v in counts.most_common()]
             print(f"  • {sheet}: " + ", ".join(parts))

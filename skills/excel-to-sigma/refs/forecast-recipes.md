@@ -3,12 +3,22 @@
 The Sigma spec patterns for an **actuals + driver-grown + manual** model. All
 live-verified to exact parity (Net Income −$135,372.84, EBITDA $62,327.16). Pair
 with `refs/model-taxonomy.md` (which architecture) and `sigma-build-gotchas.md`.
+Use this recipe only after source discovery confirms its actuals, driver,
+manual-input, grain, section, and period assumptions. Unknown source shapes
+need source-specific MCP construction or explicit review; do not fit them to
+the bundled fixture to make a baseline total match.
 
 ## 1. Closed-form growth — no recursion
 
 Excel's `forecast = prior × (1+rate)` recursion is a **closed form**:
 `forecast[n] = base × (1+rate)^n` where `n` = months after the base (Jun=0). So a
 DM custom-SQL element computes it directly — no window functions, no recursion:
+
+The `flat` branch below is reserved for a separately established constant
+forecast policy. A direct Excel reference such as `C7=B23` is a live dependency
+on another calculation, so this branch would break a cash roll-forward. Keep
+that source edge and validate recalculation; a cached formula value is not an
+editable input or proof of formula parity.
 
 ```sql
 -- spine: one row per (line × forecast month) with base/n/kind/default rate

@@ -28,7 +28,7 @@ description: >-
 - `refs/excel-translation.md` — the translation surface, the formal-Table-only MVP rule, and what "formula translation" actually means here (grain selection, not business logic).
 - `refs/sigma-build-gotchas.md` — the hard-won Sigma spec rules (SQL element formula prefix, DM POST envelope, current workbook `contents` lifecycle, element-name/ID reassignment, publish gate).
 - `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
-- `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / derived / flat) + the architecture **decision tree** + the 3 intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
+- `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / dependency link / derived) + the architecture **decision tree** + intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
 - `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
 - `refs/forecast-scenario.md` — read for Forecast `SaveScenario_Click` completion: its reviewed 14/8 audit-schema receipt, versioned nullable-name policy, retained capture CLI, disabled Mark/Clear proposal, and strict production gate.
 - `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
@@ -73,11 +73,13 @@ source table by *how it's used* and route accordingly:
 | **Entered** (users type values: budget inputs, a tracker, subscriptions) | **input table** (empty / CSV / linked) | ✅ like Excel/Sheets |
 | **Derived** (formula rollups: the income statement, SUMIFS summaries) | read-only DM element + metrics | ❌ recomputes |
 | **Reference dim** (lookup lists users maintain) | input table if maintained, else read-only | depends |
+| **Mixed** (literal source columns beside formula columns, or literal overrides within formulas) | route literal cells and live calculations separately; review overrides and edit intent | depends |
 
-A Phase-0 heuristic: a formal Table that's *fed by* formulas/other sheets and only
-*read* downstream = **derived**; a Table whose cells are typed values with no
-inbound formula = **entered**. Route entered → input-table builder, derived →
-read-only DM/metric builder. When unsure, ask the user how they use that sheet.
+Phase 0 records literal and formula provenance by column and cell. Route an
+all-literal table as a candidate input source and an all-formula table as a
+computed candidate. A mixed Table is not wholly derived or wholly editable:
+retain its literal inputs and calculate its formula columns live. Ask how users
+edit ambiguous cells before selecting the input surface.
 
 ### What's actually buildable via API today (validated 2026-06-10 by MCP query)
 
@@ -205,19 +207,22 @@ non-AUTO record before build. Never silently omit a macro.
 
 ### Phase 0c — Model map & intent (for "report drawn in cells" / planning models)
 
-When there are **no formal Tables** (a cell-drawn P&L/budget/forecast), don't punt
-to "manual rebuild." `xlsx-discover.py` now prints a **cell-level model map**:
-classifies each formula/value as **ACTUAL** (SUMIFS over a data tab → live DM),
-**DRIVER_GROWTH** (`prior×(1±rate)` → closed-form `base×(1+rate)^n`), **MANUAL**
-(literal among formulas → editable input table), **FLAT** (`=prior` → carry), or
-**DERIVED** (totals/margins → workbook calc), and names the actuals-source +
-drivers sheets.
+For a cell-drawn report, `xlsx-discover.py` inventories **ACTUAL** aggregations,
+**DRIVER_GROWTH**, **MANUAL** literals among formulas, **DEPENDENCY_LINK** direct
+cell references, and other **DERIVED** formulas. A direct reference such as
+`13WCF!C7 = B23` is a live link to the prior week's ending cash; preserve its
+source cell in the plan and recompute it. Do not replace it with a flat constant
+or a cached formula result. A flat forecast is a separate, explicit policy that
+needs source evidence; the syntax `=prior` alone does not prove one.
 
-That map *is* the architecture: **union [live ACTUAL] + [forecast]**. Before
-building, **present the map and ask the 3 intent questions** (read-only report /
-editable plan / live what-if; which inputs editable; actuals live or snapshot) —
-see `refs/model-taxonomy.md`. Then build per `refs/forecast-recipes.md` and
-**assert parity to the cent** against the sheet's cached totals (the trust gate).
+Present the detected map and confirm edit intent, source freshness, and formula
+dependencies before selecting a build. The live-actuals/driver-growth union in
+`refs/forecast-recipes.md` applies only when those source roles and grain are
+present. Archetype builders have source binding **and shape preconditions**:
+unknown sheets, tables, sections, or periods require source-specific MCP
+construction or explicit review. Never coerce them into the bundled fixture
+profile or freeze formulas merely to reproduce baseline values. Verify live
+calculations and source-bound parity before calling a migration complete.
 
 ### Phase 0d — Template-family fingerprint & routing (financial-statement models)
 

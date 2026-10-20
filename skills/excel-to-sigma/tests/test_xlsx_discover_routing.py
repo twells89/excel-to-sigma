@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -14,6 +15,7 @@ from openpyxl.worksheet.table import Table
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "xlsx-discover.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("xlsx_discover", SCRIPT)
 discover = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(discover)
@@ -119,6 +121,28 @@ class TestDiscoveryRouting(unittest.TestCase):
         self.assertEqual(report["classes"]["DEPENDENCY_LINK"], 2)
         self.assertEqual(report["dependencyLinks"][1],
                          {"cell": "D7", "sourceSheet": "Cash Inputs", "sourceCell": "B6"})
+
+    def test_escaped_apostrophe_sheet_name_keeps_dependency(self):
+        # Catches dropping a legal Excel quoted-sheet reference from the dependency graph.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Report"
+        wb.create_sheet("Owner's Cash")
+        ws["C7"] = "='Owner''s Cash'!$B$6"
+        report = inspect(wb)["reportSheets"][0]
+        self.assertEqual(report["classes"]["DEPENDENCY_LINK"], 1)
+        self.assertEqual(report["dependencyLinks"],
+                         [{"cell": "C7", "sourceSheet": "Owner's Cash", "sourceCell": "B6"}])
+
+    def test_external_and_3d_references_do_not_become_internal_links(self):
+        # Catches treating unknown source scope as a safe local dependency.
+        wb = Workbook()
+        ws = wb.active
+        ws["C7"] = "='[Other.xlsx]Cash'!$B$6"
+        ws["D7"] = "=Jan:Mar!B6"
+        report = inspect(wb)["reportSheets"][0]
+        self.assertEqual(report["classes"]["OTHER_FORMULA"], 2)
+        self.assertEqual(report["dependencyLinks"], [])
 
     def test_sku_measure_axis_is_reviewed_without_calendar_headers(self):
         # Catches overlooking a wide measure axis when headers are SKU labels.
