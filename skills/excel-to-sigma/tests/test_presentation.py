@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from openpyxl import load_workbook
+from openpyxl.formatting.rule import CellIsRule
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -231,6 +233,29 @@ class TestPresentationEmission(unittest.TestCase):
                          ["inventory-input"])
         self.assertEqual([target["elementId"] for target in targets["unrelated-supplier"]],
                          ["suppliers"])
+
+    def test_multi_area_source_rule_keeps_base_target_without_widening(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "fixture-inventory-multi-area.xlsx"
+            workbook = load_workbook(FIXTURES / "fixture-inventory-reorder.xlsx")
+            workbook["Inventory"].conditional_formatting.add(
+                "O2:O18 O20:O37",
+                CellIsRule(operator="equal", formula=['"REORDER"']),
+            )
+            workbook.save(source)
+            workbook.close()
+            plan = presentation.extract_presentation(source)
+            rule = next(rule for rule in plan["conditionalFormats"]
+                        if rule["range"] == "O2:O18 O20:O37")
+            targets = presentation.fixture_bindings(plan)["conditionalTargets"][rule["id"]]
+            self.assertEqual([(target["elementId"], target["columnId"]) for target in targets],
+                             [("inventory-input", "status")])
+            # A full first area does not authorize projection when another
+            # area targets a different source field.
+            rule["range"] = "O2:O37 A2:A37"
+            targets = presentation.fixture_bindings(plan)["conditionalTargets"][rule["id"]]
+            self.assertEqual([(target["elementId"], target["columnId"]) for target in targets],
+                             [("inventory-input", "status")])
 
     def test_cli_contents_uses_integer_document_version_after_staging_gate(self):
         source = FIXTURES / "fixture-research-model.xlsx"

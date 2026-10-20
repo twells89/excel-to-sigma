@@ -719,8 +719,11 @@ def fixture_bindings(plan):
                 # A business view projects the full source table. Only rules
                 # covering that same table can be shared with its projections.
                 if source_table and rule["sheet"] == source_table[0]:
-                    _left, first_row, _right, last_row = range_boundaries(rule["range"])
-                    if (first_row, last_row) == source_data_rows:
+                    areas = [range_boundaries(area) for area in rule["range"].split()]
+                    # A multi-area rule can include other fields or omit rows;
+                    # its original bound target remains, but a full-row view
+                    # cannot represent its exact scope.
+                    if len(areas) == 1 and (areas[0][1], areas[0][3]) == source_data_rows:
                         formula = f"[{source_name}/{field}]"
                         for role, view_columns in (("main", main_view_columns),
                                                    ("detail", detail_view_columns)):
