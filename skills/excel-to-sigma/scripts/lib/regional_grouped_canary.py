@@ -303,7 +303,7 @@ def prepare_scaffold_program(candidate, *, element_kind, page_id, source_element
         "inherited = t.list_columns()", "assigned = []",
     ]
     for column in logical["columns"]:
-        lines += [f'c = t.add_column({json_quote(column["name"])}, sigma.formula.const_number(0))',
+        lines += [f'c = t.add_column({json_quote(column["name"])}, sigma.formula.const_num(0))',
                   'assigned.append({"logicalColumnId": ' + json_quote(column["id"])
                   + ', "actualColumnId": c.id(), "name": ' + json_quote(column["name"]) + '})']
     lines += ["for c in inherited:", "    c.delete()",

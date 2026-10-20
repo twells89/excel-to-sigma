@@ -1,5 +1,7 @@
 """Focused provenance and hostile binding checks for the isolated B4 fixture."""
+import ast
 import copy
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -18,6 +20,35 @@ WORK = ROOT / "work"
 SOURCE = WORK / "broader-eight-source-replay-20261020/source-originals/01 Regional Sales Forecast.xlsx"
 BASE = WORK / "complete-source-record-bindings-plans-20261020/01-regional-sales-forecast-xlsx.json"
 CANDIDATE = WORK / "regional-grouped-canary-20261020/candidate.json"
+SDK_FORMULA = WORK / "native-grouped-docs-20261020/formula.py"
+
+
+def check_formula_api_contract(program, sdk_path=SDK_FORMULA):
+    """Resolve emitted formula calls against actual cached SDK declarations.
+
+    The API inventory comes from the MCP SDK, independently of the emitter.
+    This verifies names and argument binding, not live MCP admission/runtime.
+    """
+    declarations = {node.name: node for node in ast.parse(sdk_path.read_text()).body
+                    if isinstance(node, ast.FunctionDef)}
+    for call in ast.walk(ast.parse(program)):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and ast.unparse(call.func.value) == "sigma.formula"):
+            continue
+        name = call.func.attr
+        if name not in declarations:
+            raise AssertionError(f"sigma.formula.{name} absent from actual SDK {sdk_path}")
+        declaration = copy.deepcopy(declarations[name])
+        # Compile declarations only, without importing SDK dependencies or
+        # invoking its functions. Deferred annotations preserve exact signatures.
+        declaration.body = [ast.Pass()]
+        declaration.decorator_list = []
+        module = ast.Module(body=[ast.ImportFrom(module="__future__",
+            names=[ast.alias(name="annotations")], level=0), declaration], type_ignores=[])
+        namespace = {}
+        exec(compile(ast.fix_missing_locations(module), str(sdk_path), "exec"), namespace)
+        inspect.signature(namespace[name]).bind(*call.args,
+            **{keyword.arg: keyword.value for keyword in call.keywords})
 
 
 @unittest.skipUnless(SOURCE.exists() and BASE.exists() and CANDIDATE.exists(),
@@ -145,6 +176,25 @@ class RegionalCanaryInputsTest(unittest.TestCase):
             reconcile_input_rows(self.plan, current, feature="sales-forecast",
                                  binding=bindings["sales-forecast"], query=wrong_alias)
 
+    @unittest.skipUnless(SDK_FORMULA.exists(), "actual cached MCP SDK formula declarations unavailable")
+    def test_scaffolds_resolve_formula_calls_against_actual_sdk(self):
+        current, bindings, queries = self.setup_document()
+        observed = self.observed(current, bindings, queries)
+        for kind, feature in (("calculated-table", "sales-forecast"),
+                              ("summary-table", "summary-regions")):
+            with self.subTest(kind=kind):
+                program = prepare_scaffold_program(self.candidate, element_kind=kind,
+                    page_id="test-only-page", source_element_id=bindings[feature]["elementId"],
+                    grid_row=1, current=current, source_path=SOURCE, base_input_plan=self.base,
+                    canary_input_plan=self.plan, observed_inputs=observed)
+                check_formula_api_contract(program)
+        # Demonstrate that the independent contract rejects the observed live
+        # failure and incorrect invocation of the real constant constructor.
+        with self.assertRaisesRegex(AssertionError, "const_number absent"):
+            check_formula_api_contract("sigma.formula.const_number(0)")
+        with self.assertRaises(TypeError):
+            check_formula_api_contract("sigma.formula.const_num()")
+
     def test_native_phase_postcheck_rejects_editable_metadata_drift(self):
         before_current, bindings, before_queries = self.setup_document()
         before = self.observed(before_current, bindings, before_queries)
@@ -242,6 +292,8 @@ class RegionalCanaryInputsTest(unittest.TestCase):
             source_path=SOURCE, base_input_plan=self.base,
             canary_input_plan=self.plan, observed_inputs=observed)
         compile(grouped["program"], "<grouping>", "exec")
+        if SDK_FORMULA.exists():
+            check_formula_api_contract(grouped["program"])
         self.assertIn("sigma.formula.min(error_ordinal)", grouped["program"])
         self.assertIn("grouping.to_source()", grouped["program"])
         forged = copy.deepcopy(self.candidate)
