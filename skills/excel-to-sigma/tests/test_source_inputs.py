@@ -60,6 +60,55 @@ class SourceFixture(unittest.TestCase):
 
 
 class TestSourceInputs(SourceFixture):
+    def test_parent_version_one_artifact_revalidates_against_source(self):
+        source = ROOT / "tests/fixtures/legacy-source-plan.xlsx"
+        plan = json.loads((ROOT / "tests/fixtures/legacy-source-plan-v1.json").read_text())
+        self.assertEqual(plan["inputPlanVersion"], 1)
+        self.assertNotIn("sourceCellFormats",
+                         plan["sharedInputArchitecture"]["inputs"]["legacy-rates"])
+        validate_source_input_plan(plan, source)
+        self.assertEqual(len(plan_source_seed(plan, "legacy-rates", [], row_id_column="Row ID")["inserts"]), 2)
+        current = build_source_input_plan(source, plan["decisions"],
+                                          connection_id="fixture-connection", folder_id="fixture-folder")
+        self.assertEqual(current["inputPlanVersion"], 2)
+        self.assertIn("sourceCellFormats",
+                      current["sharedInputArchitecture"]["inputs"]["legacy-rates"])
+        validate_source_input_plan(current, source)
+        tampered = copy.deepcopy(plan)
+        tampered["sharedInputArchitecture"]["inputs"]["legacy-rates"]["rows"][0]["Rate"] = .9
+        with self.assertRaisesRegex(ValueError, "hash"):
+            validate_source_input_plan(tampered, source)
+        stripped = copy.deepcopy(current)
+        stripped["sharedInputArchitecture"]["inputs"]["legacy-rates"].pop("sourceCellFormats")
+        stripped["sharedInputArchitecture"]["inputs"]["legacy-rates"].pop("sourceCellStates")
+        logical = {key: value for key, value in stripped.items() if key != "inputPlanHash"}
+        stripped["inputPlanHash"] = hashlib.sha256(json.dumps(
+            logical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        with self.assertRaisesRegex(ValueError, "differs"):
+            validate_source_input_plan(stripped, source)
+        changed_source = self.folder / "changed-legacy.xlsx"
+        changed_source.write_bytes(source.read_bytes())
+        from openpyxl import load_workbook
+        wb = load_workbook(changed_source); wb["Input"]["B2"] = .9
+        wb.save(changed_source); wb.close()
+        with self.assertRaisesRegex(ValueError, "source hash"):
+            validate_source_input_plan(plan, changed_source)
+
+    def test_record_source_cell_must_be_within_excel_grid(self):
+        feature = {"featureId": "blank", "role": "input", "reviewed": True,
+                   "keyColumns": ["Setting"], "literalColumns": ["Setting", "Value"],
+                   "columnTypes": {"Setting": "text", "Value": "number"},
+                   "reviewedBlankColumns": ["Value"],
+                   "recordBindings": [{"sourceCells": {"Setting": "Assumptions!B2",
+                                                       "Value": "Assumptions!XFD1048576"}}]}
+        plan = self.build({"sourceSha256": self.sha, "features": [feature]})
+        self.assertIsNone(plan["sharedInputArchitecture"]["inputs"]["blank"]["rows"][0]["Value"])
+        for invalid in ("Assumptions!XFE1048577", "Assumptions!XFE1", "Assumptions!A1048577"):
+            bad = copy.deepcopy(feature)
+            bad["recordBindings"][0]["sourceCells"]["Value"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "cell|range|grid"):
+                self.build({"sourceSha256": self.sha, "features": [bad]})
+
     def test_reviewed_records_bind_noncontiguous_typed_business_fields(self):
         from openpyxl import load_workbook
         wb = load_workbook(self.source)

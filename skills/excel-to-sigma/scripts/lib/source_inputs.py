@@ -12,13 +12,14 @@ from openpyxl.utils.cell import get_column_letter, range_boundaries
 
 try:
     from .input_sync import plan_seed
-    from .source_workbook import build_source_model
+    from .source_workbook import _bounds, build_source_model
 except ImportError:
     from input_sync import plan_seed
-    from source_workbook import build_source_model
+    from source_workbook import _bounds, build_source_model
 
 
-PLAN_VERSION = 1
+PLAN_VERSION = 2
+LEGACY_PLAN_VERSION = 1
 _TYPES = {"text", "number", "datetime", "boolean"}
 _SAFE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _CELL = re.compile(r"^[A-Z]{1,3}[1-9][0-9]*$")
@@ -269,6 +270,7 @@ def _build_record_feature(model, decision, connection_id):
             sheet, address = cell_id.rsplit("!", 1)
             if sheet not in worksheet_names or not _CELL.fullmatch(address):
                 raise ValueError("source record cell ID must name a worksheet cell")
+            _bounds(address)
             if cell_id in seen_cells:
                 raise ValueError("duplicate source cell binding")
             seen_cells.add(cell_id)
@@ -553,8 +555,15 @@ def build_source_input_plan(source_path, decisions, *, connection_id, folder_id)
 
 def validate_source_input_plan(plan, source_path=None) -> None:
     """Reject altered plans and, when supplied, changed source bytes or semantics."""
-    if not isinstance(plan, dict) or plan.get("inputPlanVersion") != PLAN_VERSION:
+    if not isinstance(plan, dict) or plan.get("inputPlanVersion") not in {LEGACY_PLAN_VERSION, PLAN_VERSION}:
         raise ValueError("unsupported source input plan")
+    legacy = plan["inputPlanVersion"] == LEGACY_PLAN_VERSION
+    if legacy:
+        if any("recordBindings" in feature for feature in plan.get("decisions", {}).get("features", [])):
+            raise ValueError("version-one source input plan cannot contain record bindings")
+        if any("sourceCellFormats" in spec or "sourceCellStates" in spec
+               for spec in plan.get("sharedInputArchitecture", {}).get("inputs", {}).values()):
+            raise ValueError("version-one source input plan cannot contain version-two metadata")
     logical = {key: value for key, value in plan.items() if key != "inputPlanHash"}
     if _digest(logical) != plan.get("inputPlanHash"):
         raise ValueError("source input plan hash is stale")
@@ -564,6 +573,13 @@ def validate_source_input_plan(plan, source_path=None) -> None:
         scope = plan["sharedInputArchitecture"]["targetScope"]
         rebuilt = build_source_input_plan(source_path, plan["decisions"],
                                           connection_id=scope["connectionId"], folder_id=scope["folderId"])
+        if legacy:
+            rebuilt["inputPlanVersion"] = LEGACY_PLAN_VERSION
+            for spec in rebuilt["sharedInputArchitecture"]["inputs"].values():
+                spec.pop("sourceCellFormats", None)
+                spec.pop("sourceCellStates", None)
+            rebuilt["inputPlanHash"] = _digest({key: value for key, value in rebuilt.items()
+                                                 if key != "inputPlanHash"})
         if rebuilt != plan:
             raise ValueError("source input plan differs from source bytes")
 

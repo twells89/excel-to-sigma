@@ -100,7 +100,12 @@ python3 scripts/source-inputs.py plan --source SOURCE.xlsx --decisions decisions
 
 `build_source_input_plan(source_path, decisions, *, connection_id, folder_id)`
 returns the plan. `validate_source_input_plan(plan, source_path=None)` checks
-its digest and optionally rebuilds against exact source bytes.
+its digest and optionally rebuilds against exact source bytes. New plans use
+`inputPlanVersion: 2` and retain cell-state/format metadata. Saved version-1
+plans from the prior contiguous/unpivot/replacement contract remain valid:
+source-backed validation reconstructs those decisions and compares the exact
+version-1 projection and original hash. Version-1 plans cannot claim new
+record bindings or version-2 metadata. A changed source still fails.
 `plan_source_seed(plan, feature_id, current_rows, *, row_id_column,
 prior_seed=None)` delegates to `input_sync.plan_seed`. Query target rows first;
 pass the real system row-ID column and retain prior seed checkpoints. This
@@ -174,7 +179,8 @@ commands refuse an output path that aliases the source workbook.
 Use `recordBindings` when a business row draws typed fields from separate
 source cells. Each record names one actual `Sheet!A1` cell for every field in
 `literalColumns`; the planner reads only source literals and verifies the
-declared type. Missing cells become `null`, while an explicit empty string stays
+declared type. Addresses must lie within Excel's `A1:XFD1048576` grid. Missing
+cells become `null`, while an explicit empty string stays
 `""`. The plan keeps per-field `sourceCells`, `sourceCellStates`, and
 `sourceCellFormats`, including date and percent number formats. Contiguous
 tables and reviewed unpivots carry the same cell-state and format metadata;
