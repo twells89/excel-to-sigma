@@ -64,6 +64,12 @@ and [transactions](https://docs.snowflake.com/en/sql-reference/transactions).
 The SQL has **not been compiled or executed**; actual stored procedure catalog
 signature, owner/caller privileges, typed VARIANT mapping through Sigma, and
 concurrency/error paths remain review gates. The root task alone provisions.
+The independent R1 review found that COUNT_IF can return NULL on a changed
+same-intent PO row, which would make the SQL IF guard skip its mismatch branch.
+The revised proposal wraps COUNT_IF in COALESCE(..., 0), so a changed SKU or
+quantity reaches the failure branch. Null source-row and batch-fingerprint
+arguments now fail explicitly. This is verified only by an offline SQL contract
+probe; scoped Snowflake execution and two-session tests remain required.
 
 The [native surface contract](../skills/excel-to-sigma/refs/inventory-native-surface.json)
 records Projection as default/live-calculation page, the GoToProjection A3
@@ -87,7 +93,8 @@ fixture are under skills/excel-to-sigma/tests/. No published buttons,
 actual persisted rows, role sessions, screenshots, or restoration evidence
 have been captured in this branch.
 
-Verification: 19 focused Inventory tests passed. The broad repository suite
+Verification: 23 focused Inventory tests passed after R1 (19 port/controller
+tests plus 4 SQL contract tests). The broad repository suite
 was stopped before verdict at root coordination request; the root task will
 run one integrated suite after merging components. The SQL proposal remains
 uncompiled and unexecuted.

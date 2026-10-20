@@ -136,6 +136,9 @@ class InventoryControllerTests(unittest.TestCase):
         changed = copy.deepcopy(current)
         changed['rows'][0]['Suggested Qty'] = 50
         with self.assertRaises(InventoryControllerError): plan_purchase_orders(changed, staged, 'intent-P')
+        changed_sku = copy.deepcopy(current)
+        changed_sku['rows'][0]['SKU'] = 'SKU-999'
+        with self.assertRaises(InventoryControllerError): plan_purchase_orders(changed_sku, staged, 'intent-P')
         partial = capture(plan['stageRows'][:1], 'PO_STAGE', execution='partial')
         resumed = plan_purchase_orders(current, partial, 'intent-P')
         self.assertEqual(resumed['status'], 'NEEDS_RECOVERY_WRITE')
