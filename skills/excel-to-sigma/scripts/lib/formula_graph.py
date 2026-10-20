@@ -141,9 +141,19 @@ class FormulaGraph:
                         ready.append(candidate); ready.sort()
         return tuple(result)
 
-    def evaluate(self):
-        """Evaluate every acyclic supported formula from workbook literal values."""
+    def evaluate(self, literal_overrides=None):
+        """Evaluate acyclic formulas, optionally substituting known source literals."""
         values = dict(self.literals)
+        for identity, value in (literal_overrides or {}).items():
+            original = self.literals.get(identity)
+            if not isinstance(original, (int, float)) or isinstance(original, bool):
+                raise ValueError(f"numeric source literal required: {identity.id}")
+            if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+                raise ValueError(f"numeric source literal override required: {identity.id}")
+            values[identity] = value
+        # Cleared source literals stay None. A formula returning a reference
+        # reads that blank as zero; its consumers therefore see a numeric result.
+        # Failed formulas stay absent and never become ignorable blank inputs.
         expressions = {}
         for identity, formula in self.formulas.items():
             try:
@@ -155,15 +165,29 @@ class FormulaGraph:
             if expression is None:
                 continue
 
-            def resolve(reference):
+            def target_for(reference):
                 if reference.name:
                     target = self.names.get(reference.name)
                     if target is None:
                         raise UnsupportedExpression(f"unresolved defined name {reference.name}")
-                    return values.get(target)
-                return values.get(CellIdentity(reference.sheet, reference.address))
+                    return target
+                return CellIdentity(reference.sheet, reference.address)
+
+            def resolve(reference):
+                target = target_for(reference)
+                if target not in values:
+                    raise UnsupportedExpression(f"unresolved or failed reference {target.id}")
+                return values[target]
+
+            def arithmetic_value(reference, value):
+                target = target_for(reference)
+                original = self.literals.get(target)
+                return (0 if value is None and isinstance(original, (int, float))
+                        and not isinstance(original, bool) else value)
             try:
-                values[identity] = evaluate(expression, resolve)
+                values[identity] = evaluate(expression, resolve,
+                                            arithmetic_reference_resolver=arithmetic_value,
+                                            arithmetic_context=True)
             except (ArithmeticError, TypeError, ValueError):
                 continue
         return values

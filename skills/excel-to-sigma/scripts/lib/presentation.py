@@ -86,8 +86,10 @@ NS = {
 
 try:
     from .input_display import currency_pattern, source_format_intent, build_input_display
+    from .source_validation import read_raw_validations, classify_blank, POLICY_VERSION, POLICY_HASH
 except ImportError:
     from input_display import currency_pattern, source_format_intent, build_input_display
+    from source_validation import read_raw_validations, classify_blank, POLICY_VERSION, POLICY_HASH
 
 
 def _digest(value):
@@ -327,33 +329,45 @@ def _list_values(formula):
 
 
 def validation_accepts(rule, value):
-    if value in (None, ""):
-        return bool(rule.get("allowBlank"))
+    if value is None or value == "" and type(value) is str:
+        return None  # Declared membership cannot establish an edit/clear route.
     emitted = rule.get("emission") or {}
     if "values" in emitted:
-        return value in emitted["values"] and type(value) in {type(item) for item in emitted["values"]}
+        return any(type(value) is type(item) and value == item for item in emitted["values"])
     limits = emitted.get("range") or {}
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
+    if type(value) not in (int, float) or not math.isfinite(value):
         return False
+    number = float(value)
     return (limits.get("min") is None or number >= limits["min"]) and (limits.get("max") is None or number <= limits["max"])
 
 
-def _extract_validations(workbook):
+def _extract_validations(workbook, source_path):
     result = []
+    raw_rules = read_raw_validations(source_path)
     for ws in workbook.worksheets:
         for dv in ws.data_validations.dataValidation:
             for sqref in str(dv.sqref).split():
+                matches = [raw for raw in raw_rules if raw['sheet'] == ws.title and sqref in str(raw['range']).split()
+                           and raw['sourceType'] == dv.type and raw['operator'] == dv.operator
+                           and raw['formula1'] == dv.formula1 and raw['formula2'] == dv.formula2]
+                if len(matches) != 1:
+                    raise ValueError('source validation XML provenance missing or ambiguous')
+                raw = matches[0]
                 values = _list_values(dv.formula1)
                 status = "supported"
                 if dv.type == "list" and values is not None:
                     emission = {"values": values}
                 elif dv.type == "decimal" and dv.operator == "between":
-                    emission = {"range": {"min": float(dv.formula1), "max": float(dv.formula2)}}
+                    try:
+                        emission = {"range": {"min": float(dv.formula1), "max": float(dv.formula2)}}
+                    except (TypeError, ValueError):
+                        emission, status = None, "unresolved"
                 elif dv.type == "whole" and dv.operator == "between":
-                    low, high = int(dv.formula1), int(dv.formula2)
-                    emission = {"values": list(range(low, high + 1))}
+                    try:
+                        low, high = int(dv.formula1), int(dv.formula2)
+                        emission = {"values": list(range(low, high + 1))}
+                    except (TypeError, ValueError):
+                        emission, status = None, "unresolved"
                 else:
                     emission, status = None, "unresolved"
                 result.append({
@@ -361,7 +375,12 @@ def _extract_validations(workbook):
                     "range": sqref, "field": _field_for_range(ws, sqref),
                     "fields": _fields_for_range(ws, sqref),
                     "sourceType": dv.type, "operator": dv.operator,
-                    "allowBlank": bool(dv.allow_blank), "formula1": dv.formula1,
+                    "allowBlank": None if not raw['rawAttributes']['allowBlank']['present'] else raw['rawAttributes']['allowBlank']['value'] in ('1', 'true', 'True'),
+                    "sourceXml": copy.deepcopy(raw),
+                    "blankSemantics": {"version": POLICY_VERSION, "policyHash": POLICY_HASH,
+                                       "classification": classify_blank(raw), "applicationRoute": "UNRESOLVED",
+                                       "storedValue": "UNRESOLVED"},
+                    "formula1": dv.formula1,
                     "formula2": dv.formula2, "inclusive": dv.operator == "between",
                     "status": status, "emission": emission,
                 })
@@ -532,7 +551,7 @@ def extract_presentation(source_path):
                                     "sha256": hashlib.sha256(source.read_bytes()).hexdigest()},
         "workflow": _workflow(source),
         "charts": _extract_charts(source, formulas, cached),
-        "validations": _extract_validations(formulas),
+        "validations": _extract_validations(formulas, source),
         "conditionalFormats": _extract_conditional_formats(formulas),
         "semanticFormats": _semantic_formats(formulas),
         "formulaProvenance": formula_provenance,
@@ -667,6 +686,14 @@ def fixture_bindings(plan):
         research_formats_exact = all(column.get("format") for column in detail_view_columns)
     main_ids = {column["name"]: column["id"] for column in main_view_columns}
     detail_ids = {column["name"]: column["id"] for column in detail_view_columns}
+    source_table = BUSINESS_TABLES.get(workflow)
+    source_data_rows = None
+    if source_table:
+        workbook = load_workbook(plan["source"]["path"], read_only=False)
+        table = workbook[source_table[0]].tables[source_table[1]]
+        _left, header_row, _right, last_row = range_boundaries(table.ref)
+        source_data_rows = (header_row + 1, last_row)
+        workbook.close()
     conditional_targets = {}
     for rule in plan["conditionalFormats"]:
         targets = []
@@ -689,6 +716,21 @@ def fixture_bindings(plan):
             bound = columns.get(f"{rule['sheet']}!{field}")
             if bound:
                 targets.append(bound)
+                # A business view projects the full source table. Only rules
+                # covering that same table can be shared with its projections.
+                if source_table and rule["sheet"] == source_table[0]:
+                    areas = [range_boundaries(area) for area in rule["range"].split()]
+                    # A multi-area rule can include other fields or omit rows;
+                    # its original bound target remains, but a full-row view
+                    # cannot represent its exact scope.
+                    if len(areas) == 1 and (areas[0][1], areas[0][3]) == source_data_rows:
+                        formula = f"[{source_name}/{field}]"
+                        for role, view_columns in (("main", main_view_columns),
+                                                   ("detail", detail_view_columns)):
+                            targets.extend(
+                                {"elementId": f"{workflow}-{role}-view", "columnId": column["id"]}
+                                for column in view_columns if column.get("formula") == formula
+                            )
             elif field in main_ids:
                 targets.append({"elementId": f"{workflow}-main-view", "columnId": main_ids[field]})
             elif field in detail_ids:
@@ -696,7 +738,9 @@ def fixture_bindings(plan):
             else:
                 targets.append({"elementId": source_id,
                                 "columnId": re.sub(r"[^a-z0-9]+", "_", field.lower()).strip("_") or "value"})
-        conditional_targets[rule["id"]] = targets
+        conditional_targets[rule["id"]] = list({
+            (target["elementId"], target["columnId"]): target for target in targets
+        }.values())
     validation_targets = {}
     for rule in plan["validations"]:
         if workflow == "research" and rule["sheet"] == "Model Inputs" and rule["range"] == "C2:C7":
@@ -1396,9 +1440,8 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
         for target in targets:
             patches[target["elementId"]]["columnUpdates"].setdefault(target["columnId"], {}).update(
                 copy.deepcopy(validation["emission"]))
-        if validation["allowBlank"] is False:
-            unresolved.append({"kind": "validation-null-behavior", "sourceId": validation["id"],
-                               "reason": "current input-column schema has no allowBlank field; runtime UI rejection remains required"})
+        unresolved.append({"kind": "validation-null-behavior", "sourceId": validation["id"],
+                           "reason": "source blank edit/clear route and native persisted value require separate runtime review"})
     for rule in plan["conditionalFormats"]:
         targets = (bindings.get("conditionalTargets") or {}).get(rule["id"])
         if targets is None:
