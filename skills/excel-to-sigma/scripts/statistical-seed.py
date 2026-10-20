@@ -243,7 +243,7 @@ def seed_plan(*, source_packet_path, source_original, actual_source, actual_sour
         lines.extend(f"    {_row_expression(item['source'], variables, role_spec['columns'])},"
                      for item in inserts)
         lines.append("])")
-        lines.append("print('insertedRowIds=' + repr(row_ids))")
+        lines.append("print(row_ids)")
     lines.append(f"print('checkpointId={checkpoint}')")
     return plan, {"program": "\n".join(lines) + "\n", "checkpointId": checkpoint,
                   "actionCount": len(chunk), "remainingCount": len(actions) - len(chunk),

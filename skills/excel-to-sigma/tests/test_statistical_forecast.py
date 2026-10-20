@@ -1,5 +1,6 @@
 """Generated-data checks; external Excel replay lives outside normal CI."""
 from datetime import date
+import ast
 from pathlib import Path
 import sys
 import json
@@ -169,6 +170,15 @@ class StatisticalForecastTests(unittest.TestCase):
             current.write_bytes((packet / "root-seed-executed-queries5.json").read_bytes())
             actual_plan, actual_chunk = seed(**opts)
             self.assertEqual((len(actual_plan["inserts"]), actual_chunk["actionCount"]), (108, 25))
+            calls = [node.func for node in ast.walk(ast.parse(actual_chunk["program"]))
+                     if isinstance(node, ast.Call)]
+            # The actual SDK rejected repr; preserve the typed upsert receipt.
+            self.assertNotIn("repr", [call.id for call in calls if isinstance(call, ast.Name)])
+            self.assertIn("print(row_ids)\n", actual_chunk["program"])
+            self.assertEqual({call.id for call in calls if isinstance(call, ast.Name)},
+                             {"datetime", "isinstance", "RuntimeError", "print"})
+            self.assertEqual({call.attr for call in calls if isinstance(call, ast.Attribute)},
+                             {"get_page", "get_element", "get_column", "upsert_rows"})
             changed_after = Path(folder) / "changed-source.json"
             changed_after.write_text(source.read_text().replace('"documentVersion": 3', '"documentVersion": 4'))
             with self.assertRaisesRegex(ValueError, "SOURCE_CHANGED_DURING_QUERY"):
