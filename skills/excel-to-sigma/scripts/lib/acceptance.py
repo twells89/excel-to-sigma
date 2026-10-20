@@ -98,6 +98,28 @@ def _matrix_inputs(matrix,*,validate_source=False):
     return union
 
 
+def _source_chart_keys(charts):
+    """One unambiguous key for each source chart series/category value."""
+    keys=[]
+    if len(charts)!=2 or len({chart['id'] for chart in charts})!=2:
+        raise AcceptanceError('two distinct source charts required per workflow')
+    for chart in charts:
+        categories=chart['categories']
+        if not categories or any(category is None for category in categories):
+            raise AcceptanceError('source chart categories incomplete')
+        series=chart['series']
+        if not series or len({item['order'] for item in series})!=len(series):
+            raise AcceptanceError('source chart series incomplete/duplicate')
+        for item in series:
+            if not item['name'] or len(item['expectedValues'])!=len(categories):
+                raise AcceptanceError('source chart series/category values incomplete')
+            for position,category in enumerate(categories):
+                keys.append(json.dumps([chart['id'],item['order'],item['name'],position,category],
+                                       ensure_ascii=False,separators=(',',':')))
+    if len(keys)!=len(set(keys)):raise AcceptanceError('source chart keys duplicate')
+    return keys
+
+
 def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
     if set(manifests)!={'forecast','research','sales','inventory','expense'} or set(targets)!=set(manifests):
         raise AcceptanceError('all five workflows required')
@@ -131,7 +153,8 @@ def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
         for name in ('input-edit-reopen-restore','zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout','full-input-id-audit'):
             case(workflow,name,mode='browser' if name in ('zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout') else 'query',persistence=name=='input-edit-reopen-restore')
         case(workflow,'chart-1-visual',mode='browser');case(workflow,'chart-2-visual',mode='browser')
-        case(workflow,'chart-aggregates',{'forecast':40,'research':24,'sales':10,'inventory':8,'expense':15}[workflow])
+        chart_keys=_source_chart_keys(contract['charts'])
+        case(workflow,'chart-aggregates',len(chart_keys),chartKeys=chart_keys)
         for role,member in ROLE_MEMBERS.items():
             case(workflow,'published-'+role.lower(),mode='browser',role=copy.deepcopy(member),
                  inputMode='published-explore',editEntitlement=role!='Viewer',persistence=role!='Viewer')
@@ -281,6 +304,8 @@ def _evaluate_capture(matrix,capture):
     if len(checks)!=case['count'] or len(actual)!=case['count']:raise AcceptanceError('incomplete evidence/oracle denominator')
     want={c['key']:c for c in checks};got={c['key']:c['value'] for c in actual}
     if len(want)!=len(checks) or len(got)!=len(actual) or set(want)!=set(got):raise AcceptanceError('evidence keys incomplete/duplicate')
+    if case['id'].endswith('-chart-aggregates') and set(want)!=set(case.get('chartKeys',[])):
+        raise AcceptanceError('chart oracle must cover every source series/category key')
     failures=[k for k,c in want.items() if not compare_value(c['expected'],got[k],c['comparison'],precision=c.get('precision'))]
     return {'status':'FAILED' if failures else 'PASSED','caseId':case['id'],'workflow':case['workflow'],'failures':failures}
 
@@ -392,11 +417,15 @@ def validate_production_matrix(matrix):
     for workflow,count in counts.items():
         if not matrix['workflows'][workflow].get('inputTables'):raise AcceptanceError('actual staged writeback identities missing')
         if matrix['workflows'][workflow]['sourceFormulaCount']!=count:raise AcceptanceError('source formula denominator changed')
+        source_charts=extract_workflow_repairs(matrix['workflows'][workflow]['inputContract']['manifest']['source']['path'])['charts']
+        chart_keys=_source_chart_keys(source_charts)
         expected={**common,**extra[workflow],'formula-accounting':count,'baseline-values':{'forecast':144,'research':420,'sales':48,'inventory':36,'expense':48}[workflow],
-            'chart-aggregates':{'forecast':40,'research':24,'sales':10,'inventory':8,'expense':15}[workflow]}
+            'chart-aggregates':len(chart_keys)}
         for name,n in expected.items():
             c=actual.get(workflow+'-'+name,{})
             if c.get('count')!=n or c.get('mandatory') is not True or c.get('workflow')!=workflow:raise AcceptanceError('mandatory suite case missing/changed: '+workflow+'-'+name)
+            if name=='chart-aggregates' and c.get('chartKeys')!=chart_keys:
+                raise AcceptanceError('mandatory source chart series/category keys changed: '+workflow)
             browser=name in {'zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout','chart-1-visual','chart-2-visual'} or name.startswith('published-') or (workflow=='forecast' and any(x in name for x in ('scenario','snapshot','wrong-context','python','goal','procedure'))) or name.startswith('approval-') or name=='selection-zero-one-multiple'
             if c.get('mode')!=('browser' if browser else 'query'):raise AcceptanceError('mandatory runtime mode changed')
             if name.startswith('published-'):

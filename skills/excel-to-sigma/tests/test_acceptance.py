@@ -104,6 +104,71 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'adapter reached'):p.run_integration(matrix,adapter,scope,enabled=True)
         self.assertEqual(adapter.calls,1)
 
+    def test_chart_cases_cover_every_fixture_series_and_category(self):
+        p=self.module();manifests,targets,receipts=self.bound_matrix_inputs()
+        matrix=p.build_acceptance_matrix(manifests,targets,receipts=receipts)
+        months_26=['Jan-26','Feb-26','Mar-26','Apr-26','May-26','Jun-26',
+                   'Jul-26','Aug-26','Sep-26','Oct-26','Nov-26','Dec-26']
+        years=list(range(2019,2031))
+        source_positions={
+            'forecast':[
+                [('Revenue',months_26),('EBITDA',months_26),('Net Income',months_26)],
+                [('FY Total',['Revenue','Cost of Revenue','Operating Expenses','Below the Line'])]],
+            'research':[
+                [('Revenue',years),('EBITDA',years)],
+                [('EPS',years),('Net debt / EBITDA',years)]],
+            'sales':[
+                [('Weighted ACV',['Prospecting','Qualification','Proposal','Negotiation','Closed Won','Closed Lost'])],
+                [('Weighted ACV',['Mar-26','Apr-26','May-26','Jun-26','Jul-26','Aug-26','Sep-26','Oct-26','Nov-26','Dec-26'])]],
+            'inventory':[
+                [('Reorder Qty',['Electronics','Components','Packaging','Service Parts'])],
+                [('Available Value',['Apex Supply','Beacon Components','CorePack','Delta Service Co'])]],
+            'expense':[
+                [('Spend',['Sales','Engineering','Operations','Corporate'])],
+                [('Count',['RECON','OVER LIMIT','MISSING RECEIPT','PENDING','CLEAR'])]],
+        }
+        chart_cases={c['workflow']:c for c in matrix['cases'] if c['id'].endswith('-chart-aggregates')}
+        self.assertEqual(len(matrix['cases']),102)
+        self.assertEqual(sum(t['sourceFormulaCount'] for t in matrix['workflows'].values()),1865)
+        self.assertEqual({w:c['count'] for w,c in chart_cases.items()},
+                         {'forecast':40,'research':48,'sales':16,'inventory':8,'expense':9})
+        for workflow,charts in source_positions.items():
+            with self.subTest(workflow=workflow):
+                expected=[json.dumps([f'chart-{chart_index}',series_index,name,position,category],
+                                     ensure_ascii=False,separators=(',',':'))
+                          for chart_index,chart in enumerate(charts,1)
+                          for series_index,(name,categories) in enumerate(chart)
+                          for position,category in enumerate(categories)]
+                self.assertEqual(chart_cases[workflow]['chartKeys'],expected)
+                self.assertEqual(len(set(expected)),chart_cases[workflow]['count'])
+        self.assertEqual(sum(c['count'] for c in chart_cases.values()),121)
+        self.assertTrue(p.validate_production_matrix(matrix))
+        for workflow in ('research','expense'):
+            with self.subTest(tampered=workflow):
+                tampered=copy.deepcopy(matrix);tampered.pop('matrixHash')
+                chart=next(c for c in tampered['cases'] if c['id']==workflow+'-chart-aggregates')
+                if workflow=='research':chart['chartKeys']=chart['chartKeys'][:24]
+                else:chart['chartKeys']=[*chart['chartKeys'],'invented-expense-row']
+                chart['count']=len(chart['chartKeys'])
+                with self.assertRaises(ValueError):p.validate_production_matrix(p.seal_matrix(tampered))
+        tampered=copy.deepcopy(matrix);tampered.pop('matrixHash')
+        chart=next(c for c in tampered['cases'] if c['id']=='research-chart-aggregates')
+        wrong_keys=[*chart['chartKeys'][:-1],'invented-research-category']
+        target=tampered['workflows']['research']
+        chart['oracle']={'origin':'independent-oracle','reviewer':'fixture-test',
+                         'sourceHash':target['sourceHash'],
+                         'checks':[{'key':key,'expected':1,'comparison':'exact'} for key in wrong_keys]}
+        tampered=p.seal_matrix(tampered)
+        capture={'caseId':chart['id'],'evidenceId':'synthetic-fixture-test','origin':'sigma-query',
+                 'executionId':'synthetic-fixture-test','sourceHash':target['sourceHash'],
+                 'planHash':target['planHash'],'documentId':target['documentId'],'version':target['version'],
+                 'actual':[{'key':key,'value':1} for key in wrong_keys],
+                 'receipt':{'executionId':'synthetic-fixture-test','documentId':target['documentId'],
+                            'version':target['version'],'status':'COMPLETED'},
+                 'references':[{'kind':'test-fixture','id':'synthetic-fixture-test'}]}
+        with self.assertRaisesRegex(ValueError,'chart oracle must cover'):
+            p.append_evidence([],tampered,capture)
+
     def test_persistence_comparison_policy_requires_an_effective_business_delta(self):
         p=self.module();before=[{'ID':'row','Key':'a','Value':1.001}];changed=[{'ID':'row','Key':'a','Value':1.002}]
         with self.assertRaises(ValueError):p.verify_persistence(before,changed,changed,before,row_id='ID',key_columns=['Key'],
