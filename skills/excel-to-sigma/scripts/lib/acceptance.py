@@ -31,6 +31,8 @@ WORKFLOW_EXPLANATIONS={
 'sales':'Authored opportunity Probability × ACV drives weighted pipeline; closed-stage precedence and both dates normalized to day grain determine timing. Editable rep targets join live weighted totals; stage reference probabilities do not replace authored ones.',
 'inventory':'Available = On Hand − Allocated; Usage × Lead Days + Safety Stock determines reorder point. Equality means REORDER. Thirty-day MAX/ROUNDUP order quantity remains exact; Supplier reference values do not override item inputs.',
 'expense':'Shared category policy and currency-cent reconciliation precede receipt and approval checks. Approval changes status/timestamp only and cannot erase higher-priority violations. Required Action is live; source-static dashboard expressions remain explicitly static.'}
+VALIDATION_INPUT_FEATURE={'forecast':'forecastBusinessInput','research':'researchModelInputs',
+    'sales':'salesBusinessInput','inventory':'inventoryBusinessInput','expense':'expenseBusinessInput'}
 
 
 def _no_secrets(value):
@@ -132,6 +134,78 @@ def _source_chart_keys(charts):
     return keys
 
 
+def _validation_contract(workflow,source,manifest,receipt):
+    """Source Excel rules and their required native equivalence classes.
+
+    The target IDs come only from the approved assigned input receipt. A missing
+    source rule or column cannot be replaced with a generic successful test.
+    """
+    feature=VALIDATION_INPUT_FEATURE[workflow]
+    binding=receipt['targetBindings'][feature]
+    assigned=binding['columnIds']
+    rules=[];branches=[]
+    for rule in source['validations']:
+        if rule['status']!='supported' or rule['sourceType'] not in {'list','decimal','whole'}:
+            raise AcceptanceError('unresolved source validation cannot be declared covered')
+        if workflow=='research':
+            match=re.fullmatch(r'C(\d+):C(\d+)',rule['range'])
+            if not match:raise AcceptanceError('research validation source range changed')
+            fields=['Model Inputs!C'+str(row) for row in range(int(match[1]),int(match[2])+1)]
+            names={field:'i_model_inputs_c'+field.split('C')[-1] for field in fields}
+        else:
+            fields=rule['fields'];names={field:field for field in fields}
+        if not fields or any(not assigned.get(names[field]) for field in fields):
+            raise AcceptanceError('source validation target column unassigned')
+        target={'feature':feature,'elementId':binding['elementId'],
+                'columnIds':{field:assigned[names[field]] for field in fields}}
+        source_rule={key:copy.deepcopy(rule[key]) for key in ('id','sheet','range','field','fields','sourceType',
+            'operator','allowBlank','formula1','formula2','inclusive','status','emission')}
+        rules.append({**source_rule,'target':target})
+        if rule['sourceType']=='list':
+            formula=rule['formula1']
+            if not isinstance(formula,str) or not re.fullmatch(r'"[^"\n]+"',formula):
+                raise AcceptanceError('unsupported authored source list')
+            values=formula[1:-1].split(',')
+            if (not all(values) or '__not_in_source_list__' in values or
+                    rule['emission']!={'values':values}):
+                raise AcceptanceError('source list and native emission diverge')
+            tests=[('valid',{'type':'text','value':values[0]},'SAVED'),
+                   ('foreign',{'type':'text','value':'__not_in_source_list__'},'REJECTED_NO_WRITE')]
+        else:
+            if rule['sourceType']=='decimal':
+                low=float(Decimal(rule['formula1']));high=float(Decimal(rule['formula2']))
+                if rule['emission']!={'range':{'min':low,'max':high}}:
+                    raise AcceptanceError('source decimal and native emission diverge')
+            else:
+                low,high=int(rule['formula1']),int(rule['formula2'])
+                if rule['emission']!={'values':list(range(low,high+1))}:
+                    raise AcceptanceError('source whole range and native emission diverge')
+            if not isinstance(low,(int,float)) or not isinstance(high,(int,float)) or low>=high:
+                raise AcceptanceError('invalid source validation bounds')
+            tests=[('lower',{'type':'number','value':low},'SAVED'),
+                   ('upper',{'type':'number','value':high},'SAVED'),
+                   ('below',{'type':'number','value':low-1},'REJECTED_NO_WRITE'),
+                   ('above',{'type':'number','value':high+1},'REJECTED_NO_WRITE'),
+                   ('text',{'type':'text','value':'not-a-number'},'REJECTED_NO_WRITE')]
+            if rule['sourceType']=='whole':
+                tests.append(('fractional',{'type':'number','value':low+0.5},'REJECTED_NO_WRITE'))
+        tests.append(('blank',{'type':'null','value':None},'SAVED' if rule['allowBlank'] else 'REJECTED_NO_WRITE'))
+        for field in fields:
+            for name,attempt,outcome in tests:
+                branches.append({'id':rule['id']+'-'+field+'-'+name,'ruleId':rule['id'],
+                    'target':{'feature':feature,'elementId':binding['elementId'],
+                              'columnId':target['columnIds'][field],'sourceField':field},
+                    'attempt':copy.deepcopy(attempt),'expectedOutcome':outcome})
+    if not rules:raise AcceptanceError('source validation rules missing')
+    first=branches[0]
+    branches.append({'id':'cancel-no-effect','ruleId':first['ruleId'],
+        'target':copy.deepcopy(first['target']),'attempt':copy.deepcopy(first['attempt']),
+        'expectedOutcome':'CANCELLED_NO_WRITE'})
+    return {'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],
+            'rules':rules,'branches':branches,
+            'expectedOutcomes':[{'id':branch['id'],'outcome':branch['expectedOutcome']} for branch in branches]}
+
+
 def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
     if set(manifests)!={'forecast','research','sales','inventory','expense'} or set(targets)!=set(manifests):
         raise AcceptanceError('all five workflows required')
@@ -163,7 +237,9 @@ def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
         count={'forecast':144,'research':420,'sales':48,'inventory':36,'expense':48}[workflow]
         case(workflow,'baseline-values',count)
         for name in ('input-edit-reopen-restore','zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout','full-input-id-audit'):
-            case(workflow,name,mode='browser' if name in ('zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout') else 'query',persistence=name=='input-edit-reopen-restore')
+            extra={'validationContract':_validation_contract(workflow,contract,manifest,receipts[workflow])} if name=='zero-and-invalid-entry' else {}
+            case(workflow,name,mode='browser' if name in ('zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout') else 'query',
+                 persistence=name=='input-edit-reopen-restore',**extra)
         case(workflow,'chart-1-visual',mode='browser');case(workflow,'chart-2-visual',mode='browser')
         chart_keys=_source_chart_keys(contract['charts'])
         case(workflow,'chart-aggregates',len(chart_keys),chartKeys=chart_keys)
@@ -267,6 +343,75 @@ def published_edit_allowed(entitlement,grant,mode):
     return entitlement and (mode=='published-all-users' or (mode=='published-explore' and grant in {'explore','edit'}))
 
 
+def _validate_validation_capture(case,target,capture):
+    contract=case.get('validationContract') or {}
+    bound=target.get('inputContract') or {}
+    if not bound.get('manifest') or not bound.get('receipt'):
+        raise AcceptanceError('source-bound validation input contract required')
+    validate_manifest(bound['manifest'])
+    _bound_inputs(target,bound['manifest'],bound['receipt'])
+    source=extract_workflow_repairs(bound['manifest']['source']['path'])
+    if contract!=_validation_contract(case['workflow'],source,bound['manifest'],bound['receipt']):
+        raise AcceptanceError('source validation contract changed or foreign')
+    expected=contract.get('branches') or []
+    evidence=capture.get('validationBranches')
+    if (not isinstance(evidence,list) or len(evidence)!=len(expected) or
+            [item.get('id') for item in evidence]!=[item['id'] for item in expected]):
+        raise AcceptanceError('complete declared source-validation and Cancel branches required')
+    session=capture.get('session') or {};entry=capture.get('dataEntry') or {}
+    if (session.get('accountType') not in {'build','admin'} or session.get('editInputTables') is not True or
+            not published_edit_allowed(True,session.get('effectiveGrant'),entry.get('inputMode')) or
+            entry.get('editDataAvailable') is not True):
+        raise AcceptanceError('native validation requires actual permitted published session')
+    execution_ids=set()
+    for branch,observed in zip(expected,evidence):
+        if any(observed.get(key)!=branch[key] for key in ('id','ruleId','target','attempt')) or \
+                observed.get('observedOutcome')!=branch['expectedOutcome']:
+            raise AcceptanceError('source validation branch/target/outcome mismatch')
+        execution_id=observed.get('executionId');receipt=observed.get('receipt') or {}
+        reference={'kind':'browser','id':execution_id}
+        if (not execution_id or execution_id in execution_ids or observed.get('origin')!='sigma-browser' or
+                observed.get('sourceHash')!=target['sourceHash'] or observed.get('planHash')!=target['planHash'] or
+                observed.get('publishedVersion')!=target['version'] or observed.get('session')!=session or
+                not observed.get('steps') or not observed.get('screenshots') or
+                reference not in observed.get('references',[]) or reference not in capture['references'] or
+                receipt.get('status')!='COMPLETED' or receipt.get('executionId')!=execution_id or
+                receipt.get('documentId')!=target['documentId'] or receipt.get('version')!=target['version']):
+            raise AcceptanceError('branch actual published runtime/session/receipt required')
+        execution_ids.add(execution_id)
+        proof=observed.get('rows') or {}
+        row_id=proof.get('rowIdColumn');key_columns=proof.get('keyColumns')
+        if not isinstance(row_id,str) or not row_id or not isinstance(key_columns,list):
+            raise AcceptanceError('branch physical row/key binding required')
+        snapshots=[proof.get(name) for name in ('before','after','reopened','restored')]
+        if any(not isinstance(rows,list) or not rows for rows in snapshots):
+            raise AcceptanceError('branch complete before/after/reopen/restore rows required')
+        if any(branch['target']['columnId'] not in row for rows in snapshots for row in rows):
+            raise AcceptanceError('branch target column absent from physical readback')
+        before,after,reopened,restored=(_index_rows(rows,row_id,key_columns) for rows in snapshots)
+        if branch['expectedOutcome']=='SAVED':
+            edits=proof.get('allowedChanges')
+            if (type(observed.get('writeCount')) is not int or observed['writeCount']!=1 or
+                    not isinstance(edits,list) or len(edits)!=1 or
+                    edits[0].get('column')!=branch['target']['columnId'] or
+                    edits[0].get('value')!=branch['attempt']['value']):
+                raise AcceptanceError('source-valid branch needs exact typed saved edit')
+            verify_persistence(*snapshots,row_id=row_id,key_columns=key_columns,allowed_changes=edits)
+        elif branch['expectedOutcome'] in {'REJECTED_NO_WRITE','CANCELLED_NO_WRITE'}:
+            if (type(observed.get('writeCount')) is not int or observed['writeCount']!=0 or
+                    not (_digest(before)==_digest(after)==_digest(reopened)==_digest(restored))):
+                raise AcceptanceError('invalid/Cancel branch must preserve every physical row')
+        else:raise AcceptanceError('unknown declared source-validation outcome')
+    oracle=case.get('oracle') or {};checks=oracle.get('checks') or []
+    outcomes=contract.get('expectedOutcomes')
+    actual=capture.get('actual') or []
+    if (len(checks)!=1 or checks[0].get('key')!='source-validation-and-cancel' or
+            checks[0].get('comparison')!='exact' or checks[0].get('expected')!=outcomes or
+            len(actual)!=1 or actual[0].get('key')!='source-validation-and-cancel' or
+            actual[0].get('value')!=[{'id':item['id'],'outcome':item['observedOutcome']} for item in evidence]):
+        raise AcceptanceError('independent source validation oracle/actual vector mismatch')
+
+
 def _evaluate_capture(matrix,capture):
     _no_secrets(capture)
     cases=[c for c in matrix['cases'] if c['id']==capture.get('caseId')]
@@ -295,9 +440,13 @@ def _evaluate_capture(matrix,capture):
             allowed=published_edit_allowed(session['editInputTables'],session['effectiveGrant'],entry.get('inputMode'))
             if entry.get('inputMode')!=case['inputMode'] or entry.get('editDataAvailable') is not allowed:
                 raise AcceptanceError('published entry mode/availability mismatch')
-            if not allowed and entry.get('writeCount')!=0:raise AcceptanceError('denied role must prove zero writes')
-            if allowed and not all(entry.get(k) is True for k in ('validSaved','invalidRejected','cancelPreserved')):
-                raise AcceptanceError('permitted role requires actual Save/Cancel/invalid-entry outcomes')
+            if not allowed and (type(entry.get('writeCount')) is not int or entry['writeCount']!=0):
+                raise AcceptanceError('denied role must prove zero writes')
+            if allowed and (entry.get('validSaved') is not True or
+                    type(entry.get('writeCount')) is not int or entry['writeCount']<1):
+                raise AcceptanceError('permitted role requires actual native Save')
+    if case['id'].endswith('-zero-and-invalid-entry'):
+        _validate_validation_capture(case,target,capture)
     if case['id'].endswith('-staging-writeback-isolation'):
         _matrix_inputs(matrix)
         isolation=capture.get('isolation') or {}
@@ -429,8 +578,9 @@ def validate_production_matrix(matrix):
     for workflow,count in counts.items():
         if not matrix['workflows'][workflow].get('inputTables'):raise AcceptanceError('actual staged writeback identities missing')
         if matrix['workflows'][workflow]['sourceFormulaCount']!=count:raise AcceptanceError('source formula denominator changed')
-        source_charts=extract_workflow_repairs(matrix['workflows'][workflow]['inputContract']['manifest']['source']['path'])['charts']
-        chart_keys=_source_chart_keys(source_charts)
+        input_contract=matrix['workflows'][workflow]['inputContract']
+        source_contract=extract_workflow_repairs(input_contract['manifest']['source']['path'])
+        chart_keys=_source_chart_keys(source_contract['charts'])
         expected={**common,**extra[workflow],'formula-accounting':count,'baseline-values':{'forecast':144,'research':420,'sales':48,'inventory':36,'expense':48}[workflow],
             'chart-aggregates':len(chart_keys)}
         for name,n in expected.items():
@@ -438,6 +588,9 @@ def validate_production_matrix(matrix):
             if c.get('count')!=n or c.get('mandatory') is not True or c.get('workflow')!=workflow:raise AcceptanceError('mandatory suite case missing/changed: '+workflow+'-'+name)
             if name=='chart-aggregates' and c.get('chartKeys')!=chart_keys:
                 raise AcceptanceError('mandatory source chart series/category keys changed: '+workflow)
+            if name=='zero-and-invalid-entry' and c.get('validationContract')!=_validation_contract(
+                    workflow,source_contract,input_contract['manifest'],input_contract['receipt']):
+                raise AcceptanceError('mandatory declared source validation/Cancel coverage changed: '+workflow)
             browser=name in {'zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout','chart-1-visual','chart-2-visual'} or name.startswith('published-') or (workflow=='forecast' and any(x in name for x in ('scenario','snapshot','wrong-context','python','goal','procedure'))) or name.startswith('approval-') or name=='selection-zero-one-multiple'
             if c.get('mode')!=('browser' if browser else 'query'):raise AcceptanceError('mandatory runtime mode changed')
             if name.startswith('published-'):

@@ -247,11 +247,28 @@ origin=sigma-query or sigma-browser, actual keyed values, receipt containing
 COMPLETED and the same execution/document/version. Browser proof additionally
 requires published=true/publishedVersion, steps, screenshots, actual session
 memberId/accountType/effectiveGrant/editInputTables, identityEvidenceId and
-adminBypass=false. Role cases also require dataEntry.inputMode,
-editDataAvailable and either writeCount=0 or validSaved/invalidRejected/
-cancelPreserved=true. Real published availability derives from entitlement,
+adminBypass=false. Role cases also require dataEntry.inputMode and
+editDataAvailable. Editor and Explorer each require validSaved=true, a positive
+writeCount, and complete
+changed/reopened/restored physical-row persistence; Viewer requires writeCount=0.
+The roles do not each claim invalid-entry or Cancel branches. Real published availability derives from entitlement,
 effective inherited grant AND table mode. Explorer is the selected Build user
 with Explore document grant, not Analyze-account parity. Do not broaden roles.
+Each workflow's existing count-one `zero-and-invalid-entry` browser case carries
+a source-derived `validationContract`: every authored Excel rule, assigned input
+element/column, boundary or list equivalence branch, and one Cancel/no-effect
+branch. The production validator recomputes the contract from the pinned source
+and approved input receipt. Its independent oracle must declare that exact branch
+outcome vector. Each branch needs its own actual published browser execution,
+matching session/target/typed attempted value, steps/screenshots and COMPLETED
+receipt. Each branch binds the exact source/plan and has a browser execution
+reference in both its branch record and the parent capture. Complete physical
+rows must show a saved/reopened/restored change for a
+source-valid entry, or exact unchanged rows after rejection or Cancel. A generic
+`true`, a query/service write, an omitted rule or a foreign target cannot fill
+the case. A source field without Excel validation is not assigned an invented
+rejection rule; Sales `Assumptions!F2` is such a field, and its observed NULL
+save remains an unresolved usability safeguard outside this source-rule case.
 Persistence captures contain complete before/changed/reopened/restored rows,
 rowIdColumn, keyColumns, allowedChanges and reopen/restore evidence IDs. At
 least one final business value must differ from before; same-value and cancelling
