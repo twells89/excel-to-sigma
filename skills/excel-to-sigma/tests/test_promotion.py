@@ -97,10 +97,10 @@ class PromotionTests(unittest.TestCase):
                     allowed=case['editEntitlement'];capture['dataEntry']={'inputMode':'published-explore','editDataAvailable':allowed,
                         'writeCount':1 if allowed else 0,'validSaved':allowed}
                 if identity.endswith('-zero-and-invalid-entry'):
-                    from test_acceptance_c2 import synthetic_validation_branches
+                    from test_acceptance_c2 import synthetic_validation_bundle
                     capture['dataEntry']={'inputMode':'published-explore','editDataAvailable':True}
-                    capture['validationBranches']=synthetic_validation_branches(case,target,capture['session'])
-                    capture['references'] += [item['references'][0] for item in capture['validationBranches']]
+                    capture['validationInventory'],capture['validationBranches'],refs=synthetic_validation_bundle(case,target,capture['session'])
+                    capture['references'] += refs
                     capture['actual']=[{'key':'source-validation-and-cancel',
                         'value':case['validationContract']['expectedOutcomes']}]
             if case.get('operationRequired'):capture['operationId']='unit-operation'

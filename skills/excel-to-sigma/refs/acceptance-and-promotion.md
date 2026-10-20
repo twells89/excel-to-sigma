@@ -269,6 +269,23 @@ source-valid entry, or exact unchanged rows after rejection or Cancel. A generic
 the case. A source field without Excel validation is not assigned an invented
 rejection rule; Sales `Assumptions!F2` is such a field, and its observed NULL
 save remains an unresolved usability safeguard outside this source-rule case.
+The contract also pins the approved input's exact editMode, full assigned
+column IDs/types, source business keys and row count, plus its page/element,
+connection/storage and target binding. Parent `dataEntry.inputMode` and each
+branch `inputMode` must equal that approved editMode; the session grant must
+permit it. The parent `validationInventory` is a fresh `sigma-query` readback
+of the complete assigned input. It carries `rows`, the actual `rowIdColumn`,
+`physicalIdMap` entries `{sourceKey:[...], physicalId:...}`, all assigned
+`columns`, `binding`, `rowsHash`, execution/evidence IDs, source/plan hashes,
+and a COMPLETED receipt repeating those binding/schema/hash/ID fields.
+Every `rows.before/after/reopened/restored` phase has its own distinct
+`rows.readbacks[phase]` query receipt with the same metadata and a hash of
+that phase's complete rows. Every query execution has a reference in the
+parent capture. All phases must preserve the inventory's complete source-key
+to physical-ID map and exact column set; before/restored equal the inventory,
+and only the declared target cell may change on a saved branch. The controller
+must obtain physical IDs from the actual assigned readback; source rows alone
+cannot supply them. Older captures without these receipts remain unresolved.
 Persistence captures contain complete before/changed/reopened/restored rows,
 rowIdColumn, keyColumns, allowedChanges and reopen/restore evidence IDs. At
 least one final business value must differ from before; same-value and cancelling

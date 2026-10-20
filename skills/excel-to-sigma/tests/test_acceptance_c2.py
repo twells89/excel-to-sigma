@@ -10,33 +10,68 @@ import test_acceptance as acceptance_fixture
 import acceptance as a
 
 
-def synthetic_validation_branches(case,target,session):
-    """Unit-only complete shape for validator tests; never publish as evidence."""
+def synthetic_validation_bundle(case,target,session):
+    """Unit-only assigned query shapes; physical IDs here are never live evidence."""
+    contract=case['validationContract'];table=contract['table'];feature=table['feature']
+    spec=a._manifest_architecture(target['inputContract']['manifest'])['inputs'][feature]
+    row_id='PHYSICAL_ROW_ID'
+    rows=[]
+    for index,source in enumerate(spec['rows']):
+        row={row_id:'unit-physical-'+str(index)}
+        for column in table['columns']:
+            value=source[column['name']]
+            if column['id'] not in table['keyColumns']:
+                if column['type']=='number':value=0.37
+                elif column['type']=='text':value='unit-baseline'
+            row[column['id']]=value
+        rows.append(row)
+    binding={key:table[key] for key in ('documentId','version','pageId','elementId','connectionId',
+        'tableIdentity','targetBindingHash','identityEvidenceId')}
+    references=[]
+    def readback(name,actual):
+        execution='query-'+name
+        references.append({'kind':'query','id':execution})
+        return {'origin':'sigma-query','executionId':execution,'evidenceId':'unit-'+execution,
+            'sourceHash':contract['sourceHash'],'planHash':contract['planHash'],
+            'binding':copy.deepcopy(binding),'rowIdColumn':row_id,
+            'columns':copy.deepcopy(table['columns']),'rowsHash':a._digest(actual),
+            'receipt':{'status':'COMPLETED','executionId':execution,
+                       'evidenceId':'unit-'+execution,
+                       'documentId':target['documentId'],'version':target['version'],
+                       'sourceHash':contract['sourceHash'],'planHash':contract['planHash'],
+                       'binding':copy.deepcopy(binding),'rowIdColumn':row_id,
+                       'columns':copy.deepcopy(table['columns']),'rowsHash':a._digest(actual)}}
+    inventory={**readback('inventory',rows),'rows':copy.deepcopy(rows)}
+    inventory['physicalIdMap']=[{'sourceKey':[row[key] for key in table['keyColumns']],
+                                'physicalId':row[row_id]} for row in rows]
     evidence=[]
-    for index,branch in enumerate(case['validationContract']['branches']):
+    for index,branch in enumerate(contract['branches']):
         column=branch['target']['columnId'];attempt=branch['attempt']['value']
-        baseline='baseline' if branch['attempt']['type']=='text' else 0.5
-        if baseline==attempt:baseline=0.25
-        before=[{'ID':'physical-id','Key':'source-row',column:baseline}]
-        after=copy.deepcopy(before)
+        before=copy.deepcopy(rows);after=copy.deepcopy(before)
         saved=branch['expectedOutcome']=='SAVED'
         if saved:after[0][column]=attempt
         execution_id='native-'+str(index)
+        references.append({'kind':'browser','id':execution_id})
         proof={**branch,'observedOutcome':branch['expectedOutcome'],
             'origin':'sigma-browser','executionId':execution_id,'publishedVersion':target['version'],
             'sourceHash':target['sourceHash'],'planHash':target['planHash'],
-            'session':copy.deepcopy(session),'steps':['Edit data',branch['id'],'Save or Cancel'],
+            'inputMode':table['editMode'],'session':copy.deepcopy(session),
+            'steps':['Edit data',branch['id'],'Save or Cancel'],
             'screenshots':[{'sha256':str(index).zfill(64)}],
             'references':[{'kind':'browser','id':execution_id}],
             'receipt':{'status':'COMPLETED','executionId':execution_id,
                        'documentId':target['documentId'],'version':target['version']},
             'writeCount':1 if saved else 0,
-            'rows':{'rowIdColumn':'ID','keyColumns':['Key'],'before':before,'after':after,
-                    'reopened':copy.deepcopy(after),'restored':copy.deepcopy(before)}}
+            'rows':{'rowIdColumn':row_id,'keyColumns':copy.deepcopy(table['keyColumns']),
+                    'before':before,'after':after,'reopened':copy.deepcopy(after),
+                    'restored':copy.deepcopy(before)}}
+        proof['rows']['readbacks']={phase:readback(str(index)+'-'+phase,proof['rows'][phase])
+            for phase in ('before','after','reopened','restored')}
         if saved:
-            proof['rows']['allowedChanges']=[{'key':{'Key':'source-row'},'column':column,'value':attempt}]
+            proof['rows']['allowedChanges']=[{'key':{key:before[0][key] for key in table['keyColumns']},
+                                               'column':column,'value':attempt}]
         evidence.append(proof)
-    return evidence
+    return inventory,evidence,references
 
 
 class SourceValidationRoleTests(unittest.TestCase):
@@ -158,9 +193,17 @@ class SourceValidationRoleTests(unittest.TestCase):
 
     def test_full_source_validation_vector_and_cancel_rejects_false_runtime_or_target(self):
         matrix,case,capture=self.validation_fixture()
-        capture['validationBranches']=synthetic_validation_branches(case,matrix['workflows']['sales'],capture['session'])
-        capture['references'] += [item['references'][0] for item in capture['validationBranches']]
+        capture['validationInventory'],capture['validationBranches'],refs=synthetic_validation_bundle(case,matrix['workflows']['sales'],capture['session'])
+        capture['references'] += refs
         self.assertEqual(a.append_evidence([],matrix,capture)[0]['status'],'PASSED')
+        reordered=copy.deepcopy(capture)
+        for item in reordered['validationBranches']:
+            for phase in ('after','reopened'):
+                item['rows'][phase].reverse()
+                row_hash=a._digest(item['rows'][phase])
+                item['rows']['readbacks'][phase]['rowsHash']=row_hash
+                item['rows']['readbacks'][phase]['receipt']['rowsHash']=row_hash
+        self.assertEqual(a.append_evidence([],matrix,reordered)[0]['status'],'PASSED')
         scenarios={
             'foreign-target':lambda bad:bad['validationBranches'][0]['target'].update(columnId='foreign'),
             'different-source-rule':lambda bad:bad['validationBranches'][0].update(ruleId='foreign'),
@@ -177,6 +220,69 @@ class SourceValidationRoleTests(unittest.TestCase):
         }
         for label,mutate in scenarios.items():
             bad=copy.deepcopy(capture);mutate(bad)
+            with self.subTest(label=label),self.assertRaises(ValueError):a.append_evidence([],matrix,bad)
+
+    def test_c2_reviewer_reproductions_are_rejected(self):
+        matrix,case,capture=self.validation_fixture()
+        capture['validationInventory'],capture['validationBranches'],refs=synthetic_validation_bundle(case,matrix['workflows']['sales'],capture['session'])
+        capture['references'] += refs
+        self.assertEqual(a.append_evidence([],matrix,capture)[0]['status'],'PASSED')
+
+        def foreign_rows(bad):
+            for item in bad['validationBranches']:
+                item['rows']['rowIdColumn']='ID'
+                item['rows']['keyColumns']=['Key']
+                for phase in ('before','after','reopened','restored'):
+                    item['rows'][phase]=[{'ID':'not-an-assigned-source-row','Key':'foreign',
+                                          item['target']['columnId']:0.37}]
+                if item['rows'].get('allowedChanges'):
+                    item['rows']['allowedChanges'][0]['key']={'Key':'foreign'}
+        bad=copy.deepcopy(capture);foreign_rows(bad)
+        with self.assertRaises(ValueError):a.append_evidence([],matrix,bad)
+
+        numeric=copy.deepcopy(capture)
+        branch=next(item for item in numeric['validationBranches'] if item['id']=='validation-4-Probability-upper')
+        column=branch['target']['columnId']
+        branch['attempt']['value']=True
+        with self.assertRaises(ValueError):a.append_evidence([],matrix,numeric)
+        numeric=copy.deepcopy(capture)
+        branch=next(item for item in numeric['validationBranches'] if item['id']=='validation-4-Probability-upper')
+        column=branch['target']['columnId']
+        branch['rows']['allowedChanges'][0]['value']=True
+        for phase in ('before','restored'):branch['rows'][phase][0][column]=False
+        for phase in ('after','reopened'):branch['rows'][phase][0][column]=True
+        with self.assertRaises(ValueError):a.append_evidence([],matrix,numeric)
+
+        wrong_route=copy.deepcopy(capture)
+        wrong_route['dataEntry']['inputMode']='published-all-users'
+        wrong_route['session']['effectiveGrant']='view'
+        for item in wrong_route['validationBranches']:
+            item['session']=copy.deepcopy(wrong_route['session'])
+        with self.assertRaises(ValueError):a.append_evidence([],matrix,wrong_route)
+
+        for label,mutate in {
+            'foreign-storage':lambda bad:bad['validationInventory']['binding'].update(tableIdentity='foreign'),
+            'foreign-query':lambda bad:bad['validationInventory'].update(origin='foreign-service'),
+            'missing-row':lambda bad:bad['validationBranches'][0]['rows']['before'].pop(),
+            'missing-column':lambda bad:bad['validationBranches'][0]['rows']['before'][0].pop('c1'),
+            'changed-physical-id':lambda bad:bad['validationBranches'][0]['rows']['before'][0].update(PHYSICAL_ROW_ID='foreign'),
+            'changed-other-cell':lambda bad:bad['validationBranches'][0]['rows']['after'][1].update(c3='undisclosed'),
+            'foreign-source-key':lambda bad:bad['validationInventory']['rows'][0].update(c0='foreign'),
+            'foreign-row-id-column':lambda bad:bad['validationInventory'].update(rowIdColumn='c0'),
+            'foreign-snapshot-receipt':lambda bad:bad['validationBranches'][0]['rows']['readbacks']['before']['binding'].update(elementId='foreign'),
+        }.items():
+            bad=copy.deepcopy(capture);mutate(bad)
+            # Keep claimed hashes consistent so coverage checks, rather than only
+            # receipt-hash checks, reject the altered row populations and cells.
+            if label=='foreign-storage':
+                bad['validationInventory']['receipt']['binding']['tableIdentity']='foreign'
+            for item in bad['validationBranches']:
+                for phase,readback in item['rows']['readbacks'].items():
+                    row_hash=a._digest(item['rows'][phase])
+                    readback['rowsHash']=row_hash;readback['receipt']['rowsHash']=row_hash
+            inventory_hash=a._digest(bad['validationInventory']['rows'])
+            bad['validationInventory']['rowsHash']=inventory_hash
+            bad['validationInventory']['receipt']['rowsHash']=inventory_hash
             with self.subTest(label=label),self.assertRaises(ValueError):a.append_evidence([],matrix,bad)
 
 
