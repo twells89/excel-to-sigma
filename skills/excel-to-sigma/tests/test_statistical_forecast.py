@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 import json
 import runpy
+import shutil
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -32,6 +34,29 @@ def fixture():
 
 
 class StatisticalForecastTests(unittest.TestCase):
+    def test_source_packet_rejects_finite_row_or_csv_tampering(self):
+        workspace = LIB.parents[4]
+        original = workspace / "broader-eight-source-replay-20261020/source-originals/05 Statistical Demand Forecast.xlsx"
+        packet_dir = workspace / "statistical-sigma-preview-20261020-CANDIDATE"
+        if not original.exists() or not (packet_dir / "source-inputs.json").exists():
+            self.skipTest("external source packet unavailable")
+        operator = runpy.run_path(str(LIB.parent / "statistical-operator.py"))
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder)
+            for name in ("source-inputs.json", "history.csv", "parameters.csv", "targets.csv"):
+                shutil.copyfile(packet_dir / name, target / name)
+            operator["source_packet"](target / "source-inputs.json", original)
+            payload = json.loads((target / "source-inputs.json").read_text())
+            payload["roles"]["history"]["rows"][0]["Demand"] += 12345
+            (target / "source-inputs.json").write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "SOURCE_PACKET_CONTENT_MISMATCH"):
+                operator["source_packet"](target / "source-inputs.json", original)
+            shutil.copyfile(packet_dir / "source-inputs.json", target / "source-inputs.json")
+            with (target / "history.csv").open("a") as stream:
+                stream.write("tamper")
+            with self.assertRaisesRegex(ValueError, "SOURCE_CSV_CONTENT_MISMATCH"):
+                operator["source_packet"](target / "source-inputs.json", original)
+
     def test_operator_frames_fit_sigma_grid_and_partial_continuation_reuses_table(self):
         operator = runpy.run_path(str(LIB.parent / "statistical-operator.py"))
         for role, (_, _, _, frame) in operator["TABLES"].items():
@@ -48,10 +73,122 @@ class StatisticalForecastTests(unittest.TestCase):
         self.assertIn("set_frame(1, 15, 24, 8)", continuation)
         compile(continuation, "<partial continuation>", "exec")
 
+    def test_phase1_source_snapshot_rejects_replay_and_changed_partial_schema(self):
+        workspace = LIB.parents[4]
+        packet = workspace / "statistical-sigma-preview-20261020-CANDIDATE"
+        before = packet / "root-phase1-partial-source2.json"
+        after = packet / "root-phase1-after-source3.json"
+        if not before.exists() or not after.exists():
+            self.skipTest("actual source snapshots unavailable")
+        operator = runpy.run_path(str(LIB.parent / "statistical-operator.py"))
+        source2, source3 = json.loads(before.read_text()), json.loads(after.read_text())
+        args = {"page_id": "dsRS3ZlYIn",
+                "connection_id": "cb2f5180-641f-47bd-8efa-da9d590d855a"}
+        operator["phase1_snapshot"](source2, role="parameters", existing_id="H5nEnfBk1F", **args)
+        operator["phase1_snapshot"](source2, role="targets", **args)
+        with self.assertRaisesRegex(ValueError, "ROLE_ALREADY_EXISTS"):
+            operator["phase1_snapshot"](source3, role="targets", **args)
+        with self.assertRaisesRegex(ValueError, "PARTIAL_PARAMETER_STATE_CHANGED"):
+            operator["phase1_snapshot"](source3, role="parameters", existing_id="H5nEnfBk1F", **args)
+
+    def test_phase2_rejects_source_identity_drift_before_emission(self):
+        workspace = LIB.parents[4]
+        source_path = workspace / "statistical-sigma-preview-20261020-CANDIDATE/root-phase1-after-source3.json"
+        if not source_path.exists():
+            self.skipTest("actual source snapshot unavailable")
+        source = json.loads(source_path.read_text())
+        operator = runpy.run_path(str(LIB.parent / "statistical-operator.py"))
+        roles = {}
+        for role, names in CANDIDATE_REQUIRED.items():
+            title = operator["TABLES"][role][0]
+            element = next(e for e in source["contents"]["elements"] if e.get("name") == title)
+            ids = {c["name"]: c["id"] for c in element["columns"] if c.get("name")}
+            roles[role] = {"elementId": element["id"], "title": title, "columnIds": ids,
+                           "rowCount": {"history": 108, "parameters": 1, "targets": 12}[role],
+                           "naturalKeysVerified": True, "readbackSnapshotId": "observed-" + role,
+                           "columns": {name: {"identifier": ids[name], "rowKey": ids[name]} for name in names}}
+        readback = {"sourceHash": source["contents"].get("sourceHash",
+                    "02f90f32fa077ee1fac7e2d7a8cdc48b61bf09f6fc69b27a855886ed9cd9d310"),
+                    "workbookId": source["workbookId"],
+                    "workbookVersion": source["documentVersion"],
+                    "pageId": "dsRS3ZlYIn", "sourceSnapshotId": "observed-source",
+                    "roles": roles}
+        program = operator["phase2_program"](readback, actual_source=source,
+                    source_packet_hash="0" * 64, candidate_ets=True)
+        self.assertEqual(program["sourceIdentity"]["roles"]["history"]["elementId"],
+                         roles["history"]["elementId"])
+        changed = {**readback, "workbookVersion": readback["workbookVersion"] + 1}
+        with self.assertRaisesRegex(ValueError, "ACTUAL_SOURCE_VERSION_OR_PAGE_MISMATCH"):
+            operator["phase2_program"](changed, actual_source=source,
+                        source_packet_hash="0" * 64, candidate_ets=True)
+        changed_roles = {**roles, "history": {**roles["history"], "elementId": roles["targets"]["elementId"]}}
+        with self.assertRaisesRegex(ValueError, "ACTUAL_SOURCE_ELEMENT_MISMATCH"):
+            operator["phase2_program"]({**readback, "roles": changed_roles}, actual_source=source,
+                        source_packet_hash="0" * 64, candidate_ets=True)
+
+    def test_resumable_seed_requeries_and_preserves_edits(self):
+        workspace = LIB.parents[4]
+        packet = workspace / "statistical-sigma-preview-20261020-CANDIDATE"
+        original = workspace / "broader-eight-source-replay-20261020/source-originals/05 Statistical Demand Forecast.xlsx"
+        source = packet / "root-phase1-after-source3.json"
+        if not source.exists() or not original.exists():
+            self.skipTest("actual source snapshots unavailable")
+        seed = runpy.run_path(str(LIB.parent / "statistical-seed.py"))["seed_plan"]
+        payload = json.loads((packet / "source-inputs.json").read_text())
+        first = payload["roles"]["history"]["rows"][0]
+        with tempfile.TemporaryDirectory() as folder:
+            current = Path(folder) / "query.json"
+            current.write_text("[]")
+            opts = {"source_packet_path": packet / "source-inputs.json",
+                    "source_original": original, "actual_source": source,
+                    "query_receipt": current, "role": "history",
+                    "describe_receipt": packet / "root-phase1-after-describes3.json",
+                    "row_id_key": "EHGAUETP2V"}
+            plan, chunk = seed(**opts)
+            self.assertEqual((len(plan["inserts"]), chunk["actionCount"], chunk["remainingCount"]),
+                             (108, 25, 83))
+            with self.assertRaisesRegex(ValueError, "REQUERY_REQUIRED_AFTER_PRIOR_BATCH"):
+                seed(**opts, prior_seed=plan)
+            observed = {"Month": first["Month"], "SKU": first["SKU"],
+                        "Demand": first["Demand"], "EHGAUETP2V": "observed-row-id"}
+            current.write_text(json.dumps([observed]))
+            next_plan, next_chunk = seed(**opts, prior_seed=plan)
+            self.assertEqual((len(next_plan["inserts"]), len(next_plan["unchanged"])), (107, 1))
+            self.assertEqual(next_chunk["actionCount"], 25)
+            edited = {**observed, "Demand": observed["Demand"] + 1}
+            current.write_text(json.dumps([edited]))
+            conflict, program = seed(**opts, prior_seed=plan)
+            self.assertEqual(len(conflict["conflicts"]), 1)
+            self.assertIsNone(program)
+            current.write_text(json.dumps([observed, {**observed, "EHGAUETP2V": "other-id"}]))
+            with self.assertRaisesRegex(ValueError, "duplicate current business key"):
+                seed(**opts, prior_seed=plan)
+
     def test_candidate_sigma_preview_is_typed_current_and_review_only(self):
         binding = {role: {"title": role, "columns": {name: {"identifier": name, "rowKey": name}
                     for name in names}} for role, names in CANDIDATE_REQUIRED.items()}
-        program = emit_preview_program(binding, candidate_ets=True)
+        identity = {"workbookId": "observed-workbook", "workbookVersion": 3,
+                    "pageId": "observed-page", "sourceSnapshotId": "observed-snapshot",
+                    "sourceSnapshotHash": "1" * 64,
+                    "sourcePacketHash": "0" * 64,
+                    "roles": {role: {"elementId": "observed-" + role,
+                                     "title": role, "columns": binding[role]["columns"]}
+                              for role in CANDIDATE_REQUIRED}}
+        program = emit_preview_program(binding, candidate_ets=True, source_identity=identity)
+        changed_identity = {**identity, "workbookVersion": 4}
+        changed_program = emit_preview_program(binding, candidate_ets=True,
+                                               source_identity=changed_identity)
+        self.assertNotEqual(program["codeHash"], changed_program["codeHash"])
+        self.assertNotEqual(program["sourceBindingHash"], changed_program["sourceBindingHash"])
+        changed_role_identity = {**identity, "roles": {**identity["roles"],
+                                 "history": {**identity["roles"]["history"],
+                                             "elementId": "same-title-different-element"}}}
+        changed_role_program = emit_preview_program(binding, candidate_ets=True,
+                                                     source_identity=changed_role_identity)
+        self.assertNotEqual(program["codeHash"], changed_role_program["codeHash"])
+        self.assertNotEqual(program["sourceBindingHash"], changed_role_program["sourceBindingHash"])
+        with self.assertRaisesRegex(ValueError, "OBSERVED_SOURCE_IDENTITY_REQUIRED"):
+            emit_preview_program(binding, candidate_ets=True)
         compile(program["code"], "<candidate preview>", "exec")
         rows, targets = fixture()
         frames = {"history": rows,
@@ -85,14 +222,14 @@ class StatisticalForecastTests(unittest.TestCase):
             def fit(self, **kwargs): return Fit(self.values, not self.fail, self.invalid)
         fake = types.ModuleType("statsmodels.tsa.exponential_smoothing.ets")
         fake.ETSModel = ETSModel
+        versions = {"statsmodels": "0.15.0", "scipy": "1.18.1"}
         def execute():
             sigma = Sigma()
             with patch.dict(sys.modules, {"statsmodels": types.ModuleType("statsmodels"),
                                           "statsmodels.tsa": types.ModuleType("statsmodels.tsa"),
                                           "statsmodels.tsa.exponential_smoothing": types.ModuleType("statsmodels.tsa.exponential_smoothing"),
                                           "statsmodels.tsa.exponential_smoothing.ets": fake}), \
-                 patch("importlib.metadata.version", side_effect=lambda name: {
-                     "statsmodels": "0.15.0", "scipy": "1.18.1"}[name]):
+                 patch("importlib.metadata.version", side_effect=lambda name: versions[name]):
                 exec(program["code"], {"sigma": sigma, "session": Session()})
             return sigma.outputs[0][1]
 
@@ -106,6 +243,7 @@ class StatisticalForecastTests(unittest.TestCase):
         self.assertIsNotNone(first["FY26ETSTotal"])
         self.assertIsNotNone(first["ReorderPoint"])
         self.assertEqual(first["ModelIdentity"], program["modelIdentity"])
+        self.assertEqual(first["SourceBindingHash"], program["sourceBindingHash"])
         self.assertEqual(json.loads(first["RuntimePackages"]),
                          {"statsmodels": "0.15.0", "scipy": "1.18.1"})
         self.assertEqual(set(json.loads(first["FitDiagnostics"])), set(("SKU-A100", "SKU-B200", "SKU-C300")))
@@ -130,6 +268,11 @@ class StatisticalForecastTests(unittest.TestCase):
         self.assertEqual(dict(zip(columns, invalid[0]))["ErrorCode"],
                          "CANDIDATE_INVALID_FORECAST_OUTPUT")
         ETSModel.invalid = False
+        versions["scipy"] = "1.17.0"
+        package_failure, _ = execute()
+        self.assertEqual(dict(zip(columns, package_failure[0]))["ErrorCode"],
+                         "CANDIDATE_SCIPY_VERSION_MISMATCH")
+        versions["scipy"] = "1.18.1"
         original_fit = ETSModel.fit
         def editing_fit(self, **kwargs):
             rows[-3]["Demand"] += 1

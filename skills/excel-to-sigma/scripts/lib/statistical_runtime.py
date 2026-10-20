@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 
 
 REQUIRED = {
@@ -30,7 +31,8 @@ FIELDS = (("Status", "STRING"), ("ReadyToPublish", "BOOLEAN"),
 OUTPUT_NAME = "StatisticalForecastPreview"
 CANDIDATE_MODEL = "statsmodels 0.15.0 ETSModel(add,add,add; estimated initial states)"
 CANDIDATE_FIELDS = (("ModelIdentity", "STRING"), ("FitDiagnostics", "STRING"),
-                    ("RuntimePackages", "STRING"), ("PreviewRunId", "STRING"))
+                    ("RuntimePackages", "STRING"), ("PreviewRunId", "STRING"),
+                    ("SourceBindingHash", "STRING"))
 
 
 def _binding(binding, required=REQUIRED):
@@ -60,11 +62,43 @@ def _binding(binding, required=REQUIRED):
     return binding
 
 
-def emit_preview_program(binding, *, candidate_ets=False):
+def emit_preview_program(binding, *, candidate_ets=False, source_identity=None):
     """Return a reviewable program, never a production-ready port."""
     if type(candidate_ets) is not bool:
         raise ValueError("candidate_ets must be a boolean opt-in")
     binding = _binding(binding, CANDIDATE_REQUIRED if candidate_ets else REQUIRED)
+    if candidate_ets:
+        if (not isinstance(source_identity, dict)
+                or not isinstance(source_identity.get("workbookId"), str)
+                or not source_identity["workbookId"]
+                or not isinstance(source_identity.get("workbookVersion"), int)
+                or isinstance(source_identity["workbookVersion"], bool)
+                or not isinstance(source_identity.get("pageId"), str)
+                or not source_identity["pageId"]
+                or not isinstance(source_identity.get("sourceSnapshotId"), str)
+                or not source_identity["sourceSnapshotId"]
+                or not isinstance(source_identity.get("sourceSnapshotHash"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", source_identity["sourceSnapshotHash"])
+                or not isinstance(source_identity.get("sourcePacketHash"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", source_identity["sourcePacketHash"])
+                or not isinstance(source_identity.get("roles"), dict)
+                or set(source_identity["roles"]) != set(CANDIDATE_REQUIRED)):
+            raise ValueError("OBSERVED_SOURCE_IDENTITY_REQUIRED")
+        ids = []
+        for role in CANDIDATE_REQUIRED:
+            item = source_identity["roles"][role]
+            if (not isinstance(item, dict) or not item.get("elementId")
+                    or item.get("title") != binding[role]["title"]
+                    or item.get("columns") != binding[role]["columns"]):
+                raise ValueError("OBSERVED_SOURCE_IDENTITY_MISMATCH:" + role)
+            ids.append(item["elementId"])
+        if len(set(ids)) != len(ids):
+            raise ValueError("AMBIGUOUS_SOURCE_ELEMENTS")
+    elif source_identity is not None:
+        raise ValueError("UNQUALIFIED_PREVIEW_HAS_NO_IDENTITY_OVERRIDE")
+    binding_hash = hashlib.sha256(json.dumps({"binding": binding, "sourceIdentity": source_identity},
+                                              sort_keys=True).encode()).hexdigest() if candidate_ets else hashlib.sha256(
+                                                  json.dumps(binding, sort_keys=True).encode()).hexdigest()
     kernel = Path(__file__).with_name("statistical_forecast.py").read_text()
     provider = (Path(__file__).with_name("statistical_ets_candidate.py").read_text()
                 .replace("from __future__ import annotations\n", "")
@@ -76,6 +110,8 @@ import json
 import uuid
 
 SOURCE_BINDING = ''' + repr(binding) + '''
+SOURCE_IDENTITY = ''' + repr(source_identity) + '''
+SOURCE_BINDING_HASH = ''' + repr(binding_hash) + '''
 OUTPUT_COLUMNS = ''' + repr([name for name, _ in fields]) + '''
 OUTPUT_TYPES = ''' + repr(dict(fields)) + '''
 CANDIDATE_ETS = ''' + repr(candidate_ets) + '''
@@ -135,6 +171,8 @@ try:
                                 'scipy': version('scipy')}
             if runtime_packages['statsmodels'] != '0.15.0':
                 raise StatisticalPortError('CANDIDATE_VERSION_MISMATCH')
+            if runtime_packages['scipy'] != '1.18.1':
+                raise StatisticalPortError('CANDIDATE_SCIPY_VERSION_MISMATCH')
         except PackageNotFoundError as exc:
             raise StatisticalPortError('CANDIDATE_DEPENDENCY_UNAVAILABLE') from exc
         fit_index = [0]
@@ -177,7 +215,7 @@ try:
                 IntendedSequenceDescending=result['IntendedSequenceDescending'][period_index],
                 ModelIdentity=MODEL_IDENTITY, FitDiagnostics=json.dumps(fit_diagnostics, sort_keys=True, allow_nan=False),
                 RuntimePackages=json.dumps(runtime_packages, sort_keys=True),
-                PreviewRunId=run_id))
+                PreviewRunId=run_id, SourceBindingHash=SOURCE_BINDING_HASH))
 except Exception as error:
     rows = [dict(Status='FAILURE', ReadyToPublish=False,
                  ErrorCode=str(error) if isinstance(error, StatisticalPortError) else 'RUNTIME_INPUT_ERROR',
@@ -185,7 +223,7 @@ except Exception as error:
                  ModelIdentity=MODEL_IDENTITY,
                  FitDiagnostics=json.dumps(fit_diagnostics, sort_keys=True, default=str, allow_nan=False),
                  RuntimePackages=json.dumps(runtime_packages, sort_keys=True),
-                 PreviewRunId=run_id)]
+                 PreviewRunId=run_id, SourceBindingHash=SOURCE_BINDING_HASH)]
 
 try:
     values = [[typed_output_value(row.get(name), OUTPUT_TYPES[name]) for name in OUTPUT_COLUMNS]
@@ -196,7 +234,7 @@ except Exception:
                     ErrorCode='RUNTIME_OUTPUT_TYPE_ERROR', SourceHash=SOURCE_SHA256,
                     ModelIdentity=MODEL_IDENTITY,
                     RuntimePackages=json.dumps(runtime_packages, sort_keys=True),
-                    PreviewRunId=run_id)
+                    PreviewRunId=run_id, SourceBindingHash=SOURCE_BINDING_HASH)
     output_frame = session.create_dataframe([[typed_output_value(fallback.get(name), OUTPUT_TYPES[name])
                                               for name in OUTPUT_COLUMNS]],
         schema=''' + repr(", ".join('"'+name+'" '+type_ for name,type_ in fields)) + ''')
@@ -204,7 +242,9 @@ sigma.output(''' + repr(OUTPUT_NAME) + ''', output_frame)
 '''
     return {"code": code, "codeHash": hashlib.sha256(code.encode()).hexdigest(),
             "output": OUTPUT_NAME, "schema": list(fields),
-            "sourceBindingHash": hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest(),
+            "sourceBindingHash": binding_hash,
+            "sourceIdentity": source_identity,
+            "externalIdentityGuardRequired": candidate_ets,
             "runtimeStatus": "UNRESOLVED", "productionStatus": "BLOCKED",
             "reason": "CANDIDATE_REVIEW_REQUIRED" if candidate_ets else "EXCEL_ETS_PROVIDER_UNQUALIFIED",
             "modelIdentity": CANDIDATE_MODEL if candidate_ets else "NONE"}
