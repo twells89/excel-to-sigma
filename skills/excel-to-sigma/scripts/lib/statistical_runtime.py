@@ -64,6 +64,7 @@ import json
 
 SOURCE_BINDING = ''' + repr(binding) + '''
 OUTPUT_COLUMNS = ''' + repr([name for name, _ in FIELDS]) + '''
+OUTPUT_TYPES = ''' + repr(dict(FIELDS)) + '''
 
 
 def read_bound_rows(role):
@@ -121,12 +122,14 @@ except Exception as error:
                  InputHash=input_hash, SourceHash=SOURCE_SHA256)]
 
 try:
-    values = [[row.get(name) for name in OUTPUT_COLUMNS] for row in rows]
+    values = [[typed_output_value(row.get(name), OUTPUT_TYPES[name]) for name in OUTPUT_COLUMNS]
+              for row in rows]
     output_frame = session.create_dataframe(values, schema=''' + repr(", ".join('"'+name+'" '+type_ for name,type_ in FIELDS)) + ''')
 except Exception:
     fallback = dict(Status='FAILURE', ReadyToPublish=False,
                     ErrorCode='RUNTIME_OUTPUT_TYPE_ERROR', SourceHash=SOURCE_SHA256)
-    output_frame = session.create_dataframe([[fallback.get(name) for name in OUTPUT_COLUMNS]],
+    output_frame = session.create_dataframe([[typed_output_value(fallback.get(name), OUTPUT_TYPES[name])
+                                              for name in OUTPUT_COLUMNS]],
         schema=''' + repr(", ".join('"'+name+'" '+type_ for name,type_ in FIELDS)) + ''')
 sigma.output(''' + repr(OUTPUT_NAME) + ''', output_frame)
 '''

@@ -34,6 +34,28 @@ def _number(value, field):
     return result
 
 
+def _derived(value, field):
+    try:
+        result = float(value)
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise StatisticalPortError("NONFINITE_" + field) from exc
+    if not isfinite(result):
+        raise StatisticalPortError("NONFINITE_" + field)
+    return result
+
+
+def typed_output_value(value, kind):
+    """Verify every generated Sigma cell before Snowpark sees it."""
+    if value is None:
+        return None
+    if kind == "DOUBLE":
+        return _number(value, "OUTPUT")
+    expected = {"STRING": str, "INTEGER": int, "BOOLEAN": bool}.get(kind)
+    if expected is None or type(value) is not expected:
+        raise StatisticalPortError("INVALID_OUTPUT_TYPE")
+    return value
+
+
 def _date(value, field):
     if isinstance(value, datetime):
         value = value.date()
@@ -94,13 +116,18 @@ def forecast_linear(target, months, values):
              for month, value in zip(months, values) if value is not None]
     if len(months) != len(values) or len(pairs) < 2:
         raise StatisticalPortError("INSUFFICIENT_LINEAR_HISTORY")
-    xbar = sum(x for x, _ in pairs) / len(pairs)
-    ybar = sum(y for _, y in pairs) / len(pairs)
-    xx = sum((x - xbar) ** 2 for x, _ in pairs)
+    xbar = _derived(sum(x for x, _ in pairs) / len(pairs), "LINEAR_X_MEAN")
+    ybar = _derived(sum(y for _, y in pairs) / len(pairs), "LINEAR_Y_MEAN")
+    xx = _derived(sum((x - xbar) ** 2 for x, _ in pairs), "LINEAR_VARIANCE")
     if xx == 0:
         raise StatisticalPortError("ZERO_LINEAR_VARIANCE")
-    slope = sum((x - xbar) * (y - ybar) for x, y in pairs) / xx
-    return ybar + slope * (excel_serial(target) - xbar)
+    try:
+        covariance = sum((x - xbar) * (y - ybar) for x, y in pairs)
+        slope = covariance / xx
+        forecast = ybar + slope * (excel_serial(target) - xbar)
+    except OverflowError as exc:
+        raise StatisticalPortError("NONFINITE_LINEAR_FORECAST") from exc
+    return _derived(forecast, "LINEAR_FORECAST")
 
 
 def trailing_three_average(values):
@@ -108,15 +135,20 @@ def trailing_three_average(values):
     tail = [v for v in values[-3:] if v is not None]
     if not tail:
         raise StatisticalPortError("EMPTY_TRAILING_WINDOW")
-    return sum(tail) / len(tail)
+    return _derived(sum(tail) / len(tail), "TRAILING_AVERAGE")
 
 
 def sample_stdev(values):
     observed = [_number(v, "DEMAND") for v in values if v is not None]
     if len(observed) < 2:
         raise StatisticalPortError("INSUFFICIENT_STDEV_HISTORY")
-    mean = sum(observed) / len(observed)
-    return sqrt(sum((v - mean) ** 2 for v in observed) / (len(observed) - 1))
+    mean = _derived(sum(observed) / len(observed), "STDEV_MEAN")
+    try:
+        variance = sum((v - mean) ** 2 for v in observed) / (len(observed) - 1)
+        stdev = sqrt(_derived(variance, "STDEV_VARIANCE"))
+    except OverflowError as exc:
+        raise StatisticalPortError("NONFINITE_STDEV_VARIANCE") from exc
+    return _derived(stdev, "STDEV")
 
 
 def interpolate_missing(values):
@@ -136,7 +168,11 @@ def interpolate_missing(values):
             right += 1
         if left < 0 or right >= len(result):
             raise StatisticalPortError("UNBOUNDED_MISSING_ETS_POINT")
-        result[index] = values[left] + (values[right] - values[left]) * (index-left) / (right-left)
+        try:
+            interpolated = values[left] + (values[right] - values[left]) * (index-left) / (right-left)
+        except OverflowError as exc:
+            raise StatisticalPortError("NONFINITE_ETS_COMPLETION") from exc
+        result[index] = _derived(interpolated, "ETS_COMPLETION")
     return result
 
 
@@ -159,7 +195,7 @@ def calculate(rows, selected_sku, seasonality, service_level, lead_months,
     lead = _number(lead_months, "LEAD_MONTHS")
     if not 0 < service < 1 or lead < 0:
         raise StatisticalPortError("INVALID_INVENTORY_PARAMETERS")
-    z = NormalDist().inv_cdf(service)
+    z = _derived(NormalDist().inv_cdf(service), "SERVICE_QUANTILE")
     linear = {sku: [forecast_linear(target, months, series[sku]) for target in targets]
               for sku in SKUS}
     trailing = trailing_three_average(series[selected_sku])
@@ -182,11 +218,12 @@ def calculate(rows, selected_sku, seasonality, service_level, lead_months,
     summary = []
     for sku in SKUS:
         stdev = sample_stdev(series[sku])
-        safety = z * stdev * sqrt(lead)
-        total = sum(forecasts[sku]) if forecasts else None
+        safety = _derived(z * stdev * sqrt(lead), "SAFETY_STOCK")
+        total = _derived(sum(forecasts[sku]), "ETS_TOTAL") if forecasts else None
+        reorder = _derived(total / 12 * lead + safety, "REORDER_POINT") if total is not None else None
         summary.append({"SKU": sku, "FY26ETSTotal": total,
                         "StdDev36M": stdev, "SafetyStock": safety,
-                        "ReorderPoint": total / 12 * lead + safety if total is not None else None})
+                        "ReorderPoint": reorder})
     return {"Status": "REVIEW_REQUIRED" if forecasts else "ETS_UNAVAILABLE",
             "ReadyToPublish": False, "SourceHash": SOURCE_SHA256,
             "ETSMethod": "UNQUALIFIED_CANDIDATE" if forecasts else "NONE",

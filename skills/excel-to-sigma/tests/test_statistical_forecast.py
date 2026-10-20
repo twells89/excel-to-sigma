@@ -10,7 +10,8 @@ import warnings
 LIB = Path(__file__).resolve().parents[1] / "scripts" / "lib"
 sys.path.insert(0, str(LIB))
 from statistical_forecast import (StatisticalPortError, calculate, excel_serial,
-                                  forecast_linear, sample_stdev, trailing_three_average)
+                                  forecast_linear, sample_stdev, trailing_three_average,
+                                  typed_output_value)
 from statistical_runtime import emit_preview_program
 from statistical_ets_candidate import CandidateFitError, forecast_with_diagnostics
 
@@ -52,6 +53,70 @@ class StatisticalForecastTests(unittest.TestCase):
     def test_sample_stdev_and_trailing_average_skip_blanks(self):
         self.assertAlmostEqual(sample_stdev([1, None, 3]), 2**.5)
         self.assertEqual(trailing_three_average([1, 2, None, 4]), 3)
+
+    def test_finite_history_that_overflows_derived_values_fails_closed(self):
+        rows, targets = fixture()
+        for row in rows:
+            row["Demand"] = 1e308
+        with self.assertRaisesRegex(StatisticalPortError, "NONFINITE_LINEAR_Y_MEAN"):
+            calculate(rows, "SKU-A100", 12, .95, 2, targets)
+        with self.assertRaisesRegex(StatisticalPortError, "NONFINITE_STDEV_VARIANCE"):
+            sample_stdev([1e308, -1e308])
+        with self.assertRaisesRegex(StatisticalPortError, "NONFINITE_TRAILING_AVERAGE"):
+            trailing_three_average([1e308, 1e308, 1e308])
+
+    def test_derived_safety_and_provider_annual_sum_fail_without_preview(self):
+        rows, targets = fixture()
+        for row in rows:
+            if row["SKU"] == "SKU-A100" and row["Month"] == date(2023, 1, 1):
+                row["Demand"] = 8e153
+            if row["SKU"] == "SKU-A100" and row["Month"] == date(2023, 2, 1):
+                row["Demand"] = -8e153
+        with self.assertRaisesRegex(StatisticalPortError, "NONFINITE_SAFETY_STOCK"):
+            calculate(rows, "SKU-A100", 12, .9999999999999999, 1.7e308, targets)
+        rows, targets = fixture()
+        with self.assertRaisesRegex(StatisticalPortError, "NONFINITE_ETS_TOTAL"):
+            calculate(rows, "SKU-A100", 12, .95, 2, targets,
+                      ets_forecaster=lambda values, season, horizon: [1e308] * horizon)
+
+    def test_typed_output_and_generated_runtime_emit_only_failure_on_overflow(self):
+        for number in (float("nan"), float("inf"), -float("inf")):
+            with self.assertRaisesRegex(StatisticalPortError, "NONFINITE_OUTPUT"):
+                typed_output_value(number, "DOUBLE")
+        binding = {role: {"title": role, "columns": {name: {"identifier": name, "rowKey": name}
+                    for name in names}} for role, names in {
+                        "history": ("Month", "SKU", "Demand"),
+                        "parameters": ("Key", "Value"), "targets": ("Period", "Month")}.items()}
+        program = emit_preview_program(binding)
+        rows, targets = fixture()
+        for row in rows:
+            row["Demand"] = 1e308
+        frames = {"history": rows,
+                  "parameters": [{"Key": k, "Value": v} for k, v in {
+                      "Selected SKU": "SKU-A100", "Seasonality (months)": 12,
+                      "Service level": .95, "Lead time (months)": 2}.items()],
+                  "targets": [{"Period": i, "Month": target} for i, target in enumerate(targets, 1)]}
+
+        class Frame:
+            def __init__(self, data): self.data, self.columns = data, list(data[0])
+            def collect(self): return self
+            def __iter__(self): return iter(self.data)
+        class Sigma:
+            def __init__(self): self.outputs = []
+            def get_element(self, title): return Frame(frames[title])
+            def output(self, name, frame): self.outputs.append((name, frame))
+        class Session:
+            def create_dataframe(self, values, schema): return (values, schema)
+        # A Snowpark Row supplies as_dict; use dict subclass to model that API.
+        class Row(dict):
+            def as_dict(self): return self
+        Frame.collect = lambda self: [Row(row) for row in self.data]
+        sigma = Sigma()
+        exec(program["code"], {"sigma": sigma, "session": Session()})
+        output_rows, _ = sigma.outputs[0][1]
+        self.assertEqual(len(output_rows), 1)
+        self.assertEqual(output_rows[0][0:3], ["FAILURE", False, "NONFINITE_LINEAR_Y_MEAN"])
+        self.assertTrue(all(value is None for value in output_rows[0][5:]))
 
     def test_guards_and_candidate_remains_unqualified(self):
         rows, targets = fixture()
