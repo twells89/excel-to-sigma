@@ -10,7 +10,7 @@ import unittest
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path[:0] = [str(SCRIPTS), str(SCRIPTS / "lib")]
 from lib.regional_grouped_canary import (build_candidate, source_rows, reference_b4,
-    bind_assigned_formula, prepare_scaffold_program)
+    bind_assigned_formula)
 from native_graph_reference import NativeGraphReference
 
 
@@ -123,12 +123,6 @@ class RegionalGroupedCanaryTest(unittest.TestCase):
             build_candidate(SOURCE, self.inputs, changed, self.oracle)
 
     def test_assigned_binding_and_exact_patch_contract(self):
-        row = self.candidate["elements"][0]
-        program = prepare_scaffold_program(self.candidate, element_kind="calculated-table",
-            page_id="observed-page", source_element_id="observed-sales", grid_row=1)
-        compile(program, "<regional-row-scaffold>", "exec")
-        self.assertIn('sigma.data.source.element("observed-sales")', program)
-        self.assertEqual(program.count("t.add_column("), len(row["columns"]))
         with self.assertRaisesRegex(ValueError, "unassigned"):
             bind_assigned_formula("[Unknown/X]", namespaces={}, local_columns={})
 

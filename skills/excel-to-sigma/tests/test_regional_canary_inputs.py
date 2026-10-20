@@ -7,10 +7,11 @@ import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path[:0] = [str(SCRIPTS), str(SCRIPTS / "lib")]
-from lib.regional_canary_inputs import (build_canary_input_plan, prepare_input_create_program,
-    prepare_input_seed_program, reconcile_input_rows)
+from lib.regional_canary_inputs import (build_canary_input_plan, validate_canary_input_plan,
+    prepare_input_create_program, prepare_input_seed_program, reconcile_input_rows,
+    confirm_phase_input_stability)
 from lib.regional_grouped_canary import (prepare_contents_patch, confirm_contents_patch,
-    prepare_grouping_program, observe_b4_query)
+    prepare_grouping_program, prepare_scaffold_program, observe_b4_query)
 
 ROOT = Path(__file__).resolve().parents[5]
 WORK = ROOT / "work"
@@ -36,7 +37,7 @@ class RegionalCanaryInputsTest(unittest.TestCase):
             prefix = "test-only-sales" if feature == "sales-forecast" else "test-only-summary"
             columns = [{"id": f"{prefix}-c{i}", "name": c["name"], "type": c["type"]}
                        for i, c in enumerate(spec["columns"])]
-            columns.append({"id": f"{prefix}-id", "name": "ID", "type": "text"})
+            columns.append({"id": "ID"})  # Actual Sigma system-column serialization.
             element = {"id": prefix, "kind": "input-table", "name": spec["name"],
                        "source": {"kind": "empty", "connectionId": "test-only-connection"},
                        "columns": columns}
@@ -45,9 +46,11 @@ class RegionalCanaryInputsTest(unittest.TestCase):
                 "canaryInputPlanHash": self.plan["canaryInputPlanHash"],
                 "elementId": prefix, "connectionId": "test-only-connection",
                 "pageId": "test-only-page", "columnIds": {c["name"]: c["id"] for c in columns[:-1]},
-                "rowIdColumn": "ID", "rowIdColumnId": columns[-1]["id"]}
+                "rowIdColumn": "ID", "rowIdColumnId": columns[-1]["id"],
+                "rowIdQueryColumnId": f"{prefix}-query-id-alias"}
             queries[feature] = {"elementId": prefix, "documentVersion": 7,
                 "snapshotId": f"test-only-query-{feature}",
+                "rowIdQueryColumnId": bindings[feature]["rowIdQueryColumnId"],
                 "rows": [{**row, "ID": f"test-only-physical-{feature}-{i}"}
                          for i, row in enumerate(spec["rows"])]}
         current = {"workbookId": "test-only-document", "documentVersion": 7,
@@ -63,9 +66,9 @@ class RegionalCanaryInputsTest(unittest.TestCase):
 
     def namespace(self, element, *, system_alias=None):
         columns = {c["name"]: {"id": c["id"], "name": c["name"]}
-                   for c in element["columns"]}
+                   for c in element["columns"] if "name" in c}
         if system_alias:
-            columns["Row ID"] = columns["ID"]
+            columns["Row ID"] = {"id": "ID", "name": "ID"}
         return {"elementId": element["id"], "name": element["name"], "columns": columns}
 
     def test_projection_exact_two_inputs_and_pending_denominator(self):
@@ -82,9 +85,23 @@ class RegionalCanaryInputsTest(unittest.TestCase):
         self.assertNotIn("Source Key", sales["sourceCells"]["0"])
         self.assertEqual(self.plan["features"]["summary-regions"]["sourceCells"]["0"],
                          {"Region": "Summary!A4"})
+        forged = copy.deepcopy(self.plan)
+        forged["features"]["sales-forecast"]["rows"][0]["Units"] = 1234567
+        from lib.native_exact_plan import digest
+        forged["canaryInputPlanHash"] = digest({k: v for k, v in forged.items()
+                                                if k != "canaryInputPlanHash"})
+        with self.assertRaisesRegex(ValueError, "independently reviewed projection"):
+            validate_canary_input_plan(forged, SOURCE, self.base, self.candidate)
 
     def test_create_seed_and_reconcile_are_bounded_and_observed(self):
         current, bindings, queries = self.setup_document()
+        observed = self.observed(current, bindings, queries)
+        scaffold = prepare_scaffold_program(self.candidate, element_kind="calculated-table",
+            page_id="test-only-page", source_element_id=bindings["sales-forecast"]["elementId"],
+            grid_row=1, current=current, source_path=SOURCE, base_input_plan=self.base,
+            canary_input_plan=self.plan, observed_inputs=observed)
+        compile(scaffold, "<row-scaffold>", "exec")
+        self.assertEqual(scaffold.count("t.add_column("), len(self.candidate["elements"][0]["columns"]))
         empty = copy.deepcopy(current)
         empty["contents"]["elements"] = []
         for feature in bindings:
@@ -93,7 +110,8 @@ class RegionalCanaryInputsTest(unittest.TestCase):
             compile(create["program"], "<input-create>", "exec")
             self.assertNotIn("upsert_rows", create["program"])
             empty_query = {"elementId": bindings[feature]["elementId"],
-                           "documentVersion": 7, "snapshotId": "test-only-empty", "rows": []}
+                           "documentVersion": 7, "snapshotId": "test-only-empty", "rows": [],
+                           "rowIdQueryColumnId": bindings[feature]["rowIdQueryColumnId"]}
             seed = prepare_input_seed_program(self.plan, current, feature=feature,
                 binding=bindings[feature], empty_query=empty_query)
             compile(seed["program"], "<input-seed>", "exec")
@@ -107,6 +125,43 @@ class RegionalCanaryInputsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "value differs"):
             reconcile_input_rows(self.plan, current, feature="summary-regions",
                                  binding=bindings["summary-regions"], query=wrong)
+        for forged_system in ({"id": "FOREIGN"}, {"id": "ID", "name": "Foreign ID"}):
+            wrong_doc = copy.deepcopy(current)
+            wrong_doc["contents"]["elements"][0]["columns"][-1] = forged_system
+            with self.assertRaisesRegex(ValueError, "foreign or overlapping columns|physical column"):
+                reconcile_input_rows(self.plan, wrong_doc, feature="sales-forecast",
+                                     binding=bindings["sales-forecast"],
+                                     query=queries["sales-forecast"])
+        foreign_doc = copy.deepcopy(current)
+        foreign_doc["contents"]["elements"][0]["columns"].append(
+            {"id": "foreign", "name": "Foreign", "type": "text"})
+        with self.assertRaisesRegex(ValueError, "foreign or overlapping columns"):
+            reconcile_input_rows(self.plan, foreign_doc, feature="sales-forecast",
+                                 binding=bindings["sales-forecast"],
+                                 query=queries["sales-forecast"])
+        wrong_alias = copy.deepcopy(queries["sales-forecast"])
+        wrong_alias["rowIdQueryColumnId"] = "foreign-query-alias"
+        with self.assertRaisesRegex(ValueError, "fresh physical input query"):
+            reconcile_input_rows(self.plan, current, feature="sales-forecast",
+                                 binding=bindings["sales-forecast"], query=wrong_alias)
+
+    def test_native_phase_postcheck_rejects_editable_metadata_drift(self):
+        before_current, bindings, before_queries = self.setup_document()
+        before = self.observed(before_current, bindings, before_queries)
+        after_current = copy.deepcopy(before_current)
+        after_current["documentVersion"] = 8
+        after_queries = copy.deepcopy(before_queries)
+        for feature, query in after_queries.items():
+            query["documentVersion"] = 8
+            query["snapshotId"] = f"test-only-post-{feature}"
+        after = self.observed(after_current, bindings, after_queries)
+        receipt = confirm_phase_input_stability(self.plan, SOURCE, self.base, self.candidate,
+            before_current, before, after_current, after)
+        self.assertEqual(receipt["status"], "CONFIRMED_CANARY_INPUTS_STABLE_AFTER_EDIT")
+        changed = copy.deepcopy(after_queries)
+        changed["sales-forecast"]["rows"][0]["Source Ordinal"] = 999
+        with self.assertRaisesRegex(ValueError, "metadata value differs"):
+            self.observed(after_current, bindings, changed)
 
     def test_patch_checks_input_source_namespaces_and_b4_row_id(self):
         current, bindings, queries = self.setup_document()
@@ -148,6 +203,26 @@ class RegionalCanaryInputsTest(unittest.TestCase):
         wrong_column["namespaces"]["Sales"]["columns"]["Units"]["id"] = "foreign"
         with self.assertRaisesRegex(ValueError, "lineage"):
             prepare_contents_patch(self.candidate, current, wrong_column, **kwargs)
+        for forged in (lambda c: next(col for col in c["elements"][0]["columns"]
+                                      if col["name"] == "Revenue Number").__setitem__("formula", "1234567"),
+                       lambda c: next(col for col in c["elements"][2]["columns"]
+                                      if col["name"] == "B4 Number").__setitem__("formula", "1234567"),
+                       lambda c: c["constructionBudget"].__setitem__("formulaColumns", 29),
+                       lambda c: c["sourceMappings"].__setitem__("Summary!B4", {"targetElement": "foreign"})):
+            changed = copy.deepcopy(self.candidate)
+            forged(changed)
+            from lib.native_exact_plan import digest
+            changed["candidateDigest"] = digest(changed)  # attacker-controlled self-hash is irrelevant
+            with self.assertRaisesRegex(ValueError, "independently reviewed graph"):
+                validate_canary_input_plan(self.plan, SOURCE, self.base, changed)
+            with self.assertRaisesRegex(ValueError, "independently reviewed graph"):
+                prepare_contents_patch(changed, current, receipt, **kwargs)
+            with self.assertRaisesRegex(ValueError, "independently reviewed graph"):
+                prepare_scaffold_program(changed, element_kind="calculated-table",
+                    page_id="test-only-page", source_element_id=bindings["sales-forecast"]["elementId"],
+                    grid_row=1, current=current, source_path=SOURCE,
+                    base_input_plan=self.base, canary_input_plan=self.plan,
+                    observed_inputs=observed)
 
     def test_grouping_and_summary_b4_physical_row_readback(self):
         current, bindings, queries = self.setup_document()
@@ -163,10 +238,19 @@ class RegionalCanaryInputsTest(unittest.TestCase):
             "sourceSha256": self.candidate["sourceSha256"], "documentId": current["workbookId"],
             "documentVersion": 7, "contentsHash": digest(current["contents"])}
         grouped = prepare_grouping_program(self.candidate, current, confirmed,
-            row_element_id=row_element["id"], page_id="test-only-page", grid_row=15)
+            row_element_id=row_element["id"], page_id="test-only-page", grid_row=15,
+            source_path=SOURCE, base_input_plan=self.base,
+            canary_input_plan=self.plan, observed_inputs=observed)
         compile(grouped["program"], "<grouping>", "exec")
         self.assertIn("sigma.formula.min(error_ordinal)", grouped["program"])
         self.assertIn("grouping.to_source()", grouped["program"])
+        forged = copy.deepcopy(self.candidate)
+        next(c for c in forged["elements"][0]["columns"] if c["name"] == "Revenue Number")["formula"] = "1234567"
+        with self.assertRaisesRegex(ValueError, "independently reviewed graph"):
+            prepare_grouping_program(forged, current, confirmed,
+                row_element_id=row_element["id"], page_id="test-only-page", grid_row=15,
+                source_path=SOURCE, base_input_plan=self.base,
+                canary_input_plan=self.plan, observed_inputs=observed)
         grouped_element = {"id": "test-only-grouped", "kind": "table",
             "name": "Regional Sales Region Quarter",
             "source": {"kind": "grouping", "elementId": row_element["id"]},
@@ -195,18 +279,29 @@ class RegionalCanaryInputsTest(unittest.TestCase):
                          observed["summary-regions"]["receipt"]["rows"]["0"]["rowId"])
         readback = {"workbookId": current["workbookId"], "documentVersion": 8,
                     "contents": patch["contents"]}
+        post_queries = copy.deepcopy(queries)
+        for feature, source_query in post_queries.items():
+            source_query["documentVersion"] = 8
+            source_query["snapshotId"] = f"test-only-post-query-{feature}"
+        post_inputs = self.observed(readback, bindings, post_queries)
         query = {"elementId": summary_element["id"], "documentVersion": 8,
                  "snapshotId": "test-only-summary-query",
                  "rows": [{"Source Key": "Summary!row:4",
                            "Source Row ID": patch["b4Source"]["sourceRowId"],
                            "B4 Number": 1544984.02, "B4 Text": "", "B4 Logical": False,
                            "B4 Kind": "n", "B4 Error": ""}]}
-        result = observe_b4_query(patch, readback, query)
+        observer_kwargs = dict(source_path=SOURCE, base_input_plan=self.base,
+            canary_input_plan=self.plan, observed_inputs=post_inputs)
+        result = observe_b4_query(self.candidate, patch, readback, query, **observer_kwargs)
         self.assertEqual(result["status"], "B4_QUERY_OBSERVED_UNVERIFIED")
         wrong = copy.deepcopy(query)
         wrong["rows"][0]["Source Row ID"] = "test-only-other-row"
         with self.assertRaisesRegex(ValueError, "physical row"):
-            observe_b4_query(patch, readback, wrong)
+            observe_b4_query(self.candidate, patch, readback, wrong, **observer_kwargs)
+        forged = copy.deepcopy(self.candidate)
+        next(c for c in forged["elements"][2]["columns"] if c["name"] == "B4 Number")["formula"] = "1234567"
+        with self.assertRaisesRegex(ValueError, "independently reviewed graph"):
+            observe_b4_query(forged, patch, readback, query, **observer_kwargs)
 
 
 if __name__ == "__main__":

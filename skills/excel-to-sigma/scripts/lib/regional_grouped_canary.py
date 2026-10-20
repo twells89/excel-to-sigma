@@ -19,6 +19,10 @@ from .native_exact_plan import HelperGraph, input_scalar, digest, _map_helpers
 from .source_inputs import validate_source_input_plan
 
 SOURCE_SHA = "4b46bfa6190d1ef12ea35713e3932aa77f19fb964730b4b3bbb0851294219e2c"
+# Independently reviewed complete candidate at f45b3a0. This constant is
+# outside candidate.json and covers every emitted formula, mapping, budget,
+# obligation, and qualification. A candidate-supplied digest is never trusted.
+REVIEWED_CANDIDATE_DIGEST = "371046eb9c4826ae85dd8682bd6d7dd7f527869ffcf9fe5b1392a073709e4077"
 CELL = "Summary!B4"
 SALES_ROWS = tuple(range(2, 146))
 MAX_TABLES = 8
@@ -28,6 +32,12 @@ MAX_FORMULA_COLUMNS = 128
 def _require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def validate_reviewed_candidate(candidate):
+    _require(isinstance(candidate, dict) and digest(candidate) == REVIEWED_CANDIDATE_DIGEST,
+             "complete Regional B4 candidate differs from independently reviewed graph")
+    return candidate
 
 
 def _relative_ast(ast, row):
@@ -265,15 +275,22 @@ def bind_assigned_formula(formula, *, namespaces, local_columns):
 
 
 def prepare_scaffold_program(candidate, *, element_kind, page_id, source_element_id,
-                             grid_row):
+                             grid_row, current, source_path, base_input_plan,
+                             canary_input_plan, observed_inputs):
     """One documented SDK table scaffold; print assigned IDs for readback.
 
     The caller supplies observed page/source IDs. Grouping and the flat grouped
     table require their own qualification phase after the row formulas patch.
     """
+    validate_reviewed_candidate(candidate)
+    from .regional_canary_inputs import validate_phase_inputs
+    validated = validate_phase_inputs(canary_input_plan, source_path, base_input_plan,
+                                      candidate, current, observed_inputs)
     _require(element_kind in ("calculated-table", "summary-table"), "unsupported scaffold phase")
-    _require(all(isinstance(x, str) and x and not x.startswith("@")
-                 for x in (page_id, source_element_id)), "observed page/source IDs required")
+    feature = "sales-forecast" if element_kind == "calculated-table" else "summary-regions"
+    _require(any(p.get("id") == page_id for p in current["contents"].get("pages", [])) and
+             source_element_id == validated[feature]["elementId"],
+             "observed page/reconciled source input IDs required")
     _require(isinstance(grid_row, int) and grid_row >= 1, "positive placement row required")
     logical = next(e for e in candidate["elements"] if e["kind"] == element_kind)
     name = "Regional Sales Rows" if element_kind == "calculated-table" else "Regional Summary B4"
@@ -299,8 +316,13 @@ def json_quote(value):
 
 
 def prepare_grouping_program(candidate, current, row_patch_confirmation, *,
-                             row_element_id, page_id, grid_row):
+                             row_element_id, page_id, grid_row, source_path,
+                             base_input_plan, canary_input_plan, observed_inputs):
     """Emit the documented SDK grouping phase from a saved row-formula readback."""
+    validate_reviewed_candidate(candidate)
+    from .regional_canary_inputs import validate_phase_inputs
+    validated = validate_phase_inputs(canary_input_plan, source_path, base_input_plan,
+                                      candidate, current, observed_inputs)
     _require(candidate.get("status") == "OFFLINE_GROUPED_CANARY_PENDING_STAGING" and
              row_patch_confirmation.get("status") == "CONFIRMED_FORMULA_PATCH_STRUCTURE_ONLY" and
              row_patch_confirmation.get("sourceSha256") == candidate.get("sourceSha256") and
@@ -314,7 +336,9 @@ def prepare_grouping_program(candidate, current, row_patch_confirmation, *,
     elements = current["contents"]["elements"]
     rows = [e for e in elements if e.get("id") == row_element_id]
     _require(len(rows) == 1 and rows[0].get("kind") == "table" and
-             rows[0].get("name") == "Regional Sales Rows", "observed calculated rows missing")
+             rows[0].get("name") == "Regional Sales Rows" and
+             rows[0].get("source") == {"kind": "table", "elementId": validated["sales-forecast"]["elementId"]},
+             "observed calculated rows/source lineage missing")
     needed = {"Group Key", "Revenue Number", "First Error Ordinal"}
     columns = rows[0].get("columns", [])
     _require(needed <= {c.get("name") for c in columns} and
@@ -369,6 +393,10 @@ def _verified_namespaces(current, namespaces, observed_inputs, *, element_kind):
                  f"actual namespace column IDs/names ambiguous: {alias}")
         by_id = {c.get("id"): c for c in columns}
         for logical, assigned in binding["columns"].items():
+            if logical == "Row ID" and by_id.get("ID") == {"id": "ID"}:
+                _require(assigned == {"id": "ID", "name": "ID"},
+                         f"actual implicit system ID lineage differs: {alias}")
+                continue
             _require(isinstance(assigned, dict) and
                      isinstance(assigned.get("id"), str) and assigned["id"] and
                      isinstance(assigned.get("name"), str) and assigned["name"] and
@@ -409,6 +437,7 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind,
     The caller owns REST transport and must use the returned document version as
     an If-Match guard. Grouping creation/calculations are a separate SDK phase.
     """
+    validate_reviewed_candidate(candidate)
     _require(candidate["status"] == "OFFLINE_GROUPED_CANARY_PENDING_STAGING", "candidate status changed")
     _require(element_kind in ("calculated-table", "summary-table"), "unsupported patch phase")
     _require(receipt.get("sourceSha256") == candidate["sourceSha256"] and
@@ -418,14 +447,9 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind,
     _require(isinstance(current.get("documentVersion"), int) and
              isinstance(current.get("contents", {}).get("elements"), list),
              "fresh full document readback required")
-    from .regional_canary_inputs import validate_canary_input_plan, validate_reconciled_receipt
-    validate_canary_input_plan(canary_input_plan, source_path, base_input_plan, candidate)
-    _require(set(observed_inputs) == {"sales-forecast", "summary-regions"},
-             "both actual canary input queries are required")
-    for feature, evidence in observed_inputs.items():
-        validate_reconciled_receipt(canary_input_plan, current, feature=feature,
-                                    binding=evidence["binding"], query=evidence["query"],
-                                    receipt=evidence["receipt"])
+    from .regional_canary_inputs import validate_phase_inputs
+    validate_phase_inputs(canary_input_plan, source_path, base_input_plan, candidate,
+                          current, observed_inputs)
     _require(receipt.get("canaryInputPlanHash") == canary_input_plan["canaryInputPlanHash"],
              "canary input extension receipt is stale")
     namespace_elements = _verified_namespaces(current, receipt.get("namespaces") or {},
@@ -461,6 +485,7 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind,
         changes.append({"logicalColumnId": column["id"], "actualColumnId": actual_column["id"],
                         "formula": bound})
     packet = {"status": "REST_FORMULA_PATCH_PENDING_EXECUTION", "sourceSha256": candidate["sourceSha256"],
+              "reviewedCandidateDigest": REVIEWED_CANDIDATE_DIGEST,
               "canaryInputPlanHash": canary_input_plan["canaryInputPlanHash"],
               "documentId": current["workbookId"], "ifMatchDocumentVersion": current["documentVersion"],
               "elementId": binding["elementId"], "beforeContentsHash": digest(original),
@@ -477,7 +502,8 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind,
 
 
 def confirm_contents_patch(packet, readback):
-    _require(packet.get("status") == "REST_FORMULA_PATCH_PENDING_EXECUTION" and
+    _require(packet.get("reviewedCandidateDigest") == REVIEWED_CANDIDATE_DIGEST and
+             packet.get("status") == "REST_FORMULA_PATCH_PENDING_EXECUTION" and
              readback.get("workbookId") == packet.get("documentId") and
              isinstance(readback.get("documentVersion"), int) and
              readback["documentVersion"] > packet["ifMatchDocumentVersion"],
@@ -490,9 +516,15 @@ def confirm_contents_patch(packet, readback):
             "runtimeStatus": "UNVERIFIED_CANDIDATE"}
 
 
-def observe_b4_query(packet, readback, query):
+def observe_b4_query(candidate, packet, readback, query, *, source_path,
+                     base_input_plan, canary_input_plan, observed_inputs):
     """Tie a runtime query row to physical Summary!A4; parity is a later check."""
-    _require(packet.get("b4Source", {}).get("cell") == "Summary!A4" and
+    validate_reviewed_candidate(candidate)
+    from .regional_canary_inputs import validate_phase_inputs
+    validate_phase_inputs(canary_input_plan, source_path, base_input_plan,
+                          candidate, readback, observed_inputs)
+    _require(packet.get("reviewedCandidateDigest") == REVIEWED_CANDIDATE_DIGEST and
+             packet.get("b4Source", {}).get("cell") == "Summary!A4" and
              packet.get("status") == "REST_FORMULA_PATCH_PENDING_EXECUTION",
              "summary B4 patch and A4 source row required")
     confirmed = confirm_contents_patch(packet, readback)

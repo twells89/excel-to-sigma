@@ -7,7 +7,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
-from lib.regional_grouped_canary import build_candidate, reference_b4, source_rows
+from lib.regional_grouped_canary import (build_candidate, reference_b4, source_rows,
+    validate_reviewed_candidate)
 
 
 def main():
@@ -26,6 +27,7 @@ def main():
     if oracle is None:
         raise ValueError("source-matched Excel B4 oracle is missing")
     candidate = build_candidate(args.source, inputs, native, oracle)
+    validate_reviewed_candidate(candidate)
     if str(reference_b4(source_rows(inputs), "West")) != oracle["numericValue"]:
         raise ValueError("independent decimal source-row B4 baseline differs from Excel")
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -24,7 +24,8 @@ The logical construction is:
    fields (`Region`, `Product Line`, `Month`, `Units`, `Avg Price`). Before
    staging the canary, add two metadata fields to each input row: immutable
    `Source Key = Forecast Input!row:N` and `Source Ordinal = N-1`. These are
-   migration metadata, not extra Excel literals or fake Sigma IDs. Reconcile
+   migration-owned **editable** metadata, not extra Excel literals or fake
+   Sigma IDs; the SDK does not establish a column lock here. Reconcile
    all 144 physical row IDs after seed. A second ordinary input holds the four
    `Summary!A4:A7` Region labels, with exact source-cell lineage and physical
    row-ID reconciliation. New appended rows need a reviewed
@@ -58,13 +59,30 @@ The logical construction is:
    then query all physical rows and run `reconcile_input_rows`. It checks every
    authored value and metadata value against its original source cell, and
    records each assigned physical row ID. Query the actual row-ID column alias
-   after each REST build; a virtual alias may normalize to `ID`.
+   after each REST build; a virtual alias may normalize to `ID`. Actual Sigma
+   source serialization may expose the physical system column only as
+   `{"id":"ID"}` without a name or type. Keep that physical ID separate from
+   the observed query column ID (`rowIdQueryColumnId`, such as the ID alias in
+   describe-element DDL); the query row label is `ID`. Both IDs and the query
+   alias must be reconciled, and a foreign name/ID fails closed.
+   The complete candidate and complete fixture are pinned to independently
+   reviewed digests in code; recomputing a packet's own hash cannot authorize
+   changed formulas, source mappings, claims, or input rows.
 2. Call `prepare_scaffold_program(candidate, element_kind="calculated-table",
-   page_id=<observed>, source_element_id=<observed sales input>, grid_row=<free>)`.
+   page_id=<observed>, source_element_id=<observed sales input>, grid_row=<free>,
+   current=<fresh document>, source_path=..., base_input_plan=...,
+   canary_input_plan=..., observed_inputs=<fresh two-input receipts>)`.
    It emits one documented `get_page` / `add_table(source.element(...))` /
    `add_column(..., const_number(0))` SDK program. Execute only in a disposable
    staging document. Read back its actual element ID and every column ID, and
-   check the full document/layout for foreign changes.
+   check the full document/layout for foreign changes. After every native
+   structural edit, query both ordinary inputs again and call
+   `confirm_phase_input_stability` with pre/post documents and receipts. It
+   rejects any change to their 148 original authored/metadata values, row IDs,
+   input element/column IDs, or reused query snapshots. Repeat this check
+   after grouping, each scaffold, and each REST formula patch. During deliberate
+   value-edit tests, inspect the edited field and metadata/row IDs; restore the
+   authored field before using this original-source reconciliation again.
 3. Build an assigned receipt with `sourceSha256`, `canaryInputPlanHash`,
    `documentId`, `documentVersion`, scaffold element/column IDs, and namespace
    element IDs, names, and column IDs/names taken from fresh full-document
@@ -77,7 +95,8 @@ The logical construction is:
    namespace/source-column lineage, scaffold source, placeholders, and
    formula references. The confirmer checks exact saved full contents.
 4. Call `prepare_grouping_program` with the confirmed row-patch readback,
-   observed row element/page IDs, and free grid row. The emitted SDK program
+   observed row element/page IDs, free grid row, and fresh two-input receipts.
+   The emitted SDK program
    calls `set_groupings([[group_key_column]])`,
    `grouping.set_calculation("Revenue Sum", sigma.formula.sum(revenue_number))`,
    `grouping.set_calculation("First Error Ordinal", sigma.formula.min(error_ordinal))`,
@@ -94,7 +113,8 @@ The logical construction is:
    confirm saved full contents. Bind B4 to the first summary-regions source
    row through its reconciled physical row ID; other summary rows are outside
    this formula-cell canary. Run `observe_b4_query` on a fresh output query;
-   it checks that output Source Key and Source Row ID resolve `Summary!A4`
+   it requires fresh post-patch two-input receipts and checks that output Source
+   Key and Source Row ID resolve `Summary!A4`
    exactly, then returns five lanes as `B4_QUERY_OBSERVED_UNVERIFIED`.
 6. Query B4 number/text/logical/kind/error baseline and compare with Excel.
    Edit one ordinary sales `Units`, `Avg Price`, `Month`, and `Region`; query

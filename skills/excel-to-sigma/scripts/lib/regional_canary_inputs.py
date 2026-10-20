@@ -12,6 +12,9 @@ from .native_exact_plan import digest
 from .source_inputs import validate_source_input_plan
 
 SOURCE_SHA = "4b46bfa6190d1ef12ea35713e3932aa77f19fb964730b4b3bbb0851294219e2c"
+# Independent pinned review of the complete two-input projection. This
+# protects create/seed even if a plan's own hash is recomputed after editing.
+REVIEWED_INPUT_PLAN_DIGEST = "9d0c292bb4df1b9d67aad8d4c7dd2e628d6ec4db1c7a021893301fac244c417c"
 FEATURES = ("sales-forecast", "summary-regions")
 METADATA = (("Source Key", "text"), ("Source Ordinal", "number"))
 
@@ -25,7 +28,15 @@ def _canonical(plan):
     return {key: value for key, value in plan.items() if key != "canaryInputPlanHash"}
 
 
+def validate_reviewed_input_plan(plan):
+    _require(isinstance(plan, dict) and digest(plan) == REVIEWED_INPUT_PLAN_DIGEST,
+             "complete Regional canary input fixture differs from independently reviewed projection")
+    return plan
+
+
 def build_canary_input_plan(source_path, base_input_plan, candidate):
+    from .regional_grouped_canary import validate_reviewed_candidate
+    validate_reviewed_candidate(candidate)
     source_path = Path(source_path)
     _require(hashlib.sha256(source_path.read_bytes()).hexdigest() == SOURCE_SHA,
              "Regional source bytes changed")
@@ -84,6 +95,7 @@ def build_canary_input_plan(source_path, base_input_plan, candidate):
 
 
 def validate_canary_input_plan(plan, source_path, base_input_plan, candidate):
+    validate_reviewed_input_plan(plan)
     _require(plan.get("status") == "CANARY_QUALIFICATION_ONLY" and
              digest(_canonical(plan)) == plan.get("canaryInputPlanHash"),
              "canary input plan hash/status is stale")
@@ -100,6 +112,7 @@ def _feature(plan, feature):
 
 def prepare_input_create_program(plan, current, *, feature, page_id,
                                  connection_id, grid_row):
+    validate_reviewed_input_plan(plan)
     _require(plan.get("status") == "CANARY_QUALIFICATION_ONLY" and
              digest(_canonical(plan)) == plan.get("canaryInputPlanHash"),
              "reviewed canary input plan required")
@@ -133,6 +146,7 @@ def prepare_input_create_program(plan, current, *, feature, page_id,
 
 
 def _observed_schema(plan, feature, current, binding):
+    validate_reviewed_input_plan(plan)
     spec = _feature(plan, feature)
     _require(binding.get("documentId") == current.get("workbookId") and
              binding.get("canaryInputPlanHash") == plan["canaryInputPlanHash"],
@@ -155,15 +169,27 @@ def _observed_schema(plan, feature, current, binding):
     expected_names = {c["name"] for c in spec["columns"]}
     _require(set(binding.get("columnIds", {})) == expected_names,
              "assigned canary input column IDs incomplete")
+    _require(len(columns) == len(spec["columns"]) + 1 and
+             {c.get("id") for c in columns} ==
+             set(binding["columnIds"].values()) | {binding.get("rowIdColumnId")} and
+             binding.get("rowIdColumnId") not in set(binding["columnIds"].values()),
+             "actual canary input contains foreign or overlapping columns")
     for column in spec["columns"]:
         actual = by_id.get(binding["columnIds"][column["name"]], {})
         _require(actual.get("name") == column["name"] and actual.get("type") == column["type"],
                  f"assigned canary input column differs: {feature}/{column['name']}")
     system_id = binding.get("rowIdColumnId")
     system = by_id.get(system_id, {})
-    _require(system.get("name") == binding.get("rowIdColumn") and
-             binding.get("rowIdColumn") in ("ID", "Row ID"),
-             "actual input row ID column/alias differs")
+    implicit_id = system == {"id": "ID"} and system_id == "ID"
+    explicit_id = (system.get("name") == binding.get("rowIdColumn") and
+                   binding.get("rowIdColumn") in ("ID", "Row ID") and
+                   system.get("type") == "text")
+    _require((implicit_id and binding.get("rowIdColumn") == "ID") or explicit_id,
+             "actual input row ID physical column differs")
+    _require(isinstance(binding.get("rowIdQueryColumnId"), str) and
+             binding["rowIdQueryColumnId"] and
+             binding["rowIdQueryColumnId"] != system_id,
+             "observed row ID query alias required separately from physical ID")
     return element
 
 
@@ -171,6 +197,7 @@ def prepare_input_seed_program(plan, current, *, feature, binding, empty_query):
     _observed_schema(plan, feature, current, binding)
     _require(empty_query.get("elementId") == binding["elementId"] and
              empty_query.get("documentVersion") == current["documentVersion"] and
+             empty_query.get("rowIdQueryColumnId") == binding["rowIdQueryColumnId"] and
              empty_query.get("snapshotId") and empty_query.get("rows") == [],
              "fresh empty input query required before first seed")
     spec = _feature(plan, feature)
@@ -218,6 +245,7 @@ def reconcile_input_rows(plan, current, *, feature, binding, query):
     element = _observed_schema(plan, feature, current, binding)
     _require(query.get("elementId") == element["id"] and
              query.get("documentVersion") == current["documentVersion"] and
+             query.get("rowIdQueryColumnId") == binding["rowIdQueryColumnId"] and
              isinstance(query.get("snapshotId"), str) and query["snapshotId"] and
              isinstance(query.get("rows"), list),
              "fresh physical input query required")
@@ -251,6 +279,8 @@ def reconcile_input_rows(plan, current, *, feature, binding, query):
               "elementId": element["id"], "name": element["name"],
               "columnIds": binding["columnIds"], "rowIdColumn": binding["rowIdColumn"],
               "rowIdColumnId": binding["rowIdColumnId"], "querySnapshotId": query["snapshotId"],
+              "rowIdQueryColumnId": binding["rowIdQueryColumnId"],
+              "connectionId": element["source"]["connectionId"],
               "rows": mappings}
     return {**record, "receiptHash": digest(record)}
 
@@ -259,3 +289,44 @@ def validate_reconciled_receipt(plan, current, *, feature, binding, query, recei
     expected = reconcile_input_rows(plan, current, feature=feature, binding=binding, query=query)
     _require(receipt == expected, "canary row reconciliation receipt is stale")
     return expected
+
+
+def validate_phase_inputs(plan, source_path, base_input_plan, candidate,
+                          current, observed_inputs):
+    """Require fresh, exact physical-row evidence before a native phase."""
+    validate_canary_input_plan(plan, source_path, base_input_plan, candidate)
+    _require(set(observed_inputs) == set(FEATURES),
+             "both actual canary input queries are required")
+    return {feature: validate_reconciled_receipt(plan, current, feature=feature,
+            binding=observed_inputs[feature]["binding"],
+            query=observed_inputs[feature]["query"],
+            receipt=observed_inputs[feature]["receipt"])
+            for feature in FEATURES}
+
+
+def confirm_phase_input_stability(plan, source_path, base_input_plan, candidate,
+                                  before_current, before_inputs,
+                                  after_current, after_inputs):
+    """Post-mutation check: every original physical row and metadata stays put."""
+    before = validate_phase_inputs(plan, source_path, base_input_plan, candidate,
+                                   before_current, before_inputs)
+    after = validate_phase_inputs(plan, source_path, base_input_plan, candidate,
+                                  after_current, after_inputs)
+    _require(before_current["workbookId"] == after_current["workbookId"] and
+             after_current["documentVersion"] > before_current["documentVersion"],
+             "post-mutation document version did not advance")
+    for feature in FEATURES:
+        for field in ("elementId", "name", "columnIds", "rowIdColumn", "rowIdColumnId",
+                      "rowIdQueryColumnId", "connectionId", "rows"):
+            _require(before[feature][field] == after[feature][field],
+                     f"canary physical source or metadata drifted after native edit: {feature}/{field}")
+        _require(before[feature]["querySnapshotId"] != after[feature]["querySnapshotId"],
+                 "post-mutation source query reused an earlier snapshot")
+    return {"status": "CONFIRMED_CANARY_INPUTS_STABLE_AFTER_EDIT",
+            "sourceSha256": plan["sourceSha256"],
+            "canaryInputPlanHash": plan["canaryInputPlanHash"],
+            "documentId": after_current["workbookId"],
+            "beforeDocumentVersion": before_current["documentVersion"],
+            "afterDocumentVersion": after_current["documentVersion"],
+            "beforeQuerySnapshotIds": {f: before[f]["querySnapshotId"] for f in FEATURES},
+            "afterQuerySnapshotIds": {f: after[f]["querySnapshotId"] for f in FEATURES}}
