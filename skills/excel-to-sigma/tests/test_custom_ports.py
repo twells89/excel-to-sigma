@@ -211,7 +211,7 @@ class ConstructionTests(unittest.TestCase):
         exec(programs['goalSeek']['code'],{'sigma':sigma,'session':session})
         row=dict(zip(programs['goalSeek']['columns'],output[-1][1][0]))
         self.assertEqual(row['SolvedGrowth'],.114270488732)
-        data['Goal Seek Result']=[row];request['State']='APPLY_PENDING'
+        data[programs['goalSeek']['output']]=[row];request['State']='APPLY_PENDING'
         exec(programs['applyGuard']['code'],{'sigma':sigma,'session':session})
         ready=dict(zip(programs['applyGuard']['columns'],output[-1][1][0]))
         self.assertTrue(ready['ReadyToApply'])
@@ -227,6 +227,35 @@ class ConstructionTests(unittest.TestCase):
         data['Task 5 Headcount Inputs'][0]['Headcount']=None
         exec(programs['allocation']['code'],{'sigma':sigma,'session':session})
         self.assertEqual(len(output[-1][1]),1);self.assertEqual(output[-1][1][0][1],'FAILURE')
+
+    def test_guard_reads_solver_python_output_reference_with_observed_column_pairs(self):
+        from types import SimpleNamespace
+        p=self.module()
+        model=json.loads((ROOT/'tests/fixtures/task5-controlled-model.json').read_text())
+        request=dict(RequestKey='goal-seek',OperationId='solve-A',State='PENDING',Target=2000000,
+                     LowerBound=0,UpperBound=.25,ToleranceCents=1,MaxIterations=64,ModelBinding='reviewed-model-1')
+        result_columns=[name for name,_ in p.OUTPUT_SCHEMAS['goalSeek']]
+        observed={name:{'identifier':'"'+name+'"','rowKey':name} for name in result_columns}
+        programs=p.emit_python_programs('reviewed-model-1',column_maps={'GoalSeekResult':observed})
+        data={'Actuals':model['actuals'],'Forecast Inputs View':model['inputs'],
+              'Forecast Line Definitions':model['definitions'],'Goal Seek Invocation':[request]}
+        class Frame:
+            def __init__(self,name):
+                self.rows=data[name]
+                self.columns=['"'+key+'"' for key in self.rows[0]] if name=='GoalSeekResult' else list(self.rows[0])
+            def collect(self):return [SimpleNamespace(as_dict=lambda row=row:row) for row in self.rows]
+        output=[]
+        sigma=SimpleNamespace(get_element=Frame,output=lambda name,rows:output.append((name,rows)))
+        session=SimpleNamespace(create_dataframe=lambda rows,schema:rows)
+        exec(programs['goalSeek']['code'],{'sigma':sigma,'session':session})
+        self.assertEqual(output[-1][0],'GoalSeekResult')
+        solved=dict(zip(programs['goalSeek']['columns'],output[-1][1][0]))
+        self.assertEqual(solved['Status'],'SUCCESS')
+        data[output[-1][0]]=[solved]
+        request['State']='APPLY_PENDING'
+        exec(programs['applyGuard']['code'],{'sigma':sigma,'session':session})
+        guard=dict(zip(programs['applyGuard']['columns'],output[-1][1][0]))
+        self.assertTrue(guard['ReadyToApply'],guard)
 
     def test_runtime_column_identifier_and_collected_row_key_are_separately_explicit(self):
         from types import SimpleNamespace

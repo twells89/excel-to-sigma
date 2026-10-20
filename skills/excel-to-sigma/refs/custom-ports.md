@@ -155,7 +155,8 @@ Each output record binds codeElementId/codeHash/outputName/connectionId, and:
   equal its fixed emitted semantic field name exactly; same-type field swaps
   are refused. Identifiers and row keys remain explicit observed pairs; no
   case-folding or unquoting inference. Guard code receives only
-  actual Goal Seek Result identifier/rowKey pairs; no fabricated ninth map.
+  actual GoalSeekResult Python output identifier/rowKey pairs, keyed by its
+  `sigma.output` reference name; no fabricated ninth map.
 
 `audit_port_update(proposal, readback, post_phase_context=...)` requires fresh
 reviewed controller context, including complete supported-element SDK inventory
@@ -219,7 +220,9 @@ typedColumns (actual complete API entries/total/nextPage), typedColumnsHash and
 columnIds (logical field -> actual assigned ID). Every observed label/formula/type
 must match the explicit map and current native column; the exact code-output
 source must be unique. Goal/guard children require the actual unique titles
-`Goal Seek Result` / `Goal Seek Apply Guard` before runtime references them.
+`Goal Seek Result` / `Goal Seek Apply Guard` for workbook bindings. The guard
+reads the solver output with `sigma.get_element('GoalSeekResult')` and maps its
+columns under that same Python output reference name.
 Allocation may retain an unnamed native view because it is queried by assigned
 ID; no title is invented. The phase preserves all existing child objects/IDs/
 layout, reports adoptedElementIds separately, and never claims the earlier PUT

@@ -57,8 +57,9 @@ SOURCE_TITLES = {'actuals':'Actuals','inputs':'Forecast Inputs View','definition
 def emit_python_programs(model_binding, *, column_maps=None):
     """Return fully standalone warehouse Python. Embed actual Snowpark column maps.
 
-    get_element resolves unique element titles on the selected connection. A
-    reviewed read-only inputs projection must include the physical Input Row ID.
+    get_element resolves unique source element titles or another Python output's
+    reference name on the selected connection. A reviewed read-only inputs
+    projection must include the physical Input Row ID.
     Output schemas are explicit because failure rows contain null-only columns.
     """
     if not isinstance(model_binding,str) or not model_binding:
@@ -131,14 +132,14 @@ def read_model(actuals_frame, inputs_frame, definitions_frame):
     actuals, inputs, definitions = read_model(actuals_frame, inputs_frame, definitions_frame)
     rows = [solve_forecast(actuals, inputs, definitions, request, expected_binding=EXPECTED_BINDING)]
 ''',
-        'applyGuard': '''    invocation_frame = sigma.get_element('Goal Seek Invocation')
+        'applyGuard': f'''    invocation_frame = sigma.get_element('Goal Seek Invocation')
     request = one_invocation(invocation_frame)
     actuals_frame = sigma.get_element('Actuals')
     inputs_frame = sigma.get_element('Forecast Inputs View')
     definitions_frame = sigma.get_element('Forecast Line Definitions')
     actuals, inputs, definitions = read_model(actuals_frame, inputs_frame, definitions_frame)
-    results_frame = sigma.get_element('Goal Seek Result')
-    results = read_rows(results_frame, 'Goal Seek Result', RESULT_COLUMNS)
+    results_frame = sigma.get_element({OUTPUT_NAMES['goalSeek']!r})
+    results = read_rows(results_frame, {OUTPUT_NAMES['goalSeek']!r}, RESULT_COLUMNS)
     if len(results) != 1:
         raise PortError('INVALID_RESULT_ROWS')
     rows = [guard_goal_seek(actuals, inputs, definitions, request, results[0], expected_binding=EXPECTED_BINDING)]
@@ -710,7 +711,7 @@ def prepare_port_update(manifest,receipt,current,sources,*,column_maps=None,proc
         if column_maps is not None and column_maps!=previous['runtimeColumnMaps']:raise PortError('EXISTING_RUNTIME_COLUMN_MAP_CHANGED')
         maps=copy.deepcopy(previous['runtimeColumnMaps']);actual_outputs=copy.deepcopy(previous.get('actualOutputBindings',{}))
         observed=_materialized_outputs(output_evidence,PHASE_KEYS[phase],manifest,receipt,current,previous,model_binding);actual_outputs.update(observed)
-        if phase=='solver-outputs':maps['Goal Seek Result']={n:{k:pair[k] for k in ('identifier','rowKey')} for n,pair in observed['goalSeek']['columnMap'].items()}
+        if phase=='solver-outputs':maps[OUTPUT_NAMES['goalSeek']]={n:{k:pair[k] for k in ('identifier','rowKey')} for n,pair in observed['goalSeek']['columnMap'].items()}
         templates=_port_templates(model_binding,scope['connectionId'],column_maps=maps)
         ids={'solver-outputs':{'task5AllocationResult','task5GoalSeekResult','task5GoalSeekApplyGuardPython','task5GoalSeekApplyGuardButton'},'guard-output':{'task5GoalSeekApplyGuard'}}[phase]
         new=[copy.deepcopy(e) for e in templates['elements'] if e['id'] in ids]
