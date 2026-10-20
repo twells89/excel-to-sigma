@@ -66,6 +66,22 @@ class ExactPlanningTests(unittest.TestCase):
         lower=lower_exact_native_calculations(p,assigned)
         self.assertEqual(lower['formulas']['Summary Renamed!A2']['lanes']['text'],'"__native_h0__"')
 
+    def test_blank_boolean_inputs_remain_unproven_through_formula_references(self):
+        path,old=self.source();book=load_workbook(path)
+        for row in (2,3):
+            book['Ledger Renamed'][f'C{row}']=None
+            book['Ledger Renamed'][f'D{row}']=f'=C{row}'
+        book['Summary Renamed']['A1']="=COUNTIFS('Ledger Renamed'!D2:D3,\">0\")"
+        book.save(path)
+        decisions=copy.deepcopy(old['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        decisions['features'][0]['columnTypes']['Rate']='boolean'
+        decisions['features'][0]['reviewedBlankColumns']=['Rate']
+        inputs=build_source_input_plan(path,decisions,connection_id='connection',folder_id='folder')
+        native=build_exact_native_calculation_plan(path,inputs)
+        record=native['formulas']['Summary Renamed!A1']
+        self.assertEqual(record['status'],'unresolved')
+        self.assertIn('Boolean criteria',record['reason'])
+
     def test_source_excel_error_remains_disclosed_candidate_error_class(self):
         path=Path(self.temp.name)/'errors.xlsx';book=Workbook();book.active['A1']='=1/0';book.active['A2']='=IFERROR(A1,5)';book.save(path)
         p=build_exact_native_calculation_plan(path)
@@ -102,9 +118,17 @@ class ExactPlanningTests(unittest.TestCase):
             saved['contents']['elements'].append({'id':'assigned-'+str(index),'kind':'table','name':shard['name'],
                'source':{'kind':'table','elementId':'actual-seed'} if shard['source']['kind']=='sql' else shard['source'],
                'columns':[{'id':f'assigned-{index}-{j}','name':c['name'],'formula':'0'}for j,c in enumerate(shard['columns'])]})
+            placement=f'<Element elementId="assigned-{index}" gridColumn="1 / 25" gridRow="{1+12*index} / {13+12*index}" />'
+            saved['contents']['layout']=saved['contents']['layout'].replace('</Page>',placement+'</Page>',1)
             binding=confirm_exact_native_scaffold(proposal,saved)
             self.assertNotEqual(binding['elementId'],shard['id']);bindings[shard['id']]=binding;current=saved
-        refresh();proposal=prepare_exact_native_update(native,inputs,manifest,receipt,current,rows,
+        refresh()
+        bad=copy.deepcopy(current)
+        bad['contents']['elements'][-1]['columns'].append({'id':'unowned-extra','name':'unowned-extra','formula':'5'})
+        with self.assertRaisesRegex(ValueError,'scaffold|column'):
+            prepare_exact_native_update(native,inputs,manifest,receipt,bad,rows,
+                backup=build_native_calculation_backup(bad,rows),native_bindings=bindings)
+        proposal=prepare_exact_native_update(native,inputs,manifest,receipt,current,rows,
             backup=build_native_calculation_backup(current,rows),native_bindings=bindings)
         self.assertEqual(proposal['actualElementId'],'assigned-0')
         saved={'workbookId':'actual-doc','documentVersion':current['documentVersion']+1,'contents':copy.deepcopy(proposal['dryRunRequest']['contents'])}

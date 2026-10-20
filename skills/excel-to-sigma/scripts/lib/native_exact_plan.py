@@ -5,21 +5,22 @@ bindings remain separate. REST formula text is used after scaffold readback so
 SDK expression export cannot silently drop nested arithmetic parentheses.
 """
 from __future__ import annotations
-from dataclasses import asdict, replace
+from dataclasses import replace
 import copy
 import hashlib
 import json
 from pathlib import Path
 import re
+import xml.etree.ElementTree as ET
 try:
     from .native_exact import (Scalar, Literal, Vector, compile_expression, evaluate_bound,
-        q, iff, both, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY)
+        q, iff, both, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY, lane_dict, can_be_boolean)
     from .excel_expression import UnsupportedExpression, ExcelCalcError
     from .workbook_expression import WorkbookContext
     from .source_inputs import validate_source_input_plan
 except ImportError:
     from native_exact import (Scalar, Literal, Vector, compile_expression, evaluate_bound,
-        q, iff, both, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY)
+        q, iff, both, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY, lane_dict, can_be_boolean)
     from excel_expression import UnsupportedExpression, ExcelCalcError
     from workbook_expression import WorkbookContext
     from source_inputs import validate_source_input_plan
@@ -139,7 +140,7 @@ def input_scalar(cell,bindings,lookup):
     nullable=iff(f'IsNull({value})','"z"',{'number':'"n"','text':'"t"','boolean':'"b"','logical':'"b"','date':'"n"','datetime':'"n"'}.get(kind,'"n"'))
     if kind=='number':return Scalar(number=f'Coalesce({value}, 0)',kind=nullable)
     if kind=='text':return Scalar(text=f'Coalesce({value}, "")',kind=nullable)
-    if kind in ('boolean','logical'):return Scalar(logical=f'Coalesce({value}, False)',kind=nullable)
+    if kind in ('boolean','logical'):return Scalar(logical=f'Coalesce({value}, False)',kind=nullable,may_be_boolean=True)
     if kind in ('date','datetime'):
         # Source input dates are date-only civil dates; the epoch is adjusted by
         # caller for 1904 sources. Time-zone validation remains a runtime gate.
@@ -261,7 +262,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
                 return resolve(target)
             try:value=compile_expression(plan['formulas'][c]['ast'],relative,emit=rg.emit,epoch=plan['dateEpoch'])
             except UnsupportedExpression:row_active.remove(identity);return None
-            signature=([n['formula'] for n in rg.nodes],asdict(value))
+            signature=([n['formula'] for n in rg.nodes],lane_dict(value),can_be_boolean(value))
             if compiled and signature!=compiled[0]:row_active.remove(identity);return None
             compiled.append(signature);first_graph=rg
         a=assigned_rows[feature];prefix='Native Rows '+digest(identity)[:10];row_handles={};new=[]
@@ -281,7 +282,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
         new.append({'id':'native_rows_'+digest(identity)[:16],'kind':'table','name':final_name,'source':{'kind':'table','elementId':a['elementId']},'columns':columns,'sourceFormulaCells':[],
                     'calculatedColumnDomain':{'sourceCells':cells,'sourceTable':table.name,'appendPolicy':'live-formal-table'}})
         aggregate_elements.extend(new)
-        desc={'featureId':feature,'column':col,'valueType':'number','scalar':Scalar(**lanes),'rows':indices}
+        desc={'featureId':feature,'column':col,'valueType':'number','scalar':Scalar(**lanes,may_be_boolean=compiled[0][2]),'rows':indices}
         for c in cells:row_descriptors[c]=desc
         row_active.remove(identity);return desc
     def aggregate(node,run):
@@ -426,7 +427,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
         for c in e['columns']:c['formula']=materialize(c['formula'])
     formula_outputs={};public=[]
     for cell,value in outputs.items():
-        r=plan['formulas'][cell];lanes={k:materialize(v) for k,v in asdict(value).items()}
+        r=plan['formulas'][cell];lanes={k:materialize(v) for k,v in lane_dict(value).items()}
         columns=[{'id':r['columnId']+'_'+k,'name':r['columnId']+'_'+k,'formula':formula} for k,formula in lanes.items()]
         # Five typed lanes are intentional: a mixed IF result must not rely on
         # implicit SQL type conversion and an error must remain inspectable.
@@ -438,7 +439,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
                'source':{'kind':'sql','connectionId':plan['targetScope']['connectionId'],'statement':'SELECT 1 AS C0'},
                'columns':[{'id':'native_key','name':'native_key','formula':'1'}]+[c for _,cs in batch for c in cs],
                'sourceFormulaCells':[cell for cell,_ in batch]}
-        for cell,cs in batch:formula_outputs[cell]['targetMapping']={'logicalElementId':shard['id'],'logicalColumnId':cs[0]['id'],'logicalLaneColumnIds':{k:plan['formulas'][cell]['columnId']+'_'+k for k in asdict(Scalar())}}
+        for cell,cs in batch:formula_outputs[cell]['targetMapping']={'logicalElementId':shard['id'],'logicalColumnId':cs[0]['id'],'logicalLaneColumnIds':{k:plan['formulas'][cell]['columnId']+'_'+k for k in lane_dict(Scalar())}}
         shards.append(shard)
     # Put ordinary aggregate helpers into topological order among scalar shards.
     all_elements=shards+aggregate_elements;by_name={e['name']:e for e in all_elements};done=set();active=set();depths={};ordered_elements=[]
@@ -506,33 +507,73 @@ def prepare_exact_native_scaffold(plan,inputs,manifest,receipt,current,observed_
     if any(e.get('name')==shard['name'] for e in current['contents']['elements']):raise ValueError('native scaffold name already exists; read back assigned IDs before retry')
     source=seed_binding['elementId'] if shard['source']['kind']=='sql' else shard['source']['elementId']
     lines=['# UNVERIFIED structural scaffold; final formulas require guarded REST/readback.',
-           f'p = sigma.workbook.get_page({q(page_id)})',f't = p.add_table(sigma.data.source.element({q(source)}))',f't.set_name({q(shard["name"])})',
-           'assigned_columns = []']
+           f'p = sigma.workbook.get_page({q(page_id)})',f't = p.add_table(sigma.data.source.element({q(source)}))',f't.set_name({q(shard["name"])})',f't.set_frame(1, {1 + 12 * shard_index}, 24, 12)',
+           'inherited_columns = t.list_columns()', 'assigned_columns = []']
     for col in shard['columns']:
         lines+=[f'c = t.add_column({q(col["name"])}, sigma.formula.const_number(0))',
                 'assigned_columns.append({"logicalColumnId": '+q(col['id'])+', "actualColumnId": c.id(), "name": '+q(col['name'])+'})']
+    lines.extend(['for inherited_column in inherited_columns:', '    inherited_column.delete()'])
     lines.append(f'print({{"logicalElementId": {q(shard["id"])}, "actualElementId": t.id(), "name": {q(shard["name"])}, "columns": assigned_columns}})')
     return {'status':'REVIEWABLE_MCP_SCAFFOLD_PENDING_EXECUTION','runtimeStatus':'UNVERIFIED_CANDIDATE','sourceSha256':plan['sourceSha256'],
             'nativePlanHash':plan['nativePlanHash'],'manifestPlanHash':manifest['planHash'],'shardIndex':shard_index,
             'logicalElementId':shard['id'],'name':shard['name'],'sourceElementId':source,'logicalColumns':[{k:c[k] for k in ('id','name')} for c in shard['columns']],
             'documentId':current['workbookId'],'documentVersion':current['documentVersion'],'beforeContents':copy.deepcopy(current['contents']),
+            'beforeEnvelope':copy.deepcopy({k:v for k,v in current.items() if k not in ('contents','documentVersion')}),
+            'pageId':page_id,'frame':{'gridColumn':'1 / 25','gridRow':f'{1 + 12 * shard_index} / {13 + 12 * shard_index}'},
             'program':'\n'.join(lines)+'\n'}
+
+
+def _scaffold_layout_conserved(before,after,*,page_id,element_id,frame):
+    """Allow one direct placement; normalize only XML syntax/indentation."""
+    def parse(value):
+        if not isinstance(value,str):raise ValueError('native scaffold requires complete XML layout')
+        try:return ET.fromstring('<Layout>'+value+'</Layout>',parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True,insert_pis=True)))
+        except ET.ParseError as error:raise ValueError('native scaffold layout XML is invalid') from error
+    old,new=parse(before),parse(after)
+    pages=[p for p in new.iter('Page') if p.get('id')==page_id]
+    placements=[(parent,child) for parent in new.iter() for child in parent if child.get('elementId')==element_id]
+    if len(pages)!=1 or len(placements)!=1 or placements[0][0] is not pages[0]:raise ValueError('native scaffold must add exactly one placement on its declared page')
+    parent,placement=placements[0]
+    if (placement.tag!='Element' or placement.attrib!={'elementId':element_id,**frame} or len(placement)
+            or (placement.text or '').strip() or (placement.tail or '').strip()):raise ValueError('native scaffold placement differs from its declared frame')
+    parent.remove(placement)
+    def canonical(node):
+        text=node.text or '';tail=node.tail or ''
+        return (node.tag,tuple(sorted(node.attrib.items())),text if text.strip() else '',tail if tail.strip() else '',tuple(canonical(c)for c in node))
+    if canonical(old)!=canonical(new):raise ValueError('foreign layout changed during native scaffold')
 
 
 def confirm_exact_native_scaffold(proposal,readback):
     if (proposal.get('status')!='REVIEWABLE_MCP_SCAFFOLD_PENDING_EXECUTION' or readback.get('workbookId')!=proposal['documentId']
         or not isinstance(readback.get('documentVersion'),int) or readback['documentVersion']<=proposal['documentVersion']):raise ValueError('fresh assigned scaffold readback is required')
-    contents=readback.get('contents')or{};before=proposal['beforeContents'];before_elements={e['id']:e for e in before['elements']}
-    actuals=[e for e in contents.get('elements',[]) if e.get('name')==proposal['name']]
-    if len(actuals)!=1 or actuals[0].get('kind')!='table' or actuals[0]['id']in before_elements:raise ValueError('unique newly assigned native scaffold is required')
-    if any(next((e for e in contents['elements']if e.get('id')==eid),None)!=value for eid,value in before_elements.items()):raise ValueError('foreign contents changed during native scaffold')
-    actual=actuals[0]
+    if (not isinstance(proposal.get('beforeEnvelope'),dict)
+            or {k:v for k,v in readback.items() if k not in ('contents','documentVersion')}!=proposal['beforeEnvelope']):raise ValueError('foreign document envelope changed during native scaffold')
+    contents=readback.get('contents')or{};before=proposal['beforeContents']
+    if not isinstance(contents,dict) or {k:v for k,v in contents.items()if k not in ('elements','layout')}!={k:v for k,v in before.items()if k not in ('elements','layout')}:raise ValueError('foreign contents/pages/privateState changed during native scaffold')
+    previous=before.get('elements');elements=contents.get('elements')
+    if (not isinstance(previous,list) or not isinstance(elements,list) or len(elements)!=len(previous)+1
+            or elements[:-1]!=previous):raise ValueError('native scaffold must append exactly one declared element and preserve every foreign element')
+    actual=elements[-1];before_ids={e['id']for e in previous}
+    if (not isinstance(actual,dict) or set(actual)!={'id','kind','name','source','columns'}
+            or actual.get('kind')!='table' or actual.get('name')!=proposal['name']
+            or not isinstance(actual.get('id'),str) or not actual['id'] or actual['id']in before_ids):raise ValueError('native scaffold element shape or assigned identity differs')
     if actual.get('source')!={'kind':'table','elementId':proposal['sourceElementId']}:raise ValueError('native scaffold source differs from assigned source')
-    columns=actual.get('columns')or[];by_name={c['name']:c for c in columns}
-    if len(by_name)!=len(columns) or not all(c['name']in by_name and by_name[c['name']].get('id') for c in proposal['logicalColumns']):raise ValueError('assigned native scaffold columns are incomplete')
+    columns=actual.get('columns');declared=proposal['logicalColumns']
+    if not isinstance(columns,list) or len(columns)!=len(declared):raise ValueError('assigned native scaffold columns are not exactly declared')
+    ids=set();prior_column_ids={c.get('id')for e in previous for c in e.get('columns',[])}
+    for expected,column in zip(declared,columns):
+        if (not isinstance(column,dict) or not {'id','name','formula'}<=set(column) or set(column)-{'id','name','formula','type'}
+                or column.get('name')!=expected['name'] or column.get('formula')!='0'
+                or ('type'in column and column['type']!='number')
+                or not isinstance(column.get('id'),str) or not column['id'] or column['id']in ids or column['id']in prior_column_ids):raise ValueError('assigned native scaffold column differs from declared placeholder')
+        ids.add(column['id'])
+    if not isinstance(proposal.get('pageId'),str) or not isinstance(proposal.get('frame'),dict):raise ValueError('native scaffold proposal lacks its owned placement contract')
+    _scaffold_layout_conserved(before.get('layout'),contents.get('layout'),page_id=proposal['pageId'],element_id=actual['id'],frame=proposal['frame'])
     record={'status':'CONFIRMED_NATIVE_SCAFFOLD','sourceSha256':proposal['sourceSha256'],'nativePlanHash':proposal['nativePlanHash'],
             'manifestPlanHash':proposal['manifestPlanHash'],'logicalElementId':proposal['logicalElementId'],'elementId':actual['id'],'name':actual['name'],
-            'source':copy.deepcopy(actual['source']),'columnIds':{c['id']:by_name[c['name']]['id'] for c in proposal['logicalColumns']},'documentId':readback['workbookId'],'documentVersion':readback['documentVersion'],
+            'source':copy.deepcopy(actual['source']),'columnIds':{c['id']:actual_c['id'] for c,actual_c in zip(declared,columns)},
+            'documentId':readback['workbookId'],'documentVersion':readback['documentVersion'],'pageId':proposal['pageId'],'frame':copy.deepcopy(proposal['frame']),
+            'beforeEnvelopeHash':digest(proposal['beforeEnvelope']),'beforeContentsHash':digest(before),
             'structureHash':digest(actual),'readbackHash':digest(contents)}
     return {**record,'receiptHash':digest(record)}
 
@@ -544,7 +585,7 @@ def prepare_exact_native_update(plan,inputs,manifest,receipt,current,observed_ro
     if not 0<=shard_index<len(shards):raise ValueError('native shard index is out of bounds')
     if len(prior_readbacks)!=shard_index:raise ValueError('confirmed prior native formula readbacks are required')
     assigned={};actuals={e['id']:e for e in current['contents']['elements']}
-    for shard in shards:
+    for position,shard in enumerate(shards):
         r=native_bindings.get(shard['id'])or{};canonical={k:v for k,v in r.items()if k!='receiptHash'}
         e=actuals.get(r.get('elementId'))or{}
         if (r.get('status')!='CONFIRMED_NATIVE_SCAFFOLD' or r.get('receiptHash')!=digest(canonical) or r.get('nativePlanHash')!=plan['nativePlanHash']
@@ -552,7 +593,8 @@ def prepare_exact_native_update(plan,inputs,manifest,receipt,current,observed_ro
             or r.get('documentId')!=current['workbookId'] or r.get('documentVersion',current['documentVersion']+1)>current['documentVersion']
             or r.get('name')!=shard['name'] or e.get('name')!=shard['name'] or r.get('source')!=e.get('source')):raise ValueError('assigned native scaffold receipt is stale')
         cols={c['id']:c for c in e.get('columns',[])}
-        if set(r.get('columnIds',{}))!={c['id']for c in shard['columns']} or any(cols.get(r['columnIds'][c['id']],{}).get('name')!=c['name'] for c in shard['columns']):raise ValueError('assigned native column IDs differ from readback')
+        if len(cols)!=len(e.get('columns',[])) or set(cols)!=set(r.get('columnIds',{}).values()) or set(r.get('columnIds',{}))!={c['id']for c in shard['columns']} or any(cols.get(r['columnIds'][c['id']],{}).get('name')!=c['name'] for c in shard['columns']):raise ValueError('assigned native column IDs differ from readback')
+        if position>=shard_index and digest(e)!=r.get('structureHash'):raise ValueError('pending native scaffold changed since assigned-ID confirmation')
         assigned[shard['id']]=r
     # A prior receipt is evidence only for the exact saved formula document.
     for index,r in enumerate(prior_readbacks):

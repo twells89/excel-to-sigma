@@ -19,6 +19,7 @@ except ImportError:
     from excel_expression import ExcelCalcError, UnsupportedExpression
 
 EMPTY='""'
+SCALAR_LANES=('number','text','logical','kind','error')
 
 def q(value): return json.dumps(value,ensure_ascii=False)
 def iff(condition,yes,no):
@@ -55,6 +56,11 @@ class Scalar:
     logical: str='False'
     kind: str='"n"'              # n numeric, t text (including ""), b Boolean, z blank
     error: str=EMPTY
+    may_be_boolean: bool=False   # compile-time type-domain evidence, never an emitted lane
+
+def can_be_boolean(value):return value.may_be_boolean or '"b"' in value.kind
+
+def lane_dict(value):return {key:getattr(value,key)for key in SCALAR_LANES}
 
 class Literal:
     @staticmethod
@@ -62,7 +68,7 @@ class Literal:
     @staticmethod
     def text(value):return Scalar(text=q(value),kind='"t"')
     @staticmethod
-    def boolean(value):return Scalar(logical='True' if value else 'False',kind='"b"')
+    def boolean(value):return Scalar(logical='True' if value else 'False',kind='"b"',may_be_boolean=True)
     @staticmethod
     def blank():return Scalar(kind='"z"')
     @staticmethod
@@ -106,7 +112,7 @@ def select(condition,yes,no):
         if not isinstance(yes,Vector) or not isinstance(no,Vector) or len(yes.values)!=len(no.values):
             raise UnsupportedExpression('conditional array shapes differ')
         return Vector(tuple(select(condition,a,b) for a,b in zip(yes.values,no.values)),yes.width)
-    return Scalar(*(iff(condition,getattr(yes,k),getattr(no,k)) for k in Scalar.__dataclass_fields__))
+    return Scalar(*(iff(condition,getattr(yes,k),getattr(no,k)) for k in SCALAR_LANES),may_be_boolean=can_be_boolean(yes)or can_be_boolean(no))
 
 NUMERIC_TEXT=r'^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'
 
@@ -178,6 +184,7 @@ def criterion_spec(node,compile):
 
 def criteria(value,spec,emit=lambda f:f):
     op,target,pattern=spec
+    if can_be_boolean(value) or can_be_boolean(target):raise UnsupportedExpression('Boolean criteria semantics await actual Excel oracle')
     nativeop='!=' if op=='<>' else op
     if pattern and pattern!='dynamic':
         matched=both(eq(value.kind,'"t"'),f'RegexpMatch(Lower({value.text}), {q(pattern.lower())})')
@@ -190,7 +197,7 @@ def criteria(value,spec,emit=lambda f:f):
     if pattern=='dynamic':
         # Parse arbitrary editable criteria at runtime, including wildcard/tilde
         # escaping. Non-text typed criteria retain their native type.
-        target=Scalar(*(emit(getattr(target,k)) for k in Scalar.__dataclass_fields__))
+        target=Scalar(*(emit(getattr(target,k)) for k in SCALAR_LANES))
         raw=target.text
         operator=f'Coalesce(RegexpExtract({raw}, "^(<=|>=|<>|=|<|>)"), "=")'
         operator=emit(operator)
@@ -201,7 +208,7 @@ def criteria(value,spec,emit=lambda f:f):
         dynamic=Scalar(number=iff(isnum,f'Number({operand})','0'),text=operand,
                        kind=iff(eq(operand,EMPTY),'"z"',iff(isnum,'"n"','"t"')))
         dynamic=select(eq(target.kind,'"t"'),dynamic,target)
-        dynamic=Scalar(*(emit(getattr(dynamic,k)) for k in Scalar.__dataclass_fields__))
+        dynamic=Scalar(*(emit(getattr(dynamic,k)) for k in SCALAR_LANES))
         # First escape regex metacharacters other than Excel wildcards. Expand
         # wildcards, restore odd tilde escapes, then halve literal tilde pairs.
         pattern_expr=f'RegexpReplace({operand}, {q(r"([\\.^$|()\[\]{}+])")}, {q(r"\\\1")})'
@@ -246,7 +253,7 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
         return '('+' + '.join(layer)+')'
     def save(value):
         if isinstance(value,Vector):return value
-        return Scalar(*(emit(getattr(value,k)) if getattr(value,k) not in ('0','1','True','False','"n"','"t"','"b"','"z"',EMPTY) and not re.fullmatch(r'-?[0-9]+([.][0-9]+)?',getattr(value,k)) and not getattr(value,k).startswith('"') else getattr(value,k) for k in Scalar.__dataclass_fields__))
+        return Scalar(*(emit(getattr(value,k)) if getattr(value,k) not in ('0','1','True','False','"n"','"t"','"b"','"z"',EMPTY) and not re.fullmatch(r'-?[0-9]+([.][0-9]+)?',getattr(value,k)) and not getattr(value,k).startswith('"') else getattr(value,k) for k in SCALAR_LANES),may_be_boolean=can_be_boolean(value))
     cache={} if expression_cache is None else expression_cache
     def run(n):
         key=json.dumps(n,sort_keys=True,separators=(',',':'))
@@ -264,7 +271,7 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
             selector=scalar(run(n['selector']));result=Literal.error('#REF!')
             for name,target in reversed(n['alternatives']):result=select(eq(f'Lower({text_value(selector)})',q(name.lower())),run(target),result)
             if isinstance(result,Vector):raise UnsupportedExpression('INDIRECT array result needs review')
-            return save(Scalar(result.number,result.text,result.logical,result.kind,merge_errors(selector.error,result.error)))
+            return save(Scalar(result.number,result.text,result.logical,result.kind,merge_errors(selector.error,result.error),may_be_boolean=can_be_boolean(result)))
         if k in ('unary','percent'):
             value=scalar(run(n['operand']));v,e=numeric(value)
             return save(Scalar(number=f'({v} * 0.01)' if k=='percent' else f'({n["operator"]}{v})',error=e))
@@ -292,7 +299,7 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
             b=run(args[1]);c=run(args[2]) if len(args)==3 else Literal.boolean(False)
             result=select(condition,b,c)
             if isinstance(result,Vector):return result
-            return save(Scalar(result.number,result.text,result.logical,result.kind,merge_errors(e,result.error)))
+            return save(Scalar(result.number,result.text,result.logical,result.kind,merge_errors(e,result.error),may_be_boolean=can_be_boolean(result)))
         if aggregate and name in ('SUMIFS','COUNTIFS','SUM','COUNT','COUNTA'):
             result=aggregate(n,run)
             if result is not None:return result
@@ -365,18 +372,18 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
                     for j in range(vector.width):
                         item=Literal.error('#REF!')
                         for i in reversed(range(len(vector.values)//vector.width)):
-                            item=select(eq(f'RoundDown({row}, 0)',str(i+1)),vector.values[i*vector.width+j],item)
-                        selected.append(save(Scalar(item.number,item.text,item.logical,item.kind,merge_errors(re,ce,item.error))))
+                            item=select(eq(f'Trunc({row}, 0)',str(i+1)),vector.values[i*vector.width+j],item)
+                        selected.append(save(Scalar(item.number,item.text,item.logical,item.kind,merge_errors(re,ce,item.error),may_be_boolean=can_be_boolean(item))))
                     return Vector(tuple(selected),vector.width)
                 if row=='0':
                     selected=[]
                     for i in range(len(vector.values)//vector.width):
                         item=Literal.error('#REF!')
-                        for j in reversed(range(vector.width)):item=select(eq(f'RoundDown({col}, 0)',str(j+1)),vector.values[i*vector.width+j],item)
-                        selected.append(save(Scalar(item.number,item.text,item.logical,item.kind,merge_errors(re,ce,item.error))))
+                        for j in reversed(range(vector.width)):item=select(eq(f'Trunc({col}, 0)',str(j+1)),vector.values[i*vector.width+j],item)
+                        selected.append(save(Scalar(item.number,item.text,item.logical,item.kind,merge_errors(re,ce,item.error),may_be_boolean=can_be_boolean(item))))
                     return Vector(tuple(selected))
                 result=Literal.error('#REF!')
-                for i,v in reversed(list(enumerate(vector.values))):result=save(select(both(eq(f'RoundDown({row}, 0)',str(i//vector.width+1)),eq(f'RoundDown({col}, 0)',str(i%vector.width+1))),v,result))
+                for i,v in reversed(list(enumerate(vector.values))):result=save(select(both(eq(f'Trunc({row}, 0)',str(i//vector.width+1)),eq(f'Trunc({col}, 0)',str(i%vector.width+1))),v,result))
                 result=select(ne(merge_errors(re,ce),EMPTY),Scalar(error=merge_errors(re,ce)),result)
                 # Excel scalar INDEX of an empty cell returns numeric zero.
                 return save(select(eq(result.kind,'"z"'),Scalar(error=result.error),result))
@@ -393,7 +400,7 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
                     result=Literal.error('#REF!')
                     for j in reversed(range(vector.width)):result=select(eq(f'Floor({col})',str(j+1)),vector.values[row_index*vector.width+j],result)
                     returns.append(result)
-                sought=Scalar(sought.number,sought.text,sought.logical,sought.kind,merge_errors(sought.error,ce))
+                sought=Scalar(sought.number,sought.text,sought.logical,sought.kind,merge_errors(sought.error,ce),may_be_boolean=can_be_boolean(sought))
             else:
                 if not 3<=len(values)<=6:raise UnsupportedExpression('XLOOKUP arity')
                 if len(args)>=5 and args[4].get('source')!='0':raise UnsupportedExpression('XLOOKUP approximate mode requires review')
@@ -421,7 +428,11 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
             if name=='ABS':v=f'Abs({x})'
             elif name=='INT':v=f'Floor({x})'
             elif name=='SQRT':e=merge_errors(e,iff(f'({x} < 0)',q('#NUM!'),EMPTY));v=f'Sqrt(If({x} < 0, 0, {x}))'
-            elif name in ('ROUND','ROUNDUP'):v=f'{"Round" if name=="ROUND" else "RoundUp"}({x}, RoundDown({ns[1]}, 0))'
+            elif name=='ROUND':v=f'Round({x}, Trunc({ns[1]}, 0))'
+            elif name=='ROUNDUP':
+                # Sigma RoundUp is ceiling even for negatives. Excel ROUNDUP
+                # rounds away from zero, so round a positive magnitude first.
+                v=f'(If({x} < 0, -1, 1) * RoundUp(Abs({x}), Trunc({ns[1]}, 0)))'
             elif name=='MOD':
                 y=ns[1];e=merge_errors(e,iff(eq(y,'0'),q('#DIV/0!'),EMPTY));safe=iff(eq(y,'0'),'1',y);v=f'({x} - ({safe} * Floor(({x} / {safe}))))'
             else:
@@ -436,19 +447,19 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
                 d=f'DateDiff("day", Date({q(origin)}), {date})'
                 return d if epoch=='1904' else f'({d} + If({date} >= Date("1900-03-01"), 1, 0))'
             if name=='DATE':
-                year=emit(f'RoundDown({ns[0]}, 0)');month=emit(f'RoundDown({ns[1]}, 0)');day=f'RoundDown({ns[2]}, 0)'
+                year=emit(f'Trunc({ns[0]}, 0)');month=emit(f'Trunc({ns[1]}, 0)');day=f'Trunc({ns[2]}, 0)'
                 year=emit(iff(both(f'({year} >= 0)',f'({year} < 1900)'),f'({year} + 1900)',year))
                 y=emit(f'({year} + Floor((({month} - 1) / 12)))');m=emit(f'({month} - (12 * Floor((({month} - 1) / 12))))')
                 invalid=either(f'({y} < 1)',f'({y} > 9999)');e=merge_errors(e,iff(invalid,q('#NUM!'),EMPTY))
                 start=emit(f'MakeDate(If({invalid}, 2000, {y}), {m}, 1)');v=f'({serial(start)} + {day} - 1)'
                 # Moving across Feb 1900 must use serial arithmetic, intentionally.
             else:
-                start=emit(f'RoundDown({ns[0]}, 0)');phantom=eq(start,'60') if epoch=='1900' else 'False'
+                start=emit(f'Trunc({ns[0]}, 0)');phantom=eq(start,'60') if epoch=='1900' else 'False'
                 e=merge_errors(e,iff(either(f'({start} < 0)',f'({start} > {2957003 if epoch=="1904" else 2958465})'),q('#NUM!'),EMPTY))
                 date=emit(f'DateAdd("day", If({ne(e,EMPTY)}, 0, {start})'+(' - If('+start+' >= 60, 1, 0)' if epoch=='1900' else '')+f', Date({q(origin)}))')
                 if name=='MONTH':v=iff(eq(start,'0'),'1',iff(phantom,'2',f'DatePart("month", {date})'))
                 else:
-                    months=emit(f'RoundDown({ns[1]}, 0)')
+                    months=emit(f'Trunc({ns[1]}, 0)')
                     targetyear=emit(f'(DatePart("year", {date}) + Floor(((DatePart("month", {date}) - 1 + {months}) / 12)))')
                     invalid=either(f'({targetyear} < 1)',f'({targetyear} > 9999)')
                     e=merge_errors(e,iff(invalid,q('#NUM!'),EMPTY))
@@ -607,6 +618,7 @@ def evaluate_bound(node,reference,*,epoch='1900'):
             return all(bools) if name=='AND' else any(bools)
         if name in ('SUMIFS','COUNTIFS'):
             offset=int(name=='SUMIFS');ranges=vals[offset::2];criteria_values=vals[offset+1::2]
+            if any(type(v)is bool for r in ranges for v in r) or any(type(v)is bool for v in criteria_values):raise UnsupportedExpression('Boolean criteria semantics await actual Excel oracle')
             if any(len(r)!=len(ranges[0]) for r in ranges):raise ExcelCalcError('#VALUE!')
             indices=[i for i in range(len(ranges[0])) if all(match(r[i],c) for r,c in zip(ranges,criteria_values))]
             if name=='COUNTIFS':return len(indices)

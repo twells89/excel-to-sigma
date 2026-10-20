@@ -154,3 +154,39 @@ It checks all 1,865 original-fixture and 1,786 broader-source formulas separatel
 uses explicitly test-only UUID-shaped row IDs for offline construction, and
 writes coverage plus receipt-pending SaaS/Cash root construction requests. These
 test identities are never staging receipts or evidence of a target deployment.
+
+### R1 conservation and semantics corrections
+
+Scaffold proposals now retain the complete readback envelope and declare a
+single page/frame. The MCP program explicitly sets that frame, captures only
+the new table's inherited columns, adds the declared placeholders, then deletes
+those inherited columns. Confirmation permits exactly one appended new table
+with exactly the ordered requested columns and constant-zero formulas. Its
+assigned element and column IDs must be new and unique. The source must be the
+exact observed source. No unrelated element or column is admitted.
+
+All other document envelope and contents fields—including pages, events and
+private state—must be identical. The layout may add exactly one direct Element
+placement on the declared page with the declared frame. Existing layout nodes,
+attributes and non-whitespace text remain identical; only XML attribute order,
+quote/self-closing syntax and indentation are normalized. Undocumented SDK
+metadata or envelope changes fail closed until an observed, narrowly reviewed
+contract is added. Pending scaffolds must still match their confirmed structure
+before a formula update; extra columns cannot be silently overwritten.
+
+Sigma `RoundUp` is a ceiling operation for negative numbers. Excel `ROUNDUP`
+is therefore emitted as a sign multiplied by `RoundUp(Abs(number), digits)`.
+The test-only native interpreter follows Sigma's published negative examples,
+while the source evaluator retains Excel's separate away-from-zero operation.
+Sigma `RoundDown` also floors negatives, so Excel integer truncations (precision,
+date offsets and index positions) use documented `Trunc(value, 0)` instead.
+
+Boolean criteria in `SUMIFS`/`COUNTIFS` are currently explicit unsupported
+obligations pending an actual Excel oracle. This includes typed Boolean blank
+inputs and formulas with possible Boolean branches, even when the current
+baseline is numeric or blank. Internal type-domain evidence survives helper
+materialization and formula references; it is not a sixth output lane. Neither
+the source evaluator nor emitted lowering is treated as the truth for the
+previously disagreeing Boolean cases. Ordinary Boolean arithmetic/logical
+operations retain their existing behavior. The actual 13-source replay's
+formula counts are unchanged by this restriction.

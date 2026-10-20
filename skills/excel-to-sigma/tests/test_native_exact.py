@@ -100,6 +100,32 @@ class ExactFunctionTests(unittest.TestCase):
             if criterion=='<>':expected=28
             with self.subTest(criterion=criterion):self.assertEqual(evaluate_native(value.number),expected)
 
+    def test_sigma_roundup_oracle_is_ceiling_and_excel_lowering_is_away_from_zero(self):
+        # Sigma official RoundUp examples are the native interpreter contract;
+        # Excel ROUNDUP is a separate hand-derived expected result.
+        self.assertEqual(evaluate_native_raw('RoundUp(-3.141, 2)'),-3.14)
+        self.assertEqual(evaluate_native_raw('RoundUp(3.141, 2)'),3.15)
+        self.assertEqual(evaluate_native_raw('RoundDown(-6.25417, 3)'),-6.255)
+        self.assertEqual(evaluate_native_raw('Trunc(-1.9, 0)'),-1)
+        for number,digits,expected in [(-3.141,2,-3.15),(3.141,2,3.15),(-12.21,1,-12.3),(-123.1,-1,-130),(-123.1,-1.9,-130),(123.1,-1,130),(0,2,0)]:
+            with self.subTest(number=number,digits=digits):
+                result=compile_expression(self.bound(f'=ROUNDUP({number},{digits})'),lambda c:Literal.number(0))
+                self.assertEqual(evaluate_native(result.number),expected)
+                self.assertEqual(evaluate_native(result.error),'')
+
+    def test_boolean_criteria_are_unresolved_until_actual_excel_oracle(self):
+        values={'A1':None,'A2':'x','A3':True,'A4':0,'C1':'>0'}
+        node=self.bound('=COUNTIFS(A1:A4,C1)',values)
+        with self.assertRaisesRegex(UnsupportedExpression,'Boolean criteria.*Excel oracle'):
+            evaluate_bound(node,lambda c:values.get(c.split('!')[1]))
+        with self.assertRaisesRegex(UnsupportedExpression,'Boolean criteria.*Excel oracle'):
+            compile_expression_raw(node,lambda c:Literal.value(values.get(c.split('!')[1])),emit=lambda f:'[helper]')
+        # A numeric baseline cannot prove a formula's future Boolean branch.
+        child=compile_expression_raw(self.bound('=IF(C1=7,TRUE,0)'),lambda c:Literal.number('[editable]'),emit=lambda f:'[helper]')
+        parent=self.bound('=COUNTIFS(A1:A1,">0")')
+        with self.assertRaisesRegex(UnsupportedExpression,'Boolean criteria.*Excel oracle'):
+            compile_expression_raw(parent,lambda c:child,emit=lambda f:'[helper]')
+
     def test_finite_indirect_invalid_selector_is_ref_error_and_not_blank(self):
         for selector,result,error in [('Base',4,''),('Missing',0,'#REF!')]:
             node={'kind':'indirect','selector':{'kind':'text','value':selector},'alternatives':[['Base',{'kind':'number','source':'4'}]]}

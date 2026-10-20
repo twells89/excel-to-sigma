@@ -8,7 +8,7 @@ import calendar
 import datetime as dt
 import math
 import re
-from decimal import Decimal, ROUND_HALF_UP, ROUND_UP, ROUND_DOWN
+from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, ROUND_FLOOR, ROUND_DOWN
 
 
 def evaluate_native(formula, references=None):
@@ -64,8 +64,8 @@ def evaluate_native(formula, references=None):
             if name=='Abs':return abs(args[0])
             if name=='Power':return args[0]**args[1]
             if name=='Sqrt':return math.sqrt(args[0])
-            if name in ('Round','RoundUp','RoundDown'):
-                return float(Decimal(str(args[0])).quantize(Decimal(1).scaleb(-int(args[1])if len(args)>1 else 0),rounding={'Round':ROUND_HALF_UP,'RoundUp':ROUND_UP,'RoundDown':ROUND_DOWN}[name]))
+            if name in ('Round','RoundUp','RoundDown','Trunc'):
+                return float(Decimal(str(args[0])).quantize(Decimal(1).scaleb(-int(args[1])if len(args)>1 else 0),rounding={'Round':ROUND_HALF_UP,'RoundUp':ROUND_CEILING,'RoundDown':ROUND_FLOOR,'Trunc':ROUND_DOWN}[name]))
             if name=='Date':return dt.datetime.fromisoformat(args[0])
             if name=='MakeDate':return dt.datetime(int(args[0]),int(args[1]),int(args[2]))
             if name=='DateDiff':return (args[2]-args[1]).days
