@@ -150,6 +150,12 @@ python scripts/audit-openapi.py --out sigma-code-rep-audit.json
 for inventory/CI smoke, never for declaring a migration complete. Then run
 `scripts/xlsx-discover.py` for the model/grain-specific report.
 
+For a source-bound cell, table, and formula-dependency inventory, run
+`python scripts/source-workbook.py SOURCE.xlsx --out source-model.json` and read
+`refs/source-workbook-model.md`. This offline inventory preserves unresolved
+formulas explicitly; it does not approve a migration or change the audit and
+production-write gates.
+
 The whole-workbook Excel migration entrypoints—standalone canonical inference,
 batch conversion, the direct research-workbook builder, and the source-bound
 forecast/research plan builders—re-run this audit against the source bytes.
