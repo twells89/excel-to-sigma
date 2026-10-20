@@ -19,12 +19,12 @@ try:
     from .excel_expression import (Binary, Boolean, BoundIndirect, BoundRange, CellReference,
         ColumnRange, ExcelCalcError, ExpressionError, Function, Group, Number, Percent, Range,
         Reference, StructuredReference, Text, Unary, UnsupportedExpression, evaluate,
-        expand_range, parse_expression)
+        expand_range, parse_expression, _contains_whole_column)
 except ImportError:
     from excel_expression import (Binary, Boolean, BoundIndirect, BoundRange, CellReference,
         ColumnRange, ExcelCalcError, ExpressionError, Function, Group, Number, Percent, Range,
         Reference, StructuredReference, Text, Unary, UnsupportedExpression, evaluate,
-        expand_range, parse_expression)
+        expand_range, parse_expression, _contains_whole_column)
 
 
 class UnresolvedBinding(UnsupportedExpression):
@@ -70,6 +70,8 @@ def _cell_id(ref):
 
 
 def _checked_range(bound):
+    if bound.empty:
+        return bound
     left, top, _, _ = range_boundaries(bound.start.address)
     right, bottom, _, _ = range_boundaries(bound.end.address)
     if (abs(right - left) + 1) * (abs(bottom - top) + 1) > _MAX_BOUND_CELLS:
@@ -132,18 +134,18 @@ class WorkbookContext:
                                  keep_vba=path.suffix.lower() == ".xlsm", keep_links=True)
         return cls(path, workbook, source_hash, external_inputs, indirect_bindings)
 
-    def _name(self, name, sheet, stack):
+    def _name(self, name, sheet, address, stack):
         key = (sheet, name.casefold()) if (sheet, name.casefold()) in self.names else (None, name.casefold())
         if key not in self.names:
             raise UnresolvedBinding(f"unresolved defined name {name!r}")
         if key in stack:
-            raise FormulaCycle({(sheet, f"name:{name}")})
+            raise FormulaCycle({(sheet, address)})
         expression = self.names[key]
         if not isinstance(expression, str) or not expression:
             raise UnresolvedBinding(f"defined name {name!r} has no expression")
         return self._bind(parse_expression(expression if expression.startswith("=") else "=" + expression,
                                            sheet=sheet, workbook_mode=True),
-                          sheet, None, stack | {key})
+                          sheet, address, stack | {key})
 
     def _table_range(self, table, specification, sheet, address):
         tokens = [token.strip() for token in re.findall(r"\[([^\[\]]+)\]", specification)]
@@ -189,11 +191,12 @@ class WorkbookContext:
             indexes.append(matching[0])
         first_col = table.first_col + min(indexes) if indexes else table.first_col
         last_col = table.first_col + max(indexes) if indexes else table.last_col
+        empty = first_row > last_row
         start = CellReference(table.sheet, f"{get_column_letter(first_col)}{first_row}")
-        end = CellReference(table.sheet, f"{get_column_letter(last_col)}{last_row}")
+        end = CellReference(table.sheet, f"{get_column_letter(last_col)}{first_row if empty else last_row}")
         return _checked_range(BoundRange(start, end, f"table:{table.name}:{selector}",
                                          f"{table.header_first}:{table.totals_last or table.body_last}",
-                                         f"{first_row}:{last_row}"))
+                                         "empty" if empty else f"{first_row}:{last_row}", empty))
 
     def _bind_indirect(self, argument, sheet, address, stack):
         selector = self._bind(argument, sheet, address, stack)
@@ -229,7 +232,7 @@ class WorkbookContext:
                     raise UnresolvedBinding("INDIRECT reviewed target must bind to source cells")
                 alternatives.append((name, bound_target))
             return BoundIndirect(selector, tuple(alternatives))
-        alternatives = tuple((name, self._name(name, sheet, stack)) for name in keys)
+        alternatives = tuple((name, self._name(name, sheet, address, stack)) for name in keys)
         if any(not isinstance(target, (Reference, BoundRange)) for _, target in alternatives):
             raise UnresolvedBinding("INDIRECT named target must bind to source cells")
         return BoundIndirect(selector, alternatives)
@@ -262,7 +265,7 @@ class WorkbookContext:
             if ref.name:
                 table = self.tables.get(ref.name.casefold())
                 if table is not None: return self._table_range(table, "", sheet, address)
-                return self._name(ref.name, sheet, stack)
+                return self._name(ref.name, sheet, address, stack)
             if ref.workbook:
                 return node
             target = ref.sheet or sheet
@@ -290,14 +293,6 @@ class WorkbookContext:
                     raise UnresolvedBinding("INDIRECT reference mode requires review")
                 return self._bind_indirect(node.arguments[0], sheet, address, stack)
             arguments = tuple(self._bind(arg, sheet, address, stack) for arg in node.arguments)
-            if node.name == "COUNTIFS":
-                for index in range(0, len(arguments), 2):
-                    if index + 1 >= len(arguments): break
-                    criterion = arguments[index + 1]
-                    if (isinstance(arguments[index], BoundRange)
-                        and arguments[index].source_kind == "whole_column"
-                        and isinstance(criterion, Text) and criterion.value in ("", "=")):
-                        raise UnresolvedBinding("COUNTIFS blank criterion on whole column requires full domain")
             return Function(node.name, arguments)
         raise UnsupportedExpression(f"cannot bind {type(node).__name__}")
 
@@ -389,6 +384,10 @@ class WorkbookContext:
                 visit(node.left); visit(node.right)
             elif isinstance(node, Function):
                 if node.name == "OFFSET":
+                    complete = False
+                if node.name == "COUNTIFS" and any(
+                        _contains_whole_column(node.arguments[index])
+                        for index in range(0, len(node.arguments), 2)):
                     complete = False
                 for argument in node.arguments: visit(argument)
         visit(expression)

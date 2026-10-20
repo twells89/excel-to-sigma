@@ -252,6 +252,54 @@ class WorkbookExpressionTests(unittest.TestCase):
         self.assertEqual(context.formula_report()["formulas"]["Counts!B2"]["status"], "error")
         self.assertEqual(context.evaluate_cell("Counts", "B3"), 1)
 
+    def test_countifs_wrapped_whole_column_keeps_declared_blank_domain(self):
+        book = Workbook()
+        facts = book.active
+        facts.title = "Facts"
+        facts["A1"] = "X"
+        result = book.create_sheet("Result")
+        result["A1"] = '=COUNTIFS(INDEX(Facts!A:A,0),"")'
+        result["A2"] = '=COUNTIFS((Facts!A:A),"")'
+        result["A3"] = '=COUNTIFS(INDEX(Facts!A:A,0),"X")'
+        result["A4"] = '=COUNTIFS((Facts!A:A),"X")'
+        result["B1"] = None
+        result["A5"] = '=COUNTIFS(INDEX(Facts!A:A,0),B1)'
+        context = WorkbookContext.from_path(self.save(book))
+        report = context.formula_report()["formulas"]
+        for address in ("A1", "A2", "A5"):
+            self.assertEqual(report[f"Result!{address}"]["status"], "unresolved")
+            self.assertEqual(report[f"Result!{address}"]["dependencyStatus"], "incomplete")
+        for address in ("A3", "A4"):
+            self.assertEqual(report[f"Result!{address}"]["status"], "verified")
+            self.assertEqual(report[f"Result!{address}"]["value"], 1)
+
+    def test_empty_table_data_range_excludes_header(self):
+        book = Workbook()
+        facts = book.active
+        facts.title = "Facts"
+        facts.append(["Category", "Amount"])
+        facts.add_table(Table(displayName="tblEmpty", ref="A1:B1"))
+        result = book.create_sheet("Result")
+        result["A1"] = '=COUNTA(tblEmpty[Amount])'
+        context = WorkbookContext.from_path(self.save(book))
+        record = context.formula_report()["formulas"]["Result!A1"]
+        self.assertEqual(record["status"], "verified")
+        self.assertEqual(record["value"], 0)
+        self.assertNotIn("Facts!B1", record["dependencies"])
+        self.assertEqual(record["bindingEvidence"][0]["activeDomain"], "empty")
+
+    def test_circular_defined_name_is_a_cycle_at_formula_cell(self):
+        book = Workbook()
+        sheet = book.active
+        sheet.title = "S"
+        book.defined_names.add(DefinedName("Loop", attr_text="Loop"))
+        sheet["A1"] = '=Loop'
+        sheet["B1"] = '=A1+1'
+        context = WorkbookContext.from_path(self.save(book))
+        report = context.formula_report()["formulas"]
+        self.assertEqual(report["S!A1"]["status"], "cycle")
+        self.assertEqual(report["S!B1"]["status"], "unresolved")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -91,6 +91,7 @@ class BoundRange:
     source_kind: str
     declared_domain: str
     active_domain: str
+    empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -433,6 +434,8 @@ def extract_references(expression) -> tuple[CellReference, ...]:
 
 
 def expand_range(value: Range | BoundRange) -> tuple[CellReference, ...]:
+    if isinstance(value, BoundRange) and value.empty:
+        return ()
     if value.start.name or value.end.name or value.start.sheet != value.end.sheet:
         raise UnsupportedExpression("ranges must use cells on one sheet")
     start = _CELL.match(value.start.address)
@@ -444,6 +447,23 @@ def expand_range(value: Range | BoundRange) -> tuple[CellReference, ...]:
         for col in range(min(c1, c2), max(c1, c2) + 1):
             refs.append(CellReference(value.start.sheet, f"{get_column_letter(col)}{row}"))
     return tuple(refs)
+
+
+def _contains_whole_column(node) -> bool:
+    if isinstance(node, BoundRange):
+        return node.source_kind == "whole_column"
+    if isinstance(node, Group):
+        return _contains_whole_column(node.expression)
+    if isinstance(node, (Unary, Percent)):
+        return _contains_whole_column(node.operand)
+    if isinstance(node, Binary):
+        return _contains_whole_column(node.left) or _contains_whole_column(node.right)
+    if isinstance(node, Function):
+        return any(_contains_whole_column(argument) for argument in node.arguments)
+    if isinstance(node, BoundIndirect):
+        return (_contains_whole_column(node.selector)
+                or any(_contains_whole_column(target) for _, target in node.alternatives))
+    return False
 
 
 _ARITHMETIC_OPERATORS = {"+", "-", "*", "/", "^"}
@@ -556,8 +576,7 @@ def evaluate(expression, resolver: Callable[[CellReference], object], *,
                            if i in matched and _is_number(value))
             if node.name == "COUNTIFS":
                 for index in range(0, len(args), 2):
-                    if (index + 1 < len(args) and isinstance(node.arguments[index], BoundRange)
-                        and node.arguments[index].source_kind == "whole_column"
+                    if (index + 1 < len(args) and _contains_whole_column(node.arguments[index])
                         and _criteria_match(None, args[index + 1])):
                         raise UnsupportedExpression("COUNTIFS criterion matches omitted whole-column blanks")
                 return len(_criteria_indices(args, len(_as_list(args[0])), "COUNTIFS"))

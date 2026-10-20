@@ -35,9 +35,13 @@ or `cycle` status, a value or reason, cell dependencies,
 and `dependencyStatus`. `incomplete` marks a binding failure or a dynamic range
 whose full dependencies cannot be known. Whole-column references retain their
 Excel declared domain and the bounded active source domain. `COUNTIFS` criteria
-that could count omitted blank rows remain unresolved instead of using the
-bounded result. A bound range over 100,000 cells remains unresolved to avoid
-an unsafe expansion. Workbook 1900/1904 date epochs and scoped names are preserved.
+that could count omitted blank rows remain unresolved even when `INDEX` or
+grouping wraps a whole-column reference. `COUNTIFS` using a bounded whole-column
+domain conservatively reports incomplete dependencies. Empty table data bodies
+contain no header cells.
+Circular defined names are reported as formula cycles. A bound range over
+100,000 cells remains unresolved to avoid an unsafe expansion. Workbook
+1900/1904 date epochs and scoped names are preserved.
 
 The old `parse_expression` mode and `emit_sigma` remain for the existing
 converter. Workbook parsing is opt-in with `workbook_mode=True`. Native Sigma
