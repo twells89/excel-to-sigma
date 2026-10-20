@@ -103,7 +103,9 @@ class TestPresentationExtraction(unittest.TestCase):
         sales = self.plans["fixture-sales-pipeline.xlsx"]
         probability = next(rule for rule in sales["validations"] if rule["range"] == "I2:I49")
         self.assertEqual(probability["emission"], {"range": {"min": 0.0, "max": 1.0}})
-        self.assertFalse(probability["allowBlank"])
+        self.assertIsNone(probability["allowBlank"])
+        self.assertEqual(probability["sourceXml"]["rawAttributes"]["allowBlank"],
+                         {"present": False, "value": None})
 
     def test_preserves_conditional_rule_priority_relative_references_and_scales(self):
         rules = [rule for plan in self.plans.values() for rule in plan["conditionalFormats"]]

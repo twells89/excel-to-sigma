@@ -74,6 +74,9 @@ class PromotionTests(unittest.TestCase):
         from test_acceptance import AcceptanceTests
         p,current,rows,sdk,scope=self.fixture()
         manifests,targets,receipts=AcceptanceTests().bound_matrix_inputs()
+        from test_acceptance_c2 import synthetic_qualified_blank_reviews
+        for workflow in manifests:
+            targets[workflow]['sourceBlankReviews']=synthetic_qualified_blank_reviews(manifests[workflow])
         m=build_acceptance_matrix(manifests,targets,receipts=receipts);m.pop('matrixHash')
         for case in m['cases']:
             keys=case.get('chartKeys') or [str(i) for i in range(case['count'])]

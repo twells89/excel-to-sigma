@@ -178,9 +178,11 @@ column ownership or an executable parity check is approved.
 Local extraction and schema audits do not prove runtime behavior. Completion
 still requires SDK compilation, a guarded API dry run, GET/readback inspection,
 aggregate parity queries for every chart point, and UI checks for rendering,
-editing, ordering, rule precedence, and blank rejection. `allowBlank=false`
-remains explicit unresolved evidence because the current input-column schema
-does not expose that setting.
+editing, ordering, rule precedence, and blank route behavior. The version 2
+source blank contract is defined in `refs/source-blank-validation.md`. An
+omitted `allowBlank` is preserved as omission. Numeric zero membership is a
+declared-rule classification; edit/clear enforcement and the saved value remain
+unresolved until separately reviewed and captured.
 
 ### Physical input display configuration and readback
 

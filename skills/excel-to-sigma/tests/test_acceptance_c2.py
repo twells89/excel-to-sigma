@@ -1,5 +1,6 @@
 """C2 contract regressions. Synthetic receipts test admission, never runtime proof."""
 import copy
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -8,6 +9,30 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/lib'))
 import test_acceptance as acceptance_fixture
 import acceptance as a
+
+
+def synthetic_qualified_blank_reviews(manifest, outcome='REJECTED_NO_WRITE'):
+    """Unit-only decisions for acceptance mechanics; never source observations."""
+    source=a.extract_workflow_repairs(manifest['source']['path'])
+    reviews={}
+    for rule in source['validations']:
+        fields=rule['fields']
+        if source['workflow']=='research':
+            match=re.fullmatch(r'C(\d+):C(\d+)',rule['range'])
+            fields=['Model Inputs!C'+str(row) for row in range(int(match[1]),int(match[2])+1)]
+        for field in fields:
+            branch_id=rule['id']+'-'+field+'-blank'
+            review={'status':'REVIEWED_QUALIFIED','branchId':branch_id,
+                'sourceHash':manifest['sourceHash'], 'ruleHash':rule['sourceXml']['ruleHash'],
+                'policyHash':a.POLICY_HASH,'route':'edit-to-empty-commit',
+                'expectedOutcome':outcome,
+                'basis':'qualified-source-contract','reviewer':'unit-only-independent-reviewer',
+                'reviewedAt':'2026-10-20','decisionId':'unit-'+branch_id,
+                'sourceEvidenceId':'unit-only-source-decision',
+                'rationale':'Synthetic unit test decision only; no actual Excel route claim.'}
+            review['recordHash']=a.source_digest(review)
+            reviews[branch_id]=review
+    return reviews
 
 
 def synthetic_validation_bundle(case,target,session):
@@ -136,6 +161,13 @@ class SourceValidationRoleTests(unittest.TestCase):
         matrix=a.build_acceptance_matrix(manifests,targets,receipts=receipts)
         self.assertTrue(a.validate_production_matrix(matrix))
         self.assertEqual(len(matrix['cases']),102)
+        blanks=[b for c in matrix['cases'] if c['id'].endswith('-zero-and-invalid-entry')
+                for b in c['validationContract']['branches'] if b['id'].endswith('-blank')]
+        self.assertEqual(len(blanks),25)
+        self.assertEqual({b['expectedOutcome'] for b in blanks},{'UNRESOLVED_SOURCE_ROUTE'})
+        research=next(c for c in matrix['cases'] if c['id']=='research-zero-and-invalid-entry')
+        self.assertEqual(research['validationContract']['rules'][0]['blankSemantics']['classification'],
+                         'SATISFIES_NUMERIC_RULE_AS_ZERO')
         for workflow in manifests:
             case=next(c for c in matrix['cases'] if c['id']==workflow+'-zero-and-invalid-entry')
             contract=case['validationContract']
@@ -152,18 +184,22 @@ class SourceValidationRoleTests(unittest.TestCase):
         lead=[b for b in inventory['validationContract']['branches'] if b['ruleId']=='validation-3']
         self.assertEqual({b['attempt']['value'] for b in lead if b['attempt']['type']=='number'},
                          {1,90,0,91,1.5})
-        for mutation in ('drop-rule','drop-branch','wrong-target','changed-outcome'):
+        for mutation in ('drop-rule','drop-branch','wrong-target','changed-outcome','forged-classification'):
             bad=copy.deepcopy(matrix);bad.pop('matrixHash')
             contract=next(c for c in bad['cases'] if c['id']=='inventory-zero-and-invalid-entry')['validationContract']
             if mutation=='drop-rule':contract['rules'].pop()
             elif mutation=='drop-branch':contract['branches'].pop()
             elif mutation=='wrong-target':contract['rules'][0]['target']['elementId']='foreign'
+            elif mutation=='forged-classification':contract['rules'][0]['blankSemantics']['classification']='ALLOW_BLANK'
             else:contract['branches'][0]['expectedOutcome']='REJECTED_NO_WRITE'
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):
                 a.validate_production_matrix(a.seal_matrix(bad))
 
-    def validation_fixture(self):
+    def validation_fixture(self, reviewed=True, blank_outcome='REJECTED_NO_WRITE'):
         manifests,targets,receipts=acceptance_fixture.AcceptanceTests().bound_matrix_inputs()
+        if reviewed:
+            targets['sales']['sourceBlankReviews']=synthetic_qualified_blank_reviews(
+                manifests['sales'],blank_outcome)
         matrix=a.build_acceptance_matrix(manifests,targets,receipts=receipts)
         case=next(c for c in matrix['cases'] if c['id']=='sales-zero-and-invalid-entry')
         target=matrix['workflows']['sales']
@@ -182,6 +218,53 @@ class SourceValidationRoleTests(unittest.TestCase):
             'references':['browser-root'],
             'actual':[{'key':'source-validation-and-cancel','value':case['validationContract']['expectedOutcomes']}]}
         return matrix,case,capture
+
+    def test_unreviewed_blank_cannot_pass_with_self_selected_runtime_outcome(self):
+        matrix,case,capture=self.validation_fixture(reviewed=False)
+        capture['validationInventory'],capture['validationBranches'],refs=synthetic_validation_bundle(
+            case,matrix['workflows']['sales'],capture['session'])
+        capture['references']+=refs
+        for observed in capture['validationBranches']:
+            if observed['id'].endswith('-blank'):
+                observed['observedOutcome']='REJECTED_NO_WRITE'
+        with self.assertRaises(ValueError):a.append_evidence([],matrix,capture)
+        report=a.build_workflow_reports(matrix,[])['sales']
+        self.assertEqual(report['verdict'],'BLOCKED')
+        self.assertIn('source blank edit/clear route remains unresolved',report['completionBlockers'])
+
+    def test_qualified_review_must_bind_source_rule_policy_and_branch(self):
+        manifests,targets,receipts=acceptance_fixture.AcceptanceTests().bound_matrix_inputs()
+        matrix,case,_=self.validation_fixture()
+        review=next(iter(matrix['workflows']['sales']['sourceBlankReviews'].values()))
+        for mutation in ('ruleHash','policyHash','sourceHash','branchId','route','recordHash','sourceEvidenceId'):
+            bad=copy.deepcopy(review)
+            bad[mutation]='foreign'
+            targets['sales']['sourceBlankReviews']={review['branchId']:bad}
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                a.build_acceptance_matrix(manifests,targets,receipts=receipts)
+
+    def test_unresolved_custom_rule_keeps_blocking_blank_branch(self):
+        manifests,targets,receipts=acceptance_fixture.AcceptanceTests().bound_matrix_inputs()
+        source=a.extract_workflow_repairs(manifests['sales']['source']['path'])
+        rule=source['validations'][0]
+        rule.update(sourceType='custom',status='unresolved',emission=None)
+        rule['blankSemantics']['classification']='UNRESOLVED'
+        contract=a._validation_contract('sales',source,manifests['sales'],receipts['sales'],targets['sales'])
+        branches=[b for b in contract['branches'] if b['ruleId']==rule['id'] and b['id'].endswith('-blank')]
+        self.assertEqual(len(branches),1)
+        self.assertEqual(branches[0]['expectedOutcome'],'UNRESOLVED_SOURCE_ROUTE')
+        self.assertEqual(branches[0]['declaredBlankClass'],'UNRESOLVED')
+
+    def test_qualified_saved_blank_requires_persisted_null_not_numeric_zero(self):
+        matrix,case,capture=self.validation_fixture(blank_outcome='SAVED')
+        capture['validationInventory'],capture['validationBranches'],refs=synthetic_validation_bundle(
+            case,matrix['workflows']['sales'],capture['session'])
+        capture['references']+=refs
+        self.assertEqual(a.append_evidence([],matrix,capture)[0]['status'],'PASSED')
+        changed=copy.deepcopy(capture)
+        branch=next(item for item in changed['validationBranches'] if item['id'].endswith('-blank'))
+        branch['rows']['allowedChanges'][0]['value']=0
+        with self.assertRaises(ValueError):a.append_evidence([],matrix,changed)
 
     def test_validation_capture_needs_actual_linked_branch_proof(self):
         matrix,case,capture=self.validation_fixture()
@@ -217,6 +300,8 @@ class SourceValidationRoleTests(unittest.TestCase):
             'cancel-wrote':lambda bad:bad['validationBranches'][-1].update(writeCount=1),
             'same-execution-reused':lambda bad:bad['validationBranches'][1].update(executionId='native-0'),
             'invented-oracle':lambda bad:bad['actual'][0].update(value=[{'id':'generic','outcome':'SAVED'}]),
+            'wrong-blank-route':lambda bad:next(item for item in bad['validationBranches']
+                if item['id'].endswith('-blank')).update(sourceRoute='delete-key'),
         }
         for label,mutate in scenarios.items():
             bad=copy.deepcopy(capture);mutate(bad)

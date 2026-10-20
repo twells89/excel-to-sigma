@@ -33,6 +33,7 @@ description: >-
 - `refs/forecast-scenario.md` — read for Forecast `SaveScenario_Click` completion: its reviewed 14/8 audit-schema receipt, versioned nullable-name policy, retained capture CLI, disabled Mark/Clear proposal, and strict production gate.
 - `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
 - `refs/presentation-migration.md` — source-bound native charts, validation, conditional formatting, semantic formats, three-view layout, ordinary business inputs, and repeat-safe full-contents integration.
+- `refs/source-blank-validation.md` — version 2 raw XML and declared blank-rule classification, with source route enforcement kept separate from native runtime proof.
 - `refs/acceptance-and-promotion.md` — source-bound secondary workflow repairs, mandatory five-fixture actual evidence, persisted outcomes, original-URL promotion and row/document/SDK rollback.
 - The `sigma-workbooks` companion skill, if installed, plus the Sigma OpenAPI — canonical workbook spec. Find it through the agent's skill loader; use `refs/sigma-build-gotchas.md` when it is unavailable.
 

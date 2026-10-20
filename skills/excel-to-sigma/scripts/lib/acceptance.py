@@ -16,10 +16,12 @@ try:
     from .input_sync import _digest, _approved_feature, _manifest_architecture
     from .migration_manifest import validate_manifest, _plan_hash
     from .workflow_repairs import extract_workflow_repairs
+    from .source_validation import POLICY, POLICY_HASH, POLICY_VERSION, digest as source_digest
 except ImportError:
     from input_sync import _digest, _approved_feature, _manifest_architecture
     from migration_manifest import validate_manifest, _plan_hash
     from workflow_repairs import extract_workflow_repairs
+    from source_validation import POLICY, POLICY_HASH, POLICY_VERSION, digest as source_digest
 
 class AcceptanceError(ValueError):pass
 ROLE_MEMBERS={'Editor':{'memberId':'GrSnv8AzhaMdab23Tiiaj1xyypHxT','accountType':'build','grant':'edit'},
@@ -134,6 +136,28 @@ def _source_chart_keys(charts):
     return keys
 
 
+def _reviewed_blank_outcome(review, *, branch_id, rule, source_hash):
+    """A separate qualified source decision may set a route outcome.
+
+    Runtime captures cannot supply this decision. Its exact rule, source,
+    policy, field, and gesture are rebound during production recomputation.
+    """
+    if review is None:
+        return 'UNRESOLVED_SOURCE_ROUTE'
+    if (not isinstance(review, dict) or review.get('status') != 'REVIEWED_QUALIFIED'
+            or review.get('branchId') != branch_id or review.get('sourceHash') != source_hash
+            or review.get('ruleHash') != rule['sourceXml']['ruleHash']
+            or review.get('policyHash') != POLICY_HASH
+            or review.get('route') != 'edit-to-empty-commit'
+            or review.get('expectedOutcome') not in {'SAVED', 'REJECTED_NO_WRITE'}
+            or review.get('basis') not in {'source-runtime', 'qualified-source-contract'}
+            or not all(isinstance(review.get(k), str) and review[k].strip()
+                       for k in ('reviewer', 'reviewedAt', 'decisionId', 'rationale', 'sourceEvidenceId'))
+            or review.get('recordHash') != source_digest({k: v for k, v in review.items() if k != 'recordHash'})):
+        raise AcceptanceError('qualified source blank route review missing/stale/foreign')
+    return review['expectedOutcome']
+
+
 def _validation_contract(workflow,source,manifest,receipt,target):
     """Source Excel rules and their required native equivalence classes.
 
@@ -155,9 +179,8 @@ def _validation_contract(workflow,source,manifest,receipt,target):
         'columns':columns,'rowCount':len(spec['rows']),
         'sourceKeys':[[row[name] for name in spec['keyColumns']] for row in spec['rows']]}
     rules=[];branches=[]
+    expected_review_ids=set()
     for rule in source['validations']:
-        if rule['status']!='supported' or rule['sourceType'] not in {'list','decimal','whole'}:
-            raise AcceptanceError('unresolved source validation cannot be declared covered')
         if workflow=='research':
             match=re.fullmatch(r'C(\d+):C(\d+)',rule['range'])
             if not match:raise AcceptanceError('research validation source range changed')
@@ -167,12 +190,16 @@ def _validation_contract(workflow,source,manifest,receipt,target):
             fields=rule['fields'];names={field:field for field in fields}
         if not fields or any(not assigned.get(names[field]) for field in fields):
             raise AcceptanceError('source validation target column unassigned')
-        target={'feature':feature,'elementId':binding['elementId'],
+        rule_target={'feature':feature,'elementId':binding['elementId'],
                 'columnIds':{field:assigned[names[field]] for field in fields}}
         source_rule={key:copy.deepcopy(rule[key]) for key in ('id','sheet','range','field','fields','sourceType',
-            'operator','allowBlank','formula1','formula2','inclusive','status','emission')}
-        rules.append({**source_rule,'target':target})
-        if rule['sourceType']=='list':
+            'operator','allowBlank','formula1','formula2','inclusive','status','emission','sourceXml','blankSemantics')}
+        if (source_rule['blankSemantics'] != {'version': POLICY_VERSION, 'policyHash': POLICY_HASH,
+                'classification': rule['blankSemantics']['classification'], 'applicationRoute': 'UNRESOLVED',
+                'storedValue': 'UNRESOLVED'} or rule['sourceXml']['sourceHash'] != manifest['sourceHash']):
+            raise AcceptanceError('source blank semantics policy or raw rule stale')
+        rules.append({**source_rule,'target':rule_target})
+        if rule['status']=='supported' and rule['sourceType']=='list':
             formula=rule['formula1']
             if not isinstance(formula,str) or not re.fullmatch(r'"[^"\n]+"',formula):
                 raise AcceptanceError('unsupported authored source list')
@@ -182,7 +209,7 @@ def _validation_contract(workflow,source,manifest,receipt,target):
                 raise AcceptanceError('source list and native emission diverge')
             tests=[('valid',{'type':'text','value':values[0]},'SAVED'),
                    ('foreign',{'type':'text','value':'__not_in_source_list__'},'REJECTED_NO_WRITE')]
-        else:
+        elif rule['status']=='supported' and rule['sourceType'] in {'decimal','whole'}:
             if rule['sourceType']=='decimal':
                 low=float(Decimal(rule['formula1']));high=float(Decimal(rule['formula2']))
                 if rule['emission']!={'range':{'min':low,'max':high}}:
@@ -200,19 +227,31 @@ def _validation_contract(workflow,source,manifest,receipt,target):
                    ('text',{'type':'text','value':'not-a-number'},'REJECTED_NO_WRITE')]
             if rule['sourceType']=='whole':
                 tests.append(('fractional',{'type':'number','value':low+0.5},'REJECTED_NO_WRITE'))
-        tests.append(('blank',{'type':'null','value':None},'SAVED' if rule['allowBlank'] else 'REJECTED_NO_WRITE'))
+        else:
+            tests=[]  # Preserve the source rule and its blank branch without claiming an unreviewed domain.
+        tests.append(('blank',{'type':'null','value':None},'UNRESOLVED_SOURCE_ROUTE'))
         for field in fields:
             for name,attempt,outcome in tests:
-                branches.append({'id':rule['id']+'-'+field+'-'+name,'ruleId':rule['id'],
+                branch_id=rule['id']+'-'+field+'-'+name
+                review=(target.get('sourceBlankReviews') or {}).get(branch_id) if name=='blank' else None
+                if name=='blank':
+                    expected_review_ids.add(branch_id)
+                    outcome=_reviewed_blank_outcome(review,branch_id=branch_id,rule=rule,source_hash=manifest['sourceHash'])
+                branches.append({'id':branch_id,'ruleId':rule['id'],
                     'target':{'feature':feature,'elementId':binding['elementId'],
-                              'columnId':target['columnIds'][field],'sourceField':field},
-                    'attempt':copy.deepcopy(attempt),'expectedOutcome':outcome})
+                              'columnId':rule_target['columnIds'][field],'sourceField':field},
+                    'attempt':copy.deepcopy(attempt),'expectedOutcome':outcome,
+                    **({'declaredBlankClass':rule['blankSemantics']['classification'],
+                        'sourceRoute':'edit-to-empty-commit', 'sourceReview':copy.deepcopy(review)} if name=='blank' else {})})
     if not rules:raise AcceptanceError('source validation rules missing')
+    if set(target.get('sourceBlankReviews') or {}) - expected_review_ids:
+        raise AcceptanceError('foreign source blank route review')
     first=branches[0]
     branches.append({'id':'cancel-no-effect','ruleId':first['ruleId'],
         'target':copy.deepcopy(first['target']),'attempt':copy.deepcopy(first['attempt']),
         'expectedOutcome':'CANCELLED_NO_WRITE'})
-    return {'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'table':table_contract,
+    return {'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'blankPolicy':copy.deepcopy(POLICY),
+            'blankPolicyHash':POLICY_HASH,'table':table_contract,
             'rules':rules,'branches':branches,
             'expectedOutcomes':[{'id':branch['id'],'outcome':branch['expectedOutcome']} for branch in branches]}
 
@@ -237,6 +276,7 @@ def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
             'unresolvedSourceFeatures':copy.deepcopy(target.get('unresolvedSourceFeatures',[])),
             'documentId':target['documentId'],'version':target['version'],'url':target['url'],
             'inputTables':copy.deepcopy(target['inputTables']),'inputContract':{'manifest':copy.deepcopy(manifest),'receipt':copy.deepcopy(receipts[workflow])}, 'process':WORKFLOW_EXPLANATIONS[workflow],
+            'sourceBlankReviews':copy.deepcopy(target.get('sourceBlankReviews',{})),
             'implementation':copy.deepcopy(target.get('implementation',{'status':'UNRESOLVED_ACTUAL_TARGET_BINDINGS'})),
             'sourceFeatures':{'charts':[{'title':c['title'],'type':c['chartType'],'source':c['sourceLocation']} for c in contract['charts']],
                 'validationRules':len(contract['validations']),'conditionalFormatRules':len(contract['conditionalFormats']),
@@ -425,6 +465,8 @@ def _validate_validation_capture(case,target,capture):
     if not _same_typed(contract,_validation_contract(case['workflow'],source,bound['manifest'],bound['receipt'],target)):
         raise AcceptanceError('source validation contract changed or foreign')
     expected=contract.get('branches') or []
+    if any(branch['expectedOutcome']=='UNRESOLVED_SOURCE_ROUTE' for branch in expected):
+        raise AcceptanceError('source blank route outcome unresolved; native capture cannot select its own oracle')
     evidence=capture.get('validationBranches')
     if (not isinstance(evidence,list) or len(evidence)!=len(expected) or
             [item.get('id') for item in evidence]!=[item['id'] for item in expected]):
@@ -458,6 +500,10 @@ def _validate_validation_capture(case,target,capture):
         if any(not _same_typed(observed.get(key),branch[key]) for key in ('id','ruleId','target','attempt')) or \
                 observed.get('observedOutcome')!=branch['expectedOutcome']:
             raise AcceptanceError('source validation branch/target/outcome mismatch')
+        if branch['id'].endswith('-blank') and any(
+                not _same_typed(observed.get(key),branch[key])
+                for key in ('sourceRoute','declaredBlankClass','sourceReview')):
+            raise AcceptanceError('blank branch source route/review changed in runtime capture')
         execution_id=observed.get('executionId');receipt=observed.get('receipt') or {}
         reference={'kind':'browser','id':execution_id}
         if (not execution_id or execution_id in execution_ids or observed.get('origin')!='sigma-browser' or
@@ -598,6 +644,10 @@ def build_workflow_reports(matrix,ledger,*,final_review=None):
     blockers=[]
     try:validate_production_matrix(matrix)
     except ValueError as error:blockers.append(str(error))
+    if any(branch['expectedOutcome']=='UNRESOLVED_SOURCE_ROUTE'
+           for case in matrix['cases'] if case['id'].endswith('-zero-and-invalid-entry')
+           for branch in (case.get('validationContract') or {}).get('branches',[])):
+        blockers.append('source blank edit/clear route remains unresolved')
     final=final_review or {}
     reviewed=(final.get('status')=='APPROVED' and final.get('reviewer') and final.get('matrixHash')==matrix['matrixHash']
               and final.get('ledgerHead')==(ledger[-1]['recordHash'] if ledger else None) and final.get('branchCommit'))
