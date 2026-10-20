@@ -144,6 +144,19 @@ class SourcePresentationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "validationTargets"):
             emit_preview(plan, bindings)
 
+    def test_explicit_null_rule_maps_fail_while_omitted_maps_remain_unresolved(self):
+        plan = next(plan for plan in self.plans
+                    if plan["validations"] and plan["conditionalFormats"])
+        bindings = synthetic_bindings(plan)
+        artifact = emit_preview(plan, bindings)
+        self.assertTrue(any(item["kind"] == "validation" for item in artifact["unresolved"]))
+        self.assertTrue(any(item["kind"] == "conditionalFormat" for item in artifact["unresolved"]))
+        for key in ("validationTargets", "conditionalTargets"):
+            malformed = copy.deepcopy(bindings)
+            malformed[key] = None
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, key):
+                emit_preview(plan, malformed)
+
     def test_source_range_bindings_emit_supported_charts_without_filename_routes(self):
         artifacts = [emit_preview(plan, synthetic_bindings(plan)) for plan in self.plans]
         emitted = [element for artifact in artifacts for element in artifact["elements"]

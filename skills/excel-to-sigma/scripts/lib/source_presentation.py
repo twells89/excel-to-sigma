@@ -240,9 +240,9 @@ def _verify_chart_binding(plan, chart, binding, reviewed, context):
 
 
 def _target_list(plan, bindings, key, rule, *, reviewed):
-    mapping = bindings.get(key)
-    if mapping is None:
+    if key not in bindings:
         return []
+    mapping = bindings[key]
     if not isinstance(mapping, dict):
         raise ValueError(f"{key} must be a rule ID to target list mapping")
     if rule["id"] not in mapping:
