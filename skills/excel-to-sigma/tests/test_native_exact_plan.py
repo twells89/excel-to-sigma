@@ -82,6 +82,25 @@ class ExactPlanningTests(unittest.TestCase):
         self.assertEqual(record['status'],'unresolved')
         self.assertIn('Boolean criteria',record['reason'])
 
+    def test_sumifs_with_materialized_criteria_helpers_still_sums_numeric_values(self):
+        path,old=self.source();book=load_workbook(path)
+        for row in (2,3):book['Ledger Renamed'][f'D{row}']=f'=B{row}*C{row}'
+        book['Summary Renamed']['A1']='=SUMIFS(tblLedger[Result],tblLedger[Account],"a")'
+        book.save(path)
+        decisions=copy.deepcopy(old['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        inputs=build_source_input_plan(path,decisions,connection_id='connection',folder_id='folder')
+        native=build_exact_native_calculation_plan(path,inputs)
+        self.assertEqual(native['formulas']['Summary Renamed!A1']['localExpected'],6)
+        assigned={'ledger':{'elementId':'actual-input','name':'tblLedger','rowIdColumn':'Row ID','rows':{'0':'actual-a','1':'actual-b'}}}
+        lower=lower_exact_native_calculations(native,assigned)
+        aggregate=[e for e in lower['shards'] if 'rangeDomain' in e]
+        self.assertEqual(len(aggregate),1)
+        self.assertTrue(any(' Criteria ' in e['name'] for e in lower['shards']))
+        self.assertIn('native_value',{c['name'] for c in aggregate[0]['columns']})
+        expressions=[c['formula'] for e in lower['shards'] for c in e['columns']]
+        self.assertTrue(any('SumIf(' in f for f in expressions))
+        self.assertFalse(any('CountIf(' in f for f in expressions))
+
     def test_source_excel_error_remains_disclosed_candidate_error_class(self):
         path=Path(self.temp.name)/'errors.xlsx';book=Workbook();book.active['A1']='=1/0';book.active['A2']='=IFERROR(A1,5)';book.save(path)
         p=build_exact_native_calculation_plan(path)
@@ -122,6 +141,16 @@ class ExactPlanningTests(unittest.TestCase):
             saved['contents']['layout']=saved['contents']['layout'].replace('</Page>',placement+'</Page>',1)
             binding=confirm_exact_native_scaffold(proposal,saved)
             self.assertNotEqual(binding['elementId'],shard['id']);bindings[shard['id']]=binding;current=saved
+            if index == 0:
+                refresh()
+                canary=prepare_exact_native_update(native,inputs,manifest,receipt,current,rows,
+                    backup=build_native_calculation_backup(current,rows),native_bindings=bindings)
+                self.assertEqual(canary['shardIndex'],0)
+                self.assertEqual(canary['actualElementId'],'assigned-0')
+                bad_prefix={lowered['shards'][-1]['id']:binding}
+                with self.assertRaisesRegex(ValueError,'prefix'):
+                    prepare_exact_native_update(native,inputs,manifest,receipt,current,rows,
+                        backup=build_native_calculation_backup(current,rows),native_bindings=bad_prefix)
         refresh()
         bad=copy.deepcopy(current)
         bad['contents']['elements'][-1]['columns'].append({'id':'unowned-extra','name':'unowned-extra','formula':'5'})

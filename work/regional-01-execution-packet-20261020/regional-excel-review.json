@@ -1,0 +1,1088 @@
+{
+  "sourceSha256": "4b46bfa6190d1ef12ea35713e3932aa77f19fb964730b4b3bbb0851294219e2c",
+  "captureCount": 214,
+  "valueClasses": {
+    "real": 209,
+    "missing": 4,
+    "text": 1
+  },
+  "sourceErrors": [
+    {
+      "sourceCellId": "Summary!G4",
+      "sourceFormula": "=VLOOKUP($A4,tblRegions,3,FALSE)",
+      "displayedExcelError": "#NAME?",
+      "actualValueClass": "missing",
+      "actualSerialClass": "unavailable",
+      "localCandidateValue": 6200000,
+      "status": "SOURCE_ERROR_RECONCILIATION_REQUIRED"
+    },
+    {
+      "sourceCellId": "Summary!G5",
+      "sourceFormula": "=VLOOKUP($A5,tblRegions,3,FALSE)",
+      "displayedExcelError": "#NAME?",
+      "actualValueClass": "missing",
+      "actualSerialClass": "unavailable",
+      "localCandidateValue": 4300000,
+      "status": "SOURCE_ERROR_RECONCILIATION_REQUIRED"
+    },
+    {
+      "sourceCellId": "Summary!G6",
+      "sourceFormula": "=VLOOKUP($A6,tblRegions,3,FALSE)",
+      "displayedExcelError": "#NAME?",
+      "actualValueClass": "missing",
+      "actualSerialClass": "unavailable",
+      "localCandidateValue": 5600000,
+      "status": "SOURCE_ERROR_RECONCILIATION_REQUIRED"
+    },
+    {
+      "sourceCellId": "Summary!G7",
+      "sourceFormula": "=VLOOKUP($A7,tblRegions,3,FALSE)",
+      "displayedExcelError": "#NAME?",
+      "actualValueClass": "missing",
+      "actualSerialClass": "unavailable",
+      "localCandidateValue": 3900000,
+      "status": "SOURCE_ERROR_RECONCILIATION_REQUIRED"
+    }
+  ],
+  "numericDifferences": [
+    {
+      "sourceCellId": "Summary!H4",
+      "actualExcel": 0.0,
+      "localCandidate": 1.040600829032258
+    },
+    {
+      "sourceCellId": "Summary!H5",
+      "actualExcel": 0.0,
+      "localCandidate": 1.1236226046511628
+    },
+    {
+      "sourceCellId": "Summary!H6",
+      "actualExcel": 0.0,
+      "localCandidate": 1.0640707999999999
+    },
+    {
+      "sourceCellId": "Summary!H7",
+      "actualExcel": 0.0,
+      "localCandidate": 1.0973649794871794
+    }
+  ],
+  "displayOverflows": [
+    {
+      "sourceCellId": "Summary!F8",
+      "actualNumericValue": 21521822.24,
+      "display": "#########",
+      "classification": "numeric-display-overflow"
+    }
+  ],
+  "formula2StringDifferences": [
+    {
+      "sourceCellId": "Forecast Input!F2",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F3",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F4",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F5",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F6",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F7",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F8",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F9",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F10",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F11",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F12",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F13",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F14",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F15",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F16",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F17",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F18",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F19",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F20",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F21",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F22",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F23",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F24",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F25",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F26",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F27",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F28",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F29",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F30",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F31",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F32",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F33",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F34",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F35",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F36",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F37",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F38",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F39",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F40",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F41",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F42",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F43",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F44",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F45",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F46",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F47",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F48",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F49",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F50",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F51",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F52",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F53",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F54",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F55",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F56",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F57",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F58",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F59",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F60",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F61",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F62",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F63",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F64",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F65",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F66",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F67",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F68",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F69",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F70",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F71",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F72",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F73",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F74",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F75",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F76",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F77",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F78",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F79",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F80",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F81",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F82",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F83",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F84",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F85",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F86",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F87",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F88",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F89",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F90",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F91",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F92",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F93",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F94",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F95",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F96",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F97",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F98",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F99",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F100",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F101",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F102",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F103",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F104",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F105",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F106",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F107",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F108",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F109",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F110",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F111",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F112",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F113",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F114",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F115",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F116",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F117",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F118",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F119",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F120",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F121",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F122",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F123",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F124",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F125",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F126",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F127",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F128",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F129",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F130",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F131",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F132",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F133",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F134",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F135",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F136",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F137",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F138",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F139",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F140",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F141",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F142",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F143",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F144",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    },
+    {
+      "sourceCellId": "Forecast Input!F145",
+      "sourceFormula": "=tblSalesForecast[[#This Row],[Units]]*tblSalesForecast[[#This Row],[Avg Price]]",
+      "actualFormula2": "=[@Units]*[@[Avg Price]]",
+      "boundAstEqual": true,
+      "status": "REVIEW_REQUIRED_STRING_DIFFERENCE"
+    }
+  ],
+  "runtimeStatus": "SOURCE_REVIEW_PENDING_NATIVE_UNQUALIFIED"
+}

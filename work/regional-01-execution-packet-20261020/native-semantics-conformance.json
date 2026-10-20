@@ -1,0 +1,70 @@
+{
+  "workbookSha256": "2d69198e62cde2fd89c16dc042fd30ee8a7715fd01035537a94c357f557cc152",
+  "captureSha256": "747bcb8f02077987df76c34a946db8ad171f066ab8cb38096b3d06fecaafb7c3",
+  "captureIntegrity": {
+    "passed": 30,
+    "formula2ExactTextDifferences": 0
+  },
+  "roundupConformance": [
+    {
+      "address": "C4",
+      "number": -3.141,
+      "digits": 2,
+      "actualExcel": -3.15,
+      "sourceEvaluator": -3.15,
+      "emittedScalarReference": -3.15,
+      "status": "PASS"
+    },
+    {
+      "address": "C5",
+      "number": -3.141,
+      "digits": 0,
+      "actualExcel": -4.0,
+      "sourceEvaluator": -4.0,
+      "emittedScalarReference": -4.0,
+      "status": "PASS"
+    },
+    {
+      "address": "C6",
+      "number": -314.1,
+      "digits": -2,
+      "actualExcel": -400.0,
+      "sourceEvaluator": -400.0,
+      "emittedScalarReference": -400.0,
+      "status": "PASS"
+    },
+    {
+      "address": "C7",
+      "number": 3.141,
+      "digits": 2,
+      "actualExcel": 3.15,
+      "sourceEvaluator": 3.15,
+      "emittedScalarReference": 3.15,
+      "status": "PASS"
+    },
+    {
+      "address": "C8",
+      "number": 0,
+      "digits": 2,
+      "actualExcel": 0.0,
+      "sourceEvaluator": 0.0,
+      "emittedScalarReference": 0.0,
+      "status": "PASS"
+    },
+    {
+      "address": "C9",
+      "number": -0.001,
+      "digits": 2,
+      "actualExcel": -0.01,
+      "sourceEvaluator": -0.01,
+      "emittedScalarReference": -0.01,
+      "status": "PASS"
+    }
+  ],
+  "booleanCriteria": {
+    "capturedVectors": 24,
+    "compilerContract": "UNSUPPORTED_UNCHANGED",
+    "note": "Actual capture is retained; no unsupported type-domain contract is expanded."
+  },
+  "sigmaRuntimeStatus": "UNVERIFIED_CANDIDATE"
+}

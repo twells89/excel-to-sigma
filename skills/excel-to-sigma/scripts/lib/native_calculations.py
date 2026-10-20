@@ -345,13 +345,13 @@ def lower_native_calculations(plan, assigned_rows, *, max_columns=64):
             "status": "CONSTRUCTION_CANDIDATE_PENDING_STAGING"}
 
 
-def _observed_bindings(source_plan, manifest, receipt, contents, observed_rows):
+def _observed_bindings(source_plan, manifest, receipt, contents, observed_rows, *, input_binding_only=False):
     inputs = source_plan["sharedInputArchitecture"]["inputs"]
     elements = contents["elements"]
     result = {}
     for feature, spec in sorted(inputs.items()):
         _approved, target, _artifact = _approved_feature(manifest, receipt, feature,
-                                                         require_assigned=True)
+                                                         require_assigned=True, allow_input_only=input_binding_only)
         matches = [element for element in elements if element.get("id") == target["elementId"]]
         if len(matches) != 1 or matches[0].get("kind") != "input-table" or matches[0].get("name") != spec["name"]:
             raise ValueError(f"actual assigned input element is stale: {feature}")

@@ -349,13 +349,13 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
         def materialize_rows(formula):
             return _map_helpers(formula,'__native_r',lambda m:row_handles[m.group()])
         for start in range(0,len(row_graph.nodes),max_columns-1):
-            batch=row_graph.nodes[start:start+max_columns-1];name=prefix+' Criteria '+str(start//(max_columns-1)+1)
+            batch=row_graph.nodes[start:start+max_columns-1];helper_name=prefix+' Criteria '+str(start//(max_columns-1)+1)
             columns=[{'id':'native_row_id','name':'native_row_id','formula':f'[{a["name"]}/{a["rowIdColumn"]}]'}]
             for i,node in enumerate(batch,start):
                 columns.append({'id':f'r{i}','name':f'r{i}','formula':materialize_rows(node['formula'])})
                 row_handles[node['token']]='[r'+str(i)+']'
-            aggregate_elements.append({'id':'native_criteria_'+identity[:12]+'_'+str(start),'kind':'table','name':name,'source':{'kind':'table','elementId':a['elementId']},'columns':columns,'sourceFormulaCells':[]})
-            for i,node in enumerate(batch,start):row_handles[node['token']]=f'Lookup([{name}/r{i}], [{a["name"]}/{a["rowIdColumn"]}], [{name}/native_row_id])'
+            aggregate_elements.append({'id':'native_criteria_'+identity[:12]+'_'+str(start),'kind':'table','name':helper_name,'source':{'kind':'table','elementId':a['elementId']},'columns':columns,'sourceFormulaCells':[]})
+            for i,node in enumerate(batch,start):row_handles[node['token']]=f'Lookup([{helper_name}/r{i}], [{a["name"]}/{a["rowIdColumn"]}], [{helper_name}/native_row_id])'
         cond=materialize_rows(cond)
         element['columns']=[{'id':'native_key','name':'native_key','formula':'1'},
                             {'id':'native_match','name':'native_match','formula':cond},
@@ -584,8 +584,14 @@ def prepare_exact_native_update(plan,inputs,manifest,receipt,current,observed_ro
     shards=lowered['shards']
     if not 0<=shard_index<len(shards):raise ValueError('native shard index is out of bounds')
     if len(prior_readbacks)!=shard_index:raise ValueError('confirmed prior native formula readbacks are required')
+    # A dependency-ordered prefix permits one scaffold/REST/readback canary
+    # before creating the remaining tables. A hole or an unknown receipt is not
+    # evidence for a prefix, and all earlier readbacks remain mandatory.
+    if (not isinstance(native_bindings,dict) or not shard_index < len(native_bindings) <= len(shards)
+            or set(native_bindings)!={s['id']for s in shards[:len(native_bindings)]}):
+        raise ValueError('assigned native scaffolds must be a contiguous prefix covering this shard')
     assigned={};actuals={e['id']:e for e in current['contents']['elements']}
-    for position,shard in enumerate(shards):
+    for position,shard in enumerate(shards[:len(native_bindings)]):
         r=native_bindings.get(shard['id'])or{};canonical={k:v for k,v in r.items()if k!='receiptHash'}
         e=actuals.get(r.get('elementId'))or{}
         if (r.get('status')!='CONFIRMED_NATIVE_SCAFFOLD' or r.get('receiptHash')!=digest(canonical) or r.get('nativePlanHash')!=plan['nativePlanHash']

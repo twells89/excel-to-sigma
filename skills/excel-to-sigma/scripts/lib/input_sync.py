@@ -432,8 +432,11 @@ def build_artifact_records(manifest, architecture, target_bindings):
     return artifacts
 
 
-def _approved_feature(manifest, receipt, feature, *, require_assigned=False):
-    if receipt.get("status") != "APPROVED_STAGING":
+def _approved_feature(manifest, receipt, feature, *, require_assigned=False, allow_input_only=False):
+    input_only = (allow_input_only and receipt.get("status") == "APPROVED_INPUT_STAGING"
+                  and receipt.get("scope") == "input-tables-only"
+                  and manifest.get("planProjection", {}).get("executionScope") == "input-tables-only")
+    if receipt.get("status") != "APPROVED_STAGING" and not input_only:
         raise InputSyncError("input artifact requires an APPROVED_STAGING receipt")
     if (receipt.get("sourceHash") != manifest.get("sourceHash")
             or receipt.get("planHash") != manifest.get("planHash")):
@@ -689,7 +692,8 @@ def _row_expression(row, variables, types):
 
 def emit_construction_program(manifest, staging_receipt, feature):
     """Emit construction only from an immutable manifest and approved artifact receipt."""
-    input_spec, binding, artifact = _approved_feature(manifest, staging_receipt, feature)
+    input_spec, binding, artifact = _approved_feature(
+        manifest, staging_receipt, feature, allow_input_only=True)
     spec = _construction_spec(input_spec, binding)
     seed_rows = input_spec.get("rows") or []
     _validate_spec(spec)
@@ -745,7 +749,7 @@ def emit_write_programs(seed_plan, manifest, staging_receipt, feature,
     if not 1 <= max_batch_rows <= MAX_BATCH_ROWS:
         raise InputSyncError("max_batch_rows must be between 1 and 2000")
     input_spec, target, artifact = _approved_feature(
-        manifest, staging_receipt, feature, require_assigned=True)
+        manifest, staging_receipt, feature, require_assigned=True, allow_input_only=True)
     seed_plan = normalize_seed_plan(seed_plan)
     if seed_plan["sourceHash"] != artifact["seedHash"]:
         raise InputSyncError("reconciliation source rows differ from approved seed rows")

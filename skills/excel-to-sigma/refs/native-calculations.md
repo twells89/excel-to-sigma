@@ -139,7 +139,8 @@ using documented `get_page`, `add_table(source.element(...))`, `set_name`,
 unverified placeholders. `confirm-scaffold` reads actual server-assigned element
 and column IDs; authored IDs are never substituted for returned identities.
 
-Once every scaffold has an assigned receipt, `prepare-update --native-bindings`
+Once a contiguous scaffold prefix through the current shard has assigned receipts,
+`prepare-update --native-bindings`
 emits one version-guarded full-contents REST packet to the observed assigned
 columns. It copies foreign contents and verifies source/input/native/manifest
 identity, complete row backup, scaffold receipts and previous exact saved-formula
@@ -190,3 +191,37 @@ the source evaluator nor emitted lowering is treated as the truth for the
 previously disagreeing Boolean cases. Ordinary Boolean arithmetic/logical
 operations retain their existing behavior. The actual 13-source replay's
 formula counts are unchanged by this restriction.
+
+
+### Explicit input-only first staging phase
+
+When formula lowering needs physical input row IDs, `input-sync.py stage
+--inputs-only --input-plan <source-validated-plan>` uses a separate
+`gate_input_only_staging`. The source/manifest/input hashes and architecture must
+match, the plan and named `approved_for_staging` approval explicitly declare
+`input-tables-only`, and every source formula ID must remain in the exact
+`reviewItems` and `pendingFormulaIds` sets. Formula mappings, native review
+aliases and runtime evidence are forbidden in this phase. Source blockers and
+exact source issue staging review requirements still apply. Default full staging
+continues to reject unresolved formula mappings.
+
+The resulting `APPROVED_INPUT_STAGING` receipt is accepted only for ordinary
+literal input creation/seeding. It is rejected by native construction and
+completion. `native-calculations.py bind-input-rows` can validate fresh full
+input rows/schema against that scope and produce observed physical bindings for
+an offline `lower-candidate`; it authorizes no formula mutation. A separate
+actual native plan/manifest review and full `APPROVED_STAGING` receipt are required
+before native scaffolds or formula REST writes.
+
+Native updates now accept an exact contiguous assigned scaffold prefix through
+the current dependency-ordered shard. This permits a small construction canary
+before later helper tables exist; holes, unknown receipts, changed pending
+scaffolds and missing earlier exact formula readbacks still reject. This protocol
+change is not runtime qualification or permission to deploy a large scalar
+fallback. The Regional assessment explicitly blocks its current 309-table
+candidate pending record/period grouping.
+
+The complete emitted-table graph test now checks Lookup and conditional native
+aggregates with source-row provenance. It caught a materialization variable
+collision that changed SUMIFS into CountIf; criteria table names now use a
+separate local variable so SUMIFS retains SumIf and a numeric summand lane.

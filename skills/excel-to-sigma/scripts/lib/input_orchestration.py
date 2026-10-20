@@ -102,6 +102,85 @@ def gate_input_staging(manifest, approval, plan_or_architecture, source_gate_evi
     }
 
 
+def gate_input_only_staging(manifest, approval, source_input_plan, source_gate_evidence, *, source_path):
+    """Explicit first phase: seed source literals while every formula stays pending.
+
+    This receipt is accepted only by ordinary input creation/seed emitters. It
+    cannot pass native construction or completion. Default full staging retains
+    its original requirement that every formula mapping has been reviewed.
+    """
+    try:
+        from .migration_manifest import validate_manifest
+        from .source_inputs import validate_source_input_plan
+    except ImportError:
+        from migration_manifest import validate_manifest
+        from source_inputs import validate_source_input_plan
+    validate_manifest(manifest, source_path)
+    validate_source_input_plan(source_input_plan, source_path)
+    projection = manifest.get("planProjection") or {}
+    if (projection.get("executionScope") != "input-tables-only"
+            or approval.get("status") != "approved_for_staging"
+            or approval.get("scope") != "input-tables-only"
+            or "nativeCalculationPlan" in projection or "nativeReviewApproval" in projection):
+        raise ValueError("explicit input-tables-only plan and approval are required")
+    if (projection.get("inputPlanHash") != source_input_plan["inputPlanHash"]
+            or projection.get("sharedInputArchitecture") != source_input_plan["sharedInputArchitecture"]
+            or source_input_plan["sourceSha256"] != manifest["sourceHash"]):
+        raise ValueError("input-only source/input/manifest identity is stale")
+    for field in ("owner", "reviewer"):
+        if not isinstance(approval.get(field), str) or not approval[field].strip():
+            raise ValueError("input-only staging requires a named " + field)
+    _same_hashes(manifest, approval, "input-only approval")
+    formula_ids = {record["id"] for record in manifest["formulaCells"]}
+    for field in ("reviewItems", "pendingFormulaIds"):
+        items = approval.get(field)
+        if not isinstance(items, list) or len(items) != len(formula_ids) or set(items) != formula_ids:
+            raise ValueError("input-only staging must retain every pending formula: " + field)
+    if any(record.get("targetMapping") or record.get("verification") or record.get("evidence")
+           for record in manifest["formulaCells"]):
+        raise ValueError("input-only staging cannot assert formula mapping or runtime evidence")
+    architecture = source_input_plan["sharedInputArchitecture"]
+    if set(approval.get("mappedFeatures") or []) != set(architecture["mappedFeatures"]):
+        raise ValueError("mappedFeatures must exactly match the approved input architecture")
+    target = manifest.get("target") or {}
+    if not target.get("documentId") or type(target.get("version")) is not int:
+        raise ValueError("input-only staging requires an actual target document/version")
+    bindings = approval.get("targetBindings") or {}
+    for binding in bindings.values():
+        if (binding.get("documentId") != target["documentId"]
+                or binding.get("version") != target["version"]):
+            raise ValueError("input-only target binding is foreign or stale")
+    for spec in architecture["inputs"].values():
+        # The system row ID is an additional column in the current SDK.
+        if not 1 <= len(spec["columns"]) <= 63:
+            raise ValueError("input-only schema plus system row ID exceeds the 64-column limit")
+        frame = spec.get("frame", [1, 1, 24, 12])
+        if len(frame) != 4 or not 1 <= frame[0] or not 1 <= frame[2] <= 24 or frame[0] + frame[2] > 25:
+            raise ValueError("input-only frame exceeds the 24-column SDK layout")
+    if not isinstance(source_gate_evidence, dict) or source_gate_evidence.get("sourceSha256") != manifest["sourceHash"]:
+        raise ValueError("input-only source gate evidence is missing or stale")
+    issues = source_gate_evidence.get("issues") or []
+    if (source_gate_evidence.get("status") == "BLOCKED"
+            or source_gate_evidence.get("reviewStatus") not in {"NOT_REQUIRED", "DISPOSITIONED", "PENDING_STAGING"}
+            or any(issue.get("severity") == "blocker" for issue in issues)):
+        raise ValueError("input-only source audit is blocked or unresolved")
+    if issues:
+        review = approval.get("sourceReviewApproval") or {}
+        if review.get("status") != "approved_for_staging" or review.get("issues") != issues:
+            raise ValueError("input-only sourceReviewApproval must approve the exact audited issue scope")
+    artifacts = build_artifact_records(manifest, architecture, bindings)
+    return {"status": "APPROVED_INPUT_STAGING", "scope": "input-tables-only",
+            "sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+            "owner": approval["owner"], "reviewer": approval["reviewer"],
+            "mappedFeatures": sorted(architecture["mappedFeatures"]),
+            "pendingFormulaIds": sorted(formula_ids), "runtimeStatus": "UNVERIFIED_CANDIDATE",
+            "sourceStatus": source_gate_evidence["status"],
+            "sourceReviewStatus": "PENDING_STAGING" if issues else source_gate_evidence["reviewStatus"],
+            "pendingSourceIssues": issues,
+            "sourceReviewRequirements": [{"issue": issue, "issueHash": source_issue_hash(issue)} for issue in issues],
+            "targetBindings": bindings, "artifacts": artifacts}
+
+
 def _validate_target_bindings(manifest, receipt, runtime_evidence, architecture):
     receipt_bindings = receipt.get("targetBindings") or {}
     if runtime_evidence.get("targetBindings") != receipt_bindings:

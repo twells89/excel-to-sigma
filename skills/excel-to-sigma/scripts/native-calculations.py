@@ -32,6 +32,9 @@ def main(argv=None):
     lower.add_argument("--native-plan", required=True)
     lower.add_argument("--assigned-rows", required=True)
     lower.add_argument("--max-columns", type=int, default=64)
+    bind = commands.add_parser("bind-input-rows", help="validate actual input schema/physical rows; never authorize formulas")
+    for name in ("input-plan", "manifest", "staging-receipt", "current", "observed-rows"):
+        bind.add_argument("--" + name, required=True)
     backup = commands.add_parser("backup", help="persist complete document and queried rows")
     backup.add_argument("--current", required=True)
     backup.add_argument("--observed-rows", required=True)
@@ -53,7 +56,7 @@ def main(argv=None):
     confirm = commands.add_parser("confirm-readback", help="check saved native formula structure")
     confirm.add_argument("--proposal", required=True)
     confirm.add_argument("--readback", required=True)
-    for command in (plan, lower, backup, update, confirm, scaffold, scaffold_confirm):
+    for command in (plan, lower, bind, backup, update, confirm, scaffold, scaffold_confirm):
         command.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.command == "plan":
@@ -61,6 +64,21 @@ def main(argv=None):
     elif args.command == "lower-candidate":
         result = lower_native_calculations(_read(args.native_plan), _read(args.assigned_rows),
                                            max_columns=args.max_columns)
+    elif args.command == "bind-input-rows":
+        from source_inputs import validate_source_input_plan
+        from migration_manifest import validate_manifest
+        from native_calculations import _observed_bindings
+        inputs, manifest, current = _read(args.input_plan), _read(args.manifest), _read(args.current)
+        validate_source_input_plan(inputs)
+        validate_manifest(manifest)
+        if (manifest.get("sourceHash") != inputs["sourceSha256"]
+                or manifest.get("planProjection", {}).get("inputPlanHash") != inputs["inputPlanHash"]
+                or manifest.get("planProjection", {}).get("sharedInputArchitecture") != inputs["sharedInputArchitecture"]
+                or current.get("workbookId") != (manifest.get("target") or {}).get("documentId")
+                or current.get("documentVersion") != (manifest.get("target") or {}).get("version")):
+            raise ValueError("actual input manifest/document/version is stale")
+        result = _observed_bindings(inputs, manifest, _read(args.staging_receipt),
+            current["contents"], _read(args.observed_rows), input_binding_only=True)
     elif args.command == "backup":
         result = build_native_calculation_backup(_read(args.current), _read(args.observed_rows))
     elif args.command == "prepare-scaffold":
