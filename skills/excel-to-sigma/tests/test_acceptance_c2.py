@@ -2,8 +2,11 @@
 import copy
 import re
 import sys
+import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/lib'))
@@ -254,6 +257,58 @@ class SourceValidationRoleTests(unittest.TestCase):
         self.assertEqual(len(branches),1)
         self.assertEqual(branches[0]['expectedOutcome'],'UNRESOLVED_SOURCE_ROUTE')
         self.assertEqual(branches[0]['declaredBlankClass'],'UNRESOLVED')
+
+    def test_reviewed_blank_cannot_clear_unresolved_custom_domain(self):
+        original=ROOT/'tests/fixtures/fixture-sales-pipeline.xlsx'
+        with tempfile.TemporaryDirectory() as directory:
+            edited=Path(directory)/original.name
+            with ZipFile(original) as source, ZipFile(edited,'w') as destination:
+                for item in source.infolist():
+                    data=source.read(item.filename)
+                    if item.filename=='xl/worksheets/sheet2.xml':
+                        xml=ET.fromstring(data)
+                        ns='{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+                        rule=xml.find('.//'+ns+'dataValidation')
+                        rule.set('type','custom')
+                        rule.find(ns+'formula1').text='FALSE'
+                        data=ET.tostring(xml,encoding='utf-8')
+                    destination.writestr(item,data)
+            manifests,targets,receipts=acceptance_fixture.AcceptanceTests().bound_matrix_inputs(
+                source_overrides={'sales':edited})
+            for workflow in manifests:
+                targets[workflow]['sourceBlankReviews']=synthetic_qualified_blank_reviews(manifests[workflow])
+            matrix=a.build_acceptance_matrix(manifests,targets,receipts=receipts)
+            case=next(c for c in matrix['cases'] if c['id']=='sales-zero-and-invalid-entry')
+            self.assertEqual(len(matrix['cases']),102)
+            self.assertEqual(case['validationContract']['rules'][0]['status'],'unresolved')
+            self.assertEqual(case['validationContract']['branches'][0]['expectedOutcome'],'REJECTED_NO_WRITE')
+            self.assertTrue(case['validationContract']['unresolvedDomains'])
+            with self.assertRaisesRegex(ValueError,'unresolved source validation domain'):
+                a.validate_production_matrix(matrix)
+            self.assertTrue(any('unresolved source validation domain' in blocker for blocker in
+                                a.build_workflow_reports(matrix,[])['sales']['completionBlockers']))
+            target=matrix['workflows']['sales']
+            case['oracle']={'origin':'independent-oracle','reviewer':'source-reviewer',
+                'sourceHash':target['sourceHash'],'checks':[{'key':'source-validation-and-cancel',
+                'expected':case['validationContract']['expectedOutcomes'],'comparison':'exact'}]}
+            matrix=a.seal_matrix({k:v for k,v in matrix.items() if k!='matrixHash'})
+            capture={'caseId':case['id'],'evidenceId':'unit-capture','executionId':'unit-browser',
+                'origin':'sigma-browser','sourceHash':target['sourceHash'],'planHash':target['planHash'],
+                'documentId':target['documentId'],'version':target['version'],
+                'published':True,'publishedVersion':target['version'],'steps':['unit browser'],
+                'screenshots':['unit'], 'references':['unit'],
+                'session':{'memberId':'unit','accountType':'build','effectiveGrant':'edit',
+                    'editInputTables':True,'identityEvidenceId':'unit','adminBypass':False},
+                'dataEntry':{'inputMode':'published-explore','editDataAvailable':True},
+                'receipt':{'status':'COMPLETED','executionId':'unit-browser',
+                    'documentId':target['documentId'],'version':target['version']},
+                'actual':[{'key':'source-validation-and-cancel',
+                    'value':case['validationContract']['expectedOutcomes']}]}
+            capture['validationInventory'],capture['validationBranches'],refs=synthetic_validation_bundle(
+                case,target,capture['session'])
+            capture['references']+=refs
+            with self.assertRaisesRegex(ValueError,'unresolved source validation domain'):
+                a.append_evidence([],matrix,capture)
 
     def test_qualified_saved_blank_requires_persisted_null_not_numeric_zero(self):
         matrix,case,capture=self.validation_fixture(blank_outcome='SAVED')

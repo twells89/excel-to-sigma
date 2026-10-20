@@ -178,7 +178,7 @@ def _validation_contract(workflow,source,manifest,receipt,target):
         'editMode':spec['editMode'],'keyColumns':[assigned[name] for name in spec['keyColumns']],
         'columns':columns,'rowCount':len(spec['rows']),
         'sourceKeys':[[row[name] for name in spec['keyColumns']] for row in spec['rows']]}
-    rules=[];branches=[]
+    rules=[];branches=[];unresolved_domains=[]
     expected_review_ids=set()
     for rule in source['validations']:
         if workflow=='research':
@@ -199,6 +199,10 @@ def _validation_contract(workflow,source,manifest,receipt,target):
                 'storedValue': 'UNRESOLVED'} or rule['sourceXml']['sourceHash'] != manifest['sourceHash']):
             raise AcceptanceError('source blank semantics policy or raw rule stale')
         rules.append({**source_rule,'target':rule_target})
+        if rule['status']!='supported' or rule['sourceType'] not in {'list','decimal','whole'}:
+            unresolved_domains.append({'ruleId':rule['id'],'sourceType':rule['sourceType'],
+                'range':rule['range'],'ruleHash':rule['sourceXml']['ruleHash'],
+                'reason':'source nonblank validation domain has no reviewed native coverage'})
         if rule['status']=='supported' and rule['sourceType']=='list':
             formula=rule['formula1']
             if not isinstance(formula,str) or not re.fullmatch(r'"[^"\n]+"',formula):
@@ -252,7 +256,7 @@ def _validation_contract(workflow,source,manifest,receipt,target):
         'expectedOutcome':'CANCELLED_NO_WRITE'})
     return {'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'blankPolicy':copy.deepcopy(POLICY),
             'blankPolicyHash':POLICY_HASH,'table':table_contract,
-            'rules':rules,'branches':branches,
+            'rules':rules,'branches':branches,'unresolvedDomains':unresolved_domains,
             'expectedOutcomes':[{'id':branch['id'],'outcome':branch['expectedOutcome']} for branch in branches]}
 
 
@@ -464,6 +468,8 @@ def _validate_validation_capture(case,target,capture):
     source=extract_workflow_repairs(bound['manifest']['source']['path'])
     if not _same_typed(contract,_validation_contract(case['workflow'],source,bound['manifest'],bound['receipt'],target)):
         raise AcceptanceError('source validation contract changed or foreign')
+    if contract.get('unresolvedDomains'):
+        raise AcceptanceError('unresolved source validation domain blocks native case admission')
     expected=contract.get('branches') or []
     if any(branch['expectedOutcome']=='UNRESOLVED_SOURCE_ROUTE' for branch in expected):
         raise AcceptanceError('source blank route outcome unresolved; native capture cannot select its own oracle')
@@ -740,6 +746,8 @@ def validate_production_matrix(matrix):
             if name=='zero-and-invalid-entry' and not _same_typed(c.get('validationContract'),_validation_contract(
                     workflow,source_contract,input_contract['manifest'],input_contract['receipt'],matrix['workflows'][workflow])):
                 raise AcceptanceError('mandatory declared source validation/Cancel coverage changed: '+workflow)
+            if name=='zero-and-invalid-entry' and c['validationContract'].get('unresolvedDomains'):
+                raise AcceptanceError('unresolved source validation domain blocks production: '+workflow)
             browser=name in {'zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout','chart-1-visual','chart-2-visual'} or name.startswith('published-') or (workflow=='forecast' and any(x in name for x in ('scenario','snapshot','wrong-context','python','goal','procedure'))) or name.startswith('approval-') or name=='selection-zero-one-multiple'
             if c.get('mode')!=('browser' if browser else 'query'):raise AcceptanceError('mandatory runtime mode changed')
             if name.startswith('published-'):

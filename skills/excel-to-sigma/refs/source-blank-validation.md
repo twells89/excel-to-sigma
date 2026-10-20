@@ -34,6 +34,12 @@ all bindings. A review decision establishes only that named route; Delete,
 Clear Contents, and paste-blank need separately named evidence before their
 outcomes can be asserted.
 
+An unsupported custom/list rule or referenced numeric bound has a separate
+`unresolvedDomains` entry for its nonblank constraint. A qualified blank-route
+review leaves that entry intact. Native validation case admission and the
+production matrix remain blocked until a separately reviewed implementation
+and complete domain coverage resolve it.
+
 Even with a reviewed outcome, the native branch requires browser execution,
 source/plan/target/session receipts, physical row-ID inventory, before/after/
 reopen/restoration readbacks, typed value, and full vector equality. It cannot
