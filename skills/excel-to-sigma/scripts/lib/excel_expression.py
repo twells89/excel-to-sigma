@@ -339,19 +339,40 @@ def expand_range(value: Range) -> tuple[CellReference, ...]:
     return tuple(refs)
 
 
-def evaluate(expression, resolver: Callable[[CellReference], object]):
-    def run(node):
+_ARITHMETIC_OPERATORS = {"+", "-", "*", "/", "^"}
+_NUMERIC_SCALAR_FUNCTIONS = {"ROUND", "ABS", "INT"}
+
+
+def _argument_arithmetic_context(name, index, outer_context):
+    if name == "IF":
+        return outer_context and index > 0
+    return name in _NUMERIC_SCALAR_FUNCTIONS
+
+
+def evaluate(expression, resolver: Callable[[CellReference], object], *,
+             arithmetic_reference_resolver: Callable[[CellReference, object], object] | None = None):
+    """Evaluate one parsed expression; optionally coerce typed blank leaves in arithmetic.
+
+    The callback sees only scalar references in numeric arithmetic context. It
+    decides from source provenance whether a NULL is an empty numeric literal;
+    a derived formula error must remain an error/NULL.
+    """
+    def run(node, arithmetic=False):
         if isinstance(node, Number): return node.value
         if isinstance(node, Text): return node.value
-        if isinstance(node, Reference): return resolver(node.value)
+        if isinstance(node, Reference):
+            value = resolver(node.value)
+            return (arithmetic_reference_resolver(node.value, value)
+                    if arithmetic and arithmetic_reference_resolver is not None else value)
         if isinstance(node, Range): return [resolver(ref) for ref in expand_range(node)]
-        if isinstance(node, Group): return run(node.expression)
+        if isinstance(node, Group): return run(node.expression, arithmetic)
         if isinstance(node, Unary):
-            value = run(node.operand)
+            value = run(node.operand, True)
             return value if node.operator == "+" else -value
-        if isinstance(node, Percent): return run(node.operand) * 0.01
+        if isinstance(node, Percent): return run(node.operand, True) * 0.01
         if isinstance(node, Binary):
-            left, right = run(node.left), run(node.right)
+            numeric = node.operator in _ARITHMETIC_OPERATORS
+            left, right = run(node.left, numeric), run(node.right, numeric)
             operations = {
                 "+": lambda: left + right, "-": lambda: left - right,
                 "*": lambda: left * right, "/": lambda: left / right,
@@ -367,9 +388,10 @@ def evaluate(expression, resolver: Callable[[CellReference], object]):
                     raise ExpressionError("IF requires two or three arguments")
                 condition = run(node.arguments[0])
                 if condition:
-                    return run(node.arguments[1])
-                return run(node.arguments[2]) if len(node.arguments) == 3 else False
-            args = [run(arg) for arg in node.arguments]
+                    return run(node.arguments[1], arithmetic)
+                return run(node.arguments[2], arithmetic) if len(node.arguments) == 3 else False
+            args = [run(arg, _argument_arithmetic_context(node.name, i, arithmetic))
+                    for i, arg in enumerate(node.arguments)]
             if node.name == "ROUND":
                 if len(args) != 2:
                     raise ExpressionError("ROUND requires two arguments")
@@ -378,8 +400,8 @@ def evaluate(expression, resolver: Callable[[CellReference], object]):
                 return float(Decimal(str(args[0])).quantize(quantum, rounding=ROUND_HALF_UP))
             if node.name == "ABS": return abs(args[0])
             if node.name == "INT": return math.floor(args[0])
-            if node.name == "MIN": return min(_flatten(args))
-            if node.name == "MAX": return max(_flatten(args))
+            if node.name == "MIN": return min((v for v in _flatten(args) if isinstance(v, (int, float))), default=0)
+            if node.name == "MAX": return max((v for v in _flatten(args) if isinstance(v, (int, float))), default=0)
             if node.name == "SUM": return sum(v for v in _flatten(args) if isinstance(v, (int, float)))
             if node.name == "SUMIFS":
                 if len(args) < 3 or len(args) % 2 == 0:
@@ -408,27 +430,34 @@ def _flatten(values):
 
 
 def emit_sigma(expression, reference_renderer: Callable[[CellReference], str],
-               range_renderer: Callable[[Range], str] | None = None) -> str:
+               range_renderer: Callable[[Range], str] | None = None, *,
+               arithmetic_reference_renderer: Callable[[CellReference], str] | None = None) -> str:
     function_names = {"IF": "If", "ROUND": "Round", "ABS": "Abs", "MIN": "Min",
                       "MAX": "Max", "SUM": "Sum", "INT": "Floor", "SUMIFS": "SumIfs"}
 
-    def render(node):
+    def render(node, arithmetic=False):
         if isinstance(node, Number): return node.source
         if isinstance(node, Text): return '"' + node.value.replace('"', '\\"') + '"'
-        if isinstance(node, Reference): return reference_renderer(node.value)
+        if isinstance(node, Reference):
+            return (arithmetic_reference_renderer(node.value)
+                    if arithmetic and arithmetic_reference_renderer is not None
+                    else reference_renderer(node.value))
         if isinstance(node, Range):
             if range_renderer is not None:
                 return range_renderer(node)
             return f"Range({reference_renderer(node.start)}, {reference_renderer(node.end)})"
-        if isinstance(node, Group): return f"({render(node.expression)})"
-        if isinstance(node, Unary): return f"{node.operator}{render(node.operand)}"
-        if isinstance(node, Percent): return f"({render(node.operand)} * 0.01)"
+        if isinstance(node, Group): return f"({render(node.expression, arithmetic)})"
+        if isinstance(node, Unary): return f"{node.operator}{render(node.operand, True)}"
+        if isinstance(node, Percent): return f"({render(node.operand, True)} * 0.01)"
         if isinstance(node, Binary):
+            numeric = node.operator in _ARITHMETIC_OPERATORS
             if node.operator == "^":
-                return f"Power({render(node.left)}, {render(node.right)})"
+                return f"Power({render(node.left, numeric)}, {render(node.right, numeric)})"
             operator = "!=" if node.operator == "<>" else node.operator
-            return f"{render(node.left)} {operator} {render(node.right)}"
+            return f"{render(node.left, numeric)} {operator} {render(node.right, numeric)}"
         if isinstance(node, Function):
-            return f"{function_names[node.name]}(" + ", ".join(render(arg) for arg in node.arguments) + ")"
+            return f"{function_names[node.name]}(" + ", ".join(
+                render(arg, _argument_arithmetic_context(node.name, i, arithmetic))
+                for i, arg in enumerate(node.arguments)) + ")"
         raise UnsupportedExpression(f"cannot emit {type(node).__name__}")
     return render(expression)

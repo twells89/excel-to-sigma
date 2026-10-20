@@ -808,20 +808,35 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
             raise UnsupportedExpression(f"missing source reference {identity.id}")
         expression = parse_expression(formula, sheet=identity.sheet)
 
-        def render_reference(reference):
+        def reference_target(reference):
             if reference.name:
                 target = graph.names.get(reference.name)
                 if target is None:
                     raise UnsupportedExpression(f"unresolved defined name {reference.name}")
             else:
                 target = CellIdentity(reference.sheet, reference.address)
+            return target
+
+        def render_reference(reference):
+            target = reference_target(reference)
             return f"({render_cell(target, year, stack + (identity,))})" if target in graph.formulas \
                 else render_cell(target, year, stack + (identity,))
+
+        def render_arithmetic_reference(reference):
+            target = reference_target(reference)
+            rendered = render_reference(reference)
+            literal = graph.literals.get(target)
+            # Excel reads an empty numeric cell as zero in arithmetic. Keep the
+            # direct input projection raw, and never hide a derived formula error.
+            if isinstance(literal, (int, float)) and not isinstance(literal, bool):
+                return f"Coalesce({rendered}, 0)"
+            return rendered
 
         def render_range(value):
             return "(" + " + ".join(render_reference(reference)
                                       for reference in expand_range(value)) + ")"
-        return emit_expression_sigma(expression, render_reference, render_range)
+        return emit_expression_sigma(expression, render_reference, render_range,
+                                     arithmetic_reference_renderer=render_arithmetic_reference)
 
     for row, row_data in rows.items():
         line = lines[row]

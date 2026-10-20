@@ -141,9 +141,16 @@ class FormulaGraph:
                         ready.append(candidate); ready.sort()
         return tuple(result)
 
-    def evaluate(self):
-        """Evaluate every acyclic supported formula from workbook literal values."""
+    def evaluate(self, literal_overrides=None):
+        """Evaluate acyclic formulas, optionally substituting known source literals."""
         values = dict(self.literals)
+        for identity, value in (literal_overrides or {}).items():
+            original = self.literals.get(identity)
+            if not isinstance(original, (int, float)) or isinstance(original, bool):
+                raise ValueError(f"numeric source literal required: {identity.id}")
+            if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+                raise ValueError(f"numeric source literal override required: {identity.id}")
+            values[identity] = value
         expressions = {}
         for identity, formula in self.formulas.items():
             try:
@@ -155,15 +162,24 @@ class FormulaGraph:
             if expression is None:
                 continue
 
-            def resolve(reference):
+            def target_for(reference):
                 if reference.name:
                     target = self.names.get(reference.name)
                     if target is None:
                         raise UnsupportedExpression(f"unresolved defined name {reference.name}")
-                    return values.get(target)
-                return values.get(CellIdentity(reference.sheet, reference.address))
+                    return target
+                return CellIdentity(reference.sheet, reference.address)
+
+            def resolve(reference):
+                return values.get(target_for(reference))
+
+            def arithmetic_value(reference, value):
+                original = self.literals.get(target_for(reference))
+                return (0 if value is None and isinstance(original, (int, float))
+                        and not isinstance(original, bool) else value)
             try:
-                values[identity] = evaluate(expression, resolve)
+                values[identity] = evaluate(expression, resolve,
+                                            arithmetic_reference_resolver=arithmetic_value)
             except (ArithmeticError, TypeError, ValueError):
                 continue
         return values
