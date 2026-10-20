@@ -4,10 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 try:
-    from .excel_expression import (ExpressionError, Range, Reference, UnsupportedExpression,
+    from .excel_expression import (ExpressionError, Function, Group, Binary, Unary, Percent,
+                                   Number, Text, Range, Reference, UnsupportedExpression,
                                    evaluate, expand_range, parse_expression)
 except ImportError:  # standalone tests/scripts that place lib directly on sys.path
-    from excel_expression import (ExpressionError, Range, Reference, UnsupportedExpression,
+    from excel_expression import (ExpressionError, Function, Group, Binary, Unary, Percent,
+                                  Number, Text, Range, Reference, UnsupportedExpression,
                                   evaluate, expand_range, parse_expression)
 
 
@@ -201,6 +203,10 @@ def _expression_cells(expression):
     if isinstance(expression, Range):
         yield from expand_range(expression)
         return
+    if isinstance(expression, (Number, Text)):
+        return
+    if not isinstance(expression, (Group, Unary, Percent, Binary, Function)):
+        raise UnsupportedExpression(f"legacy formula graph cannot bind {type(expression).__name__}")
     for name in ("expression", "operand", "left", "right"):
         child = getattr(expression, name, None)
         if child is not None:
