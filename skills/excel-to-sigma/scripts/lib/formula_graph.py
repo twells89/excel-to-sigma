@@ -151,6 +151,10 @@ class FormulaGraph:
             if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
                 raise ValueError(f"numeric source literal override required: {identity.id}")
             values[identity] = value
+        # Raw results retain cleared literals as None. The numeric view carries
+        # only their arithmetic interpretation through formula links. Errors
+        # stay absent from both views and are never mistaken for blank inputs.
+        arithmetic_values = {}
         expressions = {}
         for identity, formula in self.formulas.items():
             try:
@@ -171,15 +175,28 @@ class FormulaGraph:
                 return CellIdentity(reference.sheet, reference.address)
 
             def resolve(reference):
-                return values.get(target_for(reference))
+                target = target_for(reference)
+                if target not in values:
+                    raise UnsupportedExpression(f"unresolved or failed reference {target.id}")
+                return values[target]
 
             def arithmetic_value(reference, value):
-                original = self.literals.get(target_for(reference))
+                target = target_for(reference)
+                if target in self.formulas:
+                    if target not in arithmetic_values:
+                        raise UnsupportedExpression(f"unresolved or failed reference {target.id}")
+                    return arithmetic_values[target]
+                original = self.literals.get(target)
                 return (0 if value is None and isinstance(original, (int, float))
                         and not isinstance(original, bool) else value)
             try:
-                values[identity] = evaluate(expression, resolve,
-                                            arithmetic_reference_resolver=arithmetic_value)
+                raw = evaluate(expression, resolve,
+                               arithmetic_reference_resolver=arithmetic_value)
+                numeric = evaluate(expression, resolve,
+                                   arithmetic_reference_resolver=arithmetic_value,
+                                   arithmetic_context=True)
+                values[identity] = raw
+                arithmetic_values[identity] = numeric
             except (ArithmeticError, TypeError, ValueError):
                 continue
         return values

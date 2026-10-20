@@ -1,10 +1,11 @@
 """A cleared numeric source literal is raw NULL, but Excel arithmetic reads it as zero."""
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,85 @@ class NumericBlankReferenceTests(unittest.TestCase):
         for name in ("COUNT", "COUNTA", "AVERAGE"):
             with self.assertRaises(UnsupportedExpression):
                 parse_expression(f"={name}(A1,B1)", sheet="Model")
+
+    def test_formula_links_carry_numeric_blank_context_without_coercing_raw_or_errors(self):
+        source = Workbook()
+        ws = source.active
+        ws.title = "Model"
+        other = source.create_sheet("Other")
+        ws["A1"] = 7
+        ws["B1"] = "=A1"
+        ws["C1"] = "=B1+1"
+        other["A1"] = "='Model'!B1"
+        other["B1"] = "=A1+1"
+        other["C1"] = "=IF(1,A1,1/0)+1"
+        ws["D1"] = "=1/0"
+        ws["E1"] = "=D1"
+        other["D1"] = "='Model'!E1+A1"
+        values = FormulaGraph.from_workbook(source).evaluate({CellIdentity("Model", "A1"): None})
+        for sheet, address in (("Model", "A1"), ("Model", "B1"), ("Other", "A1")):
+            self.assertIsNone(values[CellIdentity(sheet, address)])
+        for sheet, address in (("Model", "C1"), ("Other", "B1"), ("Other", "C1")):
+            with self.subTest(sheet=sheet, address=address):
+                self.assertEqual(values.get(CellIdentity(sheet, address)), 1)
+        self.assertNotIn(CellIdentity("Other", "D1"), values)
+
+    def test_research_carried_c3_blank_is_zero_in_source_and_emitted_arithmetic(self):
+        source = load_workbook(FIXTURE, data_only=False)
+        source["Model Inputs"]["D3"] = "=C3"
+        source["FY results"]["I8"] = "=H8*(1+'Model Inputs'!$D$3)"
+        values = FormulaGraph.from_workbook(source).evaluate({CellIdentity("Model Inputs", "C3"): None})
+        self.assertIsNone(values[CellIdentity("Model Inputs", "D3")])
+        with self.subTest(path="source evaluation"):
+            self.assertEqual(values.get(CellIdentity("FY results", "I8")), 1241.955)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "carried-blank.xlsx"
+            source.save(path)
+            plan = INFER.infer(path, sheet="FY results")
+        revenue = next(line for line in plan["lines"] if line["row"] == 8)
+        formula = revenue["periodFormulas"]["2026"]
+        native_value = scalar(formula, {"i_fy_results_g8": 1158,
+                                        "i_model_inputs_c2": .0725,
+                                        "i_model_inputs_c3": None})
+        self.assertIsNotNone(native_value)
+        self.assertAlmostEqual(native_value, 1241.955)
+
+    def test_aggregates_propagate_derived_errors_but_ignore_true_blank_literals(self):
+        source = Workbook()
+        ws = source.active
+        ws.title = "Model"
+        ws["A1"] = 7
+        ws["D1"] = "=1/0"
+        ws["D2"] = "=D1"
+        ws["D3"] = "=AVERAGE(A1,5)"
+        for row, dependency in enumerate(("A1", "D1", "D2", "D3", "Z9"), 1):
+            for column, name in (("E", "MIN"), ("F", "MAX"), ("G", "SUM")):
+                ws[f"{column}{row}"] = f"={name}({dependency},5)"
+        values = FormulaGraph.from_workbook(source).evaluate({CellIdentity("Model", "A1"): None})
+        for column in "EFG":
+            self.assertEqual(values[CellIdentity("Model", f"{column}1")], 5)
+            for row in range(2, 6):
+                with self.subTest(column=column, row=row):
+                    self.assertFalse(CellIdentity("Model", f"{column}{row}") in values)
+
+    def test_research_aggregate_emission_preserves_division_error_through_formula_link(self):
+        for name in ("MIN", "MAX", "SUM"):
+            with self.subTest(name=name):
+                source = load_workbook(FIXTURE, data_only=False)
+                source["Model Inputs"]["D3"] = "=1/0"
+                source["Model Inputs"]["E3"] = "=D3"
+                source["FY results"]["I8"] = f"={name}('Model Inputs'!$E$3,5)"
+                values = FormulaGraph.from_workbook(source).evaluate()
+                with self.subTest(path="source evaluation"):
+                    self.assertFalse(CellIdentity("FY results", "I8") in values)
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "derived-error.xlsx"
+                    source.save(path)
+                    plan = INFER.infer(path, sheet="FY results")
+                revenue = next(line for line in plan["lines"] if line["row"] == 8)
+                formula = revenue["periodFormulas"]["2026"]
+                with self.assertRaises(ZeroDivisionError):
+                    scalar(formula, {})
 
     def test_fixture_emission_keeps_raw_input_and_coerces_only_arithmetic_reads(self):
         plan = INFER.infer(FIXTURE)

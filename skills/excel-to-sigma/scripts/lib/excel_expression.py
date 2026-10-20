@@ -350,12 +350,14 @@ def _argument_arithmetic_context(name, index, outer_context):
 
 
 def evaluate(expression, resolver: Callable[[CellReference], object], *,
-             arithmetic_reference_resolver: Callable[[CellReference, object], object] | None = None):
+             arithmetic_reference_resolver: Callable[[CellReference, object], object] | None = None,
+             arithmetic_context: bool = False):
     """Evaluate one parsed expression; optionally coerce typed blank leaves in arithmetic.
 
     The callback sees only scalar references in numeric arithmetic context. It
     decides from source provenance whether a NULL is an empty numeric literal;
-    a derived formula error must remain an error/NULL.
+    a derived formula error must remain an error/NULL. ``arithmetic_context``
+    carries the caller's numeric use through an inlined formula reference.
     """
     def run(node, arithmetic=False):
         if isinstance(node, Number): return node.value
@@ -418,7 +420,7 @@ def evaluate(expression, resolver: Callable[[CellReference], object], *,
                            if isinstance(value, (int, float))
                            and all(values[i] == criterion for values, criterion in conditions))
         raise UnsupportedExpression(f"cannot evaluate {type(node).__name__}")
-    return run(expression)
+    return run(expression, arithmetic_context)
 
 
 def _flatten(values):
@@ -431,7 +433,8 @@ def _flatten(values):
 
 def emit_sigma(expression, reference_renderer: Callable[[CellReference], str],
                range_renderer: Callable[[Range], str] | None = None, *,
-               arithmetic_reference_renderer: Callable[[CellReference], str] | None = None) -> str:
+               arithmetic_reference_renderer: Callable[[CellReference], str] | None = None,
+               arithmetic_context: bool = False) -> str:
     function_names = {"IF": "If", "ROUND": "Round", "ABS": "Abs", "MIN": "Min",
                       "MAX": "Max", "SUM": "Sum", "INT": "Floor", "SUMIFS": "SumIfs"}
 
@@ -460,4 +463,4 @@ def emit_sigma(expression, reference_renderer: Callable[[CellReference], str],
                 render(arg, _argument_arithmetic_context(node.name, i, arithmetic))
                 for i, arg in enumerate(node.arguments)) + ")"
         raise UnsupportedExpression(f"cannot emit {type(node).__name__}")
-    return render(expression)
+    return render(expression, arithmetic_context)
