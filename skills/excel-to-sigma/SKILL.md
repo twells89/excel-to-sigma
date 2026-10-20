@@ -34,6 +34,7 @@ description: >-
 - `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
 - `refs/presentation-migration.md` — source-bound native charts, validation, conditional formatting, semantic formats, three-view layout, ordinary business inputs, and repeat-safe full-contents integration.
 - `refs/source-blank-validation.md` — version 2 raw XML and declared blank-rule classification, with source route enforcement kept separate from native runtime proof.
+- `refs/workbook-expression-context.md` — source-bound shared formula AST, local verification, explicit bindings, and unresolved dynamic calculation limits.
 - `refs/acceptance-and-promotion.md` — source-bound secondary workflow repairs, mandatory five-fixture actual evidence, persisted outcomes, original-URL promotion and row/document/SDK rollback.
 - The `sigma-workbooks` companion skill, if installed, plus the Sigma OpenAPI — canonical workbook spec. Find it through the agent's skill loader; use `refs/sigma-build-gotchas.md` when it is unavailable.
 

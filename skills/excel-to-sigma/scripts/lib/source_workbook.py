@@ -18,8 +18,8 @@ from openpyxl.utils.cell import (column_index_from_string, coordinate_from_strin
 from openpyxl.worksheet.formula import ArrayFormula
 
 from excel_expression import (
-    Binary, ExpressionError, Function, Group, Percent, Range, Reference,
-    Unary, expand_range, parse_expression,
+    Binary, ExpressionError, Function, Group, Number, Percent, Range, Reference,
+    Text, Unary, UnsupportedExpression, expand_range, parse_expression,
 )
 
 
@@ -118,6 +118,8 @@ def _walk_references(node):
             pending.extend((current.right, current.left))
         elif isinstance(current, Function):
             pending.extend(reversed(current.arguments))
+        elif not isinstance(current, (Number, Text)):
+            raise UnsupportedExpression(f"source inventory cannot bind {type(current).__name__}")
 
 
 def _reference_bounds(node):
