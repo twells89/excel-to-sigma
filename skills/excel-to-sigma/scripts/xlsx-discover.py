@@ -10,7 +10,9 @@ Usage:
 """
 import sys
 import re
+import json
 from collections import Counter
+from datetime import date, datetime
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
@@ -69,32 +71,87 @@ def chart_anchor(chart):
 def classify(headers, body_rows, nrows, referenced_by_others):
     """Return (route, why) — entered → input table; derived → read-only DM;
     reference → maintained-list (input table if users maintain it)."""
-    # formula ratio over non-empty body cells
-    filled = formulas = 0
-    for r in body_rows:
-        for c in r:
-            v = c.value
-            if v is None or v == "":
-                continue
-            filled += 1
-            if isinstance(v, str) and v.startswith("="):
-                formulas += 1
-    fr = (formulas / filled) if filled else 0.0
-    pk = any(PK_RE.search(str(h).strip()) for h in headers if h)
-    # wide cross-tab: many headers that look like a spread axis
-    wide = sum(1 for h in headers if h and WIDE_HDR_RE.match(str(h).strip()))
-    wide_flag = wide >= 4
+    analysis = analyze_table(headers, body_rows, nrows, referenced_by_others)
+    return analysis["route"], analysis["reason"], bool(analysis["wideAxis"])
 
-    if fr >= 0.3:
-        return "DERIVED", f"{fr:.0%} of cells are formulas → read-only DM element + metrics", wide_flag
-    if nrows <= 30 and pk and referenced_by_others:
-        return "REFERENCE", "small + PK + referenced by other sheets → dim (input table only if users maintain it; else read-only)", wide_flag
-    return "ENTERED", "typed values, no inbound formulas → input table (editable)", wide_flag
+
+def _date_axis(value):
+    if isinstance(value, (date, datetime)):
+        return True
+    if isinstance(value, str):
+        try:
+            date.fromisoformat(value)
+            return True
+        except ValueError:
+            return False
+    return False
+
+
+def analyze_table(headers, body_rows, nrows, referenced_by_others):
+    """Separate literal source cells from formulas before choosing a table route."""
+    columns = []
+    for index, header in enumerate(headers):
+        literals, formulas, blanks = [], [], []
+        numeric = 0
+        for row in body_rows:
+            cell = row[index]
+            value = cell.value
+            if value is None or value == "":
+                blanks.append(cell.coordinate)
+            elif isinstance(value, str) and value.startswith("="):
+                formulas.append(cell.coordinate)
+            else:
+                literals.append(cell.coordinate)
+                numeric += isinstance(value, (int, float)) and not isinstance(value, bool)
+        role = ("MIXED_REVIEW" if literals and formulas else
+                "DERIVED" if formulas else "SOURCE" if literals else "EMPTY_REVIEW")
+        columns.append({"name": str(header) if header is not None else "",
+                        "role": role, "literalCells": len(literals),
+                        "formulaCells": len(formulas), "blankCells": len(blanks),
+                        "literalCellRefs": literals, "formulaCellRefs": formulas,
+                        "_numeric": numeric})
+
+    pk = any(PK_RE.search(str(h).strip()) for h in headers if h)
+    wide = sum(1 for h in headers if h and WIDE_HDR_RE.match(str(h).strip()))
+    date_values = [row[0].value for row in body_rows if row[0].value is not None] if body_rows else []
+    measure_axis = (len(date_values) >= 3 and
+                    sum(_date_axis(v) for v in date_values) >= len(date_values) * 0.8 and
+                    sum(c["_numeric"] >= max(3, nrows * 0.8) and c["formulaCells"] == 0
+                        for c in columns[1:]) >= 3)
+    wide_axis = "POSSIBLE_MEASURE_AXIS" if measure_axis else "CALENDAR_HEADERS" if wide >= 4 else None
+    for column in columns:
+        del column["_numeric"]
+    roles = {column["role"] for column in columns}
+    if roles == {"EMPTY_REVIEW"}:
+        route = "REVIEW"
+        reason = "blank template has no observed entry or formula provenance"
+    elif "MIXED_REVIEW" in roles or "EMPTY_REVIEW" in roles or {"SOURCE", "DERIVED"} <= roles:
+        route = "MIXED"
+        reason = "literal source cells and formula cells require separate routes; review edit intent"
+    elif roles == {"DERIVED"}:
+        route = "DERIVED"
+        reason = "formula columns require live calculations"
+    elif nrows <= 30 and pk and referenced_by_others:
+        route = "REFERENCE"
+        reason = "small referenced key table; review whether users maintain it"
+    else:
+        route = "ENTERED"
+        reason = "literal source columns are candidates for editable input"
+    action = ("Review editable source columns and map formula columns to live calculations; "
+              "never seed formula results as inputs." if route == "MIXED" else
+              "Review template intent and intended entry columns before choosing a route." if route == "REVIEW" else
+              "Review whether this reference list is maintained." if route == "REFERENCE" else
+              "Map formulas to live calculations." if route == "DERIVED" else
+              "Review whether literal source values should remain editable.")
+    if wide_axis:
+        action += " Review the possible wide measure axis and grain before any unpivot."
+    return {"route": route, "reason": reason, "wideAxis": wide_axis,
+            "columns": columns, "action": action}
 
 
 SHEET_REF_RE = re.compile(r"(?:'([^']+)'|([A-Za-z0-9_]+))!\$?[A-Z]+\$?\d+")
 GROWTH_RE = re.compile(r"^=\s*\$?[A-Z]+\$?\d+\s*\*\s*\(\s*1\s*[+\-]", re.I)   # prior*(1±rate)
-FLAT_RE   = re.compile(r"^=\s*\$?[A-Z]+\$?\d+\s*$")                          # =single cell
+DIRECT_REF_RE = re.compile(r"^=\s*(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?(\$?[A-Z]+\$?\d+)\s*$", re.I)
 SUMIFS_RE = re.compile(r"\bSUMIFS?\b|\bSUMPRODUCT\b", re.I)
 ARITH_RE  = re.compile(r"[A-Z]+\$?\d+\s*[-+*/]\s*\$?[A-Z]+\$?\d+|^=IF\(", re.I)
 
@@ -132,8 +189,8 @@ def classify_report_cells(wb):
                     counts["DRIVER_GROWTH"] += 1
                     for m in SHEET_REF_RE.finditer(v):
                         driver_sheets[m.group(1) or m.group(2)] += 1
-                elif FLAT_RE.match(v):
-                    counts["FLAT"] += 1
+                elif DIRECT_REF_RE.match(v):
+                    counts["DEPENDENCY_LINK"] += 1
                 elif ARITH_RE.search(v):
                     counts["DERIVED"] += 1
                 else:
@@ -147,10 +204,28 @@ def classify_report_cells(wb):
     return sheetmap, source_sheets, driver_sheets
 
 
-def main(path):
+def dependency_links(wb):
+    """Keep direct-reference formulas as live edges with their source coordinates."""
+    table_sheets = {ws.title for ws in wb.worksheets if ws.tables}
+    links = {}
+    for ws in wb.worksheets:
+        if ws.title in table_sheets:
+            continue
+        sheet_links = []
+        for row in ws.iter_rows():
+            for cell in row:
+                match = DIRECT_REF_RE.match(cell.value) if isinstance(cell.value, str) else None
+                if match:
+                    sheet_links.append({"cell": cell.coordinate,
+                                        "sourceSheet": match.group(1) or match.group(2) or ws.title,
+                                        "sourceCell": match.group(3).replace("$", "").upper()})
+        if sheet_links:
+            links[ws.title] = sheet_links
+    return links
+
+
+def main(path, json_output=False):
     wb = load_workbook(path, data_only=False)
-    print(f"# Discovery: {path}\n")
-    print(f"Sheets ({len(wb.sheetnames)}): {', '.join(wb.sheetnames)}\n")
 
     # all formula strings (with their sheet) — for cross-sheet reference detection
     all_formulas = []
@@ -171,25 +246,48 @@ def main(path):
             nrows = len(body)
             referenced = any(s != ws.title and (ws.title in f or name in f)
                              for s, f in all_formulas)
-            route, why, wide = classify(headers, body, nrows, referenced)
-            tables.append((name, ws.title, ref, headers, nrows, route, why, wide))
+            analysis = analyze_table(headers, body, nrows, referenced)
+            tables.append({"name": name, "sheet": ws.title, "ref": ref,
+                           "rows": nrows, **analysis})
+
+    sheetmap, source_sheets, driver_sheets = classify_report_cells(wb)
+    links = dependency_links(wb)
+    if json_output:
+        print(json.dumps({"source": str(path), "sheets": wb.sheetnames, "tables": tables,
+                          "reportSheets": [{"sheet": sheet, "classes": dict(counts),
+                                            "dependencyLinks": links.get(sheet, [])}
+                                           for sheet, counts in sheetmap.items()]}, indent=2))
+        return
+
+    print(f"# Discovery: {path}\n")
+    print(f"Sheets ({len(wb.sheetnames)}): {', '.join(wb.sheetnames)}\n")
 
     print(f"## Formal Tables ({len(tables)}) — with routing")
     routes = Counter()
-    for name, sheet, ref, headers, nrows, route, why, wide in tables:
+    for table in tables:
+        name, sheet, ref, nrows = (table[key] for key in ("name", "sheet", "ref", "rows"))
+        route, why, wide = table["route"], table["reason"], table["wideAxis"]
+        headers = [column["name"] for column in table["columns"]]
         routes[route] += 1
-        tag = {"ENTERED": "✏️  ENTERED", "DERIVED": "🔒 DERIVED", "REFERENCE": "📒 REFERENCE"}[route]
+        tag = {"ENTERED": "✏️  ENTERED", "DERIVED": "🔒 DERIVED",
+               "REFERENCE": "📒 REFERENCE", "MIXED": "⚠️ MIXED",
+               "REVIEW": "❓ REVIEW"}[route]
         print(f"\n  • {name}  (sheet '{sheet}', {ref}, ~{nrows} rows)  →  {tag}")
         print(f"    columns: {', '.join(str(h) for h in headers)}")
         print(f"    routing: {why}")
+        for column in table["columns"]:
+            print(f"    {column['name']}: {column['role']} "
+                  f"({column['literalCells']} literal, {column['formulaCells']} formula, "
+                  f"{column['blankCells']} blank)")
+        print(f"    action: {table['action']}")
         if wide:
-            print(f"    ⚠️ wide cross-tab detected → UNPIVOT (Sigma transpose / SQL unpivot) to a tidy grain first")
+            print(f"    ⚠️ {wide}: review the axis and grain before choosing a reshape")
     if not tables:
         print("  (none — workbook is likely 'report drawn in cells'; expect manual rebuild)")
     else:
         print(f"\n  routing summary: " + ", ".join(f"{n} {r.lower()}" for r, n in routes.items()))
-        print("  → ENTERED/REFERENCE-maintained tables become input tables (preserve data entry);")
-        print("    DERIVED tables become read-only DM elements + metrics. See SKILL.md 'Preserve the inputs'.")
+        print("  → Route literal source and formula columns separately; review edit intent and "
+              "preserve formula dependencies.")
 
     # ---- pivots / charts ----
     n_charts = sum(len(getattr(ws, "_charts", [])) for ws in wb.worksheets)
@@ -237,38 +335,42 @@ def main(path):
     per_sheet = Counter(s for s, _ in all_formulas)
     derived = [s for s, n in per_sheet.items() if n and s not in table_sheets]
     if derived:
-        print(f"\n## Derived report sheets (formula-driven, no formal table): "
+        print(f"\n## Formula report sheets (no formal table): "
               f"{', '.join(derived)}")
-        print("  🔒 read-only — rebuild as DM metrics + workbook elements (the SUMIFS/"
-              "rollups become grouped aggregates), not input tables.")
+        print("  Review formula dependencies and any literal inputs before choosing "
+              "computed or editable targets.")
 
     # ---- cell-level MODEL MAP (for report-drawn-in-cells models; see refs/model-taxonomy.md) ----
-    sheetmap, source_sheets, driver_sheets = classify_report_cells(wb)
     if sheetmap:
         print("\n## Model map (cell-level) — for report sheets drawn in cells")
         ICON = {"ACTUAL": "📥 ACTUAL (live source)", "DRIVER_GROWTH": "📈 DRIVER-grown",
-                "MANUAL": "✏️  MANUAL input", "DERIVED": "🧮 DERIVED", "FLAT": "➡️  FLAT (carry)",
+                "MANUAL": "✏️  MANUAL input", "DERIVED": "🧮 DERIVED", "DEPENDENCY_LINK": "🔗 live dependency",
                 "OTHER_FORMULA": "· other"}
         for sheet, counts in sheetmap.items():
             parts = [f"{ICON.get(k,k)}={v}" for k, v in counts.most_common()]
             print(f"  • {sheet}: " + ", ".join(parts))
+            if sheet in links:
+                print("    direct links: " + ", ".join(
+                    f"{item['cell']}={item['sourceSheet']}!{item['sourceCell']}" for item in links[sheet]))
         if source_sheets:
             print(f"  → actuals source (SUMIFS targets): {', '.join(source_sheets)}  "
                   f"= live read-only DM element")
         if driver_sheets:
             print(f"  → driver/assumptions sheet (1±rate refs): {', '.join(driver_sheets)}  "
                   f"= editable rates table / controls")
-        print("  Architecture: union [live ACTUAL] + [forecast]; forecast = DRIVER-grown "
-              "(base×(1+rate)^n, rate from drivers) + MANUAL (editable input table) + FLAT. "
-              "Subtotals/margins = DERIVED workbook calcs. See refs/forecast-recipes.md.")
-        print("  ASK INTENT before building (read-only report / editable plan / live what-if) "
-              "→ determines static vs input-table vs driver-override. See refs/model-taxonomy.md.")
+        if source_sheets and driver_sheets:
+            print("  Candidate driver forecast: review source, driver, and manual-input roles "
+                  "before using refs/forecast-recipes.md.")
+        else:
+            print("  Review report formulas and dependencies before choosing a build architecture.")
+        print("  Review intended edits and source freshness before building. "
+              "See refs/model-taxonomy.md.")
 
-    print("\nNext: classify intent → build per refs/forecast-recipes.md; ENTERED → input-table "
-          "builder; DERIVED → read-only DM; wide → unpivot first; macros → macro-classify.py.")
+    print("\nNext: review source roles, edit intent, dependency links, and any wide axis "
+          "before choosing builders; macros → macro-classify.py.")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.exit("usage: xlsx-discover.py <file.xlsx>")
-    main(sys.argv[1])
+        sys.exit("usage: xlsx-discover.py <file.xlsx> [--json]")
+    main(sys.argv[1], json_output="--json" in sys.argv[2:])
