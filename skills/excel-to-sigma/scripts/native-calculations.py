@@ -70,7 +70,7 @@ def main(argv=None):
         from native_calculations import _observed_bindings
         inputs, manifest, current = _read(args.input_plan), _read(args.manifest), _read(args.current)
         validate_source_input_plan(inputs)
-        validate_manifest(manifest)
+        validate_manifest(manifest, allow_input_only=True)
         if (manifest.get("sourceHash") != inputs["sourceSha256"]
                 or manifest.get("planProjection", {}).get("inputPlanHash") != inputs["inputPlanHash"]
                 or manifest.get("planProjection", {}).get("sharedInputArchitecture") != inputs["sharedInputArchitecture"]

@@ -50,7 +50,7 @@ class InputOnlyStagingTests(unittest.TestCase):
         self.assertIn('add_editable_column', program)
         self.assertIn('upsert_rows', program)
         self.assertNotIn('Result', program)
-        with self.assertRaisesRegex(ValueError, 'unresolved'):
+        with self.assertRaisesRegex(ValueError, 'input-tables-only'):
             validate_staging_approval(manifest, approval)
         binding=approval['targetBindings']['ledger']
         binding.update(elementId='observed-input',columnIds={'Account':'ca','Amount':'cb','Rate':'cc'})
@@ -70,7 +70,7 @@ class InputOnlyStagingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prepare_exact_native_scaffold(native, inputs, manifest, receipt, current, rows,
                 backup=build_native_calculation_backup(current, rows), seed_binding={}, page_id='observed-page')
-        with self.assertRaisesRegex(ValueError, 'APPROVED_STAGING'):
+        with self.assertRaisesRegex(ValueError, 'input-tables-only'):
             _observed_bindings(inputs, manifest, receipt, current['contents'], rows)
 
     def test_no_scope_hash_source_formula_or_named_review_can_be_omitted(self):

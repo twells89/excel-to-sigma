@@ -436,6 +436,16 @@ def _approved_feature(manifest, receipt, feature, *, require_assigned=False, all
     input_only = (allow_input_only and receipt.get("status") == "APPROVED_INPUT_STAGING"
                   and receipt.get("scope") == "input-tables-only"
                   and manifest.get("planProjection", {}).get("executionScope") == "input-tables-only")
+    try:
+        from .migration_manifest import require_full_execution_scope, validate_input_only_formula_obligations
+    except ImportError:
+        from migration_manifest import require_full_execution_scope, validate_input_only_formula_obligations
+    if input_only:
+        validate_input_only_formula_obligations(manifest)
+    else:
+        require_full_execution_scope(manifest)
+        if receipt.get("scope") == "input-tables-only":
+            raise InputSyncError("input-tables-only receipt cannot authorize a full artifact")
     if receipt.get("status") != "APPROVED_STAGING" and not input_only:
         raise InputSyncError("input artifact requires an APPROVED_STAGING receipt")
     if (receipt.get("sourceHash") != manifest.get("sourceHash")

@@ -70,7 +70,7 @@ python3 "$repo/skills/excel-to-sigma/scripts/native-calculations.py" lower-candi
   --max-columns 64 --out "$run/native-construction-review.json"
 ```
 
-The second command is **offline construction review only**, not an instruction to execute its 309 tables. The separate native review plan must include the actual inputPlanHash/sharedInputArchitecture/nativeCalculationPlan and named `nativeReviewApproval` bound to sourceSha256/nativePlanHash. Its formulaCells use the actual lowering's logical five-lane targetMapping, all 214 retained; source Audit/verification obligations are not reclassified as passed. Root rebuilds the manifest from the original source and passes the existing full `input-sync.py stage` gate with a newly reviewed approval. The input-only receipt cannot authorize a native formula scaffold, formula REST update, or completion. Focused negative tests enforce this separation.
+The second command is **offline construction review only**, not an instruction to execute its 309 tables. Create a **new full native review plan**, omitting the first-phase `executionScope: input-tables-only`; retain the input-only manifest as immutable pending-phase evidence. The separate native review plan must include the actual inputPlanHash/sharedInputArchitecture/nativeCalculationPlan and named `nativeReviewApproval` bound to sourceSha256/nativePlanHash. Its formulaCells use the actual lowering's logical five-lane targetMapping, all 214 retained; source Audit/verification obligations are not reclassified as passed. Root rebuilds the manifest from the original source and passes the existing full `input-sync.py stage` gate with a newly reviewed approval. The input-only receipt cannot authorize a native formula scaffold, formula REST update, or completion. Focused negative tests enforce this separation.
 
 ## 3. Grouped SUMIFS canary — requires a small reviewed construction first
 
@@ -93,3 +93,17 @@ All 214 formulas remain required: 144 row Revenue formulas, 52 SUMIFS, four VLOO
 `native-semantics-conformance.json` separately verifies all 30 actual vector captures against exact workbook/source/formula2 identity (30 integrity PASS, zero formula2 differences), and all six negative/positive ROUNDUP cases against both independent source evaluation and the corrected emitted scalar reference. This is six-case Excel conformance, not live Sigma qualification. The 24 Boolean criteria vectors remain captured; unsupported Boolean criteria lowering stays unchanged.
 
 Completion still requires source decisions, saved exact formulas, actual value/type/error parity, blank/error and missing/duplicate lookup cases, natural-key uniqueness, relevant period boundaries, input edit/reopen/restore, append behavior, two charts and presentation. No completion or production approval is supplied.
+
+
+## R1 scope correction
+
+The initial packet's input-only scope was not enforced by existing full staging
+and completion validators. That defect is fixed explicitly: full manifest
+validation now rejects `input-tables-only` regardless of live status or claimed
+verification/target fields. Only literal-input staging and read-only assigned-row
+binding opt into validating that scope; every formula must be `unresolved` and
+free of target/runtime claims. Native, acceptance/report, production matrix and
+promotion finalization paths reject the input-only scope. Unknown scope values
+are invalid; full reviewed plans omit `executionScope`. See the R1 scope report
+and `r1-source-identity.json`. This is an offline guard correction, not approval
+of the still-blocked 309-table native architecture.

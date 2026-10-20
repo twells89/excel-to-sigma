@@ -115,7 +115,7 @@ def gate_input_only_staging(manifest, approval, source_input_plan, source_gate_e
     except ImportError:
         from migration_manifest import validate_manifest
         from source_inputs import validate_source_input_plan
-    validate_manifest(manifest, source_path)
+    validate_manifest(manifest, source_path, allow_input_only=True)
     validate_source_input_plan(source_input_plan, source_path)
     projection = manifest.get("planProjection") or {}
     if (projection.get("executionScope") != "input-tables-only"

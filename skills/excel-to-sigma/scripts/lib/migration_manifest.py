@@ -204,7 +204,7 @@ def build_manifest(source_path, plan=None) -> dict:
         formula = graph.formulas[identity]
         record = plan_cells.get(identity.id, {})
         _validate_target_mapping(record.get("targetMapping"), identity.id)
-        mapping_status = record.get("mappingStatus") or ("verification" if identity.sheet == "Audit" else "unresolved")
+        mapping_status = record.get("mappingStatus") or ("verification" if identity.sheet == "Audit" and (plan or {}).get("executionScope") != "input-tables-only" else "unresolved")
         try:
             expression = parse_expression(formula, sheet=identity.sheet)
             named_refs = [_reference_id(ref) for ref in extract_references(expression) if ref.name]
@@ -295,9 +295,57 @@ def _reference_id(ref):
     return f"{ref.sheet}!{ref.address}"
 
 
-def validate_manifest(manifest, source_path=None):
+def execution_scope(manifest):
+    """The new scope is an enum, never an ignored annotation.
+
+    Legacy/full plans omit executionScope. Only the explicit literal-input
+    first phase currently defines a scoped plan. Unknown/null scope values
+    fail closed rather than behaving as a full migration.
+    """
+    if not isinstance(manifest, dict):
+        raise ManifestError("execution scope requires a manifest object")
+    projection = manifest.get("planProjection") or {}
+    if not isinstance(projection, dict):
+        raise ManifestError("execution scope requires an object planProjection")
+    if "executionScope" not in projection:
+        return None
+    if projection["executionScope"] != "input-tables-only":
+        raise ManifestError("unsupported executionScope: expected input-tables-only or omitted full scope")
+    return "input-tables-only"
+
+
+def require_full_execution_scope(manifest):
+    approval = manifest.get("stagingApproval") or {}
+    if (execution_scope(manifest) == "input-tables-only"
+            or approval.get("scope") == "input-tables-only"
+            or approval.get("status") == "APPROVED_INPUT_STAGING"):
+        raise ManifestError("input-tables-only scope cannot authorize full staging, native formulas, completion or production")
+    return True
+
+
+def validate_input_only_formula_obligations(manifest):
+    if execution_scope(manifest) != "input-tables-only":
+        raise ManifestError("explicit input-tables-only scope is required")
+    records = manifest.get("formulaCells")
+    if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+        raise ManifestError("input-tables-only formula obligations must be an array of records")
+    for record in records:
+        if record.get("mappingStatus") != "unresolved":
+            raise ManifestError("input-tables-only formulas must remain unresolved: " + record.get("id", "unknown"))
+        if any(record.get(field) for field in (
+                "targetMapping", "targetBinding", "actualTarget", "verification", "evidence",
+                "runtimeEvidence", "runtime", "runtimeStatus", "execution", "executionState")):
+            raise ManifestError("input-tables-only formulas cannot carry target/runtime claims: " + record.get("id", "unknown"))
+    return True
+
+
+def validate_manifest(manifest, source_path=None, *, allow_input_only=False):
     if not isinstance(manifest, dict) or manifest.get("manifestVersion") != MANIFEST_VERSION:
         raise ManifestError("unsupported or malformed manifest version")
+    if allow_input_only and execution_scope(manifest) == "input-tables-only":
+        validate_input_only_formula_obligations(manifest)
+    else:
+        require_full_execution_scope(manifest)
     source_hash = manifest.get("sourceHash")
     plan_hash = manifest.get("planHash")
     if not _digest(source_hash) or not _digest(plan_hash):
@@ -346,6 +394,8 @@ def validate_staging_approval(manifest, approval):
     validate_manifest(manifest)
     if not isinstance(approval, dict):
         raise ManifestError("staging approval must be an object")
+    if approval.get("scope") == "input-tables-only" or approval.get("status") == "APPROVED_INPUT_STAGING":
+        raise ManifestError("input-tables-only approval cannot authorize full staging")
     if approval.get("sourceHash") != manifest["sourceHash"] or approval.get("planHash") != manifest["planHash"]:
         raise ManifestError("staging approval is stale")
     if not str(approval.get("owner") or "").strip():

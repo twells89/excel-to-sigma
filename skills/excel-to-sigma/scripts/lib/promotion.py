@@ -228,6 +228,14 @@ def finalize_mutation(plan,fresh,dry_run,*,consumed=(),reviewed_warning_hash=Non
     Record the plan hash as consumed before dispatch. After an ambiguous network
     result, inspect the actual document and checkpoint; never blindly resend.
     """
+    if 'promotionHash' in plan:
+        try:
+            from .acceptance import require_full_matrix_scope
+        except ImportError:
+            from acceptance import require_full_matrix_scope
+        matrix=(plan.get('acceptance') or {}).get('matrix')
+        if not isinstance(matrix,dict):raise ValueError('promotion requires its reviewed full-scope acceptance matrix')
+        require_full_matrix_scope(matrix)
     field='promotionHash' if 'promotionHash' in plan else 'rollbackHash';identity=plan.get(field)
     if not identity or identity!=_digest({k:v for k,v in plan.items() if k!=field}):raise ValueError('mutation plan hash stale')
     if identity in consumed:raise ValueError('mutation replay refused')

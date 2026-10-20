@@ -225,3 +225,25 @@ The complete emitted-table graph test now checks Lookup and conditional native
 aggregates with source-row provenance. It caught a materialization variable
 collision that changed SUMIFS into CountIf; criteria table names now use a
 separate local variable so SUMIFS retains SumIf and a numeric summand lane.
+
+
+### R1 input-only scope conservation
+
+`executionScope` is enforced as an enum, not descriptive metadata. Legacy/full
+plans omit it; the only defined explicit value is `input-tables-only`.
+`validate_manifest` rejects that scope by default. Its explicit
+`allow_input_only=True` is used only by the literal-input gate and read-only
+assigned-row binder, and requires every formula's canonical status to remain
+`unresolved`, with no target mapping/binding, runtime or verification claims.
+Input-only Audit cells also start unresolved; ordinary full-plan Audit defaults
+remain unchanged. Unknown/null scope values reject rather than becoming full
+execution implicitly.
+
+Full staging/completion and native consumers use the default common validator.
+Artifact receipt checks independently enforce the same distinction, including
+when a caller relabels an input-only receipt `APPROVED_STAGING`. Hash-only
+acceptance/report paths reject scoped input manifests, and promotion finalization
+checks its embedded reviewed acceptance matrix before preparing a request.
+Claimed successful target/evidence fields cannot upgrade an input-only plan.
+A later full native review is a new plan/manifest hash with no input-only scope;
+it does not change or complete the immutable first-phase manifest.
