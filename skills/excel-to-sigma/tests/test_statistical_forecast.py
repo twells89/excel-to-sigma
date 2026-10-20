@@ -137,6 +137,19 @@ class StatisticalForecastTests(unittest.TestCase):
         program = operator["phase2_program"](readback, actual_source=source,
                     source_packet_hash="0" * 64, candidate_ets=True)
         assert_literal_sigma_references(self, program["code"], [roles[role]["title"] for role in CANDIDATE_REQUIRED])
+        # Sigma's native code-output children are unnamed; several may coexist.
+        with_unnamed_outputs = json.loads(json.dumps(source))
+        with_unnamed_outputs["contents"]["elements"].extend([
+            {"id": "output-one", "kind": "table"},
+            {"id": "output-two", "kind": "table"},
+        ])
+        operator["phase2_program"](readback, actual_source=with_unnamed_outputs,
+                    source_packet_hash="0" * 64, candidate_ets=True)
+        with_duplicate_title = json.loads(json.dumps(with_unnamed_outputs))
+        with_duplicate_title["contents"]["elements"][-1]["name"] = roles["history"]["title"]
+        with self.assertRaisesRegex(ValueError, "AMBIGUOUS_ACTUAL_SOURCE_TITLES"):
+            operator["phase2_program"](readback, actual_source=with_duplicate_title,
+                        source_packet_hash="0" * 64, candidate_ets=True)
         self.assertEqual(program["sourceIdentity"]["roles"]["history"]["elementId"],
                          roles["history"]["elementId"])
         changed = {**readback, "workbookVersion": readback["workbookVersion"] + 1}

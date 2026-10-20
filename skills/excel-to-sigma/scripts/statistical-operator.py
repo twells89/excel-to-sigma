@@ -150,7 +150,10 @@ def phase2_program(readback, *, actual_source, source_packet_hash, candidate_ets
             or sum(p.get("id") == readback["pageId"] for p in actual_source.get("contents", {}).get("pages", [])) != 1):
         raise ValueError("ACTUAL_SOURCE_VERSION_OR_PAGE_MISMATCH")
     source_elements = actual_source.get("contents", {}).get("elements", [])
-    if len([e.get("name") for e in source_elements]) != len(set(e.get("name") for e in source_elements)):
+    # Native code-output tables have no title in workbook source. Only actual
+    # titles can make sigma.get_element(title) ambiguous.
+    titled = [e.get("name") for e in source_elements if e.get("name") is not None]
+    if len(titled) != len(set(titled)):
         raise ValueError("AMBIGUOUS_ACTUAL_SOURCE_TITLES")
     element_ids = []
     titles = []
