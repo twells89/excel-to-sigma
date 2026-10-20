@@ -78,10 +78,10 @@ def unpivot_source_table(source_path, *, sheet, table, key_columns, value_column
         raise ValueError("duplicate resulting axis values")
     cells = {(item["sheet"], item["address"]): item for item in model["cells"]}
     left, top, _right, bottom = range_boundaries(spec["bodyRange"])
-    rows, source_cells, row_numbers, seen = [], {}, [], set()
+    rows, source_cells, source_formats, source_states, row_numbers, seen = [], {}, {}, {}, [], set()
     column_types = {name: set() for name in key_columns + [axis_name, value_name]}
     for row_number in range(top, bottom + 1):
-        base, base_cells = {}, {}
+        base, base_cells, base_formats, base_states = {}, {}, {}, {}
         for name in key_columns:
             address = f"{get_column_letter(left + headers.index(name))}{row_number}"
             cell = cells.get((sheet, address))
@@ -92,6 +92,8 @@ def unpivot_source_table(source_path, *, sheet, table, key_columns, value_column
             if value is None or value == "":
                 raise ValueError("unpivot key is missing")
             base[name] = value; base_cells[name] = f"{sheet}!{address}"
+            base_formats[name] = cell.get("numberFormat")
+            base_states[name] = "empty-text" if value == "" else "literal"
         for name in value_columns:
             address = f"{get_column_letter(left + headers.index(name))}{row_number}"
             cell = cells.get((sheet, address))
@@ -109,8 +111,17 @@ def unpivot_source_table(source_path, *, sheet, table, key_columns, value_column
             if key in seen:
                 raise ValueError("duplicate resulting keys")
             seen.add(key)
-            source_cells[str(len(rows))] = {**base_cells, axis_name: f"{sheet}!{get_column_letter(left + headers.index(name))}{top-1}",
+            header_address = f"{get_column_letter(left + headers.index(name))}{top-1}"
+            header_cell = cells.get((sheet, header_address))
+            source_cells[str(len(rows))] = {**base_cells, axis_name: f"{sheet}!{header_address}",
                                              value_name: f"{sheet}!{address}"}
+            source_formats[str(len(rows))] = {**base_formats,
+                                              axis_name: header_cell.get("numberFormat") if header_cell else None,
+                                              value_name: cell.get("numberFormat") if cell else None}
+            source_states[str(len(rows))] = {**base_states,
+                                             axis_name: "reviewed-axis-mapping",
+                                             value_name: ("blank" if cell is None else
+                                                          "empty-text" if value == "" else "literal")}
             row_numbers.append(row_number)
             rows.append(row)
     resolved_types = {}
@@ -123,4 +134,5 @@ def unpivot_source_table(source_path, *, sheet, table, key_columns, value_column
             "sourceBinding": f"{sheet}!{spec['range']}", "keyColumns": key_columns + [axis_name],
             "axisMapping": axis_values, "columnTypes": resolved_types,
             "rows": rows, "sourceCells": source_cells,
+            "sourceCellFormats": source_formats, "sourceCellStates": source_states,
             "sourceRowNumbers": row_numbers}

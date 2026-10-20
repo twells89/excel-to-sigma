@@ -168,3 +168,52 @@ python3 scripts/source-inputs.py unpivot --source SOURCE.xlsx \
 
 `months-2026.json` must cover every selected month header exactly. Both CLI
 commands refuse an output path that aliases the source workbook.
+
+## Reviewed noncontiguous business records
+
+Use `recordBindings` when a business row draws typed fields from separate
+source cells. Each record names one actual `Sheet!A1` cell for every field in
+`literalColumns`; the planner reads only source literals and verifies the
+declared type. Missing cells become `null`, while an explicit empty string stays
+`""`. The plan keeps per-field `sourceCells`, `sourceCellStates`, and
+`sourceCellFormats`, including date and percent number formats. Contiguous
+tables and reviewed unpivots carry the same cell-state and format metadata;
+an unpivot axis marked `reviewed-axis-mapping` retains its explicit header map.
+Formula cells,
+Excel errors, duplicate source-cell assignments, duplicate or missing typed
+keys, and unsupported values fail closed. A source formula cannot be seeded
+through a record binding; use the existing explicit replacement or override
+review path where appropriate.
+
+For example, a 13-week cash grid can keep Week, Rent, and Debt as three business
+fields in one row, even though each field appears on a different source row:
+
+```json
+{
+  "featureId": "manual-cash", "role": "input", "reviewed": true,
+  "keyColumns": ["Week"],
+  "literalColumns": ["Week", "Rent", "Debt"],
+  "columnTypes": {"Week": "number", "Rent": "number", "Debt": "number"},
+  "recordBindings": [
+    {"sourceCells": {"Week": "13WCF!B4", "Rent": "13WCF!B16", "Debt": "13WCF!B18"}}
+  ]
+}
+```
+
+Use actual source fields as natural keys when they are unique. If records have
+no unique business key, declare a `recordIdentity` with
+`kind: "frozen-source-record"`, a text key column, `reviewed: true`, the exact
+source SHA256 and a nonempty `reviewBasis`. Every record then supplies
+`sourceRecordId: "Sheet!row:N"`; all its source fields must occupy that
+physical worksheet row. This identity is valid only for the reviewed source
+bytes. Reordering or changing the source invalidates the plan and requires a
+new review, so a synthetic row label cannot silently become a new business key.
+The identity column has no source-cell provenance and is never mistaken for a
+source literal by native formula binding.
+
+For fixed source labels or calendar axes represented as records, use
+`role: "reference"` and an `immutableReview` containing the exact source
+SHA256, `reviewed: true`, and a source-specific basis. The proof records why
+the literal can remain fixed; it does not invent a cache value. The target
+input-table construction, row seeding, assigned-ID readback, and promotion
+gates remain the same as for the other reviewed input features.

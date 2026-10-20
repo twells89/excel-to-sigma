@@ -60,6 +60,182 @@ class SourceFixture(unittest.TestCase):
 
 
 class TestSourceInputs(SourceFixture):
+    def test_reviewed_records_bind_noncontiguous_typed_business_fields(self):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.source)
+        ws = wb.create_sheet("Cash View")
+        ws["B4"] = "2026-01-02"; ws["C4"] = "2026-01-09"
+        ws["B16"] = 125; ws["C16"] = 130
+        ws["B18"] = 40; ws["C18"] = None
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        rows = [
+            {"sourceCells": {"Week": f"Cash View!{col}4", "Rent": f"Cash View!{col}16",
+                             "Debt": f"Cash View!{col}18"}} for col in "BC"]
+        decisions = {"sourceSha256": self.sha, "features": [{
+            "featureId": "weekly-cash", "role": "input", "reviewed": True,
+            "keyColumns": ["Week"], "literalColumns": ["Week", "Rent", "Debt"],
+            "columnTypes": {"Week": "datetime", "Rent": "number", "Debt": "number"},
+            "recordBindings": rows,
+        }]}
+        plan = self.build(decisions)
+        spec = plan["sharedInputArchitecture"]["inputs"]["weekly-cash"]
+        self.assertEqual(spec["rows"], [
+            {"Week": "2026-01-02", "Rent": 125, "Debt": 40},
+            {"Week": "2026-01-09", "Rent": 130, "Debt": None},
+        ])
+        self.assertEqual(spec["sourceCells"]["1"]["Debt"], "Cash View!C18")
+        self.assertEqual(len(plan_source_seed(plan, "weekly-cash", [], row_id_column="Row ID")["inserts"]), 2)
+        validate_source_input_plan(plan, self.source)
+
+    def test_frozen_record_identity_requires_review_and_rejects_reordered_source(self):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.source)
+        ws = wb.create_sheet("AP")
+        ws.append(["Vendor", "Week", "Category", "Amount"])
+        ws.append(["Same", "2026-01-02", "Rent", 10])
+        ws.append(["Same", "2026-01-02", "Rent", 20])
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        decision = {"featureId": "payables", "role": "input", "reviewed": True,
+                    "keyColumns": ["Source Record ID"],
+                    "literalColumns": ["Source Record ID", "Vendor", "Week", "Category", "Amount"],
+                    "columnTypes": {"Source Record ID": "text", "Vendor": "text", "Week": "datetime",
+                                    "Category": "text", "Amount": "number"},
+                    "recordIdentity": {"kind": "frozen-source-record", "column": "Source Record ID",
+                                       "sourceSha256": self.sha, "reviewed": True,
+                                       "reviewBasis": "Duplicate vendor/week/category entries are distinct source records"},
+                    "recordBindings": [
+                        {"sourceRecordId": f"AP!row:{r}", "sourceCells": {
+                            "Vendor": f"AP!A{r}", "Week": f"AP!B{r}",
+                            "Category": f"AP!C{r}", "Amount": f"AP!D{r}"}}
+                        for r in (2, 3)]}
+        decisions = {"sourceSha256": self.sha, "features": [decision]}
+        plan = self.build(decisions)
+        self.assertEqual([row["Source Record ID"] for row in
+                          plan["sharedInputArchitecture"]["inputs"]["payables"]["rows"]],
+                         ["AP!row:2", "AP!row:3"])
+        bad = copy.deepcopy(decisions); bad["features"][0]["recordIdentity"]["reviewed"] = False
+        with self.assertRaisesRegex(ValueError, "identity"):
+            self.build(bad)
+        wb = load_workbook(self.source)
+        wb["AP"]["D2"], wb["AP"]["D3"] = 20, 10
+        wb.save(self.source); wb.close()
+        with self.assertRaisesRegex(ValueError, "hash"):
+            validate_source_input_plan(plan, self.source)
+
+    def test_record_binding_rejects_formula_error_duplicate_key_and_duplicate_cell(self):
+        feature = {"featureId": "settings", "role": "input", "reviewed": True,
+                   "keyColumns": ["Setting"], "literalColumns": ["Setting", "Value"],
+                   "columnTypes": {"Setting": "text", "Value": "number"},
+                   "recordBindings": [{"sourceCells": {"Setting": "Assumptions!B2", "Value": "Assumptions!C2"}}]}
+        decisions = {"sourceSha256": self.sha, "features": [feature]}
+        self.assertEqual(self.build(decisions)["sharedInputArchitecture"]["inputs"]["settings"]["rows"],
+                         [{"Setting": "Rate", "Value": .25}])
+        bad = copy.deepcopy(decisions); bad["features"][0]["recordBindings"][0]["sourceCells"]["Value"] = "Assumptions!D2"
+        with self.assertRaisesRegex(ValueError, "formula"):
+            self.build(bad)
+        bad = copy.deepcopy(decisions); bad["features"][0]["recordBindings"][0]["sourceCells"]["Value"] = "Assumptions!B2"
+        with self.assertRaisesRegex(ValueError, "type|duplicate"):
+            self.build(bad)
+        bad = copy.deepcopy(decisions); bad["features"][0]["recordBindings"].append(copy.deepcopy(bad["features"][0]["recordBindings"][0]))
+        with self.assertRaises(ValueError):
+            self.build(bad)
+
+    def test_immutable_record_reference_requires_source_bound_review(self):
+        decision = {"featureId": "labels", "role": "reference", "reviewed": True,
+                    "keyColumns": ["Label"], "literalColumns": ["Label"],
+                    "columnTypes": {"Label": "text"},
+                    "recordBindings": [{"sourceCells": {"Label": "Assumptions!B2"}}]}
+        decisions = {"sourceSha256": self.sha, "features": [decision]}
+        with self.assertRaisesRegex(ValueError, "immutable"):
+            self.build(decisions)
+        decision["immutableReview"] = {"sourceSha256": self.sha, "reviewed": True,
+                                       "basis": "Original source label names the driver"}
+        plan = self.build(decisions)
+        spec = plan["sharedInputArchitecture"]["inputs"]["labels"]
+        self.assertEqual(spec["immutableReview"]["sourceSha256"], self.sha)
+
+    def test_record_percent_format_and_empty_text_distinguish_blank(self):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.source)
+        ws = wb.create_sheet("Mixed")
+        ws["A1"] = "Key"; ws["B1"] = .125; ws["B1"].number_format = "0.0%"
+        ws["C1"] = ""; ws["D1"] = None
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        decision = {"sourceSha256": self.sha, "features": [{
+            "featureId": "mixed", "role": "input", "reviewed": True,
+            "keyColumns": ["Key"], "literalColumns": ["Key", "Rate", "Explicit Empty", "Blank"],
+            "columnTypes": {"Key": "text", "Rate": "number", "Explicit Empty": "text", "Blank": "text"},
+            "reviewedBlankColumns": ["Blank"],
+            "recordBindings": [{"sourceCells": {"Key": "Mixed!A1", "Rate": "Mixed!B1",
+                                                "Explicit Empty": "Mixed!C1", "Blank": "Mixed!D1"}}]}]}
+        spec = self.build(decision)["sharedInputArchitecture"]["inputs"]["mixed"]
+        self.assertEqual(spec["rows"][0], {"Key": "Key", "Rate": .125,
+                                           "Explicit Empty": "", "Blank": None})
+        self.assertEqual(spec["sourceCellFormats"]["0"]["Rate"], "0.0%")
+        self.assertEqual(spec["sourceCellStates"]["0"]["Explicit Empty"], "empty-text")
+        self.assertEqual(spec["sourceCellStates"]["0"]["Blank"], "blank")
+
+    def test_record_binding_duplicate_business_key_and_error_fail_closed(self):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.source)
+        ws = wb.create_sheet("Entry")
+        ws["A1"] = "same"; ws["B1"] = 1
+        ws["A2"] = "same"; ws["B2"] = 2
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        feature = {"featureId": "entry", "role": "input", "reviewed": True,
+                   "keyColumns": ["Key"], "literalColumns": ["Key", "Amount"],
+                   "columnTypes": {"Key": "text", "Amount": "number"},
+                   "recordBindings": [{"sourceCells": {"Key": f"Entry!A{r}", "Amount": f"Entry!B{r}"}}
+                                      for r in (1, 2)]}
+        with self.assertRaisesRegex(ValueError, "duplicate typed business key"):
+            self.build({"sourceSha256": self.sha, "features": [feature]})
+        wb = load_workbook(self.source)
+        wb["Entry"]["A2"] = "different"
+        wb["Entry"]["B2"] = "#DIV/0!"; wb["Entry"]["B2"].data_type = "e"
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(ValueError, "Excel error"):
+            self.build({"sourceSha256": self.sha, "features": [feature]})
+
+    def test_record_binding_rejects_supplied_value_or_formula_cache(self):
+        feature = {"featureId": "settings", "role": "input", "reviewed": True,
+                   "keyColumns": ["Setting"], "literalColumns": ["Setting", "Value"],
+                   "columnTypes": {"Setting": "text", "Value": "number"},
+                   "recordBindings": [{"sourceCells": {"Setting": "Assumptions!B2",
+                                                       "Value": "Assumptions!C2"}}]}
+        bad = copy.deepcopy(feature)
+        bad["recordBindings"][0]["values"] = {"Value": 999}
+        with self.assertRaisesRegex(ValueError, "supplied|cache"):
+            self.build({"sourceSha256": self.sha, "features": [bad]})
+        bad = copy.deepcopy(feature)
+        bad["suppliedRows"] = [{"Setting": "Rate", "Value": 999}]
+        with self.assertRaisesRegex(ValueError, "supplied|cache"):
+            self.build({"sourceSha256": self.sha, "features": [bad]})
+
+    def test_record_binding_rejects_cross_feature_source_cell_ambiguity(self):
+        first = {"featureId": "rate-a", "role": "input", "reviewed": True,
+                 "keyColumns": ["Setting"], "literalColumns": ["Setting", "Rate"],
+                 "columnTypes": {"Setting": "text", "Rate": "number"},
+                 "recordBindings": [{"sourceCells": {"Setting": "Assumptions!B2", "Rate": "Assumptions!C2"}}]}
+        second = copy.deepcopy(first); second["featureId"] = "rate-b"
+        with self.assertRaisesRegex(ValueError, "ambiguous|duplicate"):
+            self.build({"sourceSha256": self.sha, "features": [first, second]})
+
+    def test_rectangular_source_rows_keep_percent_and_blank_cell_metadata(self):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.source)
+        wb["Sales Input"]["D2"].number_format = "0.0%"
+        wb["Sales Input"]["D3"] = None
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        spec = self.build()["sharedInputArchitecture"]["inputs"]["sales-entry"]
+        self.assertEqual(spec["sourceCellFormats"]["0"]["Entered"], "0.0%")
+        self.assertEqual(spec["sourceCellStates"]["1"]["Entered"], "blank")
+
     def test_mixed_table_preserves_literals_and_formula_obligations(self):
         plan = self.build()
         validate_source_input_plan(plan, self.source)
@@ -357,6 +533,20 @@ class TestSourceInputs(SourceFixture):
 
 
 class TestReshape(SourceFixture):
+    def test_unpivot_keeps_measure_format_and_blank_state(self):
+        wb = Workbook(); ws = wb.active; ws.title = "Rates"
+        ws.append(["Group", "Jan", "Feb"])
+        ws.append(["A", .125, None])
+        ws["B2"].number_format = "0.0%"
+        ws.add_table(Table(displayName="tblRates", ref="A1:C2"))
+        source = self.folder / "rates.xlsx"; wb.save(source); wb.close()
+        result = unpivot_source_table(source, sheet="Rates", table="tblRates",
+                                      key_columns=["Group"], value_columns=["Jan", "Feb"],
+                                      axis_name="Month", value_name="Rate",
+                                      axis_values={"Jan": "2026-01-01", "Feb": "2026-02-01"})
+        self.assertEqual(result["sourceCellFormats"]["0"]["Rate"], "0.0%")
+        self.assertEqual(result["sourceCellStates"]["1"]["Rate"], "blank")
+
     def test_generated_headcount_and_history_counts(self):
         from datetime import date
         from openpyxl import load_workbook

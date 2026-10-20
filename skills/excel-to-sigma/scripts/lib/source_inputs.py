@@ -21,6 +21,7 @@ except ImportError:
 PLAN_VERSION = 1
 _TYPES = {"text", "number", "datetime", "boolean"}
 _SAFE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_CELL = re.compile(r"^[A-Z]{1,3}[1-9][0-9]*$")
 
 
 def _digest(value):
@@ -197,16 +198,138 @@ def _build_reshape_feature(source_path, model, decision, connection_id):
             "rows": result["rows"],
             "columns": [{"name": name, "type": result["columnTypes"][name], "provenance": "source-reshape"}
                         for name in columns],
-            "sourceCells": result["sourceCells"], "sourceRowNumbers": result["sourceRowNumbers"],
+            "sourceCells": result["sourceCells"],
+            "sourceCellFormats": result["sourceCellFormats"],
+            "sourceCellStates": result["sourceCellStates"],
+            "sourceRowNumbers": result["sourceRowNumbers"],
             "sourceHeaders": reshape["keyColumns"] + reshape["valueColumns"],
             "axisMapping": result["axisMapping"], "reshape": copy.deepcopy(reshape),
             "derivedColumns": [], "overrideCells": {}}
     return feature, spec, [], {}
 
 
+def _build_record_feature(model, decision, connection_id):
+    """Bind reviewed business records whose typed fields occupy arbitrary cells."""
+    allowed = {"featureId", "displayName", "role", "reviewed", "keyColumns",
+               "literalColumns", "columnTypes", "recordBindings", "recordIdentity",
+               "immutableReview", "reviewedBlankColumns"}
+    if set(decision) - allowed:
+        raise ValueError("source records cannot contain supplied values or formula cache fields")
+    if decision.get("reviewed") is not True or decision.get("role") not in {"input", "reference"}:
+        raise ValueError("source records require a reviewed input or reference role")
+    immutable_review = decision.get("immutableReview")
+    if decision["role"] == "reference" and (not isinstance(immutable_review, dict)
+            or immutable_review.get("reviewed") is not True
+            or immutable_review.get("sourceSha256") != model["sourceSha256"]
+            or not str(immutable_review.get("basis") or "").strip()):
+        raise ValueError("immutable source reference requires exact source hash and review basis")
+    feature = decision.get("featureId")
+    if not isinstance(feature, str) or not _SAFE.fullmatch(feature):
+        raise ValueError("featureId must be a stable safe identifier")
+    keys, literal, types = (decision.get(name) for name in ("keyColumns", "literalColumns", "columnTypes"))
+    if (not isinstance(keys, list) or not keys or len(set(keys)) != len(keys)
+            or not isinstance(literal, list) or not literal or len(set(literal)) != len(literal)
+            or not set(keys) <= set(literal) or not isinstance(types, dict)
+            or set(types) != set(literal) or any(kind not in _TYPES for kind in types.values())):
+        raise ValueError("source record columns, keys and explicit types must agree")
+    bindings = decision.get("recordBindings")
+    if not isinstance(bindings, list) or not bindings:
+        raise ValueError("source record bindings must be nonempty")
+    identity = decision.get("recordIdentity")
+    identity_column = None
+    if identity is not None:
+        if (not isinstance(identity, dict) or identity.get("kind") != "frozen-source-record"
+                or identity.get("reviewed") is not True
+                or identity.get("sourceSha256") != model["sourceSha256"]
+                or not str(identity.get("reviewBasis") or "").strip()
+                or identity.get("column") not in literal
+                or types[identity["column"]] != "text"
+                or keys != [identity["column"]]):
+            raise ValueError("frozen source record identity requires exact source hash and review basis")
+        identity_column = identity["column"]
+    if decision.get("overrideCells") or decision.get("reshape") or decision.get("emptySchema"):
+        raise ValueError("source record bindings cannot mix reshape or override selections")
+    worksheet_names = {sheet["name"] for sheet in model["sheets"] if sheet["kind"] == "worksheet"}
+    cells = {f"{cell['sheet']}!{cell['address']}": cell for cell in model["cells"]}
+    expected_fields = set(literal) - ({identity_column} if identity_column else set())
+    rows, provenance, formats, states, row_numbers, seen_cells, seen_keys = [], {}, {}, {}, [], set(), set()
+    for index, binding in enumerate(bindings):
+        if isinstance(binding, dict) and set(binding) - {"sourceCells", "sourceRecordId"}:
+            raise ValueError("source record binding cannot contain supplied values or formula cache fields")
+        fields = binding.get("sourceCells") if isinstance(binding, dict) else None
+        if not isinstance(fields, dict) or set(fields) != expected_fields:
+            raise ValueError("source record requires one source cell per typed field")
+        row, source_cells, source_formats, source_states = {}, {}, {}, {}
+        for name in literal:
+            if name == identity_column:
+                continue
+            cell_id = fields[name]
+            if not isinstance(cell_id, str) or "!" not in cell_id:
+                raise ValueError("source record cell ID must name a worksheet cell")
+            sheet, address = cell_id.rsplit("!", 1)
+            if sheet not in worksheet_names or not _CELL.fullmatch(address):
+                raise ValueError("source record cell ID must name a worksheet cell")
+            if cell_id in seen_cells:
+                raise ValueError("duplicate source cell binding")
+            seen_cells.add(cell_id)
+            cell = cells.get(cell_id)
+            if cell and cell["kind"] == "formula":
+                raise ValueError(f"formula cannot be seeded as literal entered data: {cell_id}")
+            value = _value(cell) if cell else None
+            if not _matches(value, types[name]):
+                raise ValueError(f"source record type disagrees with reviewed type: {cell_id}")
+            row[name] = value
+            source_cells[name] = cell_id
+            source_formats[name] = cell.get("numberFormat") if cell else None
+            source_states[name] = ("blank" if cell is None else
+                                   "empty-text" if value == "" else "literal")
+        if identity_column:
+            source_rows = {(cell_id.rsplit("!", 1)[0], int(re.search(r"\d+$", cell_id).group()))
+                           for cell_id in source_cells.values()}
+            if len(source_rows) != 1:
+                raise ValueError("frozen source record identity requires one physical source row")
+            source_sheet, source_row = next(iter(source_rows))
+            expected_id = f"{source_sheet}!row:{source_row}"
+            if binding.get("sourceRecordId") != expected_id:
+                raise ValueError("frozen source record identity disagrees with physical row")
+            row[identity_column] = expected_id
+        elif "sourceRecordId" in binding:
+            raise ValueError("source record identity lacks reviewed identity contract")
+        for name in keys:
+            if row[name] is None or row[name] == "":
+                raise ValueError(f"missing typed source record key {name!r}")
+        key_token = _digest([[type(row[name]).__name__, row[name]] for name in keys])
+        if key_token in seen_keys:
+            raise ValueError("duplicate typed business key")
+        seen_keys.add(key_token)
+        rows.append(row)
+        provenance[str(index)] = source_cells
+        formats[str(index)] = source_formats
+        states[str(index)] = source_states
+        first_cell = next(iter(source_cells.values()))
+        row_numbers.append(int(re.search(r"\d+$", first_cell).group()))
+    for name in expected_fields:
+        if all(row[name] is None for row in rows) and name not in (decision.get("reviewedBlankColumns") or []):
+            raise ValueError(f"all-blank source record field {name!r} requires reviewed type")
+    spec = {"kind": "input-table", "name": decision.get("displayName") or feature,
+            "keyColumns": keys, "connectionId": connection_id, "editMode": "published-explore",
+            "sourceBinding": "reviewed-source-records", "rows": rows,
+            "columns": [{"name": name, "type": types[name],
+                         "provenance": "frozen-source-record" if name == identity_column else "source"}
+                        for name in literal],
+            "sourceCells": provenance, "sourceCellFormats": formats,
+            "sourceCellStates": states, "sourceRowNumbers": row_numbers,
+            "sourceHeaders": literal, "derivedColumns": [], "overrideCells": {},
+            "recordIdentity": copy.deepcopy(identity) if identity else None,
+            "immutableReview": copy.deepcopy(immutable_review) if immutable_review else None}
+    return feature, spec, [], {}
+
+
 def _build_feature(model, decision, connection_id, source_path):
     if isinstance(decision, dict) and decision.get("role") == "replacement":
         return _build_replacement(model, decision, connection_id)
+    if isinstance(decision, dict) and "recordBindings" in decision:
+        return _build_record_feature(model, decision, connection_id)
     if isinstance(decision, dict) and "reshape" in decision:
         return _build_reshape_feature(source_path, model, decision, connection_id)
     if not isinstance(decision, dict) or decision.get("reviewed") is not True or decision.get("role") not in {"input", "reference"}:
@@ -245,13 +368,14 @@ def _build_feature(model, decision, connection_id, source_path):
                          "editMode": "published-explore", "sourceBinding": f"{sheet}!{source_range}",
                          "rows": [], "columns": [{"name": name, "type": types[name], "provenance": "source"}
                                                  for name in literal],
-                         "sourceCells": {}, "sourceRowNumbers": [], "sourceHeaders": headers,
+                         "sourceCells": {}, "sourceCellFormats": {}, "sourceCellStates": {},
+                         "sourceRowNumbers": [], "sourceHeaders": headers,
                          "derivedColumns": [], "overrideCells": {}, "emptySchema": True,
                          "typeReviewEvidence": decision["typeReviewEvidence"]}, [], {}
-    rows, source_cells, obligations, key_tokens = [], {}, [], set()
+    rows, source_cells, source_formats, source_states, obligations, key_tokens = [], {}, {}, {}, [], set()
     override_records = {name: [] for name in overrides}
     for row_number in range(top, bottom + 1):
-        row, provenance, row_overrides = {}, {}, {}
+        row, provenance, formats, states, row_overrides = {}, {}, {}, {}, {}
         for offset, name in enumerate(headers):
             address = f"{get_column_letter(left + offset)}{row_number}"
             cell = cells.get((sheet, address))
@@ -288,6 +412,9 @@ def _build_feature(model, decision, connection_id, source_path):
                 continue
             row[name] = value
             provenance[name] = cell_id
+            formats[name] = cell.get("numberFormat") if cell else None
+            states[name] = ("blank" if cell is None else
+                            "empty-text" if value == "" else "literal")
         key = []
         for name in keys:
             if name not in row or row[name] is None or row[name] == "":
@@ -299,10 +426,16 @@ def _build_feature(model, decision, connection_id, source_path):
         key_tokens.add(token)
         rows.append(row)
         source_cells[str(len(rows) - 1)] = provenance
+        source_formats[str(len(rows) - 1)] = formats
+        source_states[str(len(rows) - 1)] = states
         for name, (value, cell_id) in row_overrides.items():
             override_records[name].append({
                 "row": {**{key_name: row[key_name] for key_name in keys}, name: value},
                 "sourceCells": {**{key_name: provenance[key_name] for key_name in keys}, name: cell_id},
+                "sourceCellFormats": {**{key_name: formats[key_name] for key_name in keys},
+                                      name: cells[(sheet, cell_id.rsplit('!', 1)[1])].get("numberFormat")},
+                "sourceCellStates": {**{key_name: states[key_name] for key_name in keys},
+                                     name: "empty-text" if value == "" else "literal"},
                 "sourceRow": row_number})
     for name, addresses in override_set.items():
         seen = {item["sourceCells"][name].split("!")[1] for item in override_records[name]}
@@ -323,7 +456,9 @@ def _build_feature(model, decision, connection_id, source_path):
             "keyColumns": keys, "connectionId": connection_id, "editMode": "published-explore",
             "sourceBinding": f"{sheet}!{source_range}", "rows": rows,
             "columns": [{"name": name, "type": types[name], "provenance": "source"} for name in main_literal],
-            "sourceCells": source_cells, "sourceRowNumbers": list(range(top, bottom + 1)),
+            "sourceCells": source_cells, "sourceCellFormats": source_formats,
+            "sourceCellStates": source_states,
+            "sourceRowNumbers": list(range(top, bottom + 1)),
             "sourceHeaders": headers, "derivedColumns": derived,
             "derivedMappings": {name: {"sourceFormulaCells": [item["sourceCellId"] for item in obligations
                                                                   if item["sourceColumn"] == name],
@@ -343,6 +478,8 @@ def _build_feature(model, decision, connection_id, source_path):
             "columns": [{"name": column, "type": types[column], "provenance": "source"}
                         for column in keys + [name]],
             "sourceCells": {str(index): item["sourceCells"] for index, item in enumerate(records)},
+            "sourceCellFormats": {str(index): item["sourceCellFormats"] for index, item in enumerate(records)},
+            "sourceCellStates": {str(index): item["sourceCellStates"] for index, item in enumerate(records)},
             "sourceRowNumbers": [item["sourceRow"] for item in records],
             "sourceHeaders": headers, "derivedColumns": [], "overrideCells": {name: overrides[name]},
             "overrideFor": {"featureId": feature, "sourceColumn": name,
@@ -372,6 +509,16 @@ def build_source_input_plan(source_path, decisions, *, connection_id, folder_id)
         inputs[feature] = spec
         inputs.update(extras)
         obligations.extend(formulas)
+    record_cells = {cell for spec in inputs.values() if spec.get("sourceBinding") == "reviewed-source-records"
+                    for row in spec["sourceCells"].values() for cell in row.values()}
+    if record_cells:
+        seen_bindings = set()
+        for spec in inputs.values():
+            for row in spec.get("sourceCells", {}).values():
+                for cell in row.values():
+                    if cell in record_cells and cell in seen_bindings:
+                        raise ValueError(f"ambiguous duplicate source record cell binding: {cell}")
+                    seen_bindings.add(cell)
     selected_formulas = {item["sourceCellId"] for item in obligations}
     for cell in model["cells"]:
         if cell["kind"] != "formula":
