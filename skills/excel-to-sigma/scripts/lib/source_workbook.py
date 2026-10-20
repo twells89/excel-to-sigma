@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import re
 
 from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
+from openpyxl.worksheet.formula import ArrayFormula
 
 from excel_expression import (
     Binary, ExpressionError, Function, Group, Percent, Range, Reference,
@@ -54,6 +56,15 @@ def _literal(value, number_format=None):
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise ValueError(f"unsupported cell literal type {type(value).__name__}")
+
+
+def _formula_source(value):
+    if isinstance(value, str):
+        return value, None, None
+    kind = type(value).__name__
+    if isinstance(value, ArrayFormula):
+        return value.text, kind, value.ref
+    return None, kind, getattr(value, "ref", None)
 
 
 def _bounds(source_range):
@@ -135,9 +146,11 @@ def _defined_names(workbook):
     return result, lookup
 
 
-def _dependencies(expression, sheet, names, sheet_names, populated):
+def _dependencies(expression, sheet, names, sheet_names, populated, formula_object_type=None):
     dependencies = {}
     reasons = []
+    if expression is None:
+        return [], [f"{formula_object_type or 'formula object'} has no scalar source expression"]
     try:
         parsed = parse_expression(expression, sheet=sheet)
         references = tuple(_walk_references(parsed))
@@ -183,7 +196,8 @@ def _table_model(sheet, table):
                   "formulaCells": [], "blankCells": [], "intent": "ambiguous"}
         for row in range(body_top, body_bottom + 1):
             cell = sheet.cell(row, left + offset)
-            field = "blankCells" if cell.value is None else "formulaCells" if cell.data_type == "f" else "literalCells"
+            field = ("formulaCells" if cell.data_type == "f" else
+                     "literalCells" if cell.value is not None or cell.data_type == "inlineStr" else "blankCells")
             record[field].append(f"{coordinate_col}{row}")
         columns.append(record)
     return {"id": _id("table", sheet.title, table.name), "sheet": sheet.title,
@@ -223,8 +237,9 @@ def _reviewed_blocks(decisions, sha, sheet_names):
 def build_source_model(source_path, *, block_decisions=None) -> dict:
     """Inventory source facts without saving, evaluating formulas, or running VBA."""
     source_path = Path(source_path)
-    sha = _hash(source_path)
-    workbook = load_workbook(source_path, data_only=False, read_only=False, keep_links=True)
+    source_bytes = source_path.read_bytes()
+    sha = hashlib.sha256(source_bytes).hexdigest()
+    workbook = load_workbook(BytesIO(source_bytes), data_only=False, read_only=False, keep_links=True)
     try:
         sheets = []
         cells = []
@@ -239,7 +254,7 @@ def build_source_model(source_path, *, block_decisions=None) -> dict:
                            "validationRuleCount": len(sheet.data_validations.dataValidation),
                            "conditionalFormattingCount": len(sheet.conditional_formatting)})
             for cell in sorted(sheet._cells.values(), key=lambda item: (item.row, item.column)):
-                if cell.value is None:
+                if cell.value is None and cell.data_type != "inlineStr":
                     continue
                 is_formula = cell.data_type == "f"
                 record = {"id": _cell_id(sheet.title, cell.coordinate),
@@ -247,9 +262,14 @@ def build_source_model(source_path, *, block_decisions=None) -> dict:
                           "dataType": cell.data_type, "numberFormat": cell.number_format,
                           "kind": "formula" if is_formula else "literal"}
                 if is_formula:
-                    record.update(expression=cell.value, dependencies=[], dependencyStatus="unresolved")
+                    expression, object_type, formula_range = _formula_source(cell.value)
+                    record.update(expression=expression, dependencies=[], dependencyStatus="unresolved")
+                    if object_type is not None:
+                        record["formulaObjectType"] = object_type
+                        record["formulaRange"] = formula_range
                 else:
-                    record["value"] = _literal(cell.value, cell.number_format)
+                    record["value"] = _literal("" if cell.data_type == "inlineStr" and cell.value is None else cell.value,
+                                               cell.number_format)
                 cells.append(record)
             for table in sorted(sheet.tables.values(), key=lambda item: item.name):
                 item = _table_model(sheet, table)
@@ -264,7 +284,8 @@ def build_source_model(source_path, *, block_decisions=None) -> dict:
         for cell in cells:
             if cell["kind"] != "formula":
                 continue
-            deps, reasons = _dependencies(cell["expression"], cell["sheet"], name_lookup, sheet_names, populated)
+            deps, reasons = _dependencies(cell["expression"], cell["sheet"], name_lookup, sheet_names,
+                                          populated, cell.get("formulaObjectType"))
             cell["dependencies"] = deps
             cell["dependencyStatus"] = "unresolved" if reasons else "resolved"
             for index, reason in enumerate(reasons):
@@ -320,7 +341,11 @@ def validate_source_model(model, source_path=None) -> None:
             raise ValueError("malformed cell identity")
         cell_ids.add(cell["id"])
         if cell.get("dataType") == "f":
-            if cell.get("kind") != "formula" or not isinstance(cell.get("expression"), str) or not cell["expression"].startswith("=") or "value" in cell:
+            expression = cell.get("expression")
+            expression_valid = (isinstance(expression, str) and expression.startswith("=")) or (
+                expression is None and isinstance(cell.get("formulaObjectType"), str) and
+                bool(cell["formulaObjectType"]))
+            if cell.get("kind") != "formula" or not expression_valid or "value" in cell:
                 raise ValueError("misclassified formula")
             formula_ids.add(cell["id"])
             if cell.get("dependencyStatus") not in {"resolved", "unresolved"} or not isinstance(cell.get("dependencies"), list):
@@ -338,9 +363,14 @@ def validate_source_model(model, source_path=None) -> None:
                 if dep.get("targetKind") != ("populated" if dep["targetId"] in cell_ids else "blank"):
                     raise ValueError("broken dependency target kind")
     unresolved_ids = set()
+    unresolved_ordinals = {}
     for item in model["unresolved"]:
         if item.get("cellId") not in formula_ids or not isinstance(item.get("reason"), str) or not item["reason"]:
             raise ValueError("invalid unresolved reference")
+        ordinal = unresolved_ordinals.get(item["cellId"], 0)
+        if item["id"] != _id("unresolved", item["cellId"], ordinal):
+            raise ValueError("malformed unresolved identity")
+        unresolved_ordinals[item["cellId"]] = ordinal + 1
         unresolved_ids.add(item["cellId"])
     for cell in model["cells"]:
         if cell["kind"] == "formula" and (cell["dependencyStatus"] == "unresolved") != (cell["id"] in unresolved_ids):
@@ -389,7 +419,8 @@ def validate_source_model(model, source_path=None) -> None:
         if cell["kind"] != "formula":
             continue
         expected_deps, expected_reasons = _dependencies(cell["expression"], cell["sheet"],
-                                                        name_lookup, sheet_names, cell_ids)
+                                                        name_lookup, sheet_names, cell_ids,
+                                                        cell.get("formulaObjectType"))
         if (cell["dependencies"] != expected_deps or
                 reasons_by_cell.get(cell["id"], []) != expected_reasons or
                 cell["dependencyStatus"] != ("unresolved" if expected_reasons else "resolved")):

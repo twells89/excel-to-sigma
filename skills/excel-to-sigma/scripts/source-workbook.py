@@ -21,10 +21,15 @@ def main(argv=None):
     output = Path(args.out)
     temporary = None
     try:
+        source = Path(args.source)
+        if output.resolve() == source.resolve() or (output.exists() and os.path.samefile(output, source)):
+            raise ValueError("output path refers to the source workbook")
         model = build_source_model(args.source, block_decisions=args.block_decisions)
         validate_source_model(model, args.source)
         encoded = json.dumps(model, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
         output.parent.mkdir(parents=True, exist_ok=True)
+        if output.resolve() == source.resolve() or (output.exists() and os.path.samefile(output, source)):
+            raise ValueError("output path refers to the source workbook")
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output.parent,
                                          prefix=output.name + ".", suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)

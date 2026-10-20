@@ -11,6 +11,7 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Font
+from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.workbook.defined_name import DefinedName
 
@@ -97,6 +98,38 @@ class SourceWorkbookTests(unittest.TestCase):
         model = build_source_model(self.source)
         self.assertEqual([(cell["address"], cell["kind"]) for cell in model["cells"]], [("A1", "formula")])
         self.assertEqual(model["sourceSha256"], before)
+
+    def test_inline_empty_string_is_distinct_from_absent_and_styled_empty_cells(self):
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = ""
+        ws["B1"].font = Font(bold=True)
+        self.save(wb)
+        cells = self.cells(build_source_model(self.source))
+        self.assertEqual(cells[("Sheet", "A1")]["dataType"], "inlineStr")
+        self.assertEqual(cells[("Sheet", "A1")]["value"], "")
+        self.assertEqual(cells[("Sheet", "A1")]["kind"], "literal")
+        self.assertNotIn(("Sheet", "B1"), cells)
+        self.assertNotIn(("Sheet", "C1"), cells)
+
+    def test_array_formula_text_survives_and_other_formula_objects_are_unresolved(self):
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = ArrayFormula("A1:A2", text="=SUM(B1:B2)")
+        ws["D1"] = DataTableFormula("D1:D2", r1="B1")
+        self.save(wb)
+        model = build_source_model(self.source)
+        cells = self.cells(model)
+        array = cells[("Sheet", "A1")]
+        self.assertEqual(array["kind"], "formula")
+        self.assertEqual(array["expression"], "=SUM(B1:B2)")
+        self.assertEqual(array["formulaObjectType"], "ArrayFormula")
+        self.assertEqual([d["address"] for d in array["dependencies"]], ["B1", "B2"])
+        data_table = cells[("Sheet", "D1")]
+        self.assertEqual(data_table["kind"], "formula")
+        self.assertEqual(data_table["formulaObjectType"], "DataTableFormula")
+        self.assertEqual(data_table["dependencyStatus"], "unresolved")
+        self.assertTrue(any(u["cellId"] == data_table["id"] for u in model["unresolved"]))
 
     def test_dependencies_include_range_interiors_blanks_cycles_and_names(self):
         wb = Workbook()
@@ -212,6 +245,34 @@ class SourceWorkbookTests(unittest.TestCase):
         model["unresolved"] = []
         with self.assertRaises(ValueError):
             validate_source_model(model)
+
+    def test_unresolved_identity_must_match_cell_and_reason_ordinal(self):
+        wb = Workbook()
+        wb.active["A1"] = "=Missing+Other"
+        self.save(wb)
+        model = build_source_model(self.source)
+        self.assertEqual(len(model["unresolved"]), 2)
+        for replacement in ("arbitrary", 'unresolved:["cell:[\\"Sheet\\",\\"A1\\"]",2]'):
+            bad = copy.deepcopy(model)
+            bad["unresolved"][0]["id"] = replacement
+            with self.subTest(replacement=replacement), self.assertRaises(ValueError):
+                validate_source_model(bad, self.source)
+
+    def test_cli_refuses_source_as_output_through_direct_and_alias_paths(self):
+        wb = Workbook()
+        wb.active["A1"] = 7
+        before = self.save(wb)
+        alias_symlink = Path(self.tmp.name) / "symlink.xlsx"
+        alias_symlink.symlink_to(self.source)
+        alias_hardlink = Path(self.tmp.name) / "hardlink.xlsx"
+        alias_hardlink.hardlink_to(self.source)
+        cli = ROOT / "scripts" / "source-workbook.py"
+        for output in (self.source, alias_symlink, alias_hardlink):
+            with self.subTest(output=output):
+                result = subprocess.run([sys.executable, str(cli), str(self.source), "--out", str(output)],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), before)
 
     def test_validation_rejects_stale_or_overlapping_review_bindings(self):
         wb = Workbook()
