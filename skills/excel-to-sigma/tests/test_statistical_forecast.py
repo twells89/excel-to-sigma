@@ -2,6 +2,9 @@
 from datetime import date
 from pathlib import Path
 import sys
+import json
+import runpy
+import types
 import unittest
 from unittest.mock import patch
 import warnings
@@ -12,7 +15,7 @@ sys.path.insert(0, str(LIB))
 from statistical_forecast import (StatisticalPortError, calculate, excel_serial,
                                   forecast_linear, sample_stdev, trailing_three_average,
                                   typed_output_value)
-from statistical_runtime import emit_preview_program
+from statistical_runtime import CANDIDATE_REQUIRED, emit_preview_program
 from statistical_ets_candidate import CandidateFitError, forecast_with_diagnostics
 
 
@@ -29,6 +32,114 @@ def fixture():
 
 
 class StatisticalForecastTests(unittest.TestCase):
+    def test_operator_frames_fit_sigma_grid_and_partial_continuation_reuses_table(self):
+        operator = runpy.run_path(str(LIB.parent / "statistical-operator.py"))
+        for role, (_, _, _, frame) in operator["TABLES"].items():
+            with self.subTest(role=role):
+                x, y, width, height = frame
+                self.assertGreaterEqual(x, 1)
+                self.assertGreaterEqual(y, 1)
+                self.assertGreater(width, 0)
+                self.assertGreater(height, 0)
+                self.assertLessEqual(x + width - 1, 24)
+        continuation = operator["phase1_continue_parameters"]("observed-page", "observed-table")
+        self.assertIn("page.get_element('observed-table')", continuation)
+        self.assertNotIn("add_input_table", continuation)
+        self.assertIn("set_frame(1, 15, 24, 8)", continuation)
+        compile(continuation, "<partial continuation>", "exec")
+
+    def test_candidate_sigma_preview_is_typed_current_and_review_only(self):
+        binding = {role: {"title": role, "columns": {name: {"identifier": name, "rowKey": name}
+                    for name in names}} for role, names in CANDIDATE_REQUIRED.items()}
+        program = emit_preview_program(binding, candidate_ets=True)
+        compile(program["code"], "<candidate preview>", "exec")
+        rows, targets = fixture()
+        frames = {"history": rows,
+                  "parameters": [{"Scope": "Parameters", "SelectedSKU": "SKU-A100",
+                                  "Seasonality": 12, "ServiceLevel": .95, "LeadTime": 2}],
+                  "targets": [{"Period": i, "Month": target} for i, target in enumerate(targets, 1)]}
+
+        class Row(dict):
+            def as_dict(self): return self
+        class Frame:
+            def __init__(self, data): self.data, self.columns = data, list(data[0])
+            def collect(self): return [Row(row) for row in self.data]
+        class Sigma:
+            def __init__(self): self.outputs = []
+            def get_element(self, title): return Frame(frames[title])
+            def output(self, name, frame): self.outputs.append((name, frame))
+        class Session:
+            def create_dataframe(self, values, schema): return (values, schema)
+        class Fit:
+            def __init__(self, values, converged=True, invalid=False):
+                self.values = values
+                self.mle_retvals = {"converged": converged, "warnflag": 0 if converged else 2,
+                                    "iterations": 5, "fcalls": 10}
+                self.invalid = invalid
+            def forecast(self, horizon):
+                return [float("nan") if self.invalid else self.values[-1]] * horizon
+        class ETSModel:
+            fail = False
+            invalid = False
+            def __init__(self, values, **kwargs): self.values = values
+            def fit(self, **kwargs): return Fit(self.values, not self.fail, self.invalid)
+        fake = types.ModuleType("statsmodels.tsa.exponential_smoothing.ets")
+        fake.ETSModel = ETSModel
+        def execute():
+            sigma = Sigma()
+            with patch.dict(sys.modules, {"statsmodels": types.ModuleType("statsmodels"),
+                                          "statsmodels.tsa": types.ModuleType("statsmodels.tsa"),
+                                          "statsmodels.tsa.exponential_smoothing": types.ModuleType("statsmodels.tsa.exponential_smoothing"),
+                                          "statsmodels.tsa.exponential_smoothing.ets": fake}), \
+                 patch("importlib.metadata.version", side_effect=lambda name: {
+                     "statsmodels": "0.15.0", "scipy": "1.18.1"}[name]):
+                exec(program["code"], {"sigma": sigma, "session": Session()})
+            return sigma.outputs[0][1]
+
+        values, schema = execute()
+        columns = [name for name, _ in program["schema"]]
+        first = dict(zip(columns, values[0]))
+        self.assertEqual(len(values), 36, values[0])
+        self.assertEqual((first["Status"], first["ReadyToPublish"], first["ErrorCode"]),
+                         ("REVIEW_REQUIRED", False, "CANDIDATE_REVIEW_REQUIRED"))
+        self.assertEqual(first["ETS"], rows[-3]["Demand"])
+        self.assertIsNotNone(first["FY26ETSTotal"])
+        self.assertIsNotNone(first["ReorderPoint"])
+        self.assertEqual(first["ModelIdentity"], program["modelIdentity"])
+        self.assertEqual(json.loads(first["RuntimePackages"]),
+                         {"statsmodels": "0.15.0", "scipy": "1.18.1"})
+        self.assertEqual(set(json.loads(first["FitDiagnostics"])), set(("SKU-A100", "SKU-B200", "SKU-C300")))
+        self.assertIn('"FitDiagnostics" STRING', schema)
+        prior_hash = first["InputHash"]
+        rows[-3]["Demand"] += 100
+        changed, _ = execute()
+        changed_first = dict(zip(columns, changed[0]))
+        self.assertNotEqual(changed_first["InputHash"], prior_hash)
+        self.assertNotEqual(changed_first["ETS"], first["ETS"])
+        self.assertNotEqual(changed_first["PreviewRunId"], first["PreviewRunId"])
+        ETSModel.fail = True
+        failed, _ = execute()
+        self.assertEqual(len(failed), 1)
+        failure = dict(zip(columns, failed[0]))
+        self.assertEqual((failure["Status"], failure["ErrorCode"]),
+                         ("FAILURE", "CANDIDATE_NONCONVERGED_FIT"))
+        self.assertIsNone(failure["ETS"])
+        self.assertFalse(failure["ReadyToPublish"])
+        ETSModel.fail, ETSModel.invalid = False, True
+        invalid, _ = execute()
+        self.assertEqual(dict(zip(columns, invalid[0]))["ErrorCode"],
+                         "CANDIDATE_INVALID_FORECAST_OUTPUT")
+        ETSModel.invalid = False
+        original_fit = ETSModel.fit
+        def editing_fit(self, **kwargs):
+            rows[-3]["Demand"] += 1
+            return original_fit(self, **kwargs)
+        with patch.object(ETSModel, "fit", editing_fit):
+            stale, _ = execute()
+        self.assertEqual(len(stale), 1)
+        self.assertEqual(dict(zip(columns, stale[0]))["ErrorCode"],
+                         "INPUT_CHANGED_DURING_RUN")
+
     def test_excel_serial_regression_uses_real_month_lengths(self):
         dates = [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)]
         self.assertEqual([excel_serial(d) for d in dates], [45292, 45323, 45352])
