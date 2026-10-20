@@ -13,7 +13,7 @@ from openpyxl import load_workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lib"))
 from statistical_forecast import SOURCE_SHA256, calculate
-from statistical_ets_candidate import forecast
+from statistical_ets_candidate import CandidateFitError, forecast_with_diagnostics
 
 
 def compare(actual, expected):
@@ -42,9 +42,16 @@ def main():
             for i in range(36) for j, sku in enumerate(skus)]
     target_dates = [wb["Forecast"].cell(i, 1).value for i in range(4, 16)]
     params = wb["Params"]
+    baseline_fit_diagnostics = {}
+
+    def source_forecast(values, seasonality, horizon):
+        outcome = forecast_with_diagnostics(values, seasonality, horizon)
+        baseline_fit_diagnostics[skus[len(baseline_fit_diagnostics)]] = outcome["diagnostics"]
+        return outcome["forecasts"]
+
     result = calculate(rows, params["B3"].value, params["B4"].value,
                        params["B5"].value, params["B6"].value, target_dates,
-                       ets_forecaster=forecast)
+                       ets_forecaster=source_forecast)
     by_address = {}
     for i, period in enumerate(result["Periods"], 4):
         for j, sku in enumerate(skus):
@@ -73,16 +80,23 @@ def main():
     for name, col in vector_cols.items():
         values = [vector_sheet[f"{col}{i}"].value for i in range(2, 38)]
         seasonality = 6 if name == "seasonality_6" else 12
+        expected = [record["value"] for record in vectors["results"] if record["vector"] == name]
+        if len(expected) != 12:
+            raise SystemExit("incomplete Excel behavior vector: " + name)
         if any(v is None for v in values):
             from statistical_forecast import interpolate_missing
             values = interpolate_missing(values)
         try:
-            predicted = forecast(values, seasonality, 12)
-            expected = [record["value"] for record in vectors["results"] if record["vector"] == name]
-            vector_comparisons[name] = [compare(a, e) for a, e in zip(predicted, expected)]
-        except Exception as exc:
+            outcome = forecast_with_diagnostics(values, seasonality, 12)
+            predicted = outcome["forecasts"]
+            vector_comparisons[name] = {"status": "NUMERIC_COMPARISON", "comparisonCount": 12,
+                                        "diagnostics": outcome["diagnostics"],
+                                        "comparisons": [compare(a, e) for a, e in zip(predicted, expected)]}
+        except CandidateFitError as exc:
             vector_comparisons[name] = {"status": "CANDIDATE_FIT_FAILED",
-                                        "errorType": type(exc).__name__, "error": str(exc)[:200]}
+                                        "code": exc.code, "diagnostics": exc.diagnostics,
+                                        "comparisonCount": 0, "candidateForecasts": None,
+                                        "excelValues": expected}
     by_group = {}
     for group, cols in {"ets": "BCD", "linear": "EFG", "selectedTrend": "H",
                         "trailingAverage": "I", "summary": "BCDE"}.items():
@@ -97,11 +111,16 @@ def main():
               "candidate": "statsmodels 0.15.0 ETSModel(add,add,add; estimated initial states)",
               "readiness": "REVIEW_REQUIRED", "sourceFormulaCount": oracle["formulaCount"],
               "comparedNumeric": len(by_address), "sourceError": "Forecast!K4 #NAME?",
-              "groups": by_group, "baseline": comparisons, "vectors": vector_comparisons}
+              "groups": by_group, "baseline": comparisons,
+              "baselineFitDiagnostics": baseline_fit_diagnostics,
+              "vectorExpectedCount": 72,
+              "vectorNumericComparisons": sum(v["comparisonCount"] for v in vector_comparisons.values()),
+              "vectors": vector_comparisons}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(output, indent=2, allow_nan=False) + "\n")
     print(json.dumps({"groups": by_group,
-                      "vectors": {k: (max(vv["absoluteDifference"] for vv in v) if isinstance(v, list) else v)
+                      "vectors": {k: (max(vv["absoluteDifference"] for vv in v["comparisons"])
+                                      if v["status"] == "NUMERIC_COMPARISON" else {"status": v["status"], "code": v["code"]})
                                   for k, v in vector_comparisons.items()}}, indent=2))
 
 

@@ -3,6 +3,8 @@ from datetime import date
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
+import warnings
 
 
 LIB = Path(__file__).resolve().parents[1] / "scripts" / "lib"
@@ -10,6 +12,7 @@ sys.path.insert(0, str(LIB))
 from statistical_forecast import (StatisticalPortError, calculate, excel_serial,
                                   forecast_linear, sample_stdev, trailing_three_average)
 from statistical_runtime import emit_preview_program
+from statistical_ets_candidate import CandidateFitError, forecast_with_diagnostics
 
 
 def month(year, index):
@@ -106,6 +109,58 @@ class StatisticalForecastTests(unittest.TestCase):
         sigma = Sigma(frames)
         exec(program["code"], {"sigma": sigma, "session": Session()})
         self.assertEqual(sigma.outputs[0][1][0][0][0], "FAILURE")
+
+    def test_candidate_rejects_nonconverged_fit_before_reading_finite_forecast(self):
+        class Fit:
+            mle_retvals = {"converged": False, "warnflag": 2, "iterations": 0}
+            forecast_called = False
+            def forecast(self, horizon):
+                self.forecast_called = True
+                return [100.0] * horizon
+        fit = Fit()
+        with patch("statistical_ets_candidate._fit_model", return_value=fit):
+            with self.assertRaises(CandidateFitError) as caught:
+                forecast_with_diagnostics([100.0] * 36, 12, 12)
+        self.assertEqual(caught.exception.code, "NONCONVERGED_FIT")
+        self.assertEqual(caught.exception.diagnostics["warnflag"], 2)
+        self.assertFalse(fit.forecast_called)
+
+    def test_candidate_requires_explicit_optimizer_status_and_complete_finite_output(self):
+        class Fit:
+            def __init__(self, status, output):
+                self.mle_retvals, self.output = status, output
+            def forecast(self, horizon): return self.output
+        for status in (None, {}, {"converged": True}, {"warnflag": 0}):
+            with self.subTest(status=status), patch("statistical_ets_candidate._fit_model",
+                                                     return_value=Fit(status, [1.0] * 12)):
+                with self.assertRaises(CandidateFitError) as caught:
+                    forecast_with_diagnostics([2.0] * 36, 12, 12)
+                self.assertEqual(caught.exception.code, "MISSING_OPTIMIZER_STATUS")
+        for output in ([1.0] * 11, [1.0] * 11 + [float("nan")]):
+            with self.subTest(output=output), patch("statistical_ets_candidate._fit_model",
+                                                     return_value=Fit({"converged": True, "warnflag": 0}, output)):
+                with self.assertRaises(CandidateFitError) as caught:
+                    forecast_with_diagnostics([2.0] * 36, 12, 12)
+                self.assertEqual(caught.exception.code, "INVALID_FORECAST_OUTPUT")
+        with patch("statistical_ets_candidate._fit_model",
+                   return_value=Fit({"converged": True, "warnflag": 0, "iterations": 3}, [1.0] * 12)):
+            result = forecast_with_diagnostics([2.0] * 36, 12, 12)
+        self.assertEqual(result["forecasts"], [1.0] * 12)
+        self.assertEqual(result["diagnostics"]["iterations"], 3)
+
+    def test_candidate_retains_warnings_without_treating_them_as_success(self):
+        class Fit:
+            mle_retvals = {"converged": False, "warnflag": 2}
+            def forecast(self, horizon): return [0.0] * horizon
+        def fit_with_warning(values, seasonality):
+            warnings.warn("optimizer did not converge", RuntimeWarning)
+            return Fit()
+        with patch("statistical_ets_candidate._fit_model", side_effect=fit_with_warning):
+            with self.assertRaises(CandidateFitError) as caught:
+                forecast_with_diagnostics([0.0] * 36, 12, 12)
+        self.assertEqual(caught.exception.code, "NONCONVERGED_FIT")
+        self.assertEqual(caught.exception.diagnostics["warningCount"], 1)
+        self.assertEqual(caught.exception.diagnostics["warnings"][0]["message"], "optimizer did not converge")
 
 
 if __name__ == "__main__":
