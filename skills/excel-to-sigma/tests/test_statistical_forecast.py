@@ -3,6 +3,7 @@ from datetime import date
 from pathlib import Path
 import sys
 import json
+import copy
 import runpy
 import shutil
 import tempfile
@@ -130,20 +131,49 @@ class StatisticalForecastTests(unittest.TestCase):
         workspace = LIB.parents[4]
         packet = workspace / "statistical-sigma-preview-20261020-CANDIDATE"
         original = workspace / "broader-eight-source-replay-20261020/source-originals/05 Statistical Demand Forecast.xlsx"
-        source = packet / "root-phase1-after-source3.json"
+        source = packet / "root-seed-source-before5.json"
         if not source.exists() or not original.exists():
             self.skipTest("actual source snapshots unavailable")
-        seed = runpy.run_path(str(LIB.parent / "statistical-seed.py"))["seed_plan"]
+        seed_module = runpy.run_path(str(LIB.parent / "statistical-seed.py"))
+        seed = seed_module["seed_plan"]
         payload = json.loads((packet / "source-inputs.json").read_text())
         first = payload["roles"]["history"]["rows"][0]
+        source_json = json.loads(source.read_text())
+        element = next(e for e in source_json["contents"]["elements"] if e.get("id") == "qPoaWFS7V6")
+        column_ids = {c["name"]: c["id"] for c in element["columns"] if c.get("name")}
+        requests = seed_module["query_requests"](source_json["workbookId"], element["id"],
+                    column_ids, ["Month", "SKU"], "EHGAUETP2V")
+        describes = packet / "root-seed-describes4.json"
+        def receipt(rows):
+            names = ["Month", "SKU", "Demand"]
+            def result(columns, matrix):
+                return {"structuredContent": {"columns": columns, "rows": matrix}}
+            return [{"status": "fulfilled", "value": {"role": "history", "elementId": element["id"],
+                    "selectedColumnIds": [*column_ids.values(), "EHGAUETP2V"],
+                    "rowIdAlias": "EHGAUETP2V", "request": {"query": requests["rows"]},
+                    "startedAt": "2026-10-20T22:04:19Z", "completedAt": "2026-10-20T22:04:20Z",
+                    "result": result([*column_ids.values(), "EHGAUETP2V"] if rows else [],
+                                    [[*(r[n] for n in names), r["EHGAUETP2V"]] for r in rows]),
+                    "count": {"request": {"query": requests["count"]},
+                              "startedAt": "2026-10-20T22:04:20Z", "completedAt": "2026-10-20T22:04:21Z",
+                              "result": result(["__COUNT__"], [[len(rows)]])}}}]
         with tempfile.TemporaryDirectory() as folder:
             current = Path(folder) / "query.json"
-            current.write_text("[]")
+            current.write_text(json.dumps(receipt([])))
             opts = {"source_packet_path": packet / "source-inputs.json",
                     "source_original": original, "actual_source": source,
+                    "actual_source_after": packet / "root-seed-source-after5.json",
                     "query_receipt": current, "role": "history",
-                    "describe_receipt": packet / "root-phase1-after-describes3.json",
+                    "describe_receipt": describes,
                     "row_id_key": "EHGAUETP2V"}
+            current.write_bytes((packet / "root-seed-executed-queries5.json").read_bytes())
+            actual_plan, actual_chunk = seed(**opts)
+            self.assertEqual((len(actual_plan["inserts"]), actual_chunk["actionCount"]), (108, 25))
+            changed_after = Path(folder) / "changed-source.json"
+            changed_after.write_text(source.read_text().replace('"documentVersion": 3', '"documentVersion": 4'))
+            with self.assertRaisesRegex(ValueError, "SOURCE_CHANGED_DURING_QUERY"):
+                seed(**{**opts, "actual_source_after": changed_after})
+            current.write_text(json.dumps(receipt([])))
             plan, chunk = seed(**opts)
             self.assertEqual((len(plan["inserts"]), chunk["actionCount"], chunk["remainingCount"]),
                              (108, 25, 83))
@@ -151,18 +181,50 @@ class StatisticalForecastTests(unittest.TestCase):
                 seed(**opts, prior_seed=plan)
             observed = {"Month": first["Month"], "SKU": first["SKU"],
                         "Demand": first["Demand"], "EHGAUETP2V": "observed-row-id"}
-            current.write_text(json.dumps([observed]))
+            current.write_text(json.dumps(receipt([observed])))
             next_plan, next_chunk = seed(**opts, prior_seed=plan)
             self.assertEqual((len(next_plan["inserts"]), len(next_plan["unchanged"])), (107, 1))
             self.assertEqual(next_chunk["actionCount"], 25)
             edited = {**observed, "Demand": observed["Demand"] + 1}
-            current.write_text(json.dumps([edited]))
+            current.write_text(json.dumps(receipt([edited])))
             conflict, program = seed(**opts, prior_seed=plan)
             self.assertEqual(len(conflict["conflicts"]), 1)
             self.assertIsNone(program)
-            current.write_text(json.dumps([observed, {**observed, "EHGAUETP2V": "other-id"}]))
+            forged = {**plan, "seedRecords": [{"confirmedMigrationValue": edited["Demand"]}]}
+            forged_conflict, forged_program = seed(**opts, prior_seed=forged)
+            self.assertEqual(len(forged_conflict["conflicts"]), 1)
+            self.assertIsNone(forged_program)
+            current.write_text(json.dumps(receipt([observed, {**observed, "EHGAUETP2V": "other-id"}])))
             with self.assertRaisesRegex(ValueError, "duplicate current business key"):
                 seed(**opts, prior_seed=plan)
+            current.write_text(json.dumps(receipt([{**observed, "SKU": "edited-key"}])))
+            orphan, program = seed(**opts, prior_seed=plan)
+            self.assertEqual(len(orphan["orphans"]), 1)
+            self.assertIsNone(program)
+            wrong_target = copy.deepcopy(receipt([]))
+            wrong_target[0]["value"]["request"]["query"]["workbookId"] = "wrong"
+            for unbound in ([], {"rows": []}, wrong_target):
+                current.write_text(json.dumps(unbound))
+                with self.assertRaisesRegex(ValueError, "BOUND_QUERY_RECEIPT_REQUIRED|EXECUTED_QUERY_TARGET_OR_STATUS_MISMATCH"):
+                    seed(**opts)
+            mismatched = receipt([])
+            mismatched[0]["value"]["count"]["result"]["structuredContent"]["rows"] = [[1]]
+            current.write_text(json.dumps(mismatched))
+            with self.assertRaisesRegex(ValueError, "QUERY_COUNT_OR_SCHEMA_MISMATCH"):
+                seed(**opts)
+            missing_execution_time = receipt([])
+            del missing_execution_time[0]["value"]["startedAt"]
+            current.write_text(json.dumps(missing_execution_time))
+            with self.assertRaisesRegex(ValueError, "EXECUTED_QUERY_TIMING_REQUIRED"):
+                seed(**opts)
+
+    def test_seed_date_normalization_rejects_ambiguous_values(self):
+        normalize = runpy.run_path(str(LIB.parent / "statistical-seed.py"))["_normalize"]
+        self.assertEqual(normalize("2025-01-01T00:00:00Z", "datetime"), "2025-01-01")
+        for value in ("2025-01-01garbage", "2025-01-01T23:59:59-10:00",
+                      "2025-01-01T00:00:00+01:00", "2025-01-01T13:00:00"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "AMBIGUOUS_DATE_VALUE"):
+                normalize(value, "datetime")
 
     def test_candidate_sigma_preview_is_typed_current_and_review_only(self):
         binding = {role: {"title": role, "columns": {name: {"identifier": name, "rowKey": name}
