@@ -134,10 +134,12 @@ class SdkProgramAdmissionTests(unittest.TestCase):
 
     def test_construction_and_resumable_seed_emit_exact_fractional_datetime_rows(self):
         from input_sync import build_artifact_records,emit_construction_program,emit_write_programs,plan_seed
-        h=sync_fixtures.TestMcpPrograms();h.setUp();spec=h.architecture['inputs']['salesSettings']
+        h=sync_fixtures.TestMcpPrograms();h.setUp();self.addCleanup(h.doCleanups);spec=h.architecture['inputs']['salesSettings']
         rows=[{'Key':'utc','At':'2026-10-15T08:45:12.123Z'},{'Key':'offset','At':'2026-10-15T04:45:12.123456-04:00'}]
         spec.update(rows=rows,keyColumns=['Key'],columns=[{'name':'Key','type':'text','provenance':'source'},{'name':'At','type':'datetime','provenance':'source'}])
+        h.manifest=h.manifest_for(h.architecture)
         h.bindings['salesSettings'].update(elementId='assigned-settings',columnIds={'Key':'key-id','At':'at-id'})
+        h.receipt.update(sourceHash=h.manifest['sourceHash'],planHash=h.manifest['planHash'])
         h.receipt['artifacts']=build_artifact_records(h.manifest,h.architecture,h.bindings)
         types={'Key':'text','At':'datetime'};seed=plan_seed(rows,[],['Key'],'ID',column_types=types)
         programs=[emit_construction_program(h.manifest,h.receipt,'salesSettings'),emit_write_programs(seed,h.manifest,h.receipt,'salesSettings')[0]['program']]
