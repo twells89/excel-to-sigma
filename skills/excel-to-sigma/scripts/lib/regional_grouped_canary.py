@@ -122,6 +122,8 @@ def build_candidate(source_path, input_plan, native_plan, oracle):
          "formula": 'Concat([Region Key], "|", Text([Year Key]), "|", Text([Quarter Key]))'},
         {"id": "source_ordinal", "name": "Source Ordinal",
          "formula": "[Sales/Source Ordinal]"},
+        {"id": "source_key", "name": "Source Key",
+         "formula": "[Sales/Source Key]"},
         {"id": "first_error_ordinal", "name": "First Error Ordinal",
          "formula": 'If([Revenue Error] != "", [Source Ordinal], Null)'},
     ]

@@ -12,7 +12,7 @@ Run `scripts/regional-grouped-canary.py` with the exact original workbook,
 reviewed v2 input plan, native v2 plan, and independent Excel oracle JSONL.
 It emits `candidate.json`, including all 144 Revenue source-cell mappings,
 the distinct B4 five-lane mapping, complete B4 dependency list, the actual
-source formula SHA, 3 logical elements, 26 formula columns, and unresolved
+source formula SHA, 3 logical elements, 27 formula columns, and unresolved
 qualifications. The hard canary cap is 8 tables / 128 formula columns. The
 source AST uses `table:tblSalesForecast:#data` with rows 2:145, so **appended
 sales rows remain in scope**. The candidate cannot be interpreted as a closed
@@ -30,7 +30,7 @@ The logical construction is:
 2. A calculated table sourced from that input. The existing typed native
    compiler emits one shared Revenue row template with five public lanes
    (number, text, logical, kind, error), plus live Region/Year/Quarter/group
-   keys and the source ordinal. All 144 original `F2:F145` ASTs are checked
+   keys, source key, and source ordinal. All 144 original `F2:F145` ASTs are checked
    row-relative against that template; matching formula text alone is not the
    proof. Group key uses `Lower(Region)`, `DatePart("year", Month)`, and
    `DatePart("quarter", Month)`.

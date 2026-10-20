@@ -136,7 +136,7 @@ class RegionalGroupedCanaryTest(unittest.TestCase):
                                            "columns": {logical["id"]: actual["id"]
                                                        for logical, actual in zip(row["columns"], actual_columns)}}},
                    "namespaces": {"Sales": {"name": "Sales",
-                                            "columns": {k: k for k in ("Region", "Month", "Units", "Avg Price", "Source Ordinal")}}}}
+                                            "columns": {k: k for k in ("Region", "Month", "Units", "Avg Price", "Source Ordinal", "Source Key")}}}}
         program = prepare_scaffold_program(self.candidate, element_kind="calculated-table",
             page_id="observed-page", source_element_id="observed-sales", grid_row=1)
         compile(program, "<regional-row-scaffold>", "exec")
