@@ -149,6 +149,7 @@ fit_diagnostics = {}
 runtime_packages = {}
 try:
     frames = read_bound_frames()
+    session = frames['history'].session
     history = read_bound_rows('history', frames['history'])
     parameters = read_bound_rows('parameters', frames['parameters'])
     targets = read_bound_rows('targets', frames['targets'])

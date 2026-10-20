@@ -292,7 +292,7 @@ class StatisticalForecastTests(unittest.TestCase):
         class Row(dict):
             def as_dict(self): return self
         class Frame:
-            def __init__(self, data): self.data, self.columns = data, list(data[0])
+            def __init__(self, data): self.data, self.columns, self.session = data, list(data[0]), Session()
             def collect(self): return [Row(row) for row in self.data]
         class Sigma:
             def __init__(self): self.outputs = []
@@ -323,7 +323,7 @@ class StatisticalForecastTests(unittest.TestCase):
                                           "statsmodels.tsa.exponential_smoothing": types.ModuleType("statsmodels.tsa.exponential_smoothing"),
                                           "statsmodels.tsa.exponential_smoothing.ets": fake}), \
                  patch("importlib.metadata.version", side_effect=lambda name: versions[name]):
-                exec(program["code"], {"sigma": sigma, "session": Session()})
+                exec(program["code"], {"sigma": sigma})
             return sigma.outputs[0][1]
 
         values, schema = execute()
@@ -445,7 +445,7 @@ class StatisticalForecastTests(unittest.TestCase):
                   "targets": [{"Period": i, "Month": target} for i, target in enumerate(targets, 1)]}
 
         class Frame:
-            def __init__(self, data): self.data, self.columns = data, list(data[0])
+            def __init__(self, data): self.data, self.columns, self.session = data, list(data[0]), Session()
             def collect(self): return self
             def __iter__(self): return iter(self.data)
         class Sigma:
@@ -459,7 +459,7 @@ class StatisticalForecastTests(unittest.TestCase):
             def as_dict(self): return self
         Frame.collect = lambda self: [Row(row) for row in self.data]
         sigma = Sigma()
-        exec(program["code"], {"sigma": sigma, "session": Session()})
+        exec(program["code"], {"sigma": sigma})
         output_rows, _ = sigma.outputs[0][1]
         self.assertEqual(len(output_rows), 1)
         self.assertEqual(output_rows[0][0:3], ["FAILURE", False, "NONFINITE_LINEAR_Y_MEAN"])
@@ -496,6 +496,7 @@ class StatisticalForecastTests(unittest.TestCase):
             def __init__(self, data):
                 self.data = data
                 self.columns = list(data[0])
+                self.session = Session()
             def collect(self): return [Row(row) for row in self.data]
 
         class Sigma:
@@ -514,7 +515,7 @@ class StatisticalForecastTests(unittest.TestCase):
                       "Service level": .95, "Lead time (months)": 2}.items()],
                   "targets": [{"Period": i, "Month": target} for i, target in enumerate(targets, 1)]}
         sigma = Sigma(frames)
-        exec(program["code"], {"sigma": sigma, "session": Session()})
+        exec(program["code"], {"sigma": sigma})
         values, schema = sigma.outputs[0][1]
         self.assertEqual(len(values), 36)
         self.assertEqual(values[0][0:3], ["ETS_UNAVAILABLE", False, "EXCEL_ETS_PROVIDER_UNQUALIFIED"])
@@ -528,13 +529,13 @@ class StatisticalForecastTests(unittest.TestCase):
                     self.frames["parameters"][0]["Value"] = "SKU-B200"
                 return super().get_element(name)
         changing = ChangingSigma(copy.deepcopy(frames))
-        exec(program["code"], {"sigma": changing, "session": Session()})
+        exec(program["code"], {"sigma": changing})
         self.assertEqual(changing.outputs[0][1][0][0][0:3],
                          ["FAILURE", False, "INPUT_CHANGED_DURING_RUN"])
         self.assertEqual(changing.reads, ["history", "parameters", "targets"] * 2)
         frames["parameters"][0]["Value"] = "SKU-Z"
         sigma = Sigma(frames)
-        exec(program["code"], {"sigma": sigma, "session": Session()})
+        exec(program["code"], {"sigma": sigma})
         self.assertEqual(sigma.outputs[0][1][0][0][0], "FAILURE")
 
     def test_candidate_rejects_nonconverged_fit_before_reading_finite_forecast(self):
