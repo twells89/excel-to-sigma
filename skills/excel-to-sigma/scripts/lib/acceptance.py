@@ -98,6 +98,18 @@ def _matrix_inputs(matrix,*,validate_source=False):
     return union
 
 
+def _chart_category_value(category):
+    if isinstance(category,dt.datetime):
+        return {'type':'datetime','value':category.isoformat()}
+    if isinstance(category,dt.date):
+        return {'type':'date','value':category.isoformat()}
+    if isinstance(category,float) and not math.isfinite(category):
+        raise AcceptanceError('source chart category must be finite')
+    if not isinstance(category,(str,int,float,bool)):
+        raise AcceptanceError('source chart category has unsupported type')
+    return category
+
+
 def _source_chart_keys(charts):
     """One unambiguous key for each source chart series/category value."""
     keys=[]
@@ -114,8 +126,8 @@ def _source_chart_keys(charts):
             if not item['name'] or len(item['expectedValues'])!=len(categories):
                 raise AcceptanceError('source chart series/category values incomplete')
             for position,category in enumerate(categories):
-                keys.append(json.dumps([chart['id'],item['order'],item['name'],position,category],
-                                       ensure_ascii=False,separators=(',',':')))
+                keys.append(json.dumps([chart['id'],item['order'],item['name'],position,_chart_category_value(category)],
+                                       ensure_ascii=False,separators=(',',':'),allow_nan=False))
     if len(keys)!=len(set(keys)):raise AcceptanceError('source chart keys duplicate')
     return keys
 
