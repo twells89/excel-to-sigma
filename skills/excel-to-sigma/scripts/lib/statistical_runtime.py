@@ -104,6 +104,10 @@ def emit_preview_program(binding, *, candidate_ets=False, source_identity=None):
                 .replace("from __future__ import annotations\n", "")
                 if candidate_ets else "")
     fields = FIELDS + CANDIDATE_FIELDS if candidate_ets else FIELDS
+    # Sigma's Python dependency parser requires literal source names. Resolve
+    # frames again before the second collection so input drift remains guarded.
+    frame_bindings = "\n".join(
+        f"        {role!r}: sigma.get_element({binding[role]['title']!r})," for role in REQUIRED)
     code = kernel + "\n" + provider + "\n" + '''
 import hashlib
 import json
@@ -118,9 +122,14 @@ CANDIDATE_ETS = ''' + repr(candidate_ets) + '''
 MODEL_IDENTITY = ''' + repr(CANDIDATE_MODEL if candidate_ets else "NONE") + '''
 
 
-def read_bound_rows(role):
+def read_bound_frames():
+    return {
+''' + frame_bindings + '''
+    }
+
+
+def read_bound_rows(role, frame):
     spec = SOURCE_BINDING[role]
-    frame = sigma.get_element(spec['title'])
     observed = list(frame.columns)
     columns = spec['columns']
     if any(observed.count(pair['identifier']) != 1 for pair in columns.values()):
@@ -139,9 +148,10 @@ run_id = str(uuid.uuid4())
 fit_diagnostics = {}
 runtime_packages = {}
 try:
-    history = read_bound_rows('history')
-    parameters = read_bound_rows('parameters')
-    targets = read_bound_rows('targets')
+    frames = read_bound_frames()
+    history = read_bound_rows('history', frames['history'])
+    parameters = read_bound_rows('parameters', frames['parameters'])
+    targets = read_bound_rows('targets', frames['targets'])
     raw_input = {'history': sorted(history, key=lambda r: (str(r['Month']), str(r['SKU']))),
                  'parameters': sorted(parameters, key=lambda r: str(r['Scope'] if CANDIDATE_ETS else r['Key'])),
                  'targets': sorted(targets, key=lambda r: str(r['Period']))}
@@ -189,9 +199,10 @@ try:
     result = calculate(history, selected, season,
                        service, lead, ordered_targets,
                        ets_forecaster=provider)
-    latest_history = read_bound_rows('history')
-    latest_parameters = read_bound_rows('parameters')
-    latest_targets = read_bound_rows('targets')
+    latest_frames = read_bound_frames()
+    latest_history = read_bound_rows('history', latest_frames['history'])
+    latest_parameters = read_bound_rows('parameters', latest_frames['parameters'])
+    latest_targets = read_bound_rows('targets', latest_frames['targets'])
     latest_input = {'history': sorted(latest_history, key=lambda r: (str(r['Month']), str(r['SKU']))),
                     'parameters': sorted(latest_parameters, key=lambda r: str(r['Scope'] if CANDIDATE_ETS else r['Key'])),
                     'targets': sorted(latest_targets, key=lambda r: str(r['Period']))}

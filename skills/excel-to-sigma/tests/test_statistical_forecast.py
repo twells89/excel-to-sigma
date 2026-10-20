@@ -35,7 +35,26 @@ def fixture():
     return rows, targets
 
 
+def assert_literal_sigma_references(test, code, expected_titles):
+    """Sigma discovers Python dependencies/output names from string literals."""
+    calls = [node for node in ast.walk(ast.parse(code)) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+             and node.func.value.id == "sigma"]
+    for node in calls:
+        if node.func.attr.startswith("get_") or node.func.attr == "output":
+            test.assertTrue(node.args and isinstance(node.args[0], ast.Constant)
+                            and isinstance(node.args[0].value, str), ast.unparse(node))
+    dependency_calls = [node for node in calls if node.func.attr == "get_element"]
+    test.assertEqual([node.args[0].value for node in dependency_calls], expected_titles)
+
+
 class StatisticalForecastTests(unittest.TestCase):
+    def test_sigma_literal_reference_ast_rejects_dynamic_names(self):
+        for code in ("sigma.get_element(title)", "sigma.output(output_name, frame)",
+                     "sigma.get_control('prefix' + variable)"):
+            with self.subTest(code=code), self.assertRaises(AssertionError):
+                assert_literal_sigma_references(self, code, [])
+
     def test_source_packet_rejects_finite_row_or_csv_tampering(self):
         workspace = LIB.parents[4]
         original = workspace / "broader-eight-source-replay-20261020/source-originals/05 Statistical Demand Forecast.xlsx"
@@ -117,6 +136,7 @@ class StatisticalForecastTests(unittest.TestCase):
                     "roles": roles}
         program = operator["phase2_program"](readback, actual_source=source,
                     source_packet_hash="0" * 64, candidate_ets=True)
+        assert_literal_sigma_references(self, program["code"], [roles[role]["title"] for role in CANDIDATE_REQUIRED])
         self.assertEqual(program["sourceIdentity"]["roles"]["history"]["elementId"],
                          roles["history"]["elementId"])
         changed = {**readback, "workbookVersion": readback["workbookVersion"] + 1}
@@ -262,6 +282,7 @@ class StatisticalForecastTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "OBSERVED_SOURCE_IDENTITY_REQUIRED"):
             emit_preview_program(binding, candidate_ets=True)
         compile(program["code"], "<candidate preview>", "exec")
+        assert_literal_sigma_references(self, program["code"], [binding[role]["title"] for role in CANDIDATE_REQUIRED])
         rows, targets = fixture()
         frames = {"history": rows,
                   "parameters": [{"Scope": "Parameters", "SelectedSKU": "SKU-A100",
@@ -464,6 +485,7 @@ class StatisticalForecastTests(unittest.TestCase):
                         "parameters": ("Key", "Value"), "targets": ("Period", "Month")}.items()}
         program = emit_preview_program(binding)
         compile(program["code"], "<statistical Sigma preview>", "exec")
+        assert_literal_sigma_references(self, program["code"], [binding[role]["title"] for role in binding])
         rows, targets = fixture()
 
         class Row:
@@ -477,8 +499,10 @@ class StatisticalForecastTests(unittest.TestCase):
             def collect(self): return [Row(row) for row in self.data]
 
         class Sigma:
-            def __init__(self, frames): self.frames, self.outputs = frames, []
-            def get_element(self, name): return Frame(self.frames[name])
+            def __init__(self, frames): self.frames, self.outputs, self.reads = frames, [], []
+            def get_element(self, name):
+                self.reads.append(name)
+                return Frame(self.frames[name])
             def output(self, name, frame): self.outputs.append((name, frame))
 
         class Session:
@@ -496,6 +520,18 @@ class StatisticalForecastTests(unittest.TestCase):
         self.assertEqual(values[0][0:3], ["ETS_UNAVAILABLE", False, "EXCEL_ETS_PROVIDER_UNQUALIFIED"])
         self.assertIsNone(values[0][7])  # ETS remains null.
         self.assertIn('"ReadyToPublish" BOOLEAN', schema)
+        self.assertEqual(sigma.reads, ["history", "parameters", "targets"] * 2)
+        class ChangingSigma(Sigma):
+            def get_element(self, name):
+                if len(self.reads) == 3:
+                    self.frames["parameters"] = [dict(row) for row in self.frames["parameters"]]
+                    self.frames["parameters"][0]["Value"] = "SKU-B200"
+                return super().get_element(name)
+        changing = ChangingSigma(copy.deepcopy(frames))
+        exec(program["code"], {"sigma": changing, "session": Session()})
+        self.assertEqual(changing.outputs[0][1][0][0][0:3],
+                         ["FAILURE", False, "INPUT_CHANGED_DURING_RUN"])
+        self.assertEqual(changing.reads, ["history", "parameters", "targets"] * 2)
         frames["parameters"][0]["Value"] = "SKU-Z"
         sigma = Sigma(frames)
         exec(program["code"], {"sigma": sigma, "session": Session()})
