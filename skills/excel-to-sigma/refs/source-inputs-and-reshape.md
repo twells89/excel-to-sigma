@@ -33,8 +33,9 @@ must be `true`.
 
 Types are `text`, `number`, `datetime`, and `boolean`. A natural key must be
 unique, present, immutable by review, and separate from Sigma's physical row ID.
-The planner refuses duplicate/missing keys, type disagreements, formula cells
-selected for literal seeding, and unreviewed all-blank columns. All formula
+The planner refuses duplicate/missing keys, type disagreements, Excel error
+cells even when their displayed value is text, formula cells selected for
+literal seeding, and unreviewed all-blank columns. All formula
 cells across the workbook remain `formulaObligations`, including those outside
 selected inputs. Reviewed external replacements have a distinct
 `reviewed-replacement-input` status. The plan records source row numbers and exact source cells for
@@ -44,8 +45,13 @@ For a single-row cell-drawn assumption block, use `range: "B2:C2"` and
 `headers: ["Setting", "Value"]`. For a literal override in an otherwise
 computed column, include the column in `literalColumns` and list its exact
 literal addresses in `overrideCells`, such as `{"Adjustment": ["F17"]}`.
-Formula cells in that column remain live calculation obligations and are
-omitted from seed rows. An empty formal table can supply a schema only when
+The computed column stays in `derivedColumns` and `derivedMappings`; it is
+absent from the main input's editable schema. A separate keyed ordinary
+input feature named in `overrideInputFeatures` contains only the reviewed
+literal override rows and their source-cell mappings. Both input features
+need staging bindings and readback evidence. Formula cells remain live
+calculation obligations and are omitted from both seed row sets. An empty
+formal table can supply a schema only when
 `emptySchema: true`, `reviewedBlankColumns` exactly names all editable columns,
 and `typeReviewEvidence` explains the source of each explicit type. It seeds
 zero rows and still needs separate runtime evidence before completion.
@@ -120,8 +126,38 @@ columns, duplicate resulting keys, and conflicting axis mappings. Month-like
 headers require explicit `axis_values` with full dates: `Jan` never implies a
 year. `tblDeptBudget` can use Department plus a reviewed 2026 month mapping
 to produce 60 rows. `tblHistory` can use Month with the three SKU headers as
-axis values to produce 108 observations. The result is a read-only reshape
-artifact; it is not automatically classified as an editable input feature.
+axis values to produce 108 observations. The raw result is a read-only
+reshape artifact. To make the long rows editable, add an explicit reviewed
+`role: "input"` feature to the source-bound decisions with a `reshape`
+object. `build_source_input_plan` recomputes that reshape from the exact
+source bytes and checks the reviewed keys, columns and types before adding
+it to `sharedInputArchitecture`:
+
+```json
+{
+  "featureId": "budget-long", "role": "input", "reviewed": true,
+  "keyColumns": ["Department", "Month"],
+  "literalColumns": ["Department", "Month", "Budget"],
+  "columnTypes": {"Department": "text", "Month": "datetime", "Budget": "number"},
+  "reshape": {
+    "kind": "unpivot", "sheet": "Dept Budget", "table": "tblDeptBudget",
+    "keyColumns": ["Department"],
+    "valueColumns": ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+    "axisName": "Month", "valueName": "Budget",
+    "axisValues": {"Jan": "2026-01-01", "Feb": "2026-02-01",
+                   "Mar": "2026-03-01", "Apr": "2026-04-01",
+                   "May": "2026-05-01", "Jun": "2026-06-01",
+                   "Jul": "2026-07-01", "Aug": "2026-08-01",
+                   "Sep": "2026-09-01", "Oct": "2026-10-01",
+                   "Nov": "2026-11-01", "Dec": "2026-12-01"}
+  }
+}
+```
+
+The plan retains source measure cells and source header cells for each long
+row. `plan_source_seed` and the existing staging receipt/constructor/write
+emitters apply to this reviewed feature exactly as for a regular table.
 
 ```sh
 python3 scripts/source-inputs.py unpivot --source SOURCE.xlsx \

@@ -20,6 +20,8 @@ from input_sync import emit_construction_program, emit_write_programs
 from migration_manifest import build_manifest
 from source_inputs import build_source_input_plan, plan_source_seed, validate_source_input_plan
 from source_reshape import unpivot_source_table
+from input_orchestration import gate_input_staging
+from migration_gate import gate_plan_staging_source
 
 
 class SourceFixture(unittest.TestCase):
@@ -116,8 +118,57 @@ class TestSourceInputs(SourceFixture):
         plan = self.build(decisions)
         rows = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]["rows"]
         self.assertNotIn("Computed", rows[0])
-        self.assertEqual(rows[1]["Computed"], 9)
+        self.assertNotIn("Computed", rows[1])
+        main = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]
+        self.assertIn("Computed", main["derivedColumns"])
+        self.assertNotIn("Computed", [column["name"] for column in main["columns"]])
+        override_feature = main["overrideInputFeatures"]["Computed"]
+        override = plan["sharedInputArchitecture"]["inputs"][override_feature]
+        self.assertEqual(override["rows"], [{"Business ID": "B", "Computed": 9}])
+        self.assertEqual(override["sourceCells"]["0"]["Computed"], "Sales Input!E3")
+        self.assertEqual(len(plan_source_seed(plan, override_feature, [], row_id_column="Row ID")["inserts"]), 1)
         self.assertIn("Sales Input!E2", {item["sourceCellId"] for item in plan["formulaObligations"]})
+        from input_sync import build_artifact_records
+        manifest = build_manifest(self.source, plan)
+        architecture = plan["sharedInputArchitecture"]
+        bindings = {name: {"documentId": "isolated", "version": 1, "pageId": "inputs"}
+                    for name in architecture["inputs"]}
+        receipt = {"status": "APPROVED_STAGING", "sourceHash": manifest["sourceHash"],
+                   "planHash": manifest["planHash"], "targetBindings": bindings,
+                   "artifacts": build_artifact_records(manifest, architecture, bindings)}
+        main_program = emit_construction_program(manifest, receipt, "sales-entry")
+        override_program = emit_construction_program(manifest, receipt, override_feature)
+        self.assertNotIn("add_editable_column('Computed'", main_program)
+        self.assertIn("add_editable_column('Computed'", override_program)
+
+    def test_excel_error_cells_are_never_entered_literals(self):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.source)
+        cell = wb["Sales Input"]["D2"]
+        cell.value = "#DIV/0!"; cell.data_type = "e"
+        wb["Sales Input"]["D3"] = "seven"
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        decisions = self.decisions()
+        decisions["features"][0]["columnTypes"]["Entered"] = "text"
+        with self.assertRaisesRegex(ValueError, "error|unsupported"):
+            self.build(decisions)
+
+    def test_unpivot_rejects_error_key_and_measure(self):
+        from openpyxl import load_workbook
+        wb = Workbook(); ws = wb.active; ws.title = "Data"
+        ws.append(["ID", "A", "B"]); ws.append(["x", 1, 2])
+        ws.add_table(Table(displayName="tblWide", ref="A1:C2"))
+        source = self.folder / "errors.xlsx"; wb.save(source); wb.close()
+        options = dict(sheet="Data", table="tblWide", key_columns=["ID"],
+                       value_columns=["A", "B"], axis_name="Kind", value_name="Value")
+        for address in ("A2", "B2"):
+            wb = load_workbook(source); cell = wb["Data"][address]
+            cell.value = "#N/A"; cell.data_type = "e"; wb.save(source); wb.close()
+            with self.subTest(address=address), self.assertRaisesRegex(ValueError, "error|unsupported"):
+                unpivot_source_table(source, **options)
+            wb = load_workbook(source); wb["Data"][address] = "x" if address == "A2" else 1
+            wb.save(source); wb.close()
 
     def test_source_change_updates_physical_id_and_user_edit_conflicts(self):
         baseline = self.build()
@@ -332,6 +383,49 @@ class TestReshape(SourceFixture):
                                             axis_name="SKU", value_name="Units")
         self.assertEqual(len(history_rows["rows"]), 108)
         self.assertEqual(history_rows["sourceCells"]["107"]["Units"], "History!D37")
+
+        decisions = {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(), "features": [
+            {"featureId": "budget-long", "role": "input", "reviewed": True,
+             "keyColumns": ["Department", "Month"],
+             "literalColumns": ["Department", "Month", "Amount"],
+             "columnTypes": {"Department": "text", "Month": "datetime", "Amount": "number"},
+             "reshape": {"kind": "unpivot", "sheet": "Budget", "table": "tblDeptBudget",
+                         "keyColumns": ["Department"], "valueColumns": months,
+                         "axisName": "Month", "valueName": "Amount",
+                         "axisValues": {month: f"2026-{index + 1:02d}-01" for index, month in enumerate(months)}}},
+            {"featureId": "history-long", "role": "input", "reviewed": True,
+             "keyColumns": ["Month", "SKU"], "literalColumns": ["Month", "SKU", "Units"],
+             "columnTypes": {"Month": "datetime", "SKU": "text", "Units": "number"},
+             "reshape": {"kind": "unpivot", "sheet": "History", "table": "tblHistory",
+                         "keyColumns": ["Month"], "valueColumns": ["A", "B", "C"],
+                         "axisName": "SKU", "valueName": "Units"}},
+        ]}
+        plan = build_source_input_plan(source, decisions, connection_id="c", folder_id="f")
+        validate_source_input_plan(plan, source)
+        architecture = plan["sharedInputArchitecture"]
+        self.assertEqual(len(architecture["inputs"]["budget-long"]["rows"]), 60)
+        self.assertEqual(len(architecture["inputs"]["history-long"]["rows"]), 108)
+        self.assertEqual(architecture["inputs"]["budget-long"]["sourceCells"]["59"]["Amount"], "Budget!M6")
+        self.assertEqual(architecture["inputs"]["budget-long"]["sourceCells"]["59"]["Month"], "Budget!M1")
+        self.assertEqual(len(plan_source_seed(plan, "budget-long", [], row_id_column="Row ID")["inserts"]), 60)
+        manifest = build_manifest(source, plan)
+        _source, source_evidence = gate_plan_staging_source(plan, source_arg=source)
+        bindings = {name: {"documentId": "isolated", "version": 1, "pageId": "inputs",
+                           "elementId": f"assigned-{name}", "columnIds": {
+                               column["name"]: f"{name}-{index}" for index, column in enumerate(spec["columns"])}}
+                    for name, spec in architecture["inputs"].items()}
+        approval = {"sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+                    "owner": "Fixture Owner", "reviewer": "Fixture Reviewer", "reviewItems": [],
+                    "mappedFeatures": architecture["mappedFeatures"], "targetBindings": bindings}
+        if source_evidence.get("issues"):
+            approval["sourceReviewApproval"] = {"status": "approved_for_staging", "issues": source_evidence["issues"]}
+        receipt = gate_input_staging(manifest, approval, plan, source_evidence)
+        self.assertEqual(receipt["status"], "APPROVED_STAGING")
+        program = emit_construction_program(manifest, receipt, "budget-long")
+        self.assertIn("upsert_rows", program)
+        self.assertIn("2026", program)
+        seed = plan_source_seed(plan, "history-long", [], row_id_column="Row ID")
+        self.assertEqual(len(emit_write_programs(seed, manifest, receipt, "history-long")), 1)
 
     def test_explicit_month_mapping_and_reverse_provenance(self):
         wb = Workbook(); ws = wb.active; ws.title = "Budget"

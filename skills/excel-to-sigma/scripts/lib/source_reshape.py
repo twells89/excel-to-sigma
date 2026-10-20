@@ -17,6 +17,7 @@ except ImportError:
 def _source_type(cell):
     if cell is None or cell.get("value") is None:
         return None
+    _value(cell)
     value = cell["value"]
     if isinstance(value, dict) and value.get("type") in {"date", "datetime"}:
         return "datetime"

@@ -29,6 +29,10 @@ def _digest(value):
 
 
 def _value(cell):
+    if cell.get("dataType") == "e":
+        raise ValueError("Excel error cell cannot be an entered value")
+    if cell.get("dataType") not in {"n", "s", "b", "d", "inlineStr"}:
+        raise ValueError(f"unsupported entered source cell dataType: {cell.get('dataType')}")
     value = cell["value"]
     if isinstance(value, dict):
         if value.get("type") in {"date", "datetime"}:
@@ -155,12 +159,56 @@ def _build_replacement(model, decision, connection_id):
             "sourceRowNumbers": [item["sourceRow"] for item in obligations],
             "sourceHeaders": literal, "derivedColumns": [], "overrideCells": {},
             "replacementBindings": copy.deepcopy(bindings), "replacementReview": copy.deepcopy(review)}
-    return feature, spec, obligations
+    return feature, spec, obligations, {}
 
 
-def _build_feature(model, decision, connection_id):
+def _build_reshape_feature(source_path, model, decision, connection_id):
+    """Recompute a reviewed unpivot from exact source bytes before admitting it as input."""
+    if (not isinstance(decision, dict) or decision.get("reviewed") is not True
+            or decision.get("role") != "input"):
+        raise ValueError("reshape input requires an explicit reviewed input role")
+    feature = decision.get("featureId")
+    if not isinstance(feature, str) or not _SAFE.fullmatch(feature):
+        raise ValueError("reshape featureId must be stable and safe")
+    reshape = decision.get("reshape")
+    expected = {"kind", "sheet", "table", "keyColumns", "valueColumns", "axisName", "valueName"}
+    if (not isinstance(reshape, dict) or reshape.get("kind") != "unpivot"
+            or set(reshape) not in (expected, expected | {"axisValues"})
+            or decision.get("overrideCells") or decision.get("emptySchema")):
+        raise ValueError("reshape must explicitly select one reviewed unpivot")
+    try:
+        from .source_reshape import unpivot_source_table
+    except ImportError:
+        from source_reshape import unpivot_source_table
+    result = unpivot_source_table(
+        source_path, sheet=reshape["sheet"], table=reshape["table"],
+        key_columns=reshape["keyColumns"], value_columns=reshape["valueColumns"],
+        axis_name=reshape["axisName"], value_name=reshape["valueName"],
+        axis_values=reshape.get("axisValues"))
+    columns = result["keyColumns"] + [reshape["valueName"]]
+    if (result["sourceSha256"] != model["sourceSha256"]
+            or decision.get("keyColumns") != result["keyColumns"]
+            or decision.get("literalColumns") != columns
+            or decision.get("columnTypes") != result["columnTypes"]):
+        raise ValueError("reviewed reshape keys, columns or types disagree with source")
+    spec = {"kind": "input-table", "name": decision.get("displayName") or f"{reshape['table']} Long",
+            "keyColumns": result["keyColumns"], "connectionId": connection_id,
+            "editMode": "published-explore", "sourceBinding": result["sourceBinding"],
+            "rows": result["rows"],
+            "columns": [{"name": name, "type": result["columnTypes"][name], "provenance": "source-reshape"}
+                        for name in columns],
+            "sourceCells": result["sourceCells"], "sourceRowNumbers": result["sourceRowNumbers"],
+            "sourceHeaders": reshape["keyColumns"] + reshape["valueColumns"],
+            "axisMapping": result["axisMapping"], "reshape": copy.deepcopy(reshape),
+            "derivedColumns": [], "overrideCells": {}}
+    return feature, spec, [], {}
+
+
+def _build_feature(model, decision, connection_id, source_path):
     if isinstance(decision, dict) and decision.get("role") == "replacement":
         return _build_replacement(model, decision, connection_id)
+    if isinstance(decision, dict) and "reshape" in decision:
+        return _build_reshape_feature(source_path, model, decision, connection_id)
     if not isinstance(decision, dict) or decision.get("reviewed") is not True or decision.get("role") not in {"input", "reference"}:
         raise ValueError("feature requires a reviewed input or maintained reference role")
     feature = decision.get("featureId")
@@ -177,9 +225,9 @@ def _build_feature(model, decision, connection_id):
             or any(kind not in _TYPES for kind in types.values())):
         raise ValueError("input columns, typed keys, and explicit types must match source schema")
     overrides = decision.get("overrideCells") or {}
-    if not isinstance(overrides, dict) or any(name not in literal or not isinstance(cells, list)
+    if not isinstance(overrides, dict) or any(name not in literal or name in keys or not isinstance(cells, list)
                                                 for name, cells in overrides.items()):
-        raise ValueError("editable override mappings must name literal columns")
+        raise ValueError("editable override mappings must name non-key literal columns")
     override_set = {name: set(cells) for name, cells in overrides.items()}
     if any(len(cells) != len(override_set[name]) for name, cells in overrides.items()):
         raise ValueError("duplicate editable override mapping")
@@ -199,10 +247,11 @@ def _build_feature(model, decision, connection_id):
                                                  for name in literal],
                          "sourceCells": {}, "sourceRowNumbers": [], "sourceHeaders": headers,
                          "derivedColumns": [], "overrideCells": {}, "emptySchema": True,
-                         "typeReviewEvidence": decision["typeReviewEvidence"]}, []
+                         "typeReviewEvidence": decision["typeReviewEvidence"]}, [], {}
     rows, source_cells, obligations, key_tokens = [], {}, [], set()
+    override_records = {name: [] for name in overrides}
     for row_number in range(top, bottom + 1):
-        row, provenance = {}, {}
+        row, provenance, row_overrides = {}, {}, {}
         for offset, name in enumerate(headers):
             address = f"{get_column_letter(left + offset)}{row_number}"
             cell = cells.get((sheet, address))
@@ -222,6 +271,10 @@ def _build_feature(model, decision, connection_id):
                 if cell and cell["kind"] == "literal":
                     raise ValueError(f"unmapped literal source cell: {cell_id}")
                 continue
+            if name in override_set and cell is None:
+                if address in override_set[name]:
+                    raise ValueError(f"editable override has no literal source cell: {cell_id}")
+                continue
             if cell is None:
                 value = None
             else:
@@ -230,6 +283,9 @@ def _build_feature(model, decision, connection_id):
                 raise ValueError(f"source cell type disagrees with reviewed type: {cell_id}")
             if name in override_set and address not in override_set[name]:
                 raise ValueError(f"literal override lacks explicit editable mapping: {cell_id}")
+            if name in override_set:
+                row_overrides[name] = (value, cell_id)
+                continue
             row[name] = value
             provenance[name] = cell_id
         key = []
@@ -243,23 +299,55 @@ def _build_feature(model, decision, connection_id):
         key_tokens.add(token)
         rows.append(row)
         source_cells[str(len(rows) - 1)] = provenance
+        for name, (value, cell_id) in row_overrides.items():
+            override_records[name].append({
+                "row": {**{key_name: row[key_name] for key_name in keys}, name: value},
+                "sourceCells": {**{key_name: provenance[key_name] for key_name in keys}, name: cell_id},
+                "sourceRow": row_number})
     for name, addresses in override_set.items():
-        seen = {mapping[name].split("!")[1] for mapping in source_cells.values() if name in mapping}
+        seen = {item["sourceCells"][name].split("!")[1] for item in override_records[name]}
         if addresses != seen:
             raise ValueError("editable override mappings are incomplete or foreign")
-    for name in literal:
+        if not any(item["sourceColumn"] == name for item in obligations):
+            raise ValueError(f"editable override column has no source formula: {name}")
+    main_literal = [name for name in literal if name not in overrides]
+    for name in main_literal:
         if all(row.get(name) is None for row in rows) and name not in (decision.get("reviewedBlankColumns") or []):
             raise ValueError(f"all-blank column {name!r} requires explicit reviewed type")
     if not rows:
         raise ValueError("source input selection has no rows")
-    spec = {"kind": "input-table", "name": decision.get("displayName") or decision.get("table") or feature,
+    display = decision.get("displayName") or decision.get("table") or feature
+    override_features = {name: f"{feature}__override_{_digest(name)[:8]}" for name in sorted(overrides)}
+    derived = [name for name in headers if name not in main_literal]
+    spec = {"kind": "input-table", "name": display,
             "keyColumns": keys, "connectionId": connection_id, "editMode": "published-explore",
             "sourceBinding": f"{sheet}!{source_range}", "rows": rows,
-            "columns": [{"name": name, "type": types[name], "provenance": "source"} for name in literal],
+            "columns": [{"name": name, "type": types[name], "provenance": "source"} for name in main_literal],
             "sourceCells": source_cells, "sourceRowNumbers": list(range(top, bottom + 1)),
-            "sourceHeaders": headers, "derivedColumns": [name for name in headers if name not in literal],
-            "overrideCells": overrides}
-    return feature, spec, obligations
+            "sourceHeaders": headers, "derivedColumns": derived,
+            "derivedMappings": {name: {"sourceFormulaCells": [item["sourceCellId"] for item in obligations
+                                                                  if item["sourceColumn"] == name],
+                                       "overrideInputFeature": override_features.get(name)}
+                                for name in derived},
+            "overrideCells": overrides, "overrideInputFeatures": override_features}
+    extra_inputs = {}
+    for name, override_feature in override_features.items():
+        records = override_records[name]
+        if not records or all(item["row"][name] is None for item in records):
+            raise ValueError(f"editable override column has no entered values: {name}")
+        extra_inputs[override_feature] = {
+            "kind": "input-table", "name": f"{display} — {name} Overrides",
+            "keyColumns": keys, "connectionId": connection_id, "editMode": "published-explore",
+            "sourceBinding": f"{sheet}!{source_range}",
+            "rows": [item["row"] for item in records],
+            "columns": [{"name": column, "type": types[column], "provenance": "source"}
+                        for column in keys + [name]],
+            "sourceCells": {str(index): item["sourceCells"] for index, item in enumerate(records)},
+            "sourceRowNumbers": [item["sourceRow"] for item in records],
+            "sourceHeaders": headers, "derivedColumns": [], "overrideCells": {name: overrides[name]},
+            "overrideFor": {"featureId": feature, "sourceColumn": name,
+                            "sourceFormulaCells": spec["derivedMappings"][name]["sourceFormulaCells"]}}
+    return feature, spec, obligations, extra_inputs
 
 
 def build_source_input_plan(source_path, decisions, *, connection_id, folder_id) -> dict:
@@ -278,10 +366,11 @@ def build_source_input_plan(source_path, decisions, *, connection_id, folder_id)
         raise ValueError("at least one reviewed source feature is required")
     inputs, obligations = {}, []
     for decision in features:
-        feature, spec, formulas = _build_feature(model, decision, connection_id)
-        if feature in inputs:
-            raise ValueError("duplicate featureId")
+        feature, spec, formulas, extras = _build_feature(model, decision, connection_id, source_path)
+        if set([feature, *extras]) & set(inputs):
+            raise ValueError("duplicate featureId or generated override input")
         inputs[feature] = spec
+        inputs.update(extras)
         obligations.extend(formulas)
     selected_formulas = {item["sourceCellId"] for item in obligations}
     for cell in model["cells"]:
