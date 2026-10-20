@@ -1,6 +1,8 @@
 """Offline evidence validation; fixture captures never establish real acceptance."""
 import copy,importlib.util,json,sys,tempfile,unittest
+from datetime import date,datetime
 from pathlib import Path
+from zipfile import ZipFile
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'scripts/lib'))
 
 class AcceptanceTests(unittest.TestCase):
@@ -21,7 +23,7 @@ class AcceptanceTests(unittest.TestCase):
             'sourceHash':'a'*64,'planHash':'b'*64,'documentId':'stage','version':6,
             'actual':[{'key':'A','value':100.01},{'key':'B','value':'Open'}],
             'receipt':{'executionId':'query1','documentId':'stage','version':6,'status':'COMPLETED'},'references':[{'kind':'query','id':'query1'}]}
-    def bound_matrix_inputs(self):
+    def bound_matrix_inputs(self,source_overrides=None):
         from presentation import extract_presentation,build_business_input_architecture,build_business_input_plan
         from migration_manifest import build_manifest
         from input_sync import build_artifact_records,_digest
@@ -29,7 +31,7 @@ class AcceptanceTests(unittest.TestCase):
         names={'sales':'sales-pipeline','inventory':'inventory-reorder','expense':'expense-approval','forecast':'forecast-model','research':'research-model'}
         manifests={};receipts={};targets={}
         for workflow,name in names.items():
-            path=ROOT/'tests/fixtures'/('fixture-'+name+'.xlsx');source=extract_presentation(path)
+            path=(source_overrides or {}).get(workflow,ROOT/'tests/fixtures'/('fixture-'+name+'.xlsx'));source=extract_presentation(path)
             arch=build_business_input_architecture(source,connection_id='conn',folder_id='synthetic',research_plan=research_runtime_plan() if workflow=='research' else None)
             manifest=build_manifest(path,build_business_input_plan(source,arch));manifest['target']={'documentId':'stage-'+workflow,'version':6}
             bindings={f:{'documentId':'stage-'+workflow,'version':6,'pageId':'page-'+f,'elementId':'assigned-'+workflow+'-'+f,
@@ -103,6 +105,112 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(adapter.calls,0)
         with self.assertRaisesRegex(RuntimeError,'adapter reached'):p.run_integration(matrix,adapter,scope,enabled=True)
         self.assertEqual(adapter.calls,1)
+
+    def test_chart_cases_cover_every_fixture_series_and_category(self):
+        p=self.module();manifests,targets,receipts=self.bound_matrix_inputs()
+        matrix=p.build_acceptance_matrix(manifests,targets,receipts=receipts)
+        months_26=['Jan-26','Feb-26','Mar-26','Apr-26','May-26','Jun-26',
+                   'Jul-26','Aug-26','Sep-26','Oct-26','Nov-26','Dec-26']
+        years=list(range(2019,2031))
+        source_positions={
+            'forecast':[
+                [('Revenue',months_26),('EBITDA',months_26),('Net Income',months_26)],
+                [('FY Total',['Revenue','Cost of Revenue','Operating Expenses','Below the Line'])]],
+            'research':[
+                [('Revenue',years),('EBITDA',years)],
+                [('EPS',years),('Net debt / EBITDA',years)]],
+            'sales':[
+                [('Weighted ACV',['Prospecting','Qualification','Proposal','Negotiation','Closed Won','Closed Lost'])],
+                [('Weighted ACV',['Mar-26','Apr-26','May-26','Jun-26','Jul-26','Aug-26','Sep-26','Oct-26','Nov-26','Dec-26'])]],
+            'inventory':[
+                [('Reorder Qty',['Electronics','Components','Packaging','Service Parts'])],
+                [('Available Value',['Apex Supply','Beacon Components','CorePack','Delta Service Co'])]],
+            'expense':[
+                [('Spend',['Sales','Engineering','Operations','Corporate'])],
+                [('Count',['RECON','OVER LIMIT','MISSING RECEIPT','PENDING','CLEAR'])]],
+        }
+        chart_cases={c['workflow']:c for c in matrix['cases'] if c['id'].endswith('-chart-aggregates')}
+        self.assertEqual(len(matrix['cases']),102)
+        self.assertEqual(sum(t['sourceFormulaCount'] for t in matrix['workflows'].values()),1865)
+        self.assertEqual({w:c['count'] for w,c in chart_cases.items()},
+                         {'forecast':40,'research':48,'sales':16,'inventory':8,'expense':9})
+        for workflow,charts in source_positions.items():
+            with self.subTest(workflow=workflow):
+                expected=[json.dumps([f'chart-{chart_index}',series_index,name,position,category],
+                                     ensure_ascii=False,separators=(',',':'))
+                          for chart_index,chart in enumerate(charts,1)
+                          for series_index,(name,categories) in enumerate(chart)
+                          for position,category in enumerate(categories)]
+                self.assertEqual(chart_cases[workflow]['chartKeys'],expected)
+                self.assertEqual(len(set(expected)),chart_cases[workflow]['count'])
+        self.assertEqual(sum(c['count'] for c in chart_cases.values()),121)
+        self.assertTrue(p.validate_production_matrix(matrix))
+        for workflow in ('research','expense'):
+            with self.subTest(tampered=workflow):
+                tampered=copy.deepcopy(matrix);tampered.pop('matrixHash')
+                chart=next(c for c in tampered['cases'] if c['id']==workflow+'-chart-aggregates')
+                if workflow=='research':chart['chartKeys']=chart['chartKeys'][:24]
+                else:chart['chartKeys']=[*chart['chartKeys'],'invented-expense-row']
+                chart['count']=len(chart['chartKeys'])
+                with self.assertRaises(ValueError):p.validate_production_matrix(p.seal_matrix(tampered))
+        tampered=copy.deepcopy(matrix);tampered.pop('matrixHash')
+        chart=next(c for c in tampered['cases'] if c['id']=='research-chart-aggregates')
+        wrong_keys=[*chart['chartKeys'][:-1],'invented-research-category']
+        target=tampered['workflows']['research']
+        chart['oracle']={'origin':'independent-oracle','reviewer':'fixture-test',
+                         'sourceHash':target['sourceHash'],
+                         'checks':[{'key':key,'expected':1,'comparison':'exact'} for key in wrong_keys]}
+        tampered=p.seal_matrix(tampered)
+        capture={'caseId':chart['id'],'evidenceId':'synthetic-fixture-test','origin':'sigma-query',
+                 'executionId':'synthetic-fixture-test','sourceHash':target['sourceHash'],
+                 'planHash':target['planHash'],'documentId':target['documentId'],'version':target['version'],
+                 'actual':[{'key':key,'value':1} for key in wrong_keys],
+                 'receipt':{'executionId':'synthetic-fixture-test','documentId':target['documentId'],
+                            'version':target['version'],'status':'COMPLETED'},
+                 'references':[{'kind':'test-fixture','id':'synthetic-fixture-test'}]}
+        with self.assertRaisesRegex(ValueError,'chart oracle must cover'):
+            p.append_evidence([],tampered,capture)
+
+    def test_date_typed_source_chart_categories_build_and_validate_without_text_collisions(self):
+        p=self.module();source=ROOT/'tests/fixtures/fixture-sales-pipeline.xlsx'
+        with tempfile.TemporaryDirectory() as directory:
+            variant=Path(directory)/source.name
+            with ZipFile(source) as original,ZipFile(variant,'w') as rewritten:
+                for entry in original.infolist():
+                    body=original.read(entry.filename)
+                    if entry.filename=='xl/worksheets/sheet1.xml':
+                        for cell,label,iso in [('D12','Mar-26','2026-03-01'),
+                                               ('D13','Apr-26','2026-04-01T14:30:00')]:
+                            old=f'<x:c r="{cell}" s="2" t="str"><x:v>{label}</x:v></x:c>'.encode()
+                            new=f'<x:c r="{cell}" s="2" t="d"><x:v>{iso}</x:v></x:c>'.encode()
+                            self.assertEqual(body.count(old),1)
+                            body=body.replace(old,new)
+                    rewritten.writestr(entry,body)
+            from workflow_repairs import extract_workflow_repairs
+            charts=extract_workflow_repairs(variant)['charts']
+            self.assertEqual(charts[1]['categories'][:2],[date(2026,3,1),datetime(2026,4,1,14,30)])
+            manifests,targets,receipts=self.bound_matrix_inputs({'sales':variant})
+            matrix=p.build_acceptance_matrix(manifests,targets,receipts=receipts)
+            self.assertTrue(p.validate_production_matrix(matrix))
+            sales=next(c for c in matrix['cases'] if c['id']=='sales-chart-aggregates')
+            keys=sales['chartKeys']
+            self.assertEqual(sales['count'],16)
+            self.assertEqual(len(matrix['cases']),102)
+            self.assertEqual(keys[6],json.dumps(['chart-2',0,'Weighted ACV',0,
+                                                  {'type':'date','value':'2026-03-01'}],separators=(',',':')))
+            self.assertEqual(keys[7],json.dumps(['chart-2',0,'Weighted ACV',1,
+                                                  {'type':'datetime','value':'2026-04-01T14:30:00'}],separators=(',',':')))
+            self.assertNotEqual(keys[6],json.dumps(['chart-2',0,'Weighted ACV',0,'2026-03-01'],separators=(',',':')))
+            self.assertNotEqual(keys[7],json.dumps(['chart-2',0,'Weighted ACV',1,'2026-04-01T14:30:00'],separators=(',',':')))
+            self.assertEqual(sum(c['count'] for c in matrix['cases'] if c['id'].endswith('-chart-aggregates')),121)
+
+    def test_chart_category_keys_reject_nonfinite_values(self):
+        p=self.module()
+        from workflow_repairs import extract_workflow_repairs
+        charts=extract_workflow_repairs(ROOT/'tests/fixtures/fixture-sales-pipeline.xlsx')['charts']
+        charts[1]['categories'][0]=float('nan')
+        with self.assertRaisesRegex(ValueError,'source chart category'):
+            p._source_chart_keys(charts)
 
     def test_persistence_comparison_policy_requires_an_effective_business_delta(self):
         p=self.module();before=[{'ID':'row','Key':'a','Value':1.001}];changed=[{'ID':'row','Key':'a','Value':1.002}]

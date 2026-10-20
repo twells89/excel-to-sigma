@@ -76,15 +76,16 @@ class PromotionTests(unittest.TestCase):
         manifests,targets,receipts=AcceptanceTests().bound_matrix_inputs()
         m=build_acceptance_matrix(manifests,targets,receipts=receipts);m.pop('matrixHash')
         for case in m['cases']:
+            keys=case.get('chartKeys') or [str(i) for i in range(case['count'])]
             case['oracle']={'origin':'independent-oracle','reviewer':'unit-test-oracle','sourceHash':m['workflows'][case['workflow']]['sourceHash'],
-                'checks':[{'key':str(i),'expected':True,'comparison':'exact'} for i in range(case['count'])]}
+                'checks':[{'key':key,'expected':True,'comparison':'exact'} for key in keys]}
         m=seal_matrix(m);ledger=[]
         # Synthetic captures exercise only the validator, never count as live acceptance.
         for case in m['cases']:
             target=m['workflows'][case['workflow']];identity=case['id']
             capture={**{k:target[k] for k in ('sourceHash','planHash','documentId','version')},'caseId':identity,'evidenceId':identity,'executionId':identity,'origin':'sigma-'+case['mode'],
                 'references':['unit-fixture'],'receipt':{'status':'COMPLETED','executionId':identity,'documentId':target['documentId'],'version':6},
-                'actual':[{'key':str(i),'value':True} for i in range(case['count'])]}
+                'actual':[{'key':key,'value':True} for key in (case.get('chartKeys') or [str(i) for i in range(case['count'])])]}
             if identity.endswith('-staging-writeback-isolation'):capture['isolation']={'identityEvidenceId':'unit','staging':target['inputTables'],'original':{'input':{'connectionId':'conn','tableIdentity':'original-'+case['workflow']}}}
             if case['mode']=='browser':
                 role=case.get('role',{'memberId':'unit','accountType':'build','grant':'edit'})
