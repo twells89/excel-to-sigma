@@ -66,3 +66,91 @@ integration. The REST artifact is a candidate until source, native and visual
 runtime parity after input edit, reopen and restore are evidenced. Statistical
 forecasting, dynamic locators, array spills, general criteria/range functions
 and unreviewed source literal inputs remain unresolved.
+
+## Typed native v2 (explicit opt-in)
+
+Use `plan --exact` (Python `build_native_calculation_plan(..., exact=True)`) for
+`nativePlanVersion: 2`. The legacy v1 default remains unchanged. V2 implements
+`SUMIFS`, `COUNTIFS`, `COUNT`, `COUNTA`, `IFERROR`, exact `VLOOKUP`, exact
+`XLOOKUP`, scalar and fixed-shape row/column `INDEX`, exact `MATCH`, `AND`,
+`OR`, `MOD`, `ROUNDUP`, `CEILING`, `DATE`, `EDATE`, `EOMONTH`, `MONTH`, and
+finite bound `INDIRECT`, alongside the preceding arithmetic form set. Approximate
+lookup and binary search modes, dynamic array spills, incomplete whole-column
+count domains, unknown dynamic locators, and statistical custom ports remain
+explicit obligations.
+
+Every scalar has separate `number`, `text`, `logical`, `kind`, and `error`
+columns. `kind` distinguishes numeric, text (including the empty string), Boolean,
+and true blank. `error` contains an Excel error code, or the empty string for no
+error. A numeric lane containing zero is **not** the public answer without its
+kind and error lanes. `IFERROR` selects by the Excel error lane; missing bindings
+and unsupported compilation remain exceptions, which it never catches. The
+source evaluator reports `sourceResultClass: excel-error` and
+`localExpectedError`; `localExpected: null` alone must never be called equivalence.
+All constructed and saved forms remain `UNVERIFIED_CANDIDATE` until independent
+runtime value/type/error parity, input changes, reopen, and restore are measured.
+
+The ordinary input tables remain the business editing surface. Complete formal
+calculated columns lift to ordinary row formulas only when **every** original
+row produces the identical symbolic expression after substituting its own
+input fields. Literal overrides or absolute anchors cannot be inferred away.
+`formalTemplateObligations` lists source formula cells whose append behavior
+could not be proved by that check. Aligned criteria operations use ordinary row
+predicate helpers and aggregate `Lookup(SumIf(...))` / `Lookup(CountIf(...))`.
+Bounded explicit ranges restrict observed physical rows; complete formal data
+bodies and whole-column sum domains include future input rows. Typed text
+summands can be ignored without embedding unreviewed header text as constants.
+
+Helpers share the source-cell and period DAG, including external row-table
+prerequisites. Fully parenthesized formula strings are split into deduplicated
+helpers, no more than 64 columns per table, at most 6,000 characters after actual
+name/ID substitution, with an explicit depth limit of 256. The actual 13-source
+replay is below 3,500 characters per formula. This is a bounded construction
+candidate, not a measured runtime scale guarantee; table counts and depth are
+reported per source. Summand/criteria calculation errors retain a companion
+error rollup ordered by the original observed source rows. New appended rows
+that can produce calculation errors require a reviewed stable source ordinal;
+`rangeDomain.appendErrorOrderRequiresReviewedOrdinal` records that remaining
+qualification rather than guessing their order.
+
+### Source-bound review and assigned construction
+
+A v2 manifest opt-in requires `nativeCalculationPlan`, matching `inputPlanHash`
+and `sharedInputArchitecture`, plus `nativeReviewApproval` containing `status:
+reviewed`, nonempty `owner`/`reviewer`, `sourceSha256`, and `nativePlanHash`.
+The manifest recomputes the plan/formula/AST hashes and rebinds each candidate
+against the original source text. Its default parser behavior is unchanged.
+`nativeCandidate.runtimeStatus` remains `UNVERIFIED_CANDIDATE`; Audit cells retain
+`mappingStatus: verification`. Compiler evidence never creates passed runtime
+verification or bypasses source/staging/production gates.
+
+After actual input IDs and full physical rows are queried, `lower-candidate`
+produces the exact logical mappings for review. Mappings include five
+`logicalLaneColumnIds`. Persist a full document and input-row backup. An actual
+existing native page and a queried `SELECT 1 AS C0` seed element on the approved
+connection are required for structural construction. The seed receipt includes
+actual document/version/element IDs and exact `queriedRows: [{"C0": 1}]`.
+
+`prepare-scaffold` requires the native/input plans, reviewed manifest, approved
+assigned staging receipt, fresh current document, observed rows, backup,
+`--seed-binding`, `--page-id`, and `--shard-index`. It emits **one** MCP program
+using documented `get_page`, `add_table(source.element(...))`, `set_name`,
+`add_column`, `const_number`, and column/element `id()` calls. Columns are clearly
+unverified placeholders. `confirm-scaffold` reads actual server-assigned element
+and column IDs; authored IDs are never substituted for returned identities.
+
+Once every scaffold has an assigned receipt, `prepare-update --native-bindings`
+emits one version-guarded full-contents REST packet to the observed assigned
+columns. It copies foreign contents and verifies source/input/native/manifest
+identity, complete row backup, scaffold receipts and previous exact saved-formula
+readbacks. `confirm-readback` requires the exact parenthesized saved structure.
+The SDK scaffold **does not emit the final arithmetic expressions**, so its
+known nested-math export issue cannot silently erase grouping. The CLI executes
+no MCP or REST calls itself.
+
+For the actual source replay, run `tests/native_exact_source_replay.py --root
+<task-root> --input-plans <reviewed-plan-directory> --out <report-directory>`.
+It checks all 1,865 original-fixture and 1,786 broader-source formulas separately,
+uses explicitly test-only UUID-shaped row IDs for offline construction, and
+writes coverage plus receipt-pending SaaS/Cash root construction requests. These
+test identities are never staging receipts or evidence of a target deployment.

@@ -173,8 +173,12 @@ def _render(node, reference, *, arithmetic=False):
     raise UnsupportedExpression(f"AST node {kind} requires exact native qualification")
 
 
-def build_native_calculation_plan(source_path, source_input_plan=None):
+def build_native_calculation_plan(source_path, source_input_plan=None, *, exact=False):
     """Account for every source formula without cached results or guessed inputs."""
+    if exact:
+        try: from .native_exact_plan import build_exact_native_calculation_plan
+        except ImportError: from native_exact_plan import build_exact_native_calculation_plan
+        return build_exact_native_calculation_plan(source_path, source_input_plan)
     path = Path(source_path)
     source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     if source_input_plan is not None:
@@ -267,6 +271,10 @@ def lower_native_calculations(plan, assigned_rows, *, max_columns=64):
     The returned code-representation shards are construction candidates only.
     The caller must pass them through the approved staging and document gates.
     """
+    if isinstance(plan, dict) and plan.get("nativePlanVersion") == 2:
+        try: from .native_exact_plan import lower_exact_native_calculations
+        except ImportError: from native_exact_plan import lower_exact_native_calculations
+        return lower_exact_native_calculations(plan, assigned_rows, max_columns=max_columns)
     if not isinstance(plan, dict) or plan.get("nativePlanVersion") != PLAN_VERSION:
         raise ValueError("unsupported native plan")
     logical = {key: value for key, value in plan.items() if key != "nativePlanHash"}
@@ -415,6 +423,8 @@ def prepare_native_calculation_update(plan, source_input_plan, manifest, receipt
     It never sends a request.  Each shard needs a fresh GET and confirmed prior
     shard readback, so a later write cannot consume guessed assigned IDs.
     """
+    if plan.get("nativePlanVersion") == 2:
+        raise ValueError("exact native updates require assigned scaffold receipts; use prepare_exact_native_update")
     validate_source_input_plan(source_input_plan)
     validate_manifest(manifest)
     if (manifest.get("sourceHash") != plan.get("sourceSha256")

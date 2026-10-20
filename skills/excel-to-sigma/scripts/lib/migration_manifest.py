@@ -31,7 +31,7 @@ _RECORD_RUNTIME_FIELDS = {"evidence", "runtimeEvidence", "execution", "execution
                           "actualTarget", "runtime"}
 _LOGICAL_TARGET_FIELDS = {"logicalElementId", "logicalColumnId", "logicalLineId",
                           "logicalCheckId", "logicalSourceFeatureId", "year",
-                          "equivalentReference"}
+                          "equivalentReference", "logicalLaneColumnIds"}
 _AMBIGUOUS_TARGET_FIELDS = {"workbookId", "documentId", "elementId", "columnId", "lineId",
                             "checkId", "sourceFeatureId", "actualColumnId", "version"}
 
@@ -43,7 +43,7 @@ def _sha256(path):
 
 def _formula_projection(formulas):
     keys = ("id", "sheet", "address", "originalFormula", "dependencies",
-            "mappingStatus", "targetMapping", "unresolvedReason", "reviewedReplacement")
+            "mappingStatus", "targetMapping", "unresolvedReason", "reviewedReplacement", "nativeCandidate")
     return [{key: item.get(key) for key in keys if key in item}
             for item in sorted(formulas, key=lambda value: value.get("id", ""))]
 
@@ -82,6 +82,11 @@ def _validate_target_mapping(mapping, formula_id):
         return
     if not isinstance(mapping, dict):
         raise ManifestError(f"logical targetMapping must be an object for {formula_id}")
+    lanes = mapping.get("logicalLaneColumnIds")
+    if lanes is not None and (not isinstance(lanes, dict)
+            or set(lanes) != {"number", "text", "logical", "kind", "error"}
+            or any(not isinstance(value, str) or not value.strip() for value in lanes.values())):
+        raise ManifestError(f"logical native lane identities are incomplete for {formula_id}")
     misplaced = sorted(set(mapping) & _AMBIGUOUS_TARGET_FIELDS)
     unknown = sorted(set(mapping) - _LOGICAL_TARGET_FIELDS)
     if misplaced or unknown:
@@ -114,6 +119,60 @@ def _plan_hash(source_hash, projection, formulas):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _native_records(source_hash, plan, source_path=None):
+    """Opt-in reviewed compiler evidence; this is never runtime verification."""
+    native = (plan or {}).get("nativeCalculationPlan")
+    if native is None:
+        return {}
+    approval = (plan or {}).get("nativeReviewApproval") or {}
+    canonical = {key: value for key, value in native.items() if key != "nativePlanHash"}
+    digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    if (native.get("nativePlanVersion") != 2 or native.get("nativePlanHash") != digest
+            or native.get("sourceSha256") != source_hash
+            or approval.get("status") != "reviewed"
+            or not isinstance(approval.get("owner"), str) or not approval["owner"].strip()
+            or not isinstance(approval.get("reviewer"), str) or not approval["reviewer"].strip()
+            or approval.get("sourceSha256") != source_hash
+            or approval.get("nativePlanHash") != digest
+            or native.get("inputPlanHash") != (plan or {}).get("inputPlanHash")):
+        raise ManifestError("native bound-AST source/plan/review hash is stale")
+    if source_path is not None:
+        try:
+            from .workbook_expression import WorkbookContext
+            from .native_calculations import _ast
+        except ImportError:
+            from workbook_expression import WorkbookContext
+            from native_calculations import _ast
+        context = WorkbookContext.from_path(source_path)
+        expected_cells = {f"{sheet}!{address}" for sheet, address in context.formulas}
+        if set(native.get("formulas") or {}) != expected_cells:
+            raise ManifestError("native evidence does not cover the exact source formula denominator")
+    result = {}
+    for cell, record in native.get("formulas", {}).items():
+        if record.get("status") != "ready-to-bind":
+            continue
+        formula = record.get("originalFormula")
+        ast = record.get("ast")
+        ast_hash = hashlib.sha256(json.dumps(ast, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        if (record.get("runtimeStatus") != "UNVERIFIED_CANDIDATE"
+                or record.get("astHash") != ast_hash
+                or not isinstance(formula, str)
+                or record.get("formulaSha256") != hashlib.sha256(formula.encode()).hexdigest()):
+            raise ManifestError("native bound-AST formula evidence is stale")
+        if source_path is not None:
+            sheet, address = cell.rsplit("!", 1)
+            if context.formulas.get((sheet, address)) != formula:
+                raise ManifestError("native evidence original source formula changed")
+            try:
+                rebound = context.bind_formula(formula, sheet=sheet, address=address)
+                if _ast(rebound) != ast or not context._bound_evidence(rebound)[2]:
+                    raise ManifestError("native bound-AST differs from source binding")
+            except (ValueError, TypeError) as error:
+                raise ManifestError("native source AST cannot be rebound") from error
+        result[cell] = record
+    return result
+
+
 def build_manifest(source_path, plan=None) -> dict:
     source = Path(source_path).expanduser().resolve()
     if not source.is_file():
@@ -122,11 +181,12 @@ def build_manifest(source_path, plan=None) -> dict:
     workbook = load_workbook(source, data_only=False, read_only=False)
     cached = load_workbook(source, data_only=True, read_only=False)
     graph = FormulaGraph.from_workbook(workbook)
+    native_records = _native_records(source_hash, plan, source)
     cycle_members = {cell for component in graph.cycles() for cell in component}
     plan_cells = _plan_cell_index(plan or {})
     reviewed_roots = {
         identity for identity, formula in graph.formulas.items()
-        if identity in graph.unsupported_formulas
+        if identity.id in native_records or identity in graph.unsupported_formulas
         and _valid_reviewed_replacement(plan_cells.get(identity.id, {}), formula)
     }
     unresolved_nodes = (
@@ -168,12 +228,25 @@ def build_manifest(source_path, plan=None) -> dict:
         cached_value = cached[identity.sheet][identity.address].value
         if record.get("mappingStatus") == "cached":
             item["cachedFallback"] = cached_value
-        if parse_error and not _valid_reviewed_replacement(record, formula):
+        native = native_records.get(identity.id)
+        if native is not None:
+            item["dependencies"] = list(native["dependencies"])
+            item["nativeCandidate"] = {"sourceSha256": source_hash,
+                "nativePlanHash": plan["nativeCalculationPlan"]["nativePlanHash"],
+                "formulaSha256": native["formulaSha256"], "astHash": native["astHash"],
+                "sourceResultClass": native["sourceResultClass"],
+                "runtimeStatus": "UNVERIFIED_CANDIDATE"}
+            # Audit cells retain their distinct verification obligation.
+            if identity.sheet == "Audit":
+                item["mappingStatus"] = "verification"
+        if parse_error and native is None and not _valid_reviewed_replacement(record, formula):
             item["mappingStatus"] = "unresolved"
             item["unresolvedReason"] = parse_error
         if parse_error and _valid_reviewed_replacement(record, formula):
             item["dependencies"] = list(record.get("dependencies") or [])
         elif parse_error:
+            pass
+        elif native is not None:
             pass
         elif identity in cycle_members:
             item["mappingStatus"] = "unresolved"
@@ -259,8 +332,10 @@ def validate_manifest(manifest, source_path=None):
         raise ManifestError("source hash does not match manifest")
     workbook = load_workbook(source_path, data_only=False, read_only=False)
     graph = FormulaGraph.from_workbook(workbook)
+    native_records = _native_records(source_hash, manifest.get("planProjection") or {}, source_path)
     workbook.close()
     actual = {cell.id: formula for cell, formula in graph.formulas.items()}
+    _native_records(source_hash, manifest.get("planProjection") or {})
     recorded = {item["id"]: item.get("originalFormula") for item in formulas}
     if recorded != actual:
         raise ManifestError("manifest formula records are incomplete or stale")
