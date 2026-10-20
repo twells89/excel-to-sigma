@@ -269,10 +269,9 @@ class TestPresentationEmission(unittest.TestCase):
                       for index, column in enumerate(columns)}
         target_binding = {"documentId": "doc", "version": 7, "pageId": "inputs",
                           "elementId": "input-live", "columnIds": column_ids}
-        manifest = {"sourceHash": plan["source"]["sha256"], "planHash": "a" * 64,
-                    "target": {"documentId": "doc", "version": 7},
-                    "planProjection": {**copy.deepcopy(runtime_plan),
-                                       "sharedInputArchitecture": architecture}}
+        manifest = build_manifest(plan["source"]["path"],
+                                  {**copy.deepcopy(runtime_plan), "sharedInputArchitecture": architecture})
+        manifest["target"] = {"documentId": "doc", "version": 7}
         _source, evidence = gate_plan_staging_source(
             {**copy.deepcopy(runtime_plan), "sourcePath": plan["source"]["path"],
              "sourceSha256": plan["source"]["sha256"]},
@@ -499,10 +498,9 @@ class TestPresentationEmission(unittest.TestCase):
                       for index, column in enumerate(architecture["inputs"][feature]["columns"])}
         target_binding = {"documentId": "doc", "version": 7, "pageId": "inputs",
                           "elementId": "input-live", "columnIds": column_ids}
-        manifest = {"sourceHash": plan["source"]["sha256"], "planHash": "a" * 64,
-                    "target": {"documentId": "doc", "version": 7},
-                    "planProjection": {**copy.deepcopy(runtime_plan),
-                                       "sharedInputArchitecture": architecture}}
+        manifest = build_manifest(plan["source"]["path"],
+                                  {**copy.deepcopy(runtime_plan), "sharedInputArchitecture": architecture})
+        manifest["target"] = {"documentId": "doc", "version": 7}
         _source, evidence = gate_plan_staging_source(
             {**copy.deepcopy(runtime_plan), "sourcePath": plan["source"]["path"],
              "sourceSha256": plan["source"]["sha256"]},

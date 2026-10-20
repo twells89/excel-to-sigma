@@ -481,8 +481,14 @@ class TestApprovedWiring(unittest.TestCase):
                         'inputs': {feature: {'name': 'Sales', 'connectionId': 'conn',
                             'columns': [{'name': 'Key', 'type': 'text'}, {'name': 'New', 'type': 'number'}],
                             'keyColumns': ['Key'], 'rows': [{'Key': 'A', 'New': 10}]}}}
-        manifest = {'sourceHash': 'a'*64, 'planHash': 'b'*64,
-                    'planProjection': {'sharedInputArchitecture': architecture}}
+        from openpyxl import Workbook
+        from migration_manifest import build_manifest
+        source_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(source_dir.cleanup)
+        source = Path(source_dir.name) / 'source.xlsx'
+        book = Workbook(); book.active['A1'] = 'A'; book.active['B1'] = 10
+        book.save(source); book.close()
+        manifest = build_manifest(source, {'sharedInputArchitecture': architecture})
         pre = receipt(manifest)
         pre['targetBindings'][feature]['columnIds'].pop('New')
         pre['artifacts'] = build_artifact_records(manifest, architecture, pre['targetBindings'])

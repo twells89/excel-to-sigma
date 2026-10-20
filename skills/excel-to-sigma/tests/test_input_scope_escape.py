@@ -19,7 +19,8 @@ from source_inputs import build_source_input_plan
 from migration_manifest import build_manifest,validate_manifest,validate_staging_approval,validate_completion
 from migration_gate import gate_staging_manifest,gate_completion_manifest,gate_plan_staging_source
 from input_orchestration import gate_input_only_staging,gate_input_staging,gate_input_completion
-from input_sync import build_artifact_records,emit_construction_program,emit_workbook_wiring
+from input_sync import (build_artifact_records,emit_construction_program,emit_workbook_wiring,
+                        emit_write_programs,plan_seed,plan_input_extension)
 from native_calculations import build_native_calculation_plan,prepare_native_calculation_update,build_native_calculation_backup,_observed_bindings
 from native_exact_plan import build_exact_native_calculation_plan,prepare_exact_native_scaffold,prepare_exact_native_update
 import acceptance
@@ -134,6 +135,129 @@ class InputScopeEscapeTests(unittest.TestCase):
                    receipts={w:receipt for w in ('forecast','research','sales','inventory','expense')})}
         for name,call in calls.items():
             with self.subTest(entrypoint=name),self.assertRaisesRegex(ValueError,'input-tables-only'):call()
+
+    def test_paired_scope_removal_and_receipt_relabel_rejects_every_public_consumer(self):
+        # This starts with a genuine gated receipt, then removes BOTH scope tags
+        # while preserving the genuine, now-stale plan/artifact hashes.
+        _,manifest,approval,audit,_=self.material(status='unresolved')
+        receipt=gate_input_only_staging(manifest,approval,self.inputs,audit,source_path=self.source)
+        forged=copy.deepcopy(manifest);forged['planProjection'].pop('executionScope')
+        relabelled=copy.deepcopy(receipt);relabelled['status']='APPROVED_STAGING';relabelled.pop('scope')
+        self.assertEqual(forged['planHash'],receipt['planHash'])
+        self.assertEqual(relabelled['artifacts'],receipt['artifacts'])
+        with self.assertRaisesRegex(ValueError,'plan hash'):validate_manifest(forged)
+        seed=plan_seed([{'Value':1}],[],['Value'],'Row ID')
+        matrix=acceptance.seal_matrix({'version':1,'workflows':{'sales':{
+            'sourceHash':forged['sourceHash'],'planHash':forged['planHash'],
+            'documentId':'doc','version':1,'url':'unit://doc','sourceFormulaCount':1,
+            'inputContract':{'manifest':forged,'receipt':relabelled}}},'cases':[]})
+        legacy=build_native_calculation_plan(self.source,self.inputs)
+        exact=build_exact_native_calculation_plan(self.source,self.inputs)
+        p,current,rows,sdk,scope=test_promotion.PromotionTests().fixture()
+        backup=p.build_promotion_backup(scope,current,rows,sdk,{})
+        evidence={'matrix':matrix,'ledger':[],'finalReview':{}}
+        fake_plan=p._sealed({'acceptance':evidence,'request':{'body':{'documentVersion':7},
+            'path':'/v2/workbooks/original/contents'},'sdkActionsBefore':scope['sdkActionInventory']},'promotionHash')
+        calls={
+            'construction':lambda:emit_construction_program(forged,relabelled,'input'),
+            'seed-writes':lambda:emit_write_programs(seed,forged,relabelled,'input'),
+            'extension':lambda:plan_input_extension(forged,relabelled,'input',[
+                {'name':'Value','type':'number','id':'value-column'}]),
+            'wiring':lambda:emit_workbook_wiring(forged,relabelled),
+            'validate-matrix':lambda:acceptance.validate_matrix(matrix),
+            'matrix-scope':lambda:acceptance.require_full_matrix_scope(matrix),
+            'native-input-binding':lambda:_observed_bindings(self.inputs,forged,relabelled,{'elements':[]},{},input_binding_only=True),
+            'legacy-native':lambda:prepare_native_calculation_update(legacy,self.inputs,forged,relabelled,{},{}),
+            'exact-scaffold':lambda:prepare_exact_native_scaffold(exact,self.inputs,forged,relabelled,{}, {},backup={},seed_binding={},page_id='page'),
+            'exact-update':lambda:prepare_exact_native_update(exact,self.inputs,forged,relabelled,{}, {},backup={},native_bindings={}),
+            'prepare-promotion':lambda:p.prepare_promotion(backup,current,current['contents'],{},evidence),
+            'finalize-promotion':lambda:p.finalize_mutation(fake_plan,current,{}),
+            'build-acceptance':lambda:acceptance.build_acceptance_matrix(
+                {w:forged for w in ('forecast','research','sales','inventory','expense')},
+                {w:{} for w in ('forecast','research','sales','inventory','expense')},
+                receipts={w:relabelled for w in ('forecast','research','sales','inventory','expense')}),
+            'production-matrix':lambda:acceptance.validate_production_matrix(matrix),
+            'ledger':lambda:acceptance.validate_ledger(matrix,[]),
+            'append':lambda:acceptance.append_evidence([],matrix,{}),
+            'reports':lambda:acceptance.build_workflow_reports(matrix,[]),
+            'integration':lambda:acceptance.run_integration(matrix,None,{},enabled=False)}
+        for name,call in calls.items():
+            with self.subTest(entrypoint=name),self.assertRaisesRegex(ValueError,'plan hash'):call()
+        cli=script('input-sync.py')
+        for name,value in [('manifest',forged),('receipt',relabelled),('rows',[])]:
+            (self.folder/(name+'.json')).write_text(json.dumps(value))
+        for command,extra in [('emit-create',['--feature','input']),('emit-wiring',[]),
+                              ('plan',['--feature','input','--current-rows',str(self.folder/'rows.json'),
+                                       '--row-id','Row ID','--snapshot-id','unit-query','--snapshot-age-seconds','0'])]:
+            output=self.folder/(command+'-forged.json')
+            args=[command,'--manifest',str(self.folder/'manifest.json'),'--receipt',str(self.folder/'receipt.json'),
+                  '--out',str(output),*extra]
+            with self.subTest(cli=command),self.assertRaisesRegex(ValueError,'plan hash'):cli.main(args)
+            with self.subTest(output=command):self.assertFalse(output.exists())
+
+    def test_real_input_only_and_full_receipts_keep_their_allowed_program_paths(self):
+        for scope in ('input-tables-only',None):
+            _,m,a,audit,_=self.material(status='unresolved' if scope else 'live',scope=scope)
+            if scope:
+                receipt=gate_input_only_staging(m,a,self.inputs,audit,source_path=self.source)
+            else:
+                a.pop('scope')
+                receipt=gate_input_staging(m,a,self.inputs,audit)
+            seed=plan_seed([{'Value':1}],[],['Value'],'Row ID')
+            with self.subTest(scope=scope):
+                self.assertIn('upsert_rows',emit_construction_program(m,receipt,'input'))
+                self.assertIn('upsert_rows',emit_write_programs(seed,m,receipt,'input')[0]['program'])
+                matrix=acceptance.seal_matrix({'version':1,'workflows':{'sales':{
+                    'inputContract':{'manifest':m,'receipt':receipt}}},'cases':[]})
+                if scope:
+                    with self.assertRaisesRegex(ValueError,'input-tables-only'):emit_workbook_wiring(m,receipt)
+                    with self.assertRaisesRegex(ValueError,'input-tables-only'):acceptance.validate_matrix(matrix)
+                else:
+                    self.assertEqual(emit_workbook_wiring(m,receipt)['planHash'],m['planHash'])
+                    self.assertTrue(acceptance.validate_matrix(matrix))
+
+    def test_program_and_matrix_gates_validate_integrity_beyond_scope_labels(self):
+        _,m,_,_,receipt=self.material(scope=None)
+        original=self.source.read_bytes()
+        for mutation in ('plan-seed','formula-record','receipt-plan','receipt-artifact','source-file'):
+            manifest=copy.deepcopy(m);bound=copy.deepcopy(receipt)
+            if mutation=='plan-seed':
+                manifest['planProjection']['sharedInputArchitecture']['inputs']['input']['rows'][0]['Value']=2
+                # Even recomputing the artifact approval cannot bless a stale plan.
+                bound['artifacts']=build_artifact_records(manifest,
+                    manifest['planProjection']['sharedInputArchitecture'],bound['targetBindings'])
+            elif mutation=='formula-record':manifest['formulaCells'][0]['originalFormula']='=A1+2'
+            elif mutation=='receipt-plan':bound['planHash']='f'*64
+            elif mutation=='receipt-artifact':bound['artifacts']['input']['seedHash']='f'*64
+            else:
+                book=Workbook();book.active['A1']=2;book.active['A2']='=A1+1';book.save(self.source);book.close()
+            matrix=acceptance.seal_matrix({'version':1,'workflows':{'sales':{
+                'inputContract':{'manifest':manifest,'receipt':bound}}},'cases':[]})
+            calls={'construction':lambda:emit_construction_program(manifest,bound,'input'),
+                   'seed':lambda:emit_write_programs(plan_seed([{'Value':1}],[],['Value'],'Row ID'),manifest,bound,'input'),
+                   'wiring':lambda:emit_workbook_wiring(manifest,bound),
+                   'matrix':lambda:acceptance.validate_matrix(matrix)}
+            try:
+                for name,call in calls.items():
+                    with self.subTest(mutation=mutation,entrypoint=name),self.assertRaises(ValueError):call()
+            finally:self.source.write_bytes(original)
+
+    def test_empty_wiring_cannot_skip_manifest_and_receipt_validation(self):
+        m=build_manifest(self.source,{'sharedInputArchitecture':{'inputs':{}}})
+        receipt={'status':'APPROVED_STAGING','sourceHash':m['sourceHash'],'planHash':m['planHash'],
+                 'targetBindings':{},'artifacts':{}}
+        m['planProjection']['unexpected-edit']=True
+        for entrypoint in ('wiring','matrix'):
+            matrix=acceptance.seal_matrix({'version':1,'workflows':{'sales':{
+                'inputContract':{'manifest':m,'receipt':receipt}}},'cases':[]})
+            with self.subTest(entrypoint=entrypoint),self.assertRaisesRegex(ValueError,'plan hash'):
+                if entrypoint=='wiring':emit_workbook_wiring(m,receipt)
+                else:acceptance.validate_matrix(matrix)
+        m['planProjection'].pop('unexpected-edit');receipt['status']='UNAPPROVED'
+        matrix=acceptance.seal_matrix({'version':1,'workflows':{'sales':{
+            'inputContract':{'manifest':m,'receipt':receipt}}},'cases':[]})
+        with self.assertRaisesRegex(ValueError,'APPROVED_STAGING'):emit_workbook_wiring(m,receipt)
+        with self.assertRaisesRegex(ValueError,'APPROVED_STAGING'):acceptance.validate_matrix(matrix)
 
     def test_public_stage_cli_rejects_escape_and_allows_only_pending_input_phase(self):
         cli=script('input-sync.py')

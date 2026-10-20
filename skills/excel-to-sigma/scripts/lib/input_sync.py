@@ -432,37 +432,55 @@ def build_artifact_records(manifest, architecture, target_bindings):
     return artifacts
 
 
-def _approved_feature(manifest, receipt, feature, *, require_assigned=False, allow_input_only=False):
-    input_only = (allow_input_only and receipt.get("status") == "APPROVED_INPUT_STAGING"
-                  and receipt.get("scope") == "input-tables-only"
-                  and manifest.get("planProjection", {}).get("executionScope") == "input-tables-only")
+def validate_artifact_receipt(manifest, receipt, *, allow_input_only=False):
+    """Validate current source/plan integrity before trusting receipt claims.
+
+    Matching two persisted hashes is insufficient: the manifest may have been
+    edited since those hashes were approved. This gate also runs for consumers
+    with no feature loop (wiring and acceptance matrices).
+    """
     try:
-        from .migration_manifest import require_full_execution_scope, validate_input_only_formula_obligations
+        from .migration_manifest import validate_manifest, execution_scope
     except ImportError:
-        from migration_manifest import require_full_execution_scope, validate_input_only_formula_obligations
+        from migration_manifest import validate_manifest, execution_scope
+    try:
+        validate_manifest(manifest, allow_input_only=allow_input_only)
+    except ValueError as error:
+        raise InputSyncError("approved manifest is stale or invalid: " + str(error)) from error
+    if not isinstance(receipt, dict):
+        raise InputSyncError("input artifact requires an approved staging receipt")
+    input_only = execution_scope(manifest) == "input-tables-only"
     if input_only:
-        validate_input_only_formula_obligations(manifest)
+        if (receipt.get("status") != "APPROVED_INPUT_STAGING"
+                or receipt.get("scope") != "input-tables-only"):
+            raise InputSyncError("input-tables-only artifacts require an APPROVED_INPUT_STAGING receipt")
     else:
-        require_full_execution_scope(manifest)
-        if receipt.get("scope") == "input-tables-only":
-            raise InputSyncError("input-tables-only receipt cannot authorize a full artifact")
-    if receipt.get("status") != "APPROVED_STAGING" and not input_only:
-        raise InputSyncError("input artifact requires an APPROVED_STAGING receipt")
+        if receipt.get("scope") is not None or receipt.get("status") == "APPROVED_INPUT_STAGING":
+            raise InputSyncError("input-tables-only or scoped receipt cannot authorize a full artifact")
+        if receipt.get("status") != "APPROVED_STAGING":
+            raise InputSyncError("input artifact requires an APPROVED_STAGING receipt")
     if (receipt.get("sourceHash") != manifest.get("sourceHash")
             or receipt.get("planHash") != manifest.get("planHash")):
         raise InputSyncError("approved staging receipt is stale")
     architecture = _manifest_architecture(manifest)
-    if feature not in architecture["inputs"]:
-        raise InputSyncError(f"feature is not approved: {feature}")
     bindings = receipt.get("targetBindings") or {}
     expected = build_artifact_records(manifest, architecture, bindings)
     if receipt.get("artifacts") != expected:
         raise InputSyncError("approved artifact binding does not match manifest architecture")
-    binding = bindings[feature]
     target = manifest.get("target")
-    if target and (target.get("documentId") != binding.get("documentId")
-                   or target.get("version") != binding.get("version")):
+    if target and any(target.get("documentId") != binding.get("documentId")
+                      or target.get("version") != binding.get("version")
+                      for binding in bindings.values()):
         raise InputSyncError("approved target document/version is stale")
+    return architecture, bindings, expected
+
+
+def _approved_feature(manifest, receipt, feature, *, require_assigned=False, allow_input_only=False):
+    architecture, bindings, expected = validate_artifact_receipt(
+        manifest, receipt, allow_input_only=allow_input_only)
+    if feature not in architecture["inputs"]:
+        raise InputSyncError(f"feature is not approved: {feature}")
+    binding = bindings[feature]
     if require_assigned:
         for field in ("elementId", "columnIds"):
             if not binding.get(field):
@@ -681,7 +699,7 @@ def plan_extension_seed(source_rows, current_rows, key_columns, row_id_column, *
 
 def emit_workbook_wiring(manifest, staging_receipt):
     """Return approved REST-native join fragments bound to the artifact receipt."""
-    architecture = _manifest_architecture(manifest)
+    architecture, _bindings, _artifacts = validate_artifact_receipt(manifest, staging_receipt)
     for feature in architecture["inputs"]:
         _approved_feature(manifest, staging_receipt, feature)
     return {

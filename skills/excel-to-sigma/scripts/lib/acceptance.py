@@ -13,13 +13,13 @@ import math
 import re
 from decimal import Decimal,ROUND_HALF_UP
 try:
-    from .input_sync import _digest, _approved_feature, _manifest_architecture
-    from .migration_manifest import validate_manifest, _plan_hash, require_full_execution_scope
+    from .input_sync import _digest, _approved_feature, _manifest_architecture, validate_artifact_receipt
+    from .migration_manifest import validate_manifest
     from .workflow_repairs import extract_workflow_repairs
     from .source_validation import POLICY, POLICY_HASH, POLICY_VERSION, digest as source_digest
 except ImportError:
-    from input_sync import _digest, _approved_feature, _manifest_architecture
-    from migration_manifest import validate_manifest, _plan_hash, require_full_execution_scope
+    from input_sync import _digest, _approved_feature, _manifest_architecture, validate_artifact_receipt
+    from migration_manifest import validate_manifest
     from workflow_repairs import extract_workflow_repairs
     from source_validation import POLICY, POLICY_HASH, POLICY_VERSION, digest as source_digest
 
@@ -58,12 +58,15 @@ def seal_matrix(matrix):
 
 
 def require_full_matrix_scope(matrix):
-    """Scope remains mandatory even on hash-only acceptance/report paths."""
+    """Validate embedded source/plan/receipt contracts on every matrix path."""
     for target in matrix.get('workflows',{}).values():
         contract=target.get('inputContract') or {}
         manifest=contract.get('manifest')
-        if manifest is not None:require_full_execution_scope(manifest)
         receipt=contract.get('receipt') or {}
+        if manifest is not None:
+            validate_artifact_receipt(manifest,receipt)
+        elif contract:
+            raise AcceptanceError('complete approved input contract required')
         if receipt.get('scope')=='input-tables-only' or receipt.get('status')=='APPROVED_INPUT_STAGING':
             raise AcceptanceError('input-tables-only receipt cannot authorize full acceptance or production')
     return True
@@ -77,10 +80,7 @@ def validate_matrix(matrix):
 
 def _bound_inputs(target,manifest,receipt,*,validate_source=False):
     """Exact full assigned architecture, including settings and operation companions."""
-    require_full_execution_scope(manifest)
-    if validate_source:validate_manifest(manifest)
-    elif _plan_hash(manifest.get('sourceHash'),manifest.get('planProjection'),manifest.get('formulaCells',[]))!=manifest.get('planHash'):
-        raise AcceptanceError('approved input manifest plan hash stale')
+    validate_artifact_receipt(manifest,receipt)
     if manifest.get('target')!={'documentId':target.get('documentId'),'version':target.get('version')}:
         raise AcceptanceError('manifest target document/version required')
     for key in ('sourceHash','planHash'):
