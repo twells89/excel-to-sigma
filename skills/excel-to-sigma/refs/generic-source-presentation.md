@@ -3,7 +3,9 @@
 `scripts/build-source-presentation.py` inventories presentation features in any
 `.xlsx` or `.xlsm` workbook. It has no workflow or fixture-name chart routing.
 It reuses `presentation.extract_presentation` for source rules and formatting,
-then completes the OOXML chart inventory, including unsupported chart types.
+then walks every OOXML plot and series in each chart part, including unsupported
+chart types. Each series retains its plot kind, point count, and all available
+source reference roles and cells (`xVal`/`yVal` for scatter charts).
 Source files are read only.
 
 ```bash
@@ -19,6 +21,8 @@ Each aggregate check marks its reference qualification
 runtime parity.
 An unsupported chart still has an inventory and an unresolved reason. A missing
 or inconsistent range also remains unresolved.
+Mixed-plot charts retain every plot and series but remain unresolved until a
+complete native combination mapping is reviewed; no partial chart is emitted.
 
 To preview construction with synthetic bindings, supply `--bindings ...
 --preview`. The result says `LOGICAL_FIXTURE_ONLY` and cannot be used with

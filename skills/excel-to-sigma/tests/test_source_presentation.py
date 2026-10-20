@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from openpyxl import Workbook
+from openpyxl.chart import BarChart, LineChart, ScatterChart, Reference, Series
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
@@ -71,6 +73,76 @@ class SourcePresentationTests(unittest.TestCase):
         self.assertEqual(doughnut["sourceGeometry"], {"holePercent": 10, "firstSliceAngle": 0})
         self.assertEqual(doughnut["series"][0]["sourceCells"][0], "Forecast!C12")
         self.assertEqual(doughnut["categoryCells"][0], "Forecast!A12")
+
+    def test_combination_chart_keeps_both_plots_and_never_emits_partial_chart(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Data"
+        for row in (("Category", "Bars", "Line"), ("A", 10, 7), ("B", 20, 9)):
+            sheet.append(row)
+        categories = Reference(sheet, min_col=1, min_row=2, max_row=3)
+        bars = BarChart()
+        bars.title = "Combination"
+        bars.add_data(Reference(sheet, min_col=2, min_row=1, max_row=3), titles_from_data=True)
+        bars.set_categories(categories)
+        line = LineChart()
+        line.add_data(Reference(sheet, min_col=3, min_row=1, max_row=3), titles_from_data=True)
+        line.set_categories(categories)
+        bars += line
+        sheet.add_chart(bars, "E2")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "combo.xlsx"
+            workbook.save(source)
+            plan = build_source_plan(source)
+            chart = plan["charts"][0]
+            self.assertEqual(chart["chartType"], "combo")
+            self.assertEqual(chart["status"], "unresolved")
+            self.assertEqual([plot["chartType"] for plot in chart["plots"]], ["bar", "line"])
+            self.assertEqual([series["name"] for series in chart["series"]], ["Bars", "Line"])
+            self.assertEqual([series["sourceCells"] for series in chart["series"]],
+                             [["Data!B2", "Data!B3"], ["Data!C2", "Data!C3"]])
+            artifact = emit_preview(plan, synthetic_bindings(plan))
+            self.assertFalse(any(item["kind"].endswith("-chart") for item in artifact["elements"]))
+            self.assertTrue(any(item["kind"] == "chart" and item["sourceId"] == chart["id"]
+                                for item in artifact["unresolved"]))
+
+    def test_unsupported_scatter_keeps_x_and_y_ranges_cells_and_points(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Data"
+        for row in (("X", "Y"), (1, 11), (2, 22)):
+            sheet.append(row)
+        chart = ScatterChart()
+        chart.title = "XY"
+        chart.series.append(Series(Reference(sheet, min_col=2, min_row=2, max_row=3),
+                                   Reference(sheet, min_col=1, min_row=2, max_row=3),
+                                   title="Points"))
+        sheet.add_chart(chart, "D2")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "scatter.xlsx"
+            workbook.save(source)
+            extracted = build_source_plan(source)["charts"][0]
+            self.assertEqual((extracted["chartType"], extracted["status"]),
+                             ("scatter", "unresolved"))
+            self.assertEqual(extracted["pointCount"], 2)
+            self.assertEqual(extracted["categoryCells"], ["Data!A2", "Data!A3"])
+            self.assertEqual(extracted["series"][0]["sourceCells"], ["Data!B2", "Data!B3"])
+            self.assertEqual(extracted["series"][0]["sourceReferences"],
+                             {"xVal": "'Data'!$A$2:$A$3", "yVal": "'Data'!$B$2:$B$3"})
+
+    def test_present_malformed_rule_target_is_rejected_but_absent_is_unresolved(self):
+        plan = next(plan for plan in self.plans if plan["validations"])
+        rule = plan["validations"][0]
+        bindings = synthetic_bindings(plan)
+        artifact = emit_preview(plan, bindings)
+        self.assertTrue(any(item["kind"] == "validation" and item["sourceId"] == rule["id"]
+                            for item in artifact["unresolved"]))
+        bindings["validationTargets"] = {rule["id"]: 42}
+        with self.assertRaisesRegex(ValueError, rule["id"]):
+            emit_preview(plan, bindings)
+        bindings["validationTargets"] = 42
+        with self.assertRaisesRegex(ValueError, "validationTargets"):
+            emit_preview(plan, bindings)
 
     def test_source_range_bindings_emit_supported_charts_without_filename_routes(self):
         artifacts = [emit_preview(plan, synthetic_bindings(plan)) for plan in self.plans]

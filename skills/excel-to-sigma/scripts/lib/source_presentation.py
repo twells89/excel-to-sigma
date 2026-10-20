@@ -49,13 +49,6 @@ def _chart_xml(path, part):
         return ET.fromstring(archive.read(part))
 
 
-def _first_chart_type(root):
-    for kind in ("line", "bar", "doughnut", "pie", "scatter", "area"):
-        if root.find(f".//c:{kind}Chart", presentation.NS) is not None:
-            return kind
-    return "unsupported"
-
-
 def _single_cell_value(workbook, reference):
     if not isinstance(reference, str) or "!" not in reference:
         return None
@@ -84,52 +77,72 @@ def _uniform_source_format(workbook, cells):
 
 def _complete_chart_inventory(source, chart, formulas, cached):
     root = _chart_xml(source, chart["sourceLocation"]["chartPart"])
-    kind = _first_chart_type(root)
+    plot_area = root.find(".//c:plotArea", presentation.NS)
+    plot_nodes = [] if plot_area is None else [node for node in plot_area
+                                               if node.tag.rsplit("}", 1)[-1].endswith("Chart")]
+    plot_kinds = [node.tag.rsplit("}", 1)[-1][:-5] for node in plot_nodes]
+    kind = plot_kinds[0] if len(plot_nodes) == 1 else "combo" if plot_nodes else "unsupported"
     geometry = None
     if kind == "doughnut":
-        node = root.find(".//c:doughnutChart", presentation.NS)
+        node = plot_nodes[0]
         hole = node.find("c:holeSize", presentation.NS)
         angle = node.find("c:firstSliceAng", presentation.NS)
         geometry = {"holePercent": int(hole.attrib["val"]) if hole is not None else None,
                     "firstSliceAngle": int(angle.attrib["val"]) if angle is not None else None}
-    series_nodes = root.findall(f".//c:{kind}Chart/c:ser", presentation.NS)
-    series = []
-    category_refs = []
-    for index, node in enumerate(series_nodes, 1):
-        category_ref = node.findtext("c:cat/c:numRef/c:f", namespaces=presentation.NS)
-        if category_ref is None:
-            category_ref = node.findtext("c:cat/c:strRef/c:f", namespaces=presentation.NS)
-        value_ref = node.findtext("c:val/c:numRef/c:f", namespaces=presentation.NS)
-        if value_ref is None:
-            value_ref = node.findtext("c:val/c:strRef/c:f", namespaces=presentation.NS)
-        category_refs.append(category_ref)
-        cells = presentation._range_cells(value_ref)
-        source_formulas = presentation._range_values(formulas, value_ref)
-        source_format = presentation._direct_reference_format(formulas, source_formulas, cells)
-        if source_format is None:
-            source_format = _uniform_source_format(formulas, cells)
-        if source_format is None:
-            source_format = node.findtext("c:val/c:numCache/c:formatCode", namespaces=presentation.NS)
-        _intent, fidelity, format_reason = presentation.source_format_intent(
-            source_format or "General", "number")
-        series.append({
-            "name": _series_name(formulas, node, f"Series {index}"),
-            "order": index - 1, "valueRef": value_ref, "sourceCells": cells,
-            "sourceFormulas": source_formulas,
-            "cachedExpectations": presentation._range_values(cached, value_ref),
-            "aggregation": presentation._aggregation(source_formulas),
-            "numberFormat": source_format,
-            "unit": presentation._unit(source_format, chart["title"]),
-            "formatFidelity": fidelity, "formatReason": format_reason,
-        })
+    plots, series, category_refs = [], [], []
+    for plot_index, (plot_node, plot_kind) in enumerate(zip(plot_nodes, plot_kinds), 1):
+        plot_series = []
+        for node in plot_node.findall("c:ser", presentation.NS):
+            references = {}
+            for child in node:
+                formula = child.findtext(".//c:f", namespaces=presentation.NS)
+                if formula is not None:
+                    references[child.tag.rsplit("}", 1)[-1]] = formula
+            category_ref = references.get("cat") or references.get("xVal")
+            value_ref = references.get("val") or references.get("yVal")
+            category_refs.append(category_ref)
+            cells = presentation._range_cells(value_ref)
+            source_formulas = presentation._range_values(formulas, value_ref)
+            source_format = presentation._direct_reference_format(formulas, source_formulas, cells)
+            if source_format is None:
+                source_format = _uniform_source_format(formulas, cells)
+            if source_format is None:
+                value_tag = "yVal" if plot_kind == "scatter" else "val"
+                source_format = node.findtext(
+                    f"c:{value_tag}/c:numRef/c:numCache/c:formatCode", namespaces=presentation.NS)
+            _intent, fidelity, format_reason = presentation.source_format_intent(
+                source_format or "General", "number")
+            item = {
+                "name": _series_name(formulas, node, f"Series {len(series) + 1}"),
+                "order": len(series), "plotIndex": plot_index,
+                "plotType": plot_kind, "categoryRef": category_ref,
+                "categoryCells": presentation._range_cells(category_ref),
+                "valueRef": value_ref, "sourceCells": cells,
+                "sourceReferences": references,
+                "sourceReferenceCells": {role: presentation._range_cells(ref)
+                                         for role, ref in references.items()},
+                "sourceFormulas": source_formulas,
+                "cachedExpectations": presentation._range_values(cached, value_ref),
+                "aggregation": presentation._aggregation(source_formulas),
+                "numberFormat": source_format,
+                "unit": presentation._unit(source_format, chart["title"]),
+                "formatFidelity": fidelity, "formatReason": format_reason,
+            }
+            series.append(item)
+            plot_series.append(item["order"])
+        plots.append({"plotIndex": plot_index, "chartType": plot_kind,
+                      "seriesIndexes": plot_series,
+                      "seriesCount": len(plot_series),
+                      "pointCounts": [len(series[index]["sourceCells"])
+                                      for index in plot_series]})
     category_ref = category_refs[0] if category_refs else chart.get("categoryRef")
     category_cells = presentation._range_cells(category_ref)
-    point_count = len(category_cells)
-    consistent = (bool(series) and bool(category_cells)
+    point_count = max([len(category_cells)] + [len(item["sourceCells"]) for item in series])
+    consistent = (len(plots) == 1 and bool(series) and bool(category_cells)
                   and all(ref == category_ref for ref in category_refs)
                   and all(len(item["sourceCells"]) == point_count for item in series))
     return {
-        **chart, "chartType": kind, "categoryRef": category_ref,
+        **chart, "chartType": kind, "plots": plots, "categoryRef": category_ref,
         "categoryCells": category_cells,
         "categorySourceValues": presentation._range_values(formulas, category_ref),
         "cachedCategoryExpectations": presentation._range_values(cached, category_ref),
@@ -138,6 +151,7 @@ def _complete_chart_inventory(source, chart, formulas, cached):
         "sourceGeometry": geometry,
         "status": "supported" if consistent and kind in SUPPORTED_CHART_TYPES else "unresolved",
         "unresolvedReason": (None if consistent and kind in SUPPORTED_CHART_TYPES
+                             else "combination chart requires complete native plot mapping" if len(plots) > 1
                              else "unsupported source chart type" if kind not in SUPPORTED_CHART_TYPES
                              else "source chart ranges are missing or inconsistent"),
     }
@@ -226,11 +240,18 @@ def _verify_chart_binding(plan, chart, binding, reviewed, context):
 
 
 def _target_list(plan, bindings, key, rule, *, reviewed):
-    targets = (bindings.get(key) or {}).get(rule["id"])
+    mapping = bindings.get(key)
+    if mapping is None:
+        return []
+    if not isinstance(mapping, dict):
+        raise ValueError(f"{key} must be a rule ID to target list mapping")
+    if rule["id"] not in mapping:
+        return []
+    targets = mapping[rule["id"]]
     if isinstance(targets, dict):
         targets = [targets]
     if not isinstance(targets, list):
-        return []
+        raise ValueError(f"{key} {rule['id']} has malformed target list")
     for target in targets:
         if (not isinstance(target, dict) or not target.get("elementId")
                 or not target.get("columnId") or target.get("sourceRange") != rule["range"]
