@@ -15,7 +15,7 @@ def evaluate_native(formula, references=None):
     refs=references or {}; names={}
     def ref(m):
         token='ref_'+str(len(names));names[token]=refs[m.group(0)];return token
-    
+
     for key in sorted(refs,key=len,reverse=True):
         token='ref_'+str(len(names));names[token]=refs[key];formula=formula.replace(key,token)
     # Replace native equality outside strings via Python tokenize-free scan.
