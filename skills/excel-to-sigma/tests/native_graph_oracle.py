@@ -41,6 +41,17 @@ def scalar(formula, row):
                     if run(args[i]) == key: return run(args[i+1])
                 return run(args[-1])
             if node.func.id == 'IsNull': return run(args[0]) is None
+            if node.func.id == 'Coalesce':
+                for arg in args:
+                    value = run(arg)
+                    if value is not None: return value
+                return None
+            if node.func.id in ('Min', 'Max', 'Sum'):
+                values = [run(arg) for arg in args]
+                numbers = [value for value in values if isinstance(value, (int, float))]
+                if node.func.id == 'Sum': return sum(numbers)
+                if node.func.id == 'Min': return min(numbers, default=0)
+                return max(numbers, default=0)
             if node.func.id == 'Greatest':
                 values=[run(arg) for arg in args]
                 return None if any(value is None for value in values) else max(values)

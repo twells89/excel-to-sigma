@@ -70,7 +70,7 @@ class TestResearchInference(unittest.TestCase):
     def test_period_offsets_sum_percent_and_precision_render_as_live_formulas(self):
         lines = {line["row"]: line for line in self.plan["lines"]}
         self.assertEqual(lines[9]["periodFormulas"]["2020"],
-                         "[i_fy_results_c8] / [i_fy_results_b8] - 1")
+                         "Coalesce([i_fy_results_c8], 0) / Coalesce([i_fy_results_b8], 0) - 1")
         self.assertNotIn("[c", lines[16]["periodFormulas"]["2025"])
         self.assertNotIn("[c", lines[63]["periodFormulas"]["2019"])
         self.assertNotIn("[c", lines[64]["periodFormulas"]["2019"])
