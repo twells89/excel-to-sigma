@@ -16,7 +16,7 @@ from lib.regional_canary_inputs import (build_canary_input_plan, validate_canary
     confirm_phase_input_stability)
 from lib.regional_grouped_canary import (prepare_contents_patch, confirm_contents_patch,
     prepare_grouping_program, prepare_scaffold_program, observe_b4_query,
-    REVIEWED_CANDIDATE_DIGEST)
+    REVIEWED_CANDIDATE_DIGEST, _verified_namespaces)
 from lib.native_exact_plan import digest
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -259,6 +259,48 @@ class RegionalCanaryInputsTest(unittest.TestCase):
         if system_alias:
             columns["Row ID"] = {"id": "ID", "name": "ID"}
         return {"elementId": element["id"], "name": element["name"], "columns": columns}
+
+    @unittest.skipUnless((WORK / "regional-grouped-canary-20261020/root-after-grouping-source6-R2.json").exists(),
+                         "actual persisted grouping source unavailable")
+    def test_actual_grouped_flat_unnamed_columns_require_exact_parent_and_native_ddl_lineage(self):
+        packet = WORK / "regional-grouped-canary-20261020"
+        current = json.loads((packet / "root-after-grouping-source6-R2.json").read_text())
+        observed = json.loads((packet / "root-after-grouping-observed-inputs6-R2.json").read_text())
+        raw_ddl = json.loads((packet / "root-grouped-flat-describe6-R2.json").read_text())
+        by_id = {e["id"]: e for e in current["contents"]["elements"]}
+        sales = by_id["GCVsg9yMKO"]
+        summary = by_id["CCnm2Z8VYG"]
+        rows = by_id["yDvaQ-qY-V"]
+        flat = by_id["ZmE2J1tt_Z"]
+        self.assertTrue(all("name" not in c for c in flat["columns"]))
+        row_columns = {c["name"]: {"id": c["id"], "name": c["name"]}
+                       for c in rows["columns"] if c["id"] not in ("EaPQHGxkAi", "1zF2g5Jr80")}
+        namespaces = {
+            "Sales": self.namespace(sales, system_alias=True),
+            "Summary Regions": self.namespace(summary, system_alias=True),
+            "Rows": {"elementId": rows["id"], "name": rows["name"], "columns": row_columns},
+            "Grouped": {"elementId": flat["id"], "name": flat["name"],
+                "columns": {"Group Key": {"id": "XFx9OejojL", "name": "Group Key"},
+                            "Revenue Sum": {"id": "ThCTKsVs2J", "name": "Revenue Sum"},
+                            "First Error Ordinal": {"id": "UVtagwDpPJ", "name": "First Error Ordinal"}},
+                "nativeDescribe": raw_ddl},
+        }
+        self.assertEqual(_verified_namespaces(current, namespaces, observed,
+            element_kind="summary-table", candidate=self.candidate)["Grouped"]["id"], flat["id"])
+        # A valid DDL receipt cannot launder a changed parent, grouping or flat formula.
+        for mutate in (
+            lambda c, n: c["contents"]["elements"][3]["source"].__setitem__("groupingId", "foreign"),
+            lambda c, n: c["contents"]["elements"][2]["groupings"][0]["calculations"].__setitem__(0, "foreign"),
+            lambda c, n: c["contents"]["elements"][3]["columns"][1].__setitem__("formula", "1234567"),
+            lambda c, n: c["contents"]["elements"][2]["columns"][1].__setitem__("formula", "Sum([Other])"),
+            lambda c, n: n["Grouped"]["columns"]["Revenue Sum"].__setitem__("id", "foreign"),
+            lambda c, n: n["Grouped"]["nativeDescribe"]["structuredContent"].__setitem__("ddl", "forged"),
+        ):
+            forged_current, forged_namespaces = copy.deepcopy(current), copy.deepcopy(namespaces)
+            mutate(forged_current, forged_namespaces)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                _verified_namespaces(forged_current, forged_namespaces, observed,
+                                     element_kind="summary-table", candidate=self.candidate)
 
     def grouping_fixture(self):
         current, bindings, queries = self.setup_document()

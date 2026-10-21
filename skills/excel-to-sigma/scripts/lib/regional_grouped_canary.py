@@ -386,11 +386,124 @@ def prepare_grouping_program(candidate, current, row_patch_confirmation, *,
             "pageId": page_id, "program": "\n".join(lines) + "\n"}
 
 
-def _verified_namespaces(current, namespaces, observed_inputs, *, element_kind):
+def _verified_unnamed_grouped_columns(current, namespaces, candidate):
+    """Resolve SDK-omitted flat names only from the actual grouping and DDL."""
+    elements = current["contents"]["elements"]
+    rows_binding, flat_binding = namespaces["Rows"], namespaces["Grouped"]
+    rows = next((e for e in elements if e.get("id") == rows_binding["elementId"]), None)
+    flat = next((e for e in elements if e.get("id") == flat_binding["elementId"]), None)
+    _require(rows is not None and flat is not None and
+             rows.get("kind") == flat.get("kind") == "table" and
+             rows.get("name") == rows_binding["name"] and
+             flat.get("name") == flat_binding["name"] and
+             rows.get("source") == {"kind": "table",
+                                    "elementId": namespaces["Sales"]["elementId"]},
+             "grouped row/source identity differs")
+    logical_rows = next(e for e in candidate["elements"] if e["kind"] == "calculated-table")
+    logical_group = next(e for e in candidate["elements"] if e["kind"] == "grouped-source")
+    logical_names = {c["name"] for c in logical_rows["columns"]}
+    _require(set(rows_binding["columns"]) == logical_names and
+             logical_group["sourceElement"] == logical_rows["id"] and
+             logical_group["keys"] == ["Group Key"] and
+             [(c["name"], c["aggregate"], c["column"]) for c in logical_group["calculations"]] ==
+             [("Revenue Sum", "Sum", "Revenue Number"),
+              ("First Error Ordinal", "Min", "First Error Ordinal")],
+             "reviewed grouped roles or row namespace incomplete")
+    row_columns = rows.get("columns", [])
+    row_by_id = {c.get("id"): c for c in row_columns}
+    _require(len(row_by_id) == len(row_columns) == len(logical_names) + 2 and
+             all(isinstance(c.get("id"), str) and c["id"] and
+                 isinstance(c.get("name"), str) and c["name"] and
+                 isinstance(c.get("formula"), str) and c["formula"]
+                 for c in row_columns), "grouped row columns incomplete or ambiguous")
+    for name, assigned in rows_binding["columns"].items():
+        _require(isinstance(assigned, dict) and
+                 row_by_id.get(assigned.get("id"), {}).get("name") == name and
+                 assigned.get("name") == name,
+                 f"grouped original row lineage differs: {name}")
+    original_error = rows_binding["columns"]["First Error Ordinal"]["id"]
+    _require(row_by_id[original_error]["formula"] ==
+             'If([Revenue Error] != "", [Source Ordinal], Null)' and
+             row_by_id[rows_binding["columns"]["Group Key"]["id"]]["formula"] ==
+             'Concat([Region Key], "|", Text([Year Key]), "|", Text([Quarter Key]))',
+             "grouped source key/error source formula differs")
+    groupings = rows.get("groupings", [])
+    _require(len(groupings) == 1 and isinstance(groupings[0].get("id"), str) and
+             groupings[0]["id"] and
+             groupings[0].get("groupBy") == [rows_binding["columns"]["Group Key"]["id"]] and
+             len(groupings[0].get("calculations", [])) == 2,
+             "actual row grouping IDs differ")
+    grouping = groupings[0]
+    sum_id, min_id = grouping["calculations"]
+    _require(sum_id != min_id and sum_id not in
+             {v["id"] for v in rows_binding["columns"].values()} and
+             min_id not in {v["id"] for v in rows_binding["columns"].values()} and
+             row_by_id.get(sum_id) == {"id": sum_id, "name": "Revenue Sum",
+                                       "formula": "Sum([Revenue Number])"} and
+             row_by_id.get(min_id) == {"id": min_id, "name": "First Error Ordinal",
+                                       "formula": "Min([First Error Ordinal (1)])"},
+             "actual grouped aggregate IDs/formulas differ")
+    _require({c["name"] for c in row_columns} == logical_names | {"Revenue Sum"} and
+             sum(c["name"] == "First Error Ordinal" for c in row_columns) == 2 and
+             all(sum(c["name"] == name for c in row_columns) == 1
+                 for name in logical_names - {"First Error Ordinal"}),
+             "foreign or conflicting grouped row names")
+    roles = [("Group Key", grouping["groupBy"][0], "text"),
+             ("Revenue Sum", sum_id, "number"),
+             ("First Error Ordinal", min_id, "number")]
+    flat_columns = flat.get("columns", [])
+    _require(flat.get("source") == {"kind": "table", "elementId": rows["id"],
+                                    "groupingId": grouping["id"]} and
+             len(flat_columns) == len(roles) and
+             flat.get("order") == [c.get("id") for c in flat_columns] and
+             all(set(c) == {"id", "formula"} for c in flat_columns) and
+             len({c.get("id") for c in flat_columns}) == len(flat_columns),
+             "unnamed flat grouping shape/source differs")
+    _require(set(flat_binding["columns"]) == {r[0] for r in roles},
+             "grouped namespace roles incomplete")
+    ddl_columns = []
+    for index, ((name, parent_id, kind), column) in enumerate(zip(roles, flat_columns, strict=True)):
+        _require(row_by_id[parent_id]["name"] == name and
+                 column["formula"] == f'[{rows["name"]}/{name}]' and
+                 flat_binding["columns"][name] == {"id": column["id"], "name": name},
+                 f"unnamed grouped column lineage differs: {name}")
+        punctuation = "," if index < len(roles) - 1 else ""
+        ddl_columns.append(f'  "{column["id"]}" {kind}{punctuation} -- '
+                           f'"{name}" | Formula: [{rows["name"]}/{name}]')
+    expected_ddl = "\n".join([
+        '-- Type: "level table"',
+        f'-- Workbook ID: "{current["workbookId"]}"',
+        f'-- Element ID: "{flat["id"]}"',
+        f'CREATE TABLE "workbook"."{flat["id"]}" (', *ddl_columns, ');',
+    ])
+    native = flat_binding.get("nativeDescribe")
+    _require(isinstance(native, dict) and
+             native.get("structuredContent", {}).get("ddl") == expected_ddl and
+             len(native.get("content", [])) == 1 and
+             isinstance(native["content"][0].get("text"), str),
+             "exact native grouped DDL evidence required")
+    try:
+        response = json.loads(native["content"][0]["text"])
+    except (ValueError, TypeError):
+        response = {}
+    _require(response.get("ddl") == expected_ddl,
+             "native grouped DDL response representations conflict")
+    return {"rows": rows, "flat": flat}
+
+
+def _verified_namespaces(current, namespaces, observed_inputs, *, element_kind, candidate=None):
     elements = current["contents"]["elements"]
     required = ({"Sales", "Summary Regions", "Rows"} if element_kind == "calculated-table"
                 else {"Sales", "Summary Regions", "Rows", "Grouped"})
     _require(set(namespaces) == required, "exact assigned namespaces required")
+    unnamed_grouped = False
+    if element_kind == "summary-table":
+        flat_matches = [e for e in elements if e.get("id") == namespaces["Grouped"].get("elementId")]
+        _require(len(flat_matches) == 1, "grouped namespace element absent/ambiguous")
+        unnamed_grouped = any("name" not in c for c in flat_matches[0].get("columns", []))
+        if unnamed_grouped:
+            _require(candidate is not None, "reviewed candidate required for unnamed grouped columns")
+            _verified_unnamed_grouped_columns(current, namespaces, candidate)
     result = {}
     for alias, binding in namespaces.items():
         _require(isinstance(binding.get("elementId"), str) and binding["elementId"] and
@@ -403,8 +516,9 @@ def _verified_namespaces(current, namespaces, observed_inputs, *, element_kind):
                  f"assigned namespace absent or ambiguous: {alias}")
         element = matches[0]
         columns = element.get("columns", [])
+        allow_native_grouping = unnamed_grouped and alias in ("Rows", "Grouped")
         _require(len({c.get("id") for c in columns}) == len(columns) and
-                 len({c.get("name") for c in columns}) == len(columns),
+                 (allow_native_grouping or len({c.get("name") for c in columns}) == len(columns)),
                  f"actual namespace column IDs/names ambiguous: {alias}")
         by_id = {c.get("id"): c for c in columns}
         for logical, assigned in binding["columns"].items():
@@ -415,7 +529,8 @@ def _verified_namespaces(current, namespaces, observed_inputs, *, element_kind):
             _require(isinstance(assigned, dict) and
                      isinstance(assigned.get("id"), str) and assigned["id"] and
                      isinstance(assigned.get("name"), str) and assigned["name"] and
-                     by_id.get(assigned["id"], {}).get("name") == assigned["name"],
+                     (alias == "Grouped" and unnamed_grouped or
+                      by_id.get(assigned["id"], {}).get("name") == assigned["name"]),
                      f"actual source column lineage differs: {alias}/{logical}")
         result[alias] = element
     _require(len({e["id"] for e in result.values()}) == len(result),
@@ -468,7 +583,8 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind,
     _require(receipt.get("canaryInputPlanHash") == canary_input_plan["canaryInputPlanHash"],
              "canary input extension receipt is stale")
     namespace_elements = _verified_namespaces(current, receipt.get("namespaces") or {},
-                                               observed_inputs, element_kind=element_kind)
+                                               observed_inputs, element_kind=element_kind,
+                                               candidate=candidate)
     logical = next(e for e in candidate["elements"] if e["kind"] == element_kind)
     binding = receipt.get("elements", {}).get(logical["id"], {})
     _require(binding.get("elementId") and binding.get("name") and
