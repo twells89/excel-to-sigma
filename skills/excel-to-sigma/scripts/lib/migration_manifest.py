@@ -100,7 +100,8 @@ def _validate_target_mapping(mapping, formula_id):
 def _valid_reviewed_replacement(record, original_formula):
     replacement = record.get("reviewedReplacement")
     return (
-        record.get("mappingStatus") == "live"
+        isinstance(original_formula, str)
+        and record.get("mappingStatus") == "live"
         and isinstance(record.get("targetMapping"), dict)
         and isinstance(replacement, dict)
         and replacement.get("originalFormula") == original_formula
@@ -205,13 +206,16 @@ def build_manifest(source_path, plan=None) -> dict:
         record = plan_cells.get(identity.id, {})
         _validate_target_mapping(record.get("targetMapping"), identity.id)
         mapping_status = record.get("mappingStatus") or ("verification" if identity.sheet == "Audit" and (plan or {}).get("executionScope") != "input-tables-only" else "unresolved")
-        try:
-            expression = parse_expression(formula, sheet=identity.sheet)
-            named_refs = [_reference_id(ref) for ref in extract_references(expression) if ref.name]
-            refs = sorted({cell.id for cell in graph.dependencies.get(identity, ())} | set(named_refs))
-            parse_error = None
-        except ExpressionError as error:
-            refs, parse_error = [], str(error)
+        if not isinstance(formula, str):
+            refs, parse_error = [], graph.unsupported_formulas[identity]
+        else:
+            try:
+                expression = parse_expression(formula, sheet=identity.sheet)
+                named_refs = [_reference_id(ref) for ref in extract_references(expression) if ref.name]
+                refs = sorted({cell.id for cell in graph.dependencies.get(identity, ())} | set(named_refs))
+                parse_error = None
+            except ExpressionError as error:
+                refs, parse_error = [], str(error)
         item = {
             "id": identity.id,
             "sheet": identity.sheet,
@@ -387,6 +391,14 @@ def validate_manifest(manifest, source_path=None, *, allow_input_only=False):
     recorded = {item["id"]: item.get("originalFormula") for item in formulas}
     if recorded != actual:
         raise ManifestError("manifest formula records are incomplete or stale")
+    object_formulas = {cell.id: graph.unsupported_formulas[cell]
+                       for cell, formula in graph.formulas.items()
+                       if not isinstance(formula, str)}
+    for item in formulas:
+        if item["id"] in object_formulas:
+            if (item.get("mappingStatus") != "unresolved"
+                    or item.get("unresolvedReason") != object_formulas[item["id"]]):
+                raise ManifestError(f"formula object requires unresolved review: {item['id']}")
     return True
 
 

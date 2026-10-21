@@ -174,7 +174,7 @@ class TestFormulaGraph(unittest.TestCase):
 
     def test_malformed_formulas_are_unresolved_and_do_not_block_evaluation(self):
         wb = Workbook(); ws = wb.active; ws.title = "Model"
-        ws["A1"] = "="; ws["B1"] = "=IF(0,42)"; ws["C1"] = "=ROUND(1)"
+        ws["A1"] = "=+"; ws["B1"] = "=IF(0,42)"; ws["C1"] = "=ROUND(1)"
 
         graph = FormulaGraph.from_workbook(wb)
 
@@ -294,14 +294,14 @@ class TestMigrationManifest(unittest.TestCase):
     def test_malformed_source_formula_is_explicitly_unresolved(self):
         from openpyxl import load_workbook
         workbook = load_workbook(self.path)
-        workbook["FY results"]["D1"] = "="
+        workbook["FY results"]["D1"] = "=+"
         workbook.save(self.path)
 
         manifest = build_manifest(self.path)
         item = next(item for item in manifest["formulaCells"] if item["id"] == "FY results!D1")
 
         self.assertEqual(item["mappingStatus"], "unresolved")
-        self.assertEqual(item["unresolvedReason"], "empty formula")
+        self.assertEqual(item["unresolvedReason"], "expected expression, got ''")
 
     def test_unsupported_formula_needs_exact_hash_bound_reviewed_replacement(self):
         from openpyxl import load_workbook

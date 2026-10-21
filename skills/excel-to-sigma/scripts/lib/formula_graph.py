@@ -23,6 +23,17 @@ class CellIdentity:
         return f"{self.sheet}!{self.address}"
 
 
+def formula_source(value):
+    """Keep scalar formulas unchanged and serialize object anchors without executing them."""
+    if isinstance(value, str):
+        return value
+    attributes = vars(value)
+    if any(not isinstance(key, str) or item is not None and
+           not isinstance(item, (str, int, float, bool)) for key, item in attributes.items()):
+        raise ValueError(f"formula object {type(value).__name__} has unsupported source attributes")
+    return {"objectType": type(value).__name__, "attributes": dict(sorted(attributes.items()))}
+
+
 class FormulaGraph:
     def __init__(self, formulas, literals, dependencies, unresolved, unsupported, names=None,
                  unresolved_names=None):
@@ -43,20 +54,24 @@ class FormulaGraph:
                     if cell.value is None:
                         continue
                     identity = CellIdentity(ws.title, cell.coordinate)
-                    if isinstance(cell.value, str) and cell.value.startswith("="):
-                        formulas[identity] = cell.value
+                    if cell.data_type == "f":
+                        formulas[identity] = formula_source(cell.value)
                     else:
                         literals[identity] = cell.value
         existing = set(formulas) | set(literals)
         names = _defined_names(workbook)
         dependencies, unresolved, unsupported, unresolved_names = {}, {}, {}, {}
         for identity, formula in formulas.items():
-            try:
-                expression = parse_expression(formula, sheet=identity.sheet)
-                refs = tuple(_expression_cells(expression))
-            except ExpressionError as error:
-                unsupported[identity] = str(error)
+            if not isinstance(formula, str):
+                unsupported[identity] = f"formula object {formula['objectType']} requires review"
                 refs = ()
+            else:
+                try:
+                    expression = parse_expression(formula, sheet=identity.sheet)
+                    refs = tuple(_expression_cells(expression))
+                except ExpressionError as error:
+                    unsupported[identity] = str(error)
+                    refs = ()
             deps = set()
             missing_names = set()
             for ref in refs:
@@ -158,6 +173,8 @@ class FormulaGraph:
         # Failed formulas stay absent and never become ignorable blank inputs.
         expressions = {}
         for identity, formula in self.formulas.items():
+            if not isinstance(formula, str):
+                continue
             try:
                 expressions[identity] = parse_expression(formula, sheet=identity.sheet)
             except ExpressionError:
