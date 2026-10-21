@@ -41,7 +41,7 @@ def synthetic_assigned_rows(input_plan):
         rows = []
         for index, values in enumerate(spec["rows"]):
             source_cells = list(spec["sourceCells"][str(index)].values())
-            key = (source_cells[0] if len(source_cells) == 1 else
+            key = (source_cells[0] if len(source_cells) == 1 and feature not in ("sales-forecast", "summary-regions") else
                    source_cells[0].rsplit("!", 1)[0] + "!row:" + str(spec["sourceRowNumbers"][index]))
             rows.append({**values, "Source Key": key, "Source Ordinal": index + 1,
                          "ID": f"test-only-{feature}-{index}"})
@@ -557,7 +557,8 @@ class RegionalGroupedModelTest(unittest.TestCase):
             rows = []
             for index, values in enumerate(spec["rows"]):
                 cells = list(spec["sourceCells"][str(index)].values())
-                key = cells[0] if len(cells) == 1 else cells[0].rsplit("!", 1)[0] + "!row:" + str(spec["sourceRowNumbers"][index])
+                key = (cells[0] if len(cells) == 1 and feature not in ("sales-forecast", "summary-regions") else
+                       cells[0].rsplit("!", 1)[0] + "!row:" + str(spec["sourceRowNumbers"][index]))
                 rows.append({**values, "Source Key": key, "Source Ordinal": index + 1,
                              "ID": f"physical-{feature}-{index}"})
             observed[feature] = {"elementId": feature, "name": feature,
@@ -565,6 +566,9 @@ class RegionalGroupedModelTest(unittest.TestCase):
         current = {"workbookId": "test-only", "documentVersion": 1,
                    "contents": {"elements": elements}}
         self.assertEqual(set(validate_full_assigned_rows(self.inputs, current, observed)["features"]), set(inputs))
+        self.assertEqual(observed["summary-regions"]["queryRows"][0]["Source Key"], "Summary!row:4")
+        self.assertEqual(observed["summary-months"]["queryRows"][0]["Source Key"], "Summary!A12")
+        self.assertEqual(observed["summary-products"]["queryRows"][0]["Source Key"], "Summary!B11")
         observed["sales-forecast"]["queryRows"][0]["Month"] = "2026-01-01T12:00:00.000Z"
         self.assertEqual(set(validate_full_assigned_rows(self.inputs, current, observed)["features"]), set(inputs))
         for drift in ("2026-01-01T12:34:56.000Z", "2026-01-01T12:00:00.000+01:00"):

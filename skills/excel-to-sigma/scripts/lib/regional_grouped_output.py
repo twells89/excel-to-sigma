@@ -62,13 +62,15 @@ def _ids(assigned_rows, feature, expected):
     return result
 
 
-def _source_key(spec, index):
+def _source_key(spec, index, feature):
     cells = list(spec["sourceCells"][str(index)].values())
     _require(cells and len({c.rsplit("!", 1)[0] for c in cells}) == 1,
              "source row cell lineage ambiguous")
-    if len(cells) == 1:
-        return cells[0]
-    return cells[0].rsplit("!", 1)[0] + "!row:" + str(spec["sourceRowNumbers"][index])
+    # The qualified B4 staging inputs use stable physical source-row keys for
+    # both reused tables, including the one-column Summary Region labels.
+    if feature in ("sales-forecast", "summary-regions") or len(cells) != 1:
+        return cells[0].rsplit("!", 1)[0] + "!row:" + str(spec["sourceRowNumbers"][index])
+    return cells[0]
 
 
 def _same_input(actual, expected, source_type):
@@ -126,7 +128,7 @@ def validate_full_assigned_rows(input_plan, current, observed):
             by_key[key] = row
         ids = {}
         for index, expected in enumerate(spec["rows"]):
-            key = _source_key(spec, index)
+            key = _source_key(spec, index, feature)
             row = by_key.get(key)
             _require(row is not None and row.get("Source Ordinal") == index + 1,
                      "source key/ordinal lineage differs: " + feature + "/" + str(index))
