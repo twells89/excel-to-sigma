@@ -5,7 +5,9 @@ import inspect
 import json
 from pathlib import Path
 import sys
+import types
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path[:0] = [str(SCRIPTS), str(SCRIPTS / "lib")]
@@ -257,6 +259,124 @@ class RegionalCanaryInputsTest(unittest.TestCase):
         if system_alias:
             columns["Row ID"] = {"id": "ID", "name": "ID"}
         return {"elementId": element["id"], "name": element["name"], "columns": columns}
+
+    def grouping_fixture(self):
+        current, bindings, queries = self.setup_document()
+        observed = self.observed(current, bindings, queries)
+        row_element = {"id": "test-only-row-table", "kind": "table", "name": "Regional Sales Rows",
+            "source": {"kind": "table", "elementId": bindings["sales-forecast"]["elementId"]},
+            "columns": [{"id": f"test-only-row-c{i}", "name": c["name"], "formula": c["formula"]}
+                        for i, c in enumerate(self.candidate["elements"][0]["columns"])]}
+        current["contents"]["elements"].append(row_element)
+        confirmed = {"status": "CONFIRMED_FORMULA_PATCH_STRUCTURE_ONLY",
+            "sourceSha256": self.candidate["sourceSha256"], "documentId": current["workbookId"],
+            "documentVersion": 7, "contentsHash": digest(current["contents"])}
+        grouped = prepare_grouping_program(self.candidate, current, confirmed,
+            row_element_id=row_element["id"], page_id="test-only-page", grid_row=15,
+            source_path=SOURCE, base_input_plan=self.base,
+            canary_input_plan=self.plan, observed_inputs=observed)
+        return row_element, bindings, grouped["program"]
+
+    def test_grouping_receiver_guards_reject_drift_before_any_mutation(self):
+        row_element, bindings, program = self.grouping_fixture()
+        effects = []
+        class Column:
+            def __init__(self, meta): self.meta = meta
+            def id(self): return self.meta["id"]
+            def name(self): return self.meta["name"]
+            def formula(self): return self.meta["formula"]
+        class QueryableSource:
+            def __init__(self, identity): self.identity = identity
+            def ref(self): return self.identity
+        class Grouping:
+            def set_calculation(self, name, formula):
+                effects.append(("calculation", name))
+                return Column({"id": name, "name": name})
+            def to_source(self): return QueryableSource("grouped")
+        class LevelTable:
+            def __init__(self, meta):
+                self.meta = meta
+                self.source = QueryableSource(meta["source"]["elementId"])
+            def id(self): return self.meta["id"]
+            def name(self): return self.meta["name"]
+            def data_source(self): return self.source
+            def list_columns(self): return [Column(c) for c in self.meta["columns"]]
+            def get_column_by_name(self, name):
+                return next(c for c in self.list_columns() if c.name() == name)
+            def get_column(self, identity):
+                return next(c for c in self.list_columns() if c.id() == identity)
+            def set_groupings(self, keys):
+                effects.append(("grouping", keys))
+                return [Grouping()]
+            def set_name(self, name): effects.append(("name", name))
+            def set_frame(self, *frame): effects.append(("frame", frame))
+        modules = {name: types.ModuleType(name) for name in ("sigma.levelTable", "sigma.data.source")}
+        modules["sigma.levelTable"].LevelTable = LevelTable
+        modules["sigma.data.source"].QueryableSource = QueryableSource
+        for attack in ("none", "receiver-type", "element-id", "name", "source-type", "source-id",
+                       "column-id", "column-name", "column-formula", "column-order"):
+            effects.clear()
+            table = LevelTable(copy.deepcopy(row_element))
+            if attack == "receiver-type": table = object()
+            elif attack == "element-id": table.meta["id"] = "foreign"
+            elif attack == "name": table.meta["name"] = "Foreign"
+            elif attack == "source-type": table.source = object()
+            elif attack == "source-id": table.source = QueryableSource("foreign")
+            elif attack.startswith("column-"):
+                if attack == "column-order": table.meta["columns"].reverse()
+                else: table.meta["columns"][0][attack.split('-')[1]] = "foreign"
+            page = types.SimpleNamespace(get_element=lambda identity: table,
+                add_table=lambda source: effects.append(("flat-table", source)) or LevelTable(copy.deepcopy(row_element)))
+            sigma = types.SimpleNamespace(workbook=types.SimpleNamespace(get_page=lambda identity: page),
+                data=types.SimpleNamespace(source=types.SimpleNamespace(element=QueryableSource)),
+                formula=types.SimpleNamespace(sum=lambda c: ("sum", c), min=lambda c: ("min", c)))
+            with self.subTest(attack=attack), patch.dict(sys.modules, modules):
+                if attack == "none":
+                    exec(program, {"sigma": sigma, "print": lambda value: None})
+                    self.assertTrue(effects)
+                else:
+                    with self.assertRaises(RuntimeError):
+                        exec(program, {"sigma": sigma, "print": lambda value: None})
+                    self.assertEqual(effects, [])
+
+    @unittest.skipUnless(SDK_FORMULA.exists(), "actual cached MCP SDK declarations unavailable")
+    def test_sdk_receiver_contract_narrows_generic_get_element_and_scaffolds_use_add_table(self):
+        docs = WORK / "native-grouped-docs-20261020"
+        table_docs = (docs / "levelTable.md").read_text()
+        self.assertIn("Canonical module: /sdk/sigma/levelTable.py", table_docs)
+        self.assertIn("def get_column(self, id: str) -> FormulaColumn:", table_docs)
+        self.assertIn("def data_source(self) -> Source \\| None:", table_docs)
+        source_docs = (docs / "source.md").read_text()
+        self.assertIn("Canonical module: /sdk/sigma/data/source.py", source_docs)
+        self.assertIn("## Queryable Source", source_docs)
+        self.assertIn("def ref(self) -> str:", source_docs)
+        page = (WORK / "sdk-input-docs/page.md").read_text()
+        self.assertIn("def get_element(self, element_id: ElementId) -> Element:", page)
+        _, _, program = self.grouping_fixture()
+        tree = ast.parse(program)
+        self.assertTrue(any(isinstance(n, ast.ImportFrom) and n.module == "sigma.levelTable"
+            and any(a.name == "LevelTable" for a in n.names) for n in tree.body))
+        guard_index = next(i for i, n in enumerate(tree.body) if isinstance(n, ast.If)
+            and ast.unparse(n.test) == "not isinstance(rows, LevelTable)"
+            and any(isinstance(child, ast.Raise) for child in n.body))
+        method_indices = [i for i, statement in enumerate(tree.body)
+            if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                   and ast.unparse(n.func.value) == "rows" and
+                   n.func.attr in ("list_columns", "get_column", "get_column_by_name", "set_groupings")
+                   for n in ast.walk(statement))]
+        self.assertTrue(method_indices and all(i > guard_index for i in method_indices))
+        # Both scaffold phases obtain a documented LevelTable directly; neither
+        # re-fetches the summary/source receiver through generic get_element.
+        self.assertIn("-> LevelTable:", page)
+        current, bindings, queries = self.setup_document()
+        observed = self.observed(current, bindings, queries)
+        for kind, feature in (("calculated-table", "sales-forecast"), ("summary-table", "summary-regions")):
+            scaffold = prepare_scaffold_program(self.candidate, element_kind=kind,
+                page_id="test-only-page", source_element_id=bindings[feature]["elementId"],
+                grid_row=1, current=current, source_path=SOURCE, base_input_plan=self.base,
+                canary_input_plan=self.plan, observed_inputs=observed)
+            self.assertNotIn(".get_element(", scaffold)
+            self.assertIn("t = p.add_table(", scaffold)
 
     def test_projection_exact_two_inputs_and_pending_denominator(self):
         self.assertEqual(self.plan["status"], "CANARY_QUALIFICATION_ONLY")

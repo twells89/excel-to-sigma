@@ -343,17 +343,32 @@ def prepare_grouping_program(candidate, current, row_patch_confirmation, *,
     columns = rows[0].get("columns", [])
     _require(needed <= {c.get("name") for c in columns} and
              len({c.get("name") for c in columns}) == len(columns) and
+             all(isinstance(c.get("id"), str) and c["id"] and
+                 isinstance(c.get("formula"), str) for c in columns) and
+             len({c["id"] for c in columns}) == len(columns) and
              all(c.get("formula") != "0" for c in columns if c.get("name") in needed),
              "saved group-key and aggregate source formulas required")
     _require(all(e.get("name") != "Regional Sales Region Quarter" for e in elements),
              "grouped flat table already exists")
+    expected_columns = [{key: column[key] for key in ("id", "name", "formula")}
+                        for column in columns]
+    column_ids = {column["name"]: column["id"] for column in columns}
     lines = [
         "# CANARY_QUALIFICATION_ONLY. Re-read the full document and assigned IDs after this mutation.",
+        'from sigma.levelTable import LevelTable',
+        'from sigma.data.source import QueryableSource',
         f'p = sigma.workbook.get_page({json_quote(page_id)})',
         f'rows = p.get_element({json_quote(row_element_id)})',
-        'key = rows.get_column_by_name("Group Key")',
-        'revenue = rows.get_column_by_name("Revenue Number")',
-        'error_ordinal = rows.get_column_by_name("First Error Ordinal")',
+        'if not isinstance(rows, LevelTable): raise RuntimeError("expected actual calculated-row LevelTable")',
+        f'if rows.id() != {json_quote(row_element_id)} or rows.name() != "Regional Sales Rows": raise RuntimeError("calculated-row identity changed")',
+        'source = rows.data_source()',
+        'if not isinstance(source, QueryableSource): raise RuntimeError("expected calculated-row element source")',
+        f'if source.ref() != sigma.data.source.element({json_quote(validated["sales-forecast"]["elementId"])}).ref(): raise RuntimeError("calculated-row source changed")',
+        'actual_columns = [{"id": c.id(), "name": c.name(), "formula": c.formula()} for c in rows.list_columns()]',
+        f'if actual_columns != {json_quote(expected_columns)}: raise RuntimeError("calculated-row columns or formulas changed")',
+        f'key = rows.get_column({json_quote(column_ids["Group Key"])})',
+        f'revenue = rows.get_column({json_quote(column_ids["Revenue Number"])})',
+        f'error_ordinal = rows.get_column({json_quote(column_ids["First Error Ordinal"])})',
         'grouping = rows.set_groupings([[key]])[0]',
         'sum_column = grouping.set_calculation("Revenue Sum", sigma.formula.sum(revenue))',
         'min_column = grouping.set_calculation("First Error Ordinal", sigma.formula.min(error_ordinal))',
