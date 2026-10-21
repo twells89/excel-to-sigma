@@ -501,6 +501,49 @@ def prepare_contents_patch(candidate, current, receipt, *, element_kind,
     return packet
 
 
+def _canonical_not_call_spacing(formula):
+    """The observed Sigma formatter rule, outside text and column references.
+
+    This deliberately is not general whitespace or expression equivalence.
+    Every byte other than the single space added after a `Not` call token is
+    retained, including whitespace, escaped text, regexes, and reference names.
+    """
+    _require(isinstance(formula, str), "formula text required")
+    result, insertions = [], []
+    index = 0
+    while index < len(formula):
+        start = index
+        if formula[index] in ('"', "'"):
+            quote = formula[index]
+            index += 1
+            while index < len(formula):
+                if formula[index] == '\\':
+                    index += 2
+                elif formula[index] == quote:
+                    index += 1
+                    break
+                else:
+                    index += 1
+            _require(index <= len(formula) and formula[index - 1] == quote,
+                     "unterminated formula text")
+        elif formula[index] == '[':
+            end = formula.find(']', index + 1)
+            _require(end != -1, "unterminated formula reference")
+            index = end + 1
+        elif formula[index].isalpha() or formula[index] == '_':
+            index += 1
+            while index < len(formula) and (formula[index].isalnum() or formula[index] == '_'):
+                index += 1
+            if formula[start:index] == "Not" and formula[index:index + 1] == '(':
+                result.append("Not ")
+                insertions.append(index)
+                continue
+        else:
+            index += 1
+        result.append(formula[start:index])
+    return ''.join(result), insertions
+
+
 def confirm_contents_patch(packet, readback):
     _require(packet.get("reviewedCandidateDigest") == REVIEWED_CANDIDATE_DIGEST and
              packet.get("status") == "REST_FORMULA_PATCH_PENDING_EXECUTION" and
@@ -508,11 +551,55 @@ def confirm_contents_patch(packet, readback):
              isinstance(readback.get("documentVersion"), int) and
              readback["documentVersion"] > packet["ifMatchDocumentVersion"],
              "fresh saved document readback required")
-    _require(digest(readback.get("contents")) == packet["afterContentsHash"],
+    expected = packet.get("contents")
+    expected_hash = packet["afterContentsHash"]
+    _require(isinstance(expected, dict) and digest(expected) == expected_hash,
+             "prepared full contents hash is stale")
+    actual = readback.get("contents")
+    actual_hash = digest(actual)
+    normalizations = []
+    comparable = copy.deepcopy(actual)
+    if actual_hash != expected_hash:
+        _require(isinstance(actual, dict), "saved full contents required")
+        expected_targets = [e for e in expected.get("elements", [])
+                            if e.get("id") == packet.get("elementId")]
+        actual_targets = [e for e in comparable.get("elements", [])
+                          if e.get("id") == packet.get("elementId")]
+        _require(len(expected_targets) == len(actual_targets) == 1,
+                 "exact owned formula element required")
+        changes = packet.get("changes", [])
+        ids = [change["actualColumnId"] for change in changes]
+        _require(len(set(ids)) == len(ids), "ambiguous owned formula columns")
+        for change in changes:
+            column_id = change["actualColumnId"]
+            expected_columns = [c for c in expected_targets[0].get("columns", [])
+                                if c.get("id") == column_id]
+            actual_columns = [c for c in actual_targets[0].get("columns", [])
+                              if c.get("id") == column_id]
+            _require(len(expected_columns) == len(actual_columns) == 1 and
+                     expected_columns[0].get("formula") == change["formula"],
+                     "prepared owned formula identity changed")
+            authored, saved = change["formula"], actual_columns[0].get("formula")
+            if authored == saved:
+                continue
+            canonical, insertions = _canonical_not_call_spacing(authored)
+            _require(insertions and canonical == saved,
+                     "saved owned formula differs beyond observed Not call spacing")
+            normalizations.append({"logicalColumnId": change["logicalColumnId"],
+                "actualColumnId": column_id,
+                "rule": "not-call-single-ascii-space-before-open-paren",
+                "expectedFormula": authored, "actualFormula": saved,
+                "expectedFormulaSha256": hashlib.sha256(authored.encode()).hexdigest(),
+                "actualFormulaSha256": hashlib.sha256(saved.encode()).hexdigest(),
+                "expectedInsertionOffsets": insertions})
+            actual_columns[0]["formula"] = authored
+    _require(digest(comparable) == expected_hash,
              "saved full contents differ from exact candidate patch")
     return {"status": "CONFIRMED_FORMULA_PATCH_STRUCTURE_ONLY",
             "sourceSha256": packet["sourceSha256"], "documentId": packet["documentId"],
-            "documentVersion": readback["documentVersion"], "contentsHash": packet["afterContentsHash"],
+            "documentVersion": readback["documentVersion"], "contentsHash": actual_hash,
+            "expectedContentsHash": expected_hash, "actualContentsHash": actual_hash,
+            "formulaNormalizations": normalizations,
             "runtimeStatus": "UNVERIFIED_CANDIDATE"}
 
 

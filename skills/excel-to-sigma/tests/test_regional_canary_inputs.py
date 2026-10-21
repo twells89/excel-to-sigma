@@ -13,7 +13,9 @@ from lib.regional_canary_inputs import (build_canary_input_plan, validate_canary
     prepare_input_create_program, prepare_input_seed_program, reconcile_input_rows,
     confirm_phase_input_stability)
 from lib.regional_grouped_canary import (prepare_contents_patch, confirm_contents_patch,
-    prepare_grouping_program, prepare_scaffold_program, observe_b4_query)
+    prepare_grouping_program, prepare_scaffold_program, observe_b4_query,
+    REVIEWED_CANDIDATE_DIGEST)
+from lib.native_exact_plan import digest
 
 ROOT = Path(__file__).resolve().parents[5]
 WORK = ROOT / "work"
@@ -49,6 +51,70 @@ def check_formula_api_contract(program, sdk_path=SDK_FORMULA):
         exec(compile(ast.fix_missing_locations(module), str(sdk_path), "exec"), namespace)
         inspect.signature(namespace[name]).bind(*call.args,
             **{keyword.arg: keyword.value for keyword in call.keywords})
+
+
+class RegionalFormulaReadbackTest(unittest.TestCase):
+    def packet(self):
+        formula = 'If(Not([Not( column]), "Not(\\\"literal\\\")", Not([Flag]))'
+        contents = {"elements": [{"id": "owned", "name": "Rows", "columns": [
+            {"id": "h0", "name": "h0", "formula": formula},
+            {"id": "foreign", "name": "Unchanged", "formula": "Not([Flag])"}]}],
+            "layout": "exact layout"}
+        packet = {"reviewedCandidateDigest": REVIEWED_CANDIDATE_DIGEST,
+            "status": "REST_FORMULA_PATCH_PENDING_EXECUTION", "documentId": "document",
+            "sourceSha256": "source", "ifMatchDocumentVersion": 4,
+            "elementId": "owned", "contents": contents, "afterContentsHash": digest(contents),
+            "changes": [{"logicalColumnId": "logical-h0", "actualColumnId": "h0",
+                         "formula": formula}]}
+        readback = {"workbookId": "document", "documentVersion": 5,
+                    "contents": copy.deepcopy(contents)}
+        return packet, readback
+
+    def test_accepts_only_recorded_not_call_spacing_and_keeps_actual_lineage_hash(self):
+        packet, readback = self.packet()
+        actual = 'If(Not ([Not( column]), "Not(\\\"literal\\\")", Not ([Flag]))'
+        readback["contents"]["elements"][0]["columns"][0]["formula"] = actual
+        confirmed = confirm_contents_patch(packet, readback)
+        self.assertEqual(confirmed["contentsHash"], digest(readback["contents"]))
+        self.assertEqual(confirmed["expectedContentsHash"], packet["afterContentsHash"])
+        self.assertEqual(confirmed["actualContentsHash"], digest(readback["contents"]))
+        normalization, = confirmed["formulaNormalizations"]
+        self.assertEqual(normalization["actualColumnId"], "h0")
+        self.assertEqual(normalization["expectedFormula"], packet["changes"][0]["formula"])
+        self.assertEqual(normalization["actualFormula"], actual)
+        self.assertEqual(normalization["rule"], "not-call-single-ascii-space-before-open-paren")
+
+    def test_exact_readback_still_has_no_normalization(self):
+        packet, readback = self.packet()
+        confirmed = confirm_contents_patch(packet, readback)
+        self.assertEqual(confirmed["formulaNormalizations"], [])
+        self.assertEqual(confirmed["contentsHash"], packet["afterContentsHash"])
+
+    def test_rejects_literal_reference_function_operator_and_other_whitespace_edits(self):
+        for change in (lambda f: f.replace('literal', 'changed'),
+                       lambda f: f.replace('[Flag]', '[Other]'),
+                       lambda f: f.replace('[Not( column]', '[Not ( column]'),
+                       lambda f: f.replace('Not(', 'NotSomething('),
+                       lambda f: f.replace('Not([Flag])', 'Not([Flag] = True)'),
+                       lambda f: f.replace('Not(', 'Not  ('),
+                       lambda f: f.replace('If(', 'If ('),
+                       lambda f: f.replace('Not(', 'Not\t(')):
+            packet, readback = self.packet()
+            readback["contents"]["elements"][0]["columns"][0]["formula"] = change(
+                packet["changes"][0]["formula"])
+            with self.subTest(formula=readback["contents"]["elements"][0]["columns"][0]["formula"]):
+                with self.assertRaises(ValueError):
+                    confirm_contents_patch(packet, readback)
+
+    def test_rejects_unowned_formula_or_document_shape_changes(self):
+        for change in (lambda c: c["elements"][0]["columns"][1].__setitem__("formula", "Not ([Flag])"),
+                       lambda c: c.__setitem__("layout", "different"),
+                       lambda c: c["elements"][0].__setitem__("name", "Renamed"),
+                       lambda c: c["elements"][0]["columns"][0].__setitem__("id", "other")):
+            packet, readback = self.packet()
+            change(readback["contents"])
+            with self.assertRaises(ValueError):
+                confirm_contents_patch(packet, readback)
 
 
 @unittest.skipUnless(SOURCE.exists() and BASE.exists() and CANDIDATE.exists(),
