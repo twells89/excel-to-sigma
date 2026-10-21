@@ -686,6 +686,14 @@ def fixture_bindings(plan):
         research_formats_exact = all(column.get("format") for column in detail_view_columns)
     main_ids = {column["name"]: column["id"] for column in main_view_columns}
     detail_ids = {column["name"]: column["id"] for column in detail_view_columns}
+    source_table = BUSINESS_TABLES.get(workflow)
+    source_data_rows = None
+    if source_table:
+        workbook = load_workbook(plan["source"]["path"], read_only=False)
+        table = workbook[source_table[0]].tables[source_table[1]]
+        _left, header_row, _right, last_row = range_boundaries(table.ref)
+        source_data_rows = (header_row + 1, last_row)
+        workbook.close()
     conditional_targets = {}
     for rule in plan["conditionalFormats"]:
         targets = []
@@ -708,6 +716,21 @@ def fixture_bindings(plan):
             bound = columns.get(f"{rule['sheet']}!{field}")
             if bound:
                 targets.append(bound)
+                # A business view projects the full source table. Only rules
+                # covering that same table can be shared with its projections.
+                if source_table and rule["sheet"] == source_table[0]:
+                    areas = [range_boundaries(area) for area in rule["range"].split()]
+                    # A multi-area rule can include other fields or omit rows;
+                    # its original bound target remains, but a full-row view
+                    # cannot represent its exact scope.
+                    if len(areas) == 1 and (areas[0][1], areas[0][3]) == source_data_rows:
+                        formula = f"[{source_name}/{field}]"
+                        for role, view_columns in (("main", main_view_columns),
+                                                   ("detail", detail_view_columns)):
+                            targets.extend(
+                                {"elementId": f"{workflow}-{role}-view", "columnId": column["id"]}
+                                for column in view_columns if column.get("formula") == formula
+                            )
             elif field in main_ids:
                 targets.append({"elementId": f"{workflow}-main-view", "columnId": main_ids[field]})
             elif field in detail_ids:
@@ -715,7 +738,9 @@ def fixture_bindings(plan):
             else:
                 targets.append({"elementId": source_id,
                                 "columnId": re.sub(r"[^a-z0-9]+", "_", field.lower()).strip("_") or "value"})
-        conditional_targets[rule["id"]] = targets
+        conditional_targets[rule["id"]] = list({
+            (target["elementId"], target["columnId"]): target for target in targets
+        }.values())
     validation_targets = {}
     for rule in plan["validations"]:
         if workflow == "research" and rule["sheet"] == "Model Inputs" and rule["range"] == "C2:C7":
