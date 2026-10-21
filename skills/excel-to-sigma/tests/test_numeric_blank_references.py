@@ -189,6 +189,44 @@ class NumericBlankReferenceTests(unittest.TestCase):
                 with self.subTest(column=column, row=row):
                     self.assertFalse(CellIdentity("Model", f"{column}{row}") in values)
 
+    def test_range_aggregates_ignore_empty_cells_but_propagate_formula_errors(self):
+        source = Workbook()
+        ws = source.active
+        ws.title = "Model"
+        ws["A1"] = 3
+        ws["A3"] = 7
+        ws["B1"] = 1
+        ws["B3"] = 1
+        ws["C1"] = "=SUM(A1:A3)"
+        ws["C2"] = "=MIN(A1:A3)"
+        ws["C3"] = "=MAX(A1:A3)"
+        ws["C4"] = "=SUMIFS(A1:A3,B1:B3,1)"
+        ws["D1"] = "=1/0"
+        ws["D2"] = "=SUM(D1:D1)"
+
+        values = FormulaGraph.from_workbook(source).evaluate()
+
+        self.assertEqual([values[CellIdentity("Model", f"C{row}")] for row in range(1, 5)],
+                         [10, 3, 7, 10])
+        self.assertNotIn(CellIdentity("Model", "D2"), values)
+
+    def test_research_range_sum_coalesces_numeric_source_leaves(self):
+        source = load_workbook(FIXTURE, data_only=False)
+        source["FY results"]["I8"] = "=SUM('Model Inputs'!C2:C3)"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "range-sum.xlsx"
+            source.save(path)
+            plan = INFER.infer(path, sheet="FY results")
+
+        revenue = next(line for line in plan["lines"] if line["row"] == 8)
+        formula = revenue["periodFormulas"]["2026"]
+        self.assertEqual(
+            formula,
+            "Sum((Coalesce([i_model_inputs_c2], 0) + Coalesce([i_model_inputs_c3], 0)))",
+        )
+        self.assertEqual(scalar(formula, {"i_model_inputs_c2": 0.0725,
+                                          "i_model_inputs_c3": None}), 0.0725)
+
     def test_research_aggregate_emission_preserves_division_error_through_formula_link(self):
         for name in ("MIN", "MAX", "SUM"):
             with self.subTest(name=name):

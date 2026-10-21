@@ -832,7 +832,7 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
             return render_reference(reference, True)
 
         def render_range(value):
-            return "(" + " + ".join(render_reference(reference)
+            return "(" + " + ".join(render_arithmetic_reference(reference)
                                       for reference in expand_range(value)) + ")"
         return emit_expression_sigma(expression, render_reference, render_range,
                                      arithmetic_reference_renderer=render_arithmetic_reference,

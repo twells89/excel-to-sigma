@@ -179,6 +179,14 @@ class FormulaGraph:
                     raise UnsupportedExpression(f"unresolved or failed reference {target.id}")
                 return values[target]
 
+            def resolve_range(reference):
+                target = target_for(reference)
+                if target not in values:
+                    if target in self.formulas:
+                        raise UnsupportedExpression(f"failed range reference {target.id}")
+                    return None
+                return values[target]
+
             def arithmetic_value(reference, value):
                 target = target_for(reference)
                 original = self.literals.get(target)
@@ -187,6 +195,7 @@ class FormulaGraph:
             try:
                 values[identity] = evaluate(expression, resolve,
                                             arithmetic_reference_resolver=arithmetic_value,
+                                            range_reference_resolver=resolve_range,
                                             arithmetic_context=True)
             except (ArithmeticError, TypeError, ValueError):
                 continue

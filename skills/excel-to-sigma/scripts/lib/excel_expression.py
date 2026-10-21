@@ -351,6 +351,7 @@ def _argument_arithmetic_context(name, index, outer_context):
 
 def evaluate(expression, resolver: Callable[[CellReference], object], *,
              arithmetic_reference_resolver: Callable[[CellReference, object], object] | None = None,
+             range_reference_resolver: Callable[[CellReference], object] | None = None,
              arithmetic_context: bool = False):
     """Evaluate one parsed expression; optionally coerce typed blank leaves in arithmetic.
 
@@ -366,7 +367,9 @@ def evaluate(expression, resolver: Callable[[CellReference], object], *,
             value = resolver(node.value)
             return (arithmetic_reference_resolver(node.value, value)
                     if arithmetic and arithmetic_reference_resolver is not None else value)
-        if isinstance(node, Range): return [resolver(ref) for ref in expand_range(node)]
+        if isinstance(node, Range):
+            resolve_range = range_reference_resolver or resolver
+            return [resolve_range(ref) for ref in expand_range(node)]
         if isinstance(node, Group): return run(node.expression, arithmetic)
         if isinstance(node, Unary):
             value = run(node.operand, True)
