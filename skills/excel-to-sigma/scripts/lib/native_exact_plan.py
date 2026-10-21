@@ -51,13 +51,10 @@ def _helper_tokens(formula,prefix):
     return set(tokens)
 
 
-def _reviewed_numeric_reference(node,bindings):
-    # A direct formula reference to a reviewed numeric input evaluates to zero
-    # when that input is blank. Keep the input itself blank for COUNT/MIN ranges.
-    while node['kind']=='group':node=node['expression']
-    if node['kind']!='reference':return False
-    binding=bindings.get(node['cell'])
-    return bool(binding and binding['kind']=='input' and binding['valueType']=='number')
+def _formula_result(value):
+    """Excel scalar formula results turn a successful blank into numeric zero."""
+    if isinstance(value,Vector):return value
+    return replace(value,kind=iff(both(eq(value.kind,'"z"'),eq(value.error,EMPTY)),'"n"',value.kind))
 
 
 def build_exact_native_calculation_plan(source_path,source_input_plan=None):
@@ -94,7 +91,7 @@ def build_exact_native_calculation_plan(source_path,source_input_plan=None):
             try:value=evaluate_bound(records[cell]['ast'],source_value,epoch=epoch)
             except ExcelCalcError as error:value=Fault(error.code)
             finally:active.pop()
-            if value is None and _reviewed_numeric_reference(records[cell]['ast'],bindings):value=0
+            if value is None:value=0
         else:
             s,a=cell.rsplit('!',1);value=context.literals.get((s,a))
             source=context.workbook[s][a]
@@ -120,8 +117,7 @@ def build_exact_native_calculation_plan(source_path,source_input_plan=None):
             # The helper callback avoids exponential inlining during eligibility.
             value=compile_expression(record['ast'],resolve,emit=lambda f:'[helper]',epoch=epoch)
             if isinstance(value,Vector):raise UnsupportedExpression('non-scalar source result requires array port')
-            if _reviewed_numeric_reference(record['ast'],bindings):
-                value=replace(value,kind=iff(both(eq(value.kind,'"z"'),eq(value.error,EMPTY)),'"n"',value.kind))
+            value=_formula_result(value)
             expected=source_value(cell)
             record['localExpected']=None if isinstance(expected,Fault) else expected
             record['sourceResultClass']='excel-error' if isinstance(expected,Fault) else 'blank' if expected is None else 'logical' if type(expected)is bool else 'text' if isinstance(expected,str) else 'number'
@@ -272,7 +268,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
                     if desc is None:raise UnsupportedExpression('formal calculated-column dependency is not a row template')
                     return desc['scalar']
                 return resolve(target)
-            try:value=compile_expression(plan['formulas'][c]['ast'],relative,emit=rg.emit,epoch=plan['dateEpoch'])
+            try:value=_formula_result(compile_expression(plan['formulas'][c]['ast'],relative,emit=rg.emit,epoch=plan['dateEpoch']))
             except UnsupportedExpression:row_active.remove(identity);return None
             signature=([n['formula'] for n in rg.nodes],lane_dict(value),can_be_boolean(value))
             if compiled and signature!=compiled[0]:row_active.remove(identity);return None
@@ -391,7 +387,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
     expression_cache={}
     for cell,r in sorted(plan['formulas'].items(),key=lambda kv:(kv[1].get('layer') or 0,kv[0])):
         if r['status']!='ready-to-bind':continue
-        value=compile_expression(r['ast'],resolve,emit=graph.emit,aggregate=aggregate,epoch=plan['dateEpoch'],expression_cache=expression_cache)
+        value=_formula_result(compile_expression(r['ast'],resolve,emit=graph.emit,aggregate=aggregate,epoch=plan['dateEpoch'],expression_cache=expression_cache))
         outputs[cell]=value
     formal_obligations=[]
     for cell in outputs:

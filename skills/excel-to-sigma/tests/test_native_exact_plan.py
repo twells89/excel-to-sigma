@@ -58,6 +58,26 @@ class ExactPlanningTests(unittest.TestCase):
         self.assertEqual(domains[0]['appendPolicy'],'live-formal-table')
         self.assertEqual(lower['formalTemplateObligations'],[])
 
+    def test_formal_row_formula_result_converts_blank_without_changing_input_kind(self):
+        path,old=self.source();book=load_workbook(path)
+        book['Ledger Renamed']['B2']=None
+        for row in (2,3):book['Ledger Renamed'][f'D{row}']=f'=B{row}'
+        book.save(path)
+        decisions=copy.deepcopy(old['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        decisions['features'][0]['reviewedBlankColumns']=['Amount']
+        inputs=build_source_input_plan(path,decisions,connection_id='connection',folder_id='folder')
+        plan=build_exact_native_calculation_plan(path,inputs)
+        self.assertEqual(plan['formulas']['Ledger Renamed!D2']['localExpected'],0)
+        self.assertEqual(plan['formulas']['Ledger Renamed!D3']['localExpected'],4)
+        assigned={'ledger':{'elementId':'actual-input','name':'tblLedger','rowIdColumn':'Row ID','rows':{'0':'actual-a','1':'actual-b'}}}
+        lower=lower_exact_native_calculations(plan,assigned)
+        row_tables=[e for e in lower['shards'] if 'calculatedColumnDomain' in e]
+        self.assertEqual(len(row_tables),1)
+        self.assertEqual(row_tables[0]['calculatedColumnDomain']['appendPolicy'],'live-formal-table')
+        kinds=[c['formula'] for c in row_tables[0]['columns'] if c['name']=='kind']
+        self.assertEqual(len(kinds),1)
+        self.assertIn('"n"',kinds[0])
+
     def test_formula_text_that_looks_like_internal_helper_is_literal(self):
         path,inputs=self.source();book=load_workbook(path);book['Summary Renamed']['A2']='="__native_h0__"';book.save(path)
         decisions=copy.deepcopy(inputs['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
@@ -113,15 +133,30 @@ class ExactPlanningTests(unittest.TestCase):
         path,old=self.source();book=load_workbook(path)
         book['Ledger Renamed']['B2']=None
         book['Ledger Renamed']['D2']='=B2'
+        book['Ledger Renamed']['E1']='Note'
+        book['Ledger Renamed']['E2']=None
+        book['Ledger Renamed']['E3']='kept'
+        book['Ledger Renamed'].tables['tblLedger'].ref='A1:E3'
         book['Summary Renamed']['A1']="=COUNT('Ledger Renamed'!D2)"
         book['Summary Renamed']['A2']="=MIN('Ledger Renamed'!D2,5)"
         book['Summary Renamed']['A3']='=IF(TRUE,"",0)'
         book['Summary Renamed']['A4']='=1/0'
         book['Summary Renamed']['A5']="=COUNT('Ledger Renamed'!B2)"
         book['Summary Renamed']['A6']="=MIN('Ledger Renamed'!B2,5)"
+        book['Summary Renamed']['A7']="=IF(TRUE,'Ledger Renamed'!B2,\"\")"
+        book['Summary Renamed']['A8']="=IF(FALSE,0,'Ledger Renamed'!B2)"
+        book['Summary Renamed']['A9']="=IF(FALSE,'Ledger Renamed'!B2,\"\")"
+        book['Summary Renamed']['A10']='=COUNT(A7)'
+        book['Summary Renamed']['A11']='=COUNT(A9)'
+        book['Summary Renamed']['A12']="='Ledger Renamed'!E2"
+        book['Summary Renamed']['A13']='=COUNT(A12)'
+        book['Summary Renamed']['A14']="=IF(TRUE,1/0,'Ledger Renamed'!B2)"
+        book['Summary Renamed']['A15']="=IF(TRUE,TRUE,'Ledger Renamed'!B2)"
         book.save(path)
         decisions=copy.deepcopy(old['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
-        decisions['features'][0]['reviewedBlankColumns']=['Amount']
+        decisions['features'][0]['reviewedBlankColumns']=['Amount','Note']
+        decisions['features'][0]['literalColumns'].append('Note')
+        decisions['features'][0]['columnTypes']['Note']='text'
         inputs=build_source_input_plan(path,decisions,connection_id='connection',folder_id='folder')
         plan=build_exact_native_calculation_plan(path,inputs)
         for cell,expected,kind in [('Ledger Renamed!D2',0,'number'),
@@ -129,13 +164,23 @@ class ExactPlanningTests(unittest.TestCase):
                                     ('Summary Renamed!A2',0,'number'),
                                     ('Summary Renamed!A3','','text'),
                                     ('Summary Renamed!A5',0,'number'),
-                                    ('Summary Renamed!A6',5,'number')]:
+                                    ('Summary Renamed!A6',5,'number'),
+                                    ('Summary Renamed!A7',0,'number'),
+                                    ('Summary Renamed!A8',0,'number'),
+                                    ('Summary Renamed!A9','','text'),
+                                    ('Summary Renamed!A10',1,'number'),
+                                    ('Summary Renamed!A11',0,'number'),
+                                    ('Summary Renamed!A12',0,'number'),
+                                    ('Summary Renamed!A13',1,'number'),
+                                    ('Summary Renamed!A15',True,'logical')]:
             with self.subTest(cell=cell):
                 record=plan['formulas'][cell]
                 self.assertEqual(record['status'],'ready-to-bind')
                 self.assertEqual(record['localExpected'],expected)
                 self.assertEqual(record['sourceResultClass'],kind)
         self.assertEqual(plan['formulas']['Summary Renamed!A4']['sourceResultClass'],'excel-error')
+        self.assertEqual(plan['formulas']['Summary Renamed!A14']['sourceResultClass'],'excel-error')
+        self.assertEqual(plan['formulas']['Summary Renamed!A14']['localExpectedError'],'#DIV/0!')
         assigned={'ledger':{'elementId':'actual-input','name':'tblLedger','rowIdColumn':'Row ID','rows':{'0':'actual-a','1':'actual-b'}}}
         lowered=lower_exact_native_calculations(plan,assigned)
         direct=lowered['formulas']['Ledger Renamed!D2']['lanes']
