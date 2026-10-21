@@ -1673,7 +1673,13 @@ def integrate_presentation(contents, artifact):
         for column_id, update in patch["columnUpdates"].items():
             if column_id not in columns:
                 raise ValueError(f"presentation patch column is missing: {element_id}/{column_id}")
-            columns[column_id].update(copy.deepcopy(update))
+            update = copy.deepcopy(update)
+            if "style" in update and isinstance(update["style"], dict):
+                prior_style = columns[column_id].get("style") or {}
+                if not isinstance(prior_style, dict):
+                    raise ValueError(f"presentation patch column style is malformed: {element_id}/{column_id}")
+                update["style"] = {**prior_style, **update["style"]}
+            columns[column_id].update(update)
         prior = element.setdefault("conditionalFormats", [])
         for rule in patch["conditionalFormats"]:
             if rule not in prior:

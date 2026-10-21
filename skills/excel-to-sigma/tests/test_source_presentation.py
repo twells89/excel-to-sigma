@@ -183,6 +183,82 @@ class SourcePresentationTests(unittest.TestCase):
         self.assertIn("Quarterly", retail["pages"][0]["name"])
         self.assertEqual(retail["elements"][3]["name"], "Net Sales by Quarter")
 
+    def test_generated_table_widths_keep_long_fields_readable_and_scrollable(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Register"
+        names = ["Entry ID", "Transaction Date", "Employee", "Department", "Category",
+                 "Vendor Description", "Amount USD", "Receipt Status", "Approval Status",
+                 "Card Amount", "Ledger Amount", "Policy Limit", "Recon Variance",
+                 "Policy Excess", "Exception", "Project", "Cost Center", "Audit Notes"]
+        sheet.append(names)
+        sheet.append(list(range(len(names))))
+        sheet.column_dimensions["B"].width = 24
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "register.xlsx"
+            workbook.save(source)
+            plan = build_source_plan(source)
+            bindings = synthetic_bindings(plan)
+            columns = [{"id": f"c{index}", "name": name,
+                        "formula": f"[Live/{name}]",
+                        "sourceCell": f"Register!{presentation.get_column_letter(index)}1"}
+                       for index, name in enumerate(names, 1)]
+            columns[6]["format"] = {"kind": "number", "formatString": "$,.2f"}
+            bindings["mainViewColumns"] = copy.deepcopy(columns[:9])
+            bindings["detailViewColumns"] = copy.deepcopy(columns)
+            bindings["editViewColumns"] = copy.deepcopy(columns[:5])
+            artifact = emit_preview(plan, bindings)
+        main = next(e for e in artifact["elements"] if e["id"] == "main")
+        detail = next(e for e in artifact["elements"] if e["id"] == "detail")
+        self.assertEqual(len(main["columns"]), 9)
+        self.assertEqual(len(detail["columns"]), 18)
+        self.assertGreater(sum(c["style"]["width"] for c in detail["columns"]), 1600)
+        self.assertGreaterEqual(main["columns"][1]["style"]["width"], 173)
+        self.assertGreaterEqual(main["columns"][6]["style"]["width"], 140)
+        self.assertGreaterEqual(detail["columns"][7]["style"]["width"], 150)
+        self.assertLessEqual(detail["columns"][-1]["style"]["width"], 360)
+        self.assertTrue(all("sourceCell" not in c for c in detail["columns"]))
+        self.assertEqual(detail["columns"][6]["format"],
+                         {"kind": "number", "formatString": "$,.2f"})
+        self.assertFalse(any(c.get("hidden") for c in detail["columns"]))
+        edit_updates = artifact["elementPatches"]["edit"]["columnUpdates"]
+        self.assertEqual(set(edit_updates), {f"c{i}" for i in range(1, 6)})
+        self.assertGreaterEqual(edit_updates["c2"]["style"]["width"], 173)
+        contents = {"schemaVersion": 1, "kind": "workbook", "pages": [], "layout": "",
+                    "elements": [{"id": "view-source", "kind": "table", "columns": []},
+                                 {"id": "edit", "kind": "input-table",
+                                  "columns": [{"id": f"c{i}", "style": {"backgroundColor": "#EFEFEF"},
+                                               "format": {"kind": "number", "formatString": ".2f"}}
+                                              for i in range(1, 6)]}]}
+        merged = presentation.integrate_presentation(contents, artifact)
+        edit = next(e for e in merged["elements"] if e["id"] == "edit")
+        self.assertEqual(edit["columns"][1]["style"]["backgroundColor"], "#EFEFEF")
+        self.assertGreaterEqual(edit["columns"][1]["style"]["width"], 173)
+        self.assertEqual(edit["columns"][1]["format"],
+                         {"kind": "number", "formatString": ".2f"})
+
+    def test_explicit_width_style_is_preserved_and_invalid_width_fails(self):
+        plan = self.plans[0]
+        bindings = synthetic_bindings(plan)
+        columns = [{"id": "date", "name": "Transaction Date",
+                    "formula": "[Live/Transaction Date]",
+                    "format": {"kind": "datetime", "formatString": "%Y-%m-%d"},
+                    "style": {"width": 225, "backgroundColor": "#EFEFEF"}}]
+        bindings["mainViewColumns"] = columns
+        bindings["detailViewColumns"] = copy.deepcopy(columns)
+        artifact = emit_preview(plan, bindings)
+        for element in artifact["elements"]:
+            if element["id"] in {"main", "detail"}:
+                self.assertEqual(element["columns"][0]["style"],
+                                 {"width": 225, "backgroundColor": "#EFEFEF"})
+                self.assertEqual(element["columns"][0]["format"],
+                                 {"kind": "datetime", "formatString": "%Y-%m-%d"})
+        for invalid in (0, -10, "wide", float("nan"), True):
+            broken = copy.deepcopy(bindings)
+            broken["mainViewColumns"][0]["style"]["width"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "width"):
+                emit_preview(plan, broken)
+
     def test_donut_schema_audit_requires_native_fields_and_column_sort(self):
         donut = {"allOf": [
             {"required": ["id", "kind", "source", "columns", "color", "value"],

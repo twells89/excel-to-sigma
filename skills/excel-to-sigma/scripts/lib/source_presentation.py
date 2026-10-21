@@ -35,6 +35,74 @@ PLAN_VERSION = 1
 SUPPORTED_CHART_TYPES = {"bar", "line", "doughnut"}
 
 
+def _table_column_width(column, role, workbook):
+    """Return a readable pixel width, retaining an explicit native width."""
+    style = column.get("style") or {}
+    if not isinstance(style, dict):
+        raise ValueError("table column style must be an object")
+    if "width" in style:
+        width = style["width"]
+        if (isinstance(width, bool) or not isinstance(width, (int, float))
+                or not math.isfinite(width) or width <= 0):
+            raise ValueError("table column style.width must be a positive finite pixel number")
+        return width
+
+    name = str(column.get("name") or "")
+    lower = name.lower()
+    fmt = column.get("format") or {}
+    kind = fmt.get("kind") if isinstance(fmt, dict) else None
+    if kind == "datetime" or re.search(r"\bdate\b|\btime\b", lower):
+        minimum = 135
+    elif (kind == "number" and ("$" in str(fmt.get("formatString") or "")
+                                or fmt.get("currencySymbol"))
+          or re.search(r"\bamount\b|\bcost\b|\bprice\b|\brevenue\b|\bexpense\b", lower)):
+        minimum = 145
+    elif re.search(r"\bstatus\b|\bstate\b|\bapproval\b", lower):
+        minimum = 150
+    elif kind == "number" and "%" in str(fmt.get("formatString") or "") or re.search(r"\bpercent\b|\brate\b|\bratio\b", lower):
+        minimum = 120
+    elif re.search(r"\bid\b|\bcode\b|\bsku\b|\bkey\b", lower):
+        minimum = 120
+    elif re.search(r"\bcount\b|\bqty\b|\bquantity\b|\bdays\b", lower):
+        minimum = 110
+    elif re.search(r"\bnotes?\b|\bdescription\b|\bcomment\b", lower):
+        minimum = 170
+    else:
+        minimum = 135 if role == "main" else 150
+    header_width = math.ceil(len(name) * 7.2 + 28)
+    source_width = 0
+    reference = column.get("sourceCell")
+    if workbook is not None and isinstance(reference, str) and "!" in reference:
+        sheet, address = reference.rsplit("!", 1)
+        sheet = sheet.strip("'").replace("''", "'")
+        match = re.fullmatch(r"\$?([A-Z]+)\$?\d+", address)
+        if match and sheet in workbook:
+            dimension = workbook[sheet].column_dimensions.get(match.group(1))
+            if dimension is not None and dimension.customWidth:
+                chars = dimension.width
+                if isinstance(chars, (int, float)) and math.isfinite(chars) and chars > 0:
+                    source_width = round(chars * 7 + 5)
+    ceiling = 280 if role == "main" else 360
+    return min(ceiling, max(minimum, header_width, source_width))
+
+
+def _sized_table_columns(columns, role, workbook):
+    result = []
+    seen = set()
+    for column in columns:
+        if not isinstance(column, dict) or not column.get("id") or not column.get("name"):
+            raise ValueError(f"{role} table columns require unique ID and name")
+        if column["id"] in seen:
+            raise ValueError(f"{role} table columns require unique ID and name")
+        seen.add(column["id"])
+        emitted = copy.deepcopy(column)
+        emitted.pop("sourceCell", None)
+        emitted["style"] = {**(emitted.get("style") or {}),
+                            "width": _table_column_width(column, role, workbook)}
+        result.append(emitted)
+    return result
+
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                      ensure_ascii=False, default=str).encode()).hexdigest()
@@ -425,14 +493,37 @@ def _render(plan, bindings, *, staging_gate, manifest=None):
         elements.append(element)
         emitted_ids.append(element_id)
         emitted_sources.append(binding["sourceElementId"])
-    for role, element_id, columns in (("Main", bindings["mainElementId"], bindings["mainViewColumns"]),
-                                      ("Detail", bindings["detailElementId"], bindings["detailViewColumns"])):
-        elements.append({"id": element_id, "kind": "table", "name": f"{plan['sourceName']} {role}",
+    table_bindings = [("main", bindings["mainViewColumns"]),
+                      ("detail", bindings["detailViewColumns"])]
+    if "editViewColumns" in bindings:
+        if not isinstance(bindings["editViewColumns"], list) or not bindings["editViewColumns"]:
+            raise ValueError("editViewColumns requires explicit existing edit column IDs and names")
+        table_bindings.append(("edit", bindings["editViewColumns"]))
+    source_references = any(column.get("sourceCell") for _role, columns in table_bindings
+                            for column in columns if isinstance(column, dict))
+    workbook = None
+    if source_references:
+        source_path = Path(plan["source"]["path"])
+        if hashlib.sha256(source_path.read_bytes()).hexdigest() != plan["sourceHash"]:
+            raise ValueError("presentation source changed before width emission")
+        workbook = load_workbook(source_path, data_only=False, read_only=False)
+    try:
+        sized = {role: _sized_table_columns(columns, role, workbook)
+                 for role, columns in table_bindings}
+    finally:
+        if workbook is not None:
+            workbook.close()
+    for role, element_id in (("main", bindings["mainElementId"]),
+                             ("detail", bindings["detailElementId"])):
+        elements.append({"id": element_id, "kind": "table", "name": f"{plan['sourceName']} {role.title()}",
                          "description": {"text": marker, "visibility": "hidden"},
                          "source": {"kind": "table", "elementId": bindings["viewSourceElementId"]},
-                         "columns": copy.deepcopy(columns)})
+                         "columns": sized[role]})
 
     patches = defaultdict(lambda: {"columnUpdates": {}, "conditionalFormats": []})
+    for column in sized.get("edit", []):
+        patches[bindings["editElementId"]]["columnUpdates"][column["id"]] = {
+            "style": {"width": column["style"]["width"]}}
     for rule in plan["validations"]:
         targets = _target_list(plan, bindings, "validationTargets", rule,
                                reviewed=staging_gate["status"] != "LOGICAL_FIXTURE_ONLY")
