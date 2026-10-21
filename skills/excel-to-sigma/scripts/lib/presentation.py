@@ -1670,12 +1670,17 @@ def integrate_presentation(contents, artifact):
         if element is None:
             raise ValueError(f"presentation patch target is missing: {element_id}")
         columns = {column.get("id"): column for column in element.get("columns", [])}
+        expected_names = patch.get("expectedColumnNames", {})
+        if not isinstance(expected_names, dict):
+            raise ValueError(f"presentation patch expected column names are malformed: {element_id}")
         for column_id, update in patch["columnUpdates"].items():
             if column_id not in columns:
                 raise ValueError(f"presentation patch column is missing: {element_id}/{column_id}")
+            if column_id in expected_names and columns[column_id].get("name") != expected_names[column_id]:
+                raise ValueError(f"presentation patch column name is stale: {element_id}/{column_id}")
             update = copy.deepcopy(update)
             if "style" in update and isinstance(update["style"], dict):
-                prior_style = columns[column_id].get("style") or {}
+                prior_style = columns[column_id]["style"] if "style" in columns[column_id] else {}
                 if not isinstance(prior_style, dict):
                     raise ValueError(f"presentation patch column style is malformed: {element_id}/{column_id}")
                 update["style"] = {**prior_style, **update["style"]}

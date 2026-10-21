@@ -227,7 +227,8 @@ class SourcePresentationTests(unittest.TestCase):
         contents = {"schemaVersion": 1, "kind": "workbook", "pages": [], "layout": "",
                     "elements": [{"id": "view-source", "kind": "table", "columns": []},
                                  {"id": "edit", "kind": "input-table",
-                                  "columns": [{"id": f"c{i}", "style": {"backgroundColor": "#EFEFEF"},
+                                  "columns": [{"id": f"c{i}", "name": names[i - 1],
+                                               "style": {"backgroundColor": "#EFEFEF"},
                                                "format": {"kind": "number", "formatString": ".2f"}}
                                               for i in range(1, 6)]}]}
         merged = presentation.integrate_presentation(contents, artifact)
@@ -236,6 +237,14 @@ class SourcePresentationTests(unittest.TestCase):
         self.assertGreaterEqual(edit["columns"][1]["style"]["width"], 173)
         self.assertEqual(edit["columns"][1]["format"],
                          {"kind": "number", "formatString": ".2f"})
+        stale_name = copy.deepcopy(contents)
+        stale_name["elements"][1]["columns"][0]["name"] = "Replaced column"
+        with self.assertRaisesRegex(ValueError, "name"):
+            presentation.integrate_presentation(stale_name, artifact)
+        malformed_style = copy.deepcopy(contents)
+        malformed_style["elements"][1]["columns"][0]["style"] = []
+        with self.assertRaisesRegex(ValueError, "style"):
+            presentation.integrate_presentation(malformed_style, artifact)
 
     def test_explicit_width_style_is_preserved_and_invalid_width_fails(self):
         plan = self.plans[0]
@@ -257,6 +266,11 @@ class SourcePresentationTests(unittest.TestCase):
             broken = copy.deepcopy(bindings)
             broken["mainViewColumns"][0]["style"]["width"] = invalid
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "width"):
+                emit_preview(plan, broken)
+        for invalid_style in ([], None, False, ""):
+            broken = copy.deepcopy(bindings)
+            broken["mainViewColumns"][0]["style"] = invalid_style
+            with self.subTest(invalid_style=invalid_style), self.assertRaisesRegex(ValueError, "style"):
                 emit_preview(plan, broken)
 
     def test_donut_schema_audit_requires_native_fields_and_column_sort(self):

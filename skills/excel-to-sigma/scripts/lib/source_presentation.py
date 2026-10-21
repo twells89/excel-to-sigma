@@ -37,7 +37,7 @@ SUPPORTED_CHART_TYPES = {"bar", "line", "doughnut"}
 
 def _table_column_width(column, role, workbook):
     """Return a readable pixel width, retaining an explicit native width."""
-    style = column.get("style") or {}
+    style = column["style"] if "style" in column else {}
     if not isinstance(style, dict):
         raise ValueError("table column style must be an object")
     if "width" in style:
@@ -97,8 +97,9 @@ def _sized_table_columns(columns, role, workbook):
         seen.add(column["id"])
         emitted = copy.deepcopy(column)
         emitted.pop("sourceCell", None)
-        emitted["style"] = {**(emitted.get("style") or {}),
-                            "width": _table_column_width(column, role, workbook)}
+        width = _table_column_width(column, role, workbook)
+        emitted["style"] = {**(emitted["style"] if "style" in emitted else {}),
+                            "width": width}
         result.append(emitted)
     return result
 
@@ -524,6 +525,7 @@ def _render(plan, bindings, *, staging_gate, manifest=None):
     for column in sized.get("edit", []):
         patches[bindings["editElementId"]]["columnUpdates"][column["id"]] = {
             "style": {"width": column["style"]["width"]}}
+        patches[bindings["editElementId"]].setdefault("expectedColumnNames", {})[column["id"]] = column["name"]
     for rule in plan["validations"]:
         targets = _target_list(plan, bindings, "validationTargets", rule,
                                reviewed=staging_gate["status"] != "LOGICAL_FIXTURE_ONLY")
