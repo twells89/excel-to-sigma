@@ -20,7 +20,19 @@ from migration_gate import gate_plan_staging_source  # noqa: E402
 from migration_manifest import build_manifest  # noqa: E402
 from source_presentation import build_source_plan, emit_approved, emit_preview, audit_donut_openapi, _digest  # noqa: E402
 
-SOURCES = Path(__file__).resolve().parents[4] / "broader-eight-source-replay-20261020" / "source-originals"
+FIXTURES = ROOT / "tests" / "fixtures"
+SOURCES = [
+    FIXTURES / "regional-grouped" / "01 Regional Sales Forecast.xlsx",
+    *[FIXTURES / "broader-eight" / name for name in (
+        "02 SaaS Driver Forecast FY26.xlsx",
+        "03 Retail Quarterly Budget.xlsx",
+        "04 Sales Pipeline Forecast.xlsx",
+        "05 Statistical Demand Forecast.xlsx",
+        "06 13-Week Cash Flow.xlsx",
+        "07 Headcount and Opex Plan.xlsx",
+        "08 Inventory Replenishment Plan.xlsm",
+    )],
+]
 
 
 def synthetic_bindings(plan):
@@ -59,7 +71,7 @@ def synthetic_bindings(plan):
 class SourcePresentationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.paths = sorted(path for path in SOURCES.iterdir() if path.suffix in {".xlsx", ".xlsm"})
+        cls.paths = SOURCES
         cls.plans = [build_source_plan(path) for path in cls.paths]
 
     def test_eight_sources_inventory_every_chart_and_point_including_doughnut(self):
