@@ -1099,6 +1099,9 @@ def build_operational_input_elements(architecture, target_bindings=None):
         source = resolved_source("expenseSource")
         if not source.get("elementId") or not source.get("name"):
             raise InputSyncError("approved expense source wiring is required")
+        # Excel arithmetic reads a cleared numeric input as zero; the raw input stays null.
+        card_for_arithmetic = "Coalesce([ExpenseJoin/Card Amount], 0)"
+        ledger_for_arithmetic = "Coalesce([ExpenseJoin/Ledger Amount], 0)"
         elements.extend([
             {"id": "expensePolicy", "kind": "input-table", "name": spec["name"],
              "inputMode": "edit", "source": {"kind": "empty", "connectionId": connection},
@@ -1131,12 +1134,12 @@ def build_operational_input_elements(architecture, target_bindings=None):
                  {"id": "expense_policy_status", "name": "PolicyMatchStatus",
                   "formula": 'If(IsNull([Policy/Category]), "ERROR: missing policy", "Matched")'},
                  {"id": "expense_recon", "name": "Recon Variance",
-                  "formula": "[ExpenseJoin/Card Amount] - [ExpenseJoin/Ledger Amount]"},
+                  "formula": f"{card_for_arithmetic} - {ledger_for_arithmetic}"},
                  {"id": "expense_excess", "name": "PolicyExcess",
                   "formula": "If(IsNull([Policy/Category]), Null, Greatest([ExpenseJoin/Amount] - [Policy/Per-item Limit], 0))"},
                  {"id": "expense_exception", "name": "Exception",
                   "formula": ('If(IsNull([Policy/Category]), Null, '
-                              'If(Abs(Round([ExpenseJoin/Card Amount] * 100, 0) - Round([ExpenseJoin/Ledger Amount] * 100, 0)) > 1, "RECON", '
+                              f'If(Abs(Round({card_for_arithmetic} * 100, 0) - Round({ledger_for_arithmetic} * 100, 0)) > 1, "RECON", '
                               'If([PolicyExcess] > 0, "OVER LIMIT", '
                               'If([ExpenseJoin/Receipt Status] = "Missing", "MISSING RECEIPT", '
                               'If([ExpenseJoin/Approval Status] <> "Approved", "PENDING", "CLEAR")))))')}]},

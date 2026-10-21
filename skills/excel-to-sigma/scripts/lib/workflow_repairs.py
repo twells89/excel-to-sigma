@@ -29,8 +29,8 @@ class RepairError(ValueError):pass
 
 
 def reconciliation_required(card,ledger):
-    if card is None or ledger is None:return None
     def cents(v):
+        if v is None:return 0
         if isinstance(v,bool) or not isinstance(v,(int,float,Decimal)) or not math.isfinite(float(v)):
             raise RepairError('currency must be finite numeric')
         return int((Decimal(str(v))*100).quantize(Decimal(1),rounding=ROUND_HALF_UP))
