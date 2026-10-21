@@ -115,7 +115,7 @@ def _editable_column_contract(manifest, target, column):
             from .presentation import _extract_validations
         except ImportError:
             from presentation import _extract_validations
-        rules=_extract_validations(workbook)
+        rules=_extract_validations(workbook, manifest['source']['path'])
     finally:workbook.close()
     matches=[]
     for rule in rules:

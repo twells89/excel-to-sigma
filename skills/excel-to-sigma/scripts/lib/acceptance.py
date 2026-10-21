@@ -16,10 +16,12 @@ try:
     from .input_sync import _digest, _approved_feature, _manifest_architecture
     from .migration_manifest import validate_manifest, _plan_hash
     from .workflow_repairs import extract_workflow_repairs
+    from .source_validation import POLICY, POLICY_HASH, POLICY_VERSION, digest as source_digest
 except ImportError:
     from input_sync import _digest, _approved_feature, _manifest_architecture
     from migration_manifest import validate_manifest, _plan_hash
     from workflow_repairs import extract_workflow_repairs
+    from source_validation import POLICY, POLICY_HASH, POLICY_VERSION, digest as source_digest
 
 class AcceptanceError(ValueError):pass
 ROLE_MEMBERS={'Editor':{'memberId':'GrSnv8AzhaMdab23Tiiaj1xyypHxT','accountType':'build','grant':'edit'},
@@ -31,6 +33,8 @@ WORKFLOW_EXPLANATIONS={
 'sales':'Authored opportunity Probability × ACV drives weighted pipeline; closed-stage precedence and both dates normalized to day grain determine timing. Editable rep targets join live weighted totals; stage reference probabilities do not replace authored ones.',
 'inventory':'Available = On Hand − Allocated; Usage × Lead Days + Safety Stock determines reorder point. Equality means REORDER. Thirty-day MAX/ROUNDUP order quantity remains exact; Supplier reference values do not override item inputs.',
 'expense':'Shared category policy and currency-cent reconciliation precede receipt and approval checks. Approval changes status/timestamp only and cannot erase higher-priority violations. Required Action is live; source-static dashboard expressions remain explicitly static.'}
+VALIDATION_INPUT_FEATURE={'forecast':'forecastBusinessInput','research':'researchModelInputs',
+    'sales':'salesBusinessInput','inventory':'inventoryBusinessInput','expense':'expenseBusinessInput'}
 
 
 def _no_secrets(value):
@@ -132,6 +136,130 @@ def _source_chart_keys(charts):
     return keys
 
 
+def _reviewed_blank_outcome(review, *, branch_id, rule, source_hash):
+    """A separate qualified source decision may set a route outcome.
+
+    Runtime captures cannot supply this decision. Its exact rule, source,
+    policy, field, and gesture are rebound during production recomputation.
+    """
+    if review is None:
+        return 'UNRESOLVED_SOURCE_ROUTE'
+    if (not isinstance(review, dict) or review.get('status') != 'REVIEWED_QUALIFIED'
+            or review.get('branchId') != branch_id or review.get('sourceHash') != source_hash
+            or review.get('ruleHash') != rule['sourceXml']['ruleHash']
+            or review.get('policyHash') != POLICY_HASH
+            or review.get('route') != 'edit-to-empty-commit'
+            or review.get('expectedOutcome') not in {'SAVED', 'REJECTED_NO_WRITE'}
+            or review.get('basis') not in {'source-runtime', 'qualified-source-contract'}
+            or not all(isinstance(review.get(k), str) and review[k].strip()
+                       for k in ('reviewer', 'reviewedAt', 'decisionId', 'rationale', 'sourceEvidenceId'))
+            or review.get('recordHash') != source_digest({k: v for k, v in review.items() if k != 'recordHash'})):
+        raise AcceptanceError('qualified source blank route review missing/stale/foreign')
+    return review['expectedOutcome']
+
+
+def _validation_contract(workflow,source,manifest,receipt,target):
+    """Source Excel rules and their required native equivalence classes.
+
+    The target IDs come only from the approved assigned input receipt. A missing
+    source rule or column cannot be replaced with a generic successful test.
+    """
+    feature=VALIDATION_INPUT_FEATURE[workflow]
+    binding=receipt['targetBindings'][feature]
+    assigned=binding['columnIds']
+    spec=_manifest_architecture(manifest)['inputs'][feature]
+    table=target['inputTables'][feature]
+    columns=[{'name':column['name'],'id':assigned[column['name']],'type':column['type']}
+             for column in spec['columns']]
+    table_contract={'feature':feature,'documentId':binding['documentId'],'version':binding['version'],
+        'pageId':binding['pageId'],'elementId':binding['elementId'],
+        'connectionId':table['connectionId'],'tableIdentity':table['tableIdentity'],
+        'targetBindingHash':table['targetBindingHash'],'identityEvidenceId':table['identityEvidenceId'],
+        'editMode':spec['editMode'],'keyColumns':[assigned[name] for name in spec['keyColumns']],
+        'columns':columns,'rowCount':len(spec['rows']),
+        'sourceKeys':[[row[name] for name in spec['keyColumns']] for row in spec['rows']]}
+    rules=[];branches=[];unresolved_domains=[]
+    expected_review_ids=set()
+    for rule in source['validations']:
+        if workflow=='research':
+            match=re.fullmatch(r'C(\d+):C(\d+)',rule['range'])
+            if not match:raise AcceptanceError('research validation source range changed')
+            fields=['Model Inputs!C'+str(row) for row in range(int(match[1]),int(match[2])+1)]
+            names={field:'i_model_inputs_c'+field.split('C')[-1] for field in fields}
+        else:
+            fields=rule['fields'];names={field:field for field in fields}
+        if not fields or any(not assigned.get(names[field]) for field in fields):
+            raise AcceptanceError('source validation target column unassigned')
+        rule_target={'feature':feature,'elementId':binding['elementId'],
+                'columnIds':{field:assigned[names[field]] for field in fields}}
+        source_rule={key:copy.deepcopy(rule[key]) for key in ('id','sheet','range','field','fields','sourceType',
+            'operator','allowBlank','formula1','formula2','inclusive','status','emission','sourceXml','blankSemantics')}
+        if (source_rule['blankSemantics'] != {'version': POLICY_VERSION, 'policyHash': POLICY_HASH,
+                'classification': rule['blankSemantics']['classification'], 'applicationRoute': 'UNRESOLVED',
+                'storedValue': 'UNRESOLVED'} or rule['sourceXml']['sourceHash'] != manifest['sourceHash']):
+            raise AcceptanceError('source blank semantics policy or raw rule stale')
+        rules.append({**source_rule,'target':rule_target})
+        if rule['status']!='supported' or rule['sourceType'] not in {'list','decimal','whole'}:
+            unresolved_domains.append({'ruleId':rule['id'],'sourceType':rule['sourceType'],
+                'range':rule['range'],'ruleHash':rule['sourceXml']['ruleHash'],
+                'reason':'source nonblank validation domain has no reviewed native coverage'})
+        if rule['status']=='supported' and rule['sourceType']=='list':
+            formula=rule['formula1']
+            if not isinstance(formula,str) or not re.fullmatch(r'"[^"\n]+"',formula):
+                raise AcceptanceError('unsupported authored source list')
+            values=formula[1:-1].split(',')
+            if (not all(values) or '__not_in_source_list__' in values or
+                    rule['emission']!={'values':values}):
+                raise AcceptanceError('source list and native emission diverge')
+            tests=[('valid',{'type':'text','value':values[0]},'SAVED'),
+                   ('foreign',{'type':'text','value':'__not_in_source_list__'},'REJECTED_NO_WRITE')]
+        elif rule['status']=='supported' and rule['sourceType'] in {'decimal','whole'}:
+            if rule['sourceType']=='decimal':
+                low=float(Decimal(rule['formula1']));high=float(Decimal(rule['formula2']))
+                if rule['emission']!={'range':{'min':low,'max':high}}:
+                    raise AcceptanceError('source decimal and native emission diverge')
+            else:
+                low,high=int(rule['formula1']),int(rule['formula2'])
+                if rule['emission']!={'values':list(range(low,high+1))}:
+                    raise AcceptanceError('source whole range and native emission diverge')
+            if not isinstance(low,(int,float)) or not isinstance(high,(int,float)) or low>=high:
+                raise AcceptanceError('invalid source validation bounds')
+            tests=[('lower',{'type':'number','value':low},'SAVED'),
+                   ('upper',{'type':'number','value':high},'SAVED'),
+                   ('below',{'type':'number','value':low-1},'REJECTED_NO_WRITE'),
+                   ('above',{'type':'number','value':high+1},'REJECTED_NO_WRITE'),
+                   ('text',{'type':'text','value':'not-a-number'},'REJECTED_NO_WRITE')]
+            if rule['sourceType']=='whole':
+                tests.append(('fractional',{'type':'number','value':low+0.5},'REJECTED_NO_WRITE'))
+        else:
+            tests=[]  # Preserve the source rule and its blank branch without claiming an unreviewed domain.
+        tests.append(('blank',{'type':'null','value':None},'UNRESOLVED_SOURCE_ROUTE'))
+        for field in fields:
+            for name,attempt,outcome in tests:
+                branch_id=rule['id']+'-'+field+'-'+name
+                review=(target.get('sourceBlankReviews') or {}).get(branch_id) if name=='blank' else None
+                if name=='blank':
+                    expected_review_ids.add(branch_id)
+                    outcome=_reviewed_blank_outcome(review,branch_id=branch_id,rule=rule,source_hash=manifest['sourceHash'])
+                branches.append({'id':branch_id,'ruleId':rule['id'],
+                    'target':{'feature':feature,'elementId':binding['elementId'],
+                              'columnId':rule_target['columnIds'][field],'sourceField':field},
+                    'attempt':copy.deepcopy(attempt),'expectedOutcome':outcome,
+                    **({'declaredBlankClass':rule['blankSemantics']['classification'],
+                        'sourceRoute':'edit-to-empty-commit', 'sourceReview':copy.deepcopy(review)} if name=='blank' else {})})
+    if not rules:raise AcceptanceError('source validation rules missing')
+    if set(target.get('sourceBlankReviews') or {}) - expected_review_ids:
+        raise AcceptanceError('foreign source blank route review')
+    first=branches[0]
+    branches.append({'id':'cancel-no-effect','ruleId':first['ruleId'],
+        'target':copy.deepcopy(first['target']),'attempt':copy.deepcopy(first['attempt']),
+        'expectedOutcome':'CANCELLED_NO_WRITE'})
+    return {'sourceHash':manifest['sourceHash'],'planHash':manifest['planHash'],'blankPolicy':copy.deepcopy(POLICY),
+            'blankPolicyHash':POLICY_HASH,'table':table_contract,
+            'rules':rules,'branches':branches,'unresolvedDomains':unresolved_domains,
+            'expectedOutcomes':[{'id':branch['id'],'outcome':branch['expectedOutcome']} for branch in branches]}
+
+
 def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
     if set(manifests)!={'forecast','research','sales','inventory','expense'} or set(targets)!=set(manifests):
         raise AcceptanceError('all five workflows required')
@@ -152,6 +280,7 @@ def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
             'unresolvedSourceFeatures':copy.deepcopy(target.get('unresolvedSourceFeatures',[])),
             'documentId':target['documentId'],'version':target['version'],'url':target['url'],
             'inputTables':copy.deepcopy(target['inputTables']),'inputContract':{'manifest':copy.deepcopy(manifest),'receipt':copy.deepcopy(receipts[workflow])}, 'process':WORKFLOW_EXPLANATIONS[workflow],
+            'sourceBlankReviews':copy.deepcopy(target.get('sourceBlankReviews',{})),
             'implementation':copy.deepcopy(target.get('implementation',{'status':'UNRESOLVED_ACTUAL_TARGET_BINDINGS'})),
             'sourceFeatures':{'charts':[{'title':c['title'],'type':c['chartType'],'source':c['sourceLocation']} for c in contract['charts']],
                 'validationRules':len(contract['validations']),'conditionalFormatRules':len(contract['conditionalFormats']),
@@ -163,7 +292,9 @@ def build_acceptance_matrix(manifests,targets,*,oracles=None,receipts=None):
         count={'forecast':144,'research':420,'sales':48,'inventory':36,'expense':48}[workflow]
         case(workflow,'baseline-values',count)
         for name in ('input-edit-reopen-restore','zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout','full-input-id-audit'):
-            case(workflow,name,mode='browser' if name in ('zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout') else 'query',persistence=name=='input-edit-reopen-restore')
+            extra={'validationContract':_validation_contract(workflow,contract,manifest,receipts[workflow],target)} if name=='zero-and-invalid-entry' else {}
+            case(workflow,name,mode='browser' if name in ('zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout') else 'query',
+                 persistence=name=='input-edit-reopen-restore',**extra)
         case(workflow,'chart-1-visual',mode='browser');case(workflow,'chart-2-visual',mode='browser')
         chart_keys=_source_chart_keys(contract['charts'])
         case(workflow,'chart-aggregates',len(chart_keys),chartKeys=chart_keys)
@@ -267,6 +398,171 @@ def published_edit_allowed(entitlement,grant,mode):
     return entitlement and (mode=='published-all-users' or (mode=='published-explore' and grant in {'explore','edit'}))
 
 
+def _same_typed(left,right):
+    if isinstance(left,dict) or isinstance(right,dict):
+        return isinstance(left,dict) and isinstance(right,dict) and left.keys()==right.keys() and all(
+            _same_typed(left[key],right[key]) for key in left)
+    if isinstance(left,list) or isinstance(right,list):
+        return isinstance(left,list) and isinstance(right,list) and len(left)==len(right) and all(
+            _same_typed(a,b) for a,b in zip(left,right))
+    if isinstance(left,(int,float)) and not isinstance(left,bool):
+        return isinstance(right,(int,float)) and not isinstance(right,bool) and math.isfinite(left) and math.isfinite(right) and left==right
+    return type(left) is type(right) and left==right
+
+
+def _assigned_rows(rows,table,row_id,physical_ids):
+    columns={column['id']:column['type'] for column in table['columns']}
+    keys=table['keyColumns']
+    if not isinstance(rows,list) or len(rows)!=table['rowCount']:
+        raise AcceptanceError('complete assigned input row population required')
+    indexed=_index_rows(rows,row_id,keys)
+    if (physical_ids is not None and set(indexed)!=physical_ids) or any(set(row)!={row_id,*columns} for row in rows):
+        raise AcceptanceError('assigned physical IDs and complete schema required')
+    actual_keys=[]
+    for row in rows:
+        actual_keys.append([row[key] for key in keys])
+        for column,kind in columns.items():
+            value=row[column]
+            if value is None:continue
+            if kind=='number':valid=isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value)
+            elif kind in {'text','datetime','date'}:valid=isinstance(value,str)
+            elif kind=='boolean':valid=type(value) is bool
+            else:raise AcceptanceError('unsupported assigned source column type')
+            if not valid:raise AcceptanceError('assigned source column value type mismatch')
+    if sorted(_digest(key) for key in actual_keys)!=sorted(_digest(key) for key in table['sourceKeys']):
+        raise AcceptanceError('assigned source business keys incomplete or foreign')
+    return indexed
+
+
+def _bound_validation_readback(readback,rows,contract,target,row_id,capture,execution_ids):
+    table=contract['table'];execution=readback.get('executionId');reference={'kind':'query','id':execution}
+    binding={key:table[key] for key in ('documentId','version','pageId','elementId','connectionId',
+        'tableIdentity','targetBindingHash','identityEvidenceId')}
+    if (not execution or execution in execution_ids or not readback.get('evidenceId') or
+            readback.get('origin')!='sigma-query' or readback.get('sourceHash')!=contract['sourceHash'] or
+            readback.get('planHash')!=contract['planHash'] or readback.get('binding')!=binding or
+            readback.get('rowIdColumn')!=row_id or readback.get('columns')!=table['columns'] or
+            readback.get('rowsHash')!=_digest(rows) or reference not in capture.get('references',[]) or
+            (readback.get('receipt') or {}).get('status')!='COMPLETED' or
+            (readback.get('receipt') or {}).get('executionId')!=execution or
+            (readback.get('receipt') or {}).get('evidenceId')!=readback.get('evidenceId') or
+            (readback.get('receipt') or {}).get('documentId')!=target['documentId'] or
+            (readback.get('receipt') or {}).get('version')!=target['version'] or
+            (readback.get('receipt') or {}).get('sourceHash')!=contract['sourceHash'] or
+            (readback.get('receipt') or {}).get('planHash')!=contract['planHash'] or
+            (readback.get('receipt') or {}).get('binding')!=binding or
+            (readback.get('receipt') or {}).get('rowsHash')!=readback.get('rowsHash') or
+            (readback.get('receipt') or {}).get('rowIdColumn')!=row_id or
+            (readback.get('receipt') or {}).get('columns')!=table['columns']):
+        raise AcceptanceError('assigned readback receipt, schema, storage or row reference missing')
+    execution_ids.add(execution)
+
+
+def _validate_validation_capture(case,target,capture):
+    contract=case.get('validationContract') or {}
+    bound=target.get('inputContract') or {}
+    if not bound.get('manifest') or not bound.get('receipt'):
+        raise AcceptanceError('source-bound validation input contract required')
+    validate_manifest(bound['manifest'])
+    _bound_inputs(target,bound['manifest'],bound['receipt'])
+    source=extract_workflow_repairs(bound['manifest']['source']['path'])
+    if not _same_typed(contract,_validation_contract(case['workflow'],source,bound['manifest'],bound['receipt'],target)):
+        raise AcceptanceError('source validation contract changed or foreign')
+    if contract.get('unresolvedDomains'):
+        raise AcceptanceError('unresolved source validation domain blocks native case admission')
+    expected=contract.get('branches') or []
+    if any(branch['expectedOutcome']=='UNRESOLVED_SOURCE_ROUTE' for branch in expected):
+        raise AcceptanceError('source blank route outcome unresolved; native capture cannot select its own oracle')
+    evidence=capture.get('validationBranches')
+    if (not isinstance(evidence,list) or len(evidence)!=len(expected) or
+            [item.get('id') for item in evidence]!=[item['id'] for item in expected]):
+        raise AcceptanceError('complete declared source-validation and Cancel branches required')
+    session=capture.get('session') or {};entry=capture.get('dataEntry') or {}
+    table=contract['table']
+    if (session.get('accountType') not in {'build','admin'} or session.get('editInputTables') is not True or
+            entry.get('inputMode')!=table['editMode'] or
+            not published_edit_allowed(True,session.get('effectiveGrant'),entry.get('inputMode')) or
+            entry.get('editDataAvailable') is not True):
+        raise AcceptanceError('native validation requires actual permitted published session')
+    execution_ids=set()
+    inventory=capture.get('validationInventory') or {}
+    inventory_rows=inventory.get('rows');row_id=inventory.get('rowIdColumn')
+    if (not isinstance(row_id,str) or not row_id or row_id in {column['id'] for column in table['columns']} or
+            not isinstance(inventory_rows,list)):
+        raise AcceptanceError('assigned physical row-ID inventory required')
+    _bound_validation_readback(inventory,inventory_rows,contract,target,row_id,capture,execution_ids)
+    baseline=_assigned_rows(inventory_rows,table,row_id,None)
+    physical_ids=set(baseline)
+    identity_map=[{'sourceKey':[row[key] for key in table['keyColumns']],'physicalId':row[row_id]}
+                  for row in inventory_rows]
+    if not _same_typed(inventory.get('physicalIdMap'),identity_map):
+        raise AcceptanceError('assigned source-key to physical-ID inventory required')
+    for branch,observed in zip(expected,evidence):
+        attempt=branch['attempt'];value=attempt['value']
+        if (attempt['type']=='number' and (not isinstance(value,(int,float)) or isinstance(value,bool) or not math.isfinite(value)) or
+                attempt['type']=='text' and not isinstance(value,str) or
+                attempt['type']=='null' and value is not None):
+            raise AcceptanceError('source attempt type invalid')
+        if any(not _same_typed(observed.get(key),branch[key]) for key in ('id','ruleId','target','attempt')) or \
+                observed.get('observedOutcome')!=branch['expectedOutcome']:
+            raise AcceptanceError('source validation branch/target/outcome mismatch')
+        if branch['id'].endswith('-blank') and any(
+                not _same_typed(observed.get(key),branch[key])
+                for key in ('sourceRoute','declaredBlankClass','sourceReview')):
+            raise AcceptanceError('blank branch source route/review changed in runtime capture')
+        execution_id=observed.get('executionId');receipt=observed.get('receipt') or {}
+        reference={'kind':'browser','id':execution_id}
+        if (not execution_id or execution_id in execution_ids or observed.get('origin')!='sigma-browser' or
+                observed.get('sourceHash')!=target['sourceHash'] or observed.get('planHash')!=target['planHash'] or
+                observed.get('publishedVersion')!=target['version'] or not _same_typed(observed.get('session'),session) or
+                observed.get('inputMode')!=table['editMode'] or
+                not observed.get('steps') or not observed.get('screenshots') or
+                reference not in observed.get('references',[]) or reference not in capture['references'] or
+                receipt.get('status')!='COMPLETED' or receipt.get('executionId')!=execution_id or
+                receipt.get('documentId')!=target['documentId'] or receipt.get('version')!=target['version']):
+            raise AcceptanceError('branch actual published runtime/session/receipt required')
+        execution_ids.add(execution_id)
+        proof=observed.get('rows') or {}
+        key_columns=table['keyColumns']
+        if proof.get('rowIdColumn')!=row_id or proof.get('keyColumns')!=key_columns:
+            raise AcceptanceError('branch physical row/key binding required')
+        snapshots=[proof.get(name) for name in ('before','after','reopened','restored')]
+        if any(not isinstance(rows,list) or not rows for rows in snapshots):
+            raise AcceptanceError('branch complete before/after/reopen/restore rows required')
+        readbacks=proof.get('readbacks') or {}
+        if set(readbacks)!={'before','after','reopened','restored'}:
+            raise AcceptanceError('all assigned phase readbacks required')
+        for phase,rows in zip(('before','after','reopened','restored'),snapshots):
+            _bound_validation_readback(readbacks[phase],rows,contract,target,row_id,capture,execution_ids)
+        before,after,reopened,restored=(_assigned_rows(rows,table,row_id,physical_ids) for rows in snapshots)
+        if not _same_typed(before,baseline) or not _same_typed(restored,baseline):
+            raise AcceptanceError('source input baseline and restored rows mismatch')
+        if branch['expectedOutcome']=='SAVED':
+            edits=proof.get('allowedChanges')
+            if (type(observed.get('writeCount')) is not int or observed['writeCount']!=1 or
+                    not isinstance(edits,list) or len(edits)!=1 or
+                    edits[0].get('column')!=branch['target']['columnId'] or
+                    not _same_typed(edits[0].get('value'),value) or
+                    set(edits[0].get('key',{}))!=set(key_columns)):
+                raise AcceptanceError('source-valid branch needs exact typed saved edit')
+            ordered=[[indexed[rid] for rid in sorted(physical_ids)]
+                     for indexed in (before,after,reopened,restored)]
+            verify_persistence(*ordered,row_id=row_id,key_columns=key_columns,allowed_changes=edits)
+        elif branch['expectedOutcome'] in {'REJECTED_NO_WRITE','CANCELLED_NO_WRITE'}:
+            if (type(observed.get('writeCount')) is not int or observed['writeCount']!=0 or
+                    not (_same_typed(before,after) and _same_typed(before,reopened) and _same_typed(before,restored))):
+                raise AcceptanceError('invalid/Cancel branch must preserve every physical row')
+        else:raise AcceptanceError('unknown declared source-validation outcome')
+    oracle=case.get('oracle') or {};checks=oracle.get('checks') or []
+    outcomes=contract.get('expectedOutcomes')
+    actual=capture.get('actual') or []
+    if (len(checks)!=1 or checks[0].get('key')!='source-validation-and-cancel' or
+            checks[0].get('comparison')!='exact' or not _same_typed(checks[0].get('expected'),outcomes) or
+            len(actual)!=1 or actual[0].get('key')!='source-validation-and-cancel' or
+            not _same_typed(actual[0].get('value'),[{'id':item['id'],'outcome':item['observedOutcome']} for item in evidence])):
+        raise AcceptanceError('independent source validation oracle/actual vector mismatch')
+
+
 def _evaluate_capture(matrix,capture):
     _no_secrets(capture)
     cases=[c for c in matrix['cases'] if c['id']==capture.get('caseId')]
@@ -295,9 +591,13 @@ def _evaluate_capture(matrix,capture):
             allowed=published_edit_allowed(session['editInputTables'],session['effectiveGrant'],entry.get('inputMode'))
             if entry.get('inputMode')!=case['inputMode'] or entry.get('editDataAvailable') is not allowed:
                 raise AcceptanceError('published entry mode/availability mismatch')
-            if not allowed and entry.get('writeCount')!=0:raise AcceptanceError('denied role must prove zero writes')
-            if allowed and not all(entry.get(k) is True for k in ('validSaved','invalidRejected','cancelPreserved')):
-                raise AcceptanceError('permitted role requires actual Save/Cancel/invalid-entry outcomes')
+            if not allowed and (type(entry.get('writeCount')) is not int or entry['writeCount']!=0):
+                raise AcceptanceError('denied role must prove zero writes')
+            if allowed and (entry.get('validSaved') is not True or
+                    type(entry.get('writeCount')) is not int or entry['writeCount']<1):
+                raise AcceptanceError('permitted role requires actual native Save')
+    if case['id'].endswith('-zero-and-invalid-entry'):
+        _validate_validation_capture(case,target,capture)
     if case['id'].endswith('-staging-writeback-isolation'):
         _matrix_inputs(matrix)
         isolation=capture.get('isolation') or {}
@@ -350,6 +650,10 @@ def build_workflow_reports(matrix,ledger,*,final_review=None):
     blockers=[]
     try:validate_production_matrix(matrix)
     except ValueError as error:blockers.append(str(error))
+    if any(branch['expectedOutcome']=='UNRESOLVED_SOURCE_ROUTE'
+           for case in matrix['cases'] if case['id'].endswith('-zero-and-invalid-entry')
+           for branch in (case.get('validationContract') or {}).get('branches',[])):
+        blockers.append('source blank edit/clear route remains unresolved')
     final=final_review or {}
     reviewed=(final.get('status')=='APPROVED' and final.get('reviewer') and final.get('matrixHash')==matrix['matrixHash']
               and final.get('ledgerHead')==(ledger[-1]['recordHash'] if ledger else None) and final.get('branchCommit'))
@@ -429,8 +733,9 @@ def validate_production_matrix(matrix):
     for workflow,count in counts.items():
         if not matrix['workflows'][workflow].get('inputTables'):raise AcceptanceError('actual staged writeback identities missing')
         if matrix['workflows'][workflow]['sourceFormulaCount']!=count:raise AcceptanceError('source formula denominator changed')
-        source_charts=extract_workflow_repairs(matrix['workflows'][workflow]['inputContract']['manifest']['source']['path'])['charts']
-        chart_keys=_source_chart_keys(source_charts)
+        input_contract=matrix['workflows'][workflow]['inputContract']
+        source_contract=extract_workflow_repairs(input_contract['manifest']['source']['path'])
+        chart_keys=_source_chart_keys(source_contract['charts'])
         expected={**common,**extra[workflow],'formula-accounting':count,'baseline-values':{'forecast':144,'research':420,'sales':48,'inventory':36,'expense':48}[workflow],
             'chart-aggregates':len(chart_keys)}
         for name,n in expected.items():
@@ -438,6 +743,11 @@ def validate_production_matrix(matrix):
             if c.get('count')!=n or c.get('mandatory') is not True or c.get('workflow')!=workflow:raise AcceptanceError('mandatory suite case missing/changed: '+workflow+'-'+name)
             if name=='chart-aggregates' and c.get('chartKeys')!=chart_keys:
                 raise AcceptanceError('mandatory source chart series/category keys changed: '+workflow)
+            if name=='zero-and-invalid-entry' and not _same_typed(c.get('validationContract'),_validation_contract(
+                    workflow,source_contract,input_contract['manifest'],input_contract['receipt'],matrix['workflows'][workflow])):
+                raise AcceptanceError('mandatory declared source validation/Cancel coverage changed: '+workflow)
+            if name=='zero-and-invalid-entry' and c['validationContract'].get('unresolvedDomains'):
+                raise AcceptanceError('unresolved source validation domain blocks production: '+workflow)
             browser=name in {'zero-and-invalid-entry','readonly-formats-and-colors','navigation-layout','chart-1-visual','chart-2-visual'} or name.startswith('published-') or (workflow=='forecast' and any(x in name for x in ('scenario','snapshot','wrong-context','python','goal','procedure'))) or name.startswith('approval-') or name=='selection-zero-one-multiple'
             if c.get('mode')!=('browser' if browser else 'query'):raise AcceptanceError('mandatory runtime mode changed')
             if name.startswith('published-'):

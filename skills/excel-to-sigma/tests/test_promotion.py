@@ -74,11 +74,17 @@ class PromotionTests(unittest.TestCase):
         from test_acceptance import AcceptanceTests
         p,current,rows,sdk,scope=self.fixture()
         manifests,targets,receipts=AcceptanceTests().bound_matrix_inputs()
+        from test_acceptance_c2 import synthetic_qualified_blank_reviews
+        for workflow in manifests:
+            targets[workflow]['sourceBlankReviews']=synthetic_qualified_blank_reviews(manifests[workflow])
         m=build_acceptance_matrix(manifests,targets,receipts=receipts);m.pop('matrixHash')
         for case in m['cases']:
             keys=case.get('chartKeys') or [str(i) for i in range(case['count'])]
-            case['oracle']={'origin':'independent-oracle','reviewer':'unit-test-oracle','sourceHash':m['workflows'][case['workflow']]['sourceHash'],
-                'checks':[{'key':key,'expected':True,'comparison':'exact'} for key in keys]}
+            checks=([{'key':'source-validation-and-cancel','expected':case['validationContract']['expectedOutcomes'],'comparison':'exact'}]
+                    if case['id'].endswith('-zero-and-invalid-entry') else
+                    [{'key':key,'expected':True,'comparison':'exact'} for key in keys])
+            case['oracle']={'origin':'independent-oracle','reviewer':'unit-test-oracle',
+                'sourceHash':m['workflows'][case['workflow']]['sourceHash'],'checks':checks}
         m=seal_matrix(m);ledger=[]
         # Synthetic captures exercise only the validator, never count as live acceptance.
         for case in m['cases']:
@@ -91,7 +97,15 @@ class PromotionTests(unittest.TestCase):
                 role=case.get('role',{'memberId':'unit','accountType':'build','grant':'edit'})
                 capture.update(published=True,publishedVersion=6,steps=['unit-fixture'],screenshots=['unit-fixture'],session={'memberId':role['memberId'],'accountType':role['accountType'],'effectiveGrant':role['grant'],'identityEvidenceId':'unit','adminBypass':False,'editInputTables':case.get('editEntitlement',True)})
                 if 'role' in case:
-                    allowed=case['editEntitlement'];capture['dataEntry']={'inputMode':'published-explore','editDataAvailable':allowed,'writeCount':1 if allowed else 0,'validSaved':allowed,'invalidRejected':allowed,'cancelPreserved':allowed}
+                    allowed=case['editEntitlement'];capture['dataEntry']={'inputMode':'published-explore','editDataAvailable':allowed,
+                        'writeCount':1 if allowed else 0,'validSaved':allowed}
+                if identity.endswith('-zero-and-invalid-entry'):
+                    from test_acceptance_c2 import synthetic_validation_bundle
+                    capture['dataEntry']={'inputMode':'published-explore','editDataAvailable':True}
+                    capture['validationInventory'],capture['validationBranches'],refs=synthetic_validation_bundle(case,target,capture['session'])
+                    capture['references'] += refs
+                    capture['actual']=[{'key':'source-validation-and-cancel',
+                        'value':case['validationContract']['expectedOutcomes']}]
             if case.get('operationRequired'):capture['operationId']='unit-operation'
             if case.get('persistence'):
                 capture['persistence']={'before':[{'ID':'row','Key':'a','Value':1}],'changed':[{'ID':'row','Key':'a','Value':2}],'reopened':[{'ID':'row','Key':'a','Value':2}],'restored':[{'ID':'row','Key':'a','Value':1}],
