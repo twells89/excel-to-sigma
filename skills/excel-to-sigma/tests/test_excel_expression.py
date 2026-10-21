@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts/lib'))
-from excel_expression import Binary, Group, Number, emit_sigma, evaluate, parse_expression
+from excel_expression import Binary, ExcelCalcError, Group, Number, emit_sigma, evaluate, parse_expression
 
 
 class PowerPrecedenceTests(unittest.TestCase):
@@ -42,5 +42,28 @@ class PowerPrecedenceTests(unittest.TestCase):
                                  ('=-2^3^2','Power(Power(-2, 3), 2)')]:
             with self.subTest(formula=formula):
                 self.assertEqual(emit_sigma(self.expression(formula),lambda ref:'['+ref.address+']'),expected)
+
+
+class ConcatenationPrecedenceTests(unittest.TestCase):
+    def value(self, formula):
+        return evaluate(parse_expression(formula, sheet='Model', workbook_mode=True), lambda _ref: None,
+                        excel_errors=True)
+
+    def test_arithmetic_binds_before_concatenation_and_comparison_follows(self):
+        # Expected results follow Excel's documented operator precedence.
+        for formula, expected in [('=1+2&"x"', '3x'),
+                                  ('=1&2+3', '15'),
+                                  ('=1+2&3+4', '37'),
+                                  ('=2*3&"x"', '6x'),
+                                  ('=1+2&"x"="3x"', True),
+                                  ('=1+2&"x"="12x"', False),
+                                  ('=1&(2+3)', '15'),
+                                  ('=(1+2)&"x"', '3x')]:
+            with self.subTest(formula=formula):
+                self.assertEqual(self.value(formula), expected)
+
+    def test_parentheses_can_force_invalid_text_arithmetic(self):
+        with self.assertRaisesRegex(ExcelCalcError, '#VALUE!'):
+            self.value('=1+(2&"x")')
 
 if __name__=='__main__':unittest.main()

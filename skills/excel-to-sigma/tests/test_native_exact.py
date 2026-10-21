@@ -31,6 +31,25 @@ class ExactFunctionTests(unittest.TestCase):
         node=self.bound(formula, values)
         return evaluate_bound(node, lambda c:dict(values).get(c.split('!')[1]))
 
+    def test_concatenation_precedence_reaches_exact_native_formula_lanes(self):
+        for formula, expected_kind, expected in [
+            ('=1+2&"x"', 't', '3x'),
+            ('=1&2+3', 't', '15'),
+            ('=1+2&3+4', 't', '37'),
+            ('=1+2&"x"="3x"', 'b', True),
+            ('=1+2&"x"="12x"', 'b', False),
+            ('=1&(2+3)', 't', '15'),
+        ]:
+            with self.subTest(formula=formula):
+                compiled=compile_expression(self.bound(formula),lambda _cell:Literal.number(0))
+                self.assertEqual(evaluate_native(compiled.error),'')
+                self.assertEqual(evaluate_native(compiled.kind),expected_kind)
+                lane=compiled.text if expected_kind=='t' else compiled.logical
+                self.assertEqual(evaluate_native(lane),expected)
+                if formula=='=1+2&"x"':
+                    emitted=compile_expression_raw(self.bound(formula),lambda _cell:Literal.number(0))
+                    self.assertEqual(emitted.text,'Concat(Text((1 + 2)), "x")')
+
     def test_criteria_and_numeric_range_ignore_text_and_booleans(self):
         values={'A1':'West','A2':'west','A3':'East','A4':None,'B1':4,'B2':7,'B3':8,'B4':9}
         self.assertEqual(self.value('=SUMIFS(B1:B4,A1:A4,"WEST")',values),11)

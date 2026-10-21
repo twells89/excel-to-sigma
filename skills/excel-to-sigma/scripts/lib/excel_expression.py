@@ -284,24 +284,24 @@ class _Parser:
         return False
 
     def _comparison(self):
-        node = self._additive()
+        node = self._concatenate()
         while self._peek() in (("OP", "="), ("OP", "<>"), ("OP", "<"),
                                ("OP", ">"), ("OP", "<="), ("OP", ">=")):
-            op = self._take()[1]
-            node = Binary(op, node, self._additive())
-        return node
-
-    def _additive(self):
-        node = self._concatenate()
-        while self._peek() in (("OP", "+"), ("OP", "-")):
             op = self._take()[1]
             node = Binary(op, node, self._concatenate())
         return node
 
-    def _concatenate(self):
+    def _additive(self):
         node = self._multiplicative()
+        while self._peek() in (("OP", "+"), ("OP", "-")):
+            op = self._take()[1]
+            node = Binary(op, node, self._multiplicative())
+        return node
+
+    def _concatenate(self):
+        node = self._additive()
         while self._accept("&"):
-            node = Binary("&", node, self._multiplicative())
+            node = Binary("&", node, self._additive())
         return node
 
     def _multiplicative(self):
