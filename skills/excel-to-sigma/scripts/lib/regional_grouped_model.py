@@ -541,9 +541,94 @@ def prepare_product_rows_scaffold_program(model, current, confirmation, *, row_e
             "program": "\n".join(lines) + "\n"}
 
 
+def _projection_ddl_columns(ddl, current, element):
+    if not isinstance(ddl, str):
+        _blocked("projection DDL text required")
+    lines = ddl.strip().splitlines()
+    opening = f'CREATE TABLE "workbook"."{element["id"]}" ('
+    positions = [i for i, line in enumerate(lines) if line.strip() == opening]
+    if len(positions) != 1:
+        _blocked("projection DDL workbook/element target differs")
+    start = positions[0]
+    headers = [line.strip() for line in lines[:start] if line.strip()]
+    if (any(not line.startswith("-- ") for line in headers) or
+            [line for line in headers if line.startswith("-- Workbook ID:")] !=
+            [f'-- Workbook ID: "{current["workbookId"]}"'] or
+            [line for line in headers if line.startswith("-- Element ID:")] !=
+            [f'-- Element ID: "{element["id"]}"'] or lines[-1].strip() != ");"):
+        _blocked("projection DDL workbook/element target differs")
+    body = lines[start + 1:-1]
+    matches = [re.fullmatch(
+        r'\s*"([A-Za-z0-9_-]+)" (text|number|datetime|boolean)(,?) -- "([^"]+)" \| Formula: (.*)',
+        line) for line in body]
+    columns = element.get("columns", [])
+    if (len(matches) != len(columns) or any(match is None for match in matches) or
+            len({match[1] for match in matches}) != len(matches)):
+        _blocked("complete ordered projection DDL columns required")
+    result = []
+    for index, (column, match) in enumerate(zip(columns, matches)):
+        column_id, kind, comma, name, formula = match.groups()
+        if (column.get("id") != column_id or column.get("formula") != formula or
+                not name or bool(comma) != (index < len(columns) - 1)):
+            _blocked("projection DDL physical ID/order/formula differs")
+        result.append({"id": column_id, "name": name, "formula": formula, "type": kind})
+    return result
+
+
+def _unnamed_product_projection(current, rows, product, receipt):
+    """Use full observed native DDL only for omitted inherited REST names."""
+    if not isinstance(receipt, dict) or set(receipt) != {
+            "documentId", "documentVersion", "contentsHash", "rowElementId",
+            "productElementId", "parentDdl", "productDdl",
+            "reviewedParentNameDifferences"}:
+        _blocked("complete actual inherited-column receipt required")
+    if (receipt["documentId"] != current.get("workbookId") or
+            type(receipt["documentVersion"]) is not int or
+            receipt["documentVersion"] != current.get("documentVersion") or
+            receipt["contentsHash"] != digest(current.get("contents")) or
+            receipt["rowElementId"] != rows.get("id") or
+            receipt["productElementId"] != product.get("id")):
+        _blocked("inherited-column receipt source/version/element binding differs")
+    parent = _projection_ddl_columns(receipt["parentDdl"], current, rows)
+    child = _projection_ddl_columns(receipt["productDdl"], current, product)
+    if len(child) != len(parent) + 1 or not any(
+            c.get("name") is None for c in product["columns"][:-1]):
+        _blocked("receipt is only for omitted inherited REST names")
+    differences = []
+    for source, observed in zip(rows["columns"], parent):
+        if source.get("name") != observed["name"]:
+            differences.append({"id": observed["id"], "restName": source.get("name"),
+                                "sdkName": observed["name"]})
+    if (not isinstance(receipt["reviewedParentNameDifferences"], list) or
+            receipt["reviewedParentNameDifferences"] != differences):
+        _blocked("parent SDK display differences require exact ordered review")
+    if len({c["name"] for c in parent}) != len(parent) or len({c["name"] for c in child}) != len(child):
+        _blocked("observed projection DDL names ambiguous")
+    for rest, observed, source in zip(product["columns"][:-1], child[:-1], parent):
+        if (rest.get("name") not in (None, observed["name"]) or
+                observed["name"] != source["name"] or
+                observed["type"] != source["type"] or
+                observed["formula"] != f'[{rows["name"]}/{source["name"]}]'):
+            _blocked("inherited projection DDL/REST source lineage differs")
+    last_rest, last_observed = product["columns"][-1], child[-1]
+    if (last_rest.get("name") != last_observed["name"] or
+            last_observed["name"] != "Product Error Ordinal" or
+            last_observed["type"] != "number" or
+            last_observed["formula"] != "0"):
+        _blocked("projected error placeholder differs")
+    return {column["name"]: column for column in child}
+
+
 def prepare_product_error_patch(model, current, scaffold, *, row_element_id,
-                                product_element_id, error_column_id):
-    """Patch a distinct projected error ordinal after actual ID/lineage readback."""
+                                product_element_id, error_column_id,
+                                inherited_column_receipt=None):
+    """Patch the observed error placeholder, retaining strict named-REST defaults.
+
+    For omitted inherited REST names, the optional source-bound receipt carries
+    complete successful parent/product native DDL and explicitly reviewed
+    parent display differences. The caller admits raw describe envelopes;
+    this function validates decoded metadata, not live capture provenance.
+    """
     if model.get("status") != "OFFLINE_GROUPED_MODEL_PENDING_STAGING" or scaffold.get("status") != "PRODUCT_ROWS_SCAFFOLD_PENDING_EXECUTION" or scaffold.get("sourceSha256") != model["sourceSha256"] or scaffold.get("documentId") != current.get("workbookId") or scaffold.get("rowElementId") != row_element_id:
         _blocked("product-row scaffold provenance differs")
     elements = current.get("contents", {}).get("elements", [])
@@ -551,10 +636,13 @@ def prepare_product_error_patch(model, current, scaffold, *, row_element_id,
     rows = [e for e in elements if e.get("id") == row_element_id]
     if len(products) != 1 or len(rows) != 1 or products[0].get("kind") != "table" or products[0].get("source") != {"kind": "table", "elementId": row_element_id}:
         _blocked("saved product projection/source differs")
+    observed_names = (_unnamed_product_projection(current, rows[0], products[0],
+                      inherited_column_receipt) if inherited_column_receipt is not None else None)
     names = ("Revenue Error", "Source Ordinal", "Product Key", "Month Key", "Revenue Number")
     for name in names:
         original = [c for c in rows[0]["columns"] if c.get("name") == name]
-        inherited = [c for c in products[0]["columns"] if c.get("name") == name]
+        inherited = ([observed_names[name]] if observed_names is not None and name in observed_names else
+                     [c for c in products[0]["columns"] if c.get("name") == name])
         if len(original) != 1 or len(inherited) != 1 or inherited[0].get("formula") != f'[{rows[0]["name"]}/{name}]':
             _blocked("projected source column lineage differs: " + name)
     matches = [c for c in products[0]["columns"] if c.get("id") == error_column_id]
