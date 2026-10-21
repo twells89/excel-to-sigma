@@ -378,8 +378,58 @@ def _observed_rows(current, row_element_id, sales_element_id):
     return rows[0], sales[0]
 
 
+def _row_sdk_metadata_guard(current, rows, sdk_metadata_receipt):
+    """Bind an explicitly reviewed SDK display projection to exact saved REST rows.
+
+    The default stays the strict REST projection. The optional receipt must be a
+    complete ordered SDK observation for this workbook/version/contents and
+    declare every display-name difference by physical column ID. It changes
+    only the generated read guard, never the saved source or formula bindings.
+    """
+    expected = [{"id": c["id"], "name": c.get("name"), "formula": c.get("formula")}
+                for c in rows["columns"]]
+    if sdk_metadata_receipt is None:
+        return expected
+    receipt = sdk_metadata_receipt
+    if not isinstance(receipt, dict) or set(receipt) != {
+            "documentId", "documentVersion", "contentsHash", "elementId",
+            "columns", "reviewedNameDifferences"}:
+        _blocked("complete explicit SDK metadata receipt required")
+    if (receipt["documentId"] != current.get("workbookId") or
+            type(receipt["documentVersion"]) is not int or
+            receipt["documentVersion"] != current.get("documentVersion") or
+            receipt["contentsHash"] != digest(current.get("contents")) or
+            receipt["elementId"] != rows.get("id")):
+        _blocked("SDK metadata receipt source/version/content binding differs")
+    columns = receipt["columns"]
+    differences = receipt["reviewedNameDifferences"]
+    if (not isinstance(columns, list) or len(columns) != len(expected) or
+            not isinstance(differences, list) or
+            any(not isinstance(c, dict) or set(c) != {"id", "name", "formula"} or
+                not isinstance(c["id"], str) or not c["id"] or
+                not isinstance(c["name"], str)
+                for c in columns) or
+            any(not isinstance(d, dict) or set(d) != {"id", "restName", "sdkName"} or
+                not all(isinstance(d[key], str) for key in ("id", "restName", "sdkName"))
+                for d in differences)):
+        _blocked("SDK metadata receipt columns/review incomplete")
+    if len({c["id"] for c in columns}) != len(columns):
+        _blocked("SDK metadata receipt column IDs duplicate")
+    observed_differences = []
+    for rest, sdk in zip(expected, columns):
+        if (sdk["id"] != rest["id"] or sdk["formula"] != rest["formula"] or
+                not isinstance(sdk["name"], str)):
+            _blocked("SDK metadata receipt ID/order/formula differs")
+        if sdk["name"] != rest["name"]:
+            observed_differences.append({"id": rest["id"], "restName": rest["name"],
+                                         "sdkName": sdk["name"]})
+    if differences != observed_differences:
+        _blocked("SDK display differences require exact ordered caller review")
+    return columns
+
+
 def prepare_product_key_scaffold(model, current, *, row_element_id, sales_element_id,
-                                 page_id):
+                                 page_id, sdk_metadata_receipt=None):
     """SDK structural extension; caller must read back IDs before formulas."""
     if model.get("status") != "OFFLINE_GROUPED_MODEL_PENDING_STAGING":
         _blocked("unreviewed grouped model")
@@ -388,8 +438,7 @@ def prepare_product_key_scaffold(model, current, *, row_element_id, sales_elemen
         _blocked("product/month key already exists; reconcile previous phase")
     if not any(p.get("id") == page_id for p in current["contents"].get("pages", [])):
         _blocked("observed page ID required")
-    expected = [{"id": c["id"], "name": c.get("name"), "formula": c.get("formula")}
-                for c in rows["columns"]]
+    expected = _row_sdk_metadata_guard(current, rows, sdk_metadata_receipt)
     lines = [
         "# STAGING ONLY: structural add; read back IDs, then exact versioned formula patch.",
         "from sigma.levelTable import LevelTable",
@@ -453,7 +502,8 @@ def confirm_product_key_patch(packet, after):
 
 
 def prepare_product_rows_scaffold_program(model, current, confirmation, *, row_element_id,
-                                          sales_element_id, page_id, grid_row):
+                                          sales_element_id, page_id, grid_row,
+                                          sdk_metadata_receipt=None):
     """Project shared rows and add a distinct error ordinal for read-back patching."""
     if model.get("status") != "OFFLINE_GROUPED_MODEL_PENDING_STAGING" or confirmation.get("status") != "PRODUCT_KEY_FORMULAS_CONFIRMED" or confirmation.get("documentId") != current.get("workbookId") or confirmation.get("documentVersion") != current.get("documentVersion") or confirmation.get("contentsHash") != digest(current.get("contents")) or confirmation.get("rowElementId") != row_element_id:
         _blocked("confirmed fresh product-key readback required")
@@ -463,7 +513,7 @@ def prepare_product_rows_scaffold_program(model, current, confirmation, *, row_e
     names = {c.get("name"): c for c in rows["columns"] if c.get("name") in ("Product Key", "Month Key", "Revenue Number", "Source Ordinal")}
     if set(names) != {"Product Key", "Month Key", "Revenue Number", "Source Ordinal"} or names["Product Key"].get("formula") != f'Lower([{next(e for e in current["contents"]["elements"] if e.get("id") == sales_element_id)["name"]}/Product Line])' or not names["Month Key"].get("formula", "").endswith('/Month]'):
         _blocked("saved product key/date and source error-order formulas differ")
-    expected = [{"id": c["id"], "name": c.get("name"), "formula": c.get("formula")} for c in rows["columns"]]
+    expected = _row_sdk_metadata_guard(current, rows, sdk_metadata_receipt)
     lines = [
         "# STAGING ONLY: read back projected columns before patching error ordinal.",
         "from sigma.levelTable import LevelTable",
