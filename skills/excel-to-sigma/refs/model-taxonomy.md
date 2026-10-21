@@ -1,42 +1,49 @@
 # Spreadsheet model taxonomy + the architecture decision
 
-The hard part of Excel→Sigma isn't the mechanical build — it's **classifying the
-model**: which parts are live actuals, which are driver-grown, which are typed
-inputs, which are derived. That classification is mostly deterministic; the
-*architecture* it implies depends on **how the model is used**, which isn't in the
-file — so you **detect, propose a model map, then ask a few intent questions**.
+The hard part of Excel→Sigma is **classifying the model**: which cells are typed
+sources, live references, aggregations, drivers, or other formulas. Discovery
+records evidence; edit intent and the target architecture still need review.
 
 This is the path that handles "report drawn in cells" workbooks (no formal Table)
 — the common FP&A case the formal-Table router (`refs/excel-translation.md`) skips.
 
 ## Detect — the cell-level classifier (`xlsx-discover.py`)
 
-For every formula/value cell on a non-Table sheet, `classify_report_cells` emits:
+For formulas and numeric literals among formulas on a non-Table sheet,
+`classify_report_cells` emits counts. The JSON discovery report also records
+the source coordinates of direct-reference formulas:
 
 | Class | Excel signal | Sigma target |
 |---|---|---|
 | **ACTUAL** | `SUMIFS`/`SUMIF`/`SUMPRODUCT` over a transaction tab | live read-only DM element off that source |
 | **DRIVER_GROWTH** | `=prior_cell * (1 ± Assumptions!rate)` | closed-form `base × (1+rate)^n` (rate from the drivers) |
 | **MANUAL** | numeric literal sitting in a row that's otherwise formula-driven | editable input table (one cell per line×period) |
-| **FLAT** | `=single_prior_cell` (carried) | `= base` |
+| **DEPENDENCY_LINK** | `=B23` or `='Owner''s Cash'!$B$6` | live formula edge to the recorded source sheet/cell |
 | **DERIVED** | arithmetic of sibling cells / `IF` margins (totals, %s) | workbook calc columns |
 
-It also reports the **actuals source** sheet (SUMIFS targets) and the
-**driver/assumptions** sheet (the `(1±rate)` refs). Example, FY P&L model:
+Unresolved formulas, including external-workbook and 3D references, remain
+`OTHER_FORMULA` for review. Do not represent them as local dependency edges.
+
+It also reports detected **actuals source** sheets (SUMIFS targets) and
+**driver/assumptions** sheets (the `(1±rate)` refs). Example, FY P&L model:
 
 ```
-P&L: DERIVED=111, ACTUAL=60, DRIVER-grown=30, MANUAL=24, FLAT=6
+P&L: DERIVED=111, ACTUAL=60, DRIVER-grown=30, MANUAL=24, live dependency=6
   → actuals source: Data        (= live read-only DM element)
   → drivers:        Assumptions  (= editable rates table / controls)
 ```
 
-That map *is* the architecture: **union [live ACTUAL] + [forecast]**, where
-forecast = DRIVER_GROWTH + MANUAL + FLAT, and DERIVED becomes workbook calcs.
+The source's grain and usage determine the architecture. A P&L with verified
+actuals and drivers may use **union [live ACTUAL] + [forecast]** and the
+`forecast-recipes.md` builder. A cash roll-forward such as `C7=B23` needs a live
+edge to the preceding ending-cash calculation. It cannot be replaced by a
+constant base. Use a `flat` forecast branch only when an independent source
+policy establishes a constant across the relevant periods; `=prior` syntax is
+insufficient evidence.
 
 ## The decision — ask intent (don't guess)
 
-The classification is fixed; the *build* hinges on one question. Present the
-detected model map, then ask (use the recommended-default pattern):
+Present the detected model map, then confirm these points where applicable:
 
 **1. How is this model used?** (the load-bearing question)
 
@@ -48,19 +55,20 @@ detected model map, then ask (use the recommended-default pattern):
 
 **2. Which detected inputs stay editable?** (pre-fill from MANUAL + driver detection: the growth rates, the manual cells, or both)
 
-**3. Actuals: live or snapshot?** (default **live** — re-query the source, matching Excel's `SUMIFS`)
+**3. If actuals are present, are they live or a snapshot?** Match the source's
+refresh behavior and confirm the target connection.
 
-Keep it to these. Everything else (grain, sections, line order, parity targets)
-is derivable. The questions are *informed by* the model map, so the agent looks
-like it understands the spreadsheet — it does.
+Confirm the source grain, sheets, sections, periods, and dependency links before
+using an archetype builder. Source-hash binding alone does not prove that a
+builder supports the workbook shape. Unknown structures route to source-specific
+MCP construction or explicit review, never to a bundled fixture profile.
 
 ## Build + the trust gate
 
-Build per `refs/forecast-recipes.md` for the chosen architecture, then **assert
-parity to the cent** against the spreadsheet's cached totals (e.g. Net Income,
-EBITDA, Total Revenue). The parity gate is what makes the output trustworthy
-regardless of how the questions were answered — never call a migration done
-without it.
+Use `refs/forecast-recipes.md` only when its actuals/driver/manual preconditions
+hold. Verify that target calculations remain live, then compare against
+source-bound cached totals where available. Freezing formula caches to match
+baseline values is not formula parity and does not complete a migration.
 
 ## Macros
 

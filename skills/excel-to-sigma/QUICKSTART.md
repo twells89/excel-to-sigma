@@ -93,9 +93,12 @@ Allocation **−415,557** · Net Contribution **2,662,748**.
 
 For a "report drawn in cells" planning model (live actuals + assumption-driven
 forecast + manual cells) — the FP&A case. `xlsx-discover.py` now prints a
-**cell-level model map** (ACTUAL / DRIVER_GROWTH / MANUAL / FLAT / DERIVED); after
-confirming intent (read-only / editable / what-if — see `refs/model-taxonomy.md`),
-drive the whole build from a **model-plan JSON**:
+**cell-level model map** (ACTUAL / DRIVER_GROWTH / MANUAL /
+DEPENDENCY_LINK / DERIVED). Preserve direct cell references as live
+dependencies, including cash roll-forwards; `=prior` is not evidence for a
+constant `flat` forecast. After confirming intent and that the source has the
+expected actuals, drivers, sections, and periods (see `refs/model-taxonomy.md`),
+drive this archetype build from a **model-plan JSON**:
 
 ```bash
 # dry run: local parity + emits dm_spec.json / wb_spec.json / seed CSVs to /tmp/fcst-build
@@ -109,6 +112,11 @@ saved in the plan instead of passing `--source`. Legacy plans without a source
 hash must be regenerated because their parity claims cannot be tied to the
 workbook being migrated. If the source audit requires review, also pass
 `--review-dispositions review.json` using the format in `refs/coverage-contract.md`.
+Source binding alone does not make this builder general. If discovery finds
+unknown sheets, tables, sections, periods, or dependency behavior, use
+source-specific MCP construction or explicit review. Do not map the workbook
+into the bundled sample profile or freeze formula caches to obtain baseline
+parity; validate live behavior before claiming completion.
 
 The forecast is computed (`base × (1+rate)^n`); editable rate/manual input tables
 override via `Coalesce(input, default)`, so **parity holds before any seeding**
