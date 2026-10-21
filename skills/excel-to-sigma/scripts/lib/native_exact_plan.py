@@ -51,6 +51,15 @@ def _helper_tokens(formula,prefix):
     return set(tokens)
 
 
+def _reviewed_numeric_reference(node,bindings):
+    # A direct formula reference to a reviewed numeric input evaluates to zero
+    # when that input is blank. Keep the input itself blank for COUNT/MIN ranges.
+    while node['kind']=='group':node=node['expression']
+    if node['kind']!='reference':return False
+    binding=bindings.get(node['cell'])
+    return bool(binding and binding['kind']=='input' and binding['valueType']=='number')
+
+
 def build_exact_native_calculation_plan(source_path,source_input_plan=None):
     try:from .native_calculations import _ast,_input_bindings,_replacement_external_inputs,_symbol
     except ImportError:from native_calculations import _ast,_input_bindings,_replacement_external_inputs,_symbol
@@ -85,6 +94,7 @@ def build_exact_native_calculation_plan(source_path,source_input_plan=None):
             try:value=evaluate_bound(records[cell]['ast'],source_value,epoch=epoch)
             except ExcelCalcError as error:value=Fault(error.code)
             finally:active.pop()
+            if value is None and _reviewed_numeric_reference(records[cell]['ast'],bindings):value=0
         else:
             s,a=cell.rsplit('!',1);value=context.literals.get((s,a))
             source=context.workbook[s][a]
@@ -110,6 +120,8 @@ def build_exact_native_calculation_plan(source_path,source_input_plan=None):
             # The helper callback avoids exponential inlining during eligibility.
             value=compile_expression(record['ast'],resolve,emit=lambda f:'[helper]',epoch=epoch)
             if isinstance(value,Vector):raise UnsupportedExpression('non-scalar source result requires array port')
+            if _reviewed_numeric_reference(record['ast'],bindings):
+                value=replace(value,kind=iff(both(eq(value.kind,'"z"'),eq(value.error,EMPTY)),'"n"',value.kind))
             expected=source_value(cell)
             record['localExpected']=None if isinstance(expected,Fault) else expected
             record['sourceResultClass']='excel-error' if isinstance(expected,Fault) else 'blank' if expected is None else 'logical' if type(expected)is bool else 'text' if isinstance(expected,str) else 'number'
@@ -510,7 +522,7 @@ def prepare_exact_native_scaffold(plan,inputs,manifest,receipt,current,observed_
            f'p = sigma.workbook.get_page({q(page_id)})',f't = p.add_table(sigma.data.source.element({q(source)}))',f't.set_name({q(shard["name"])})',f't.set_frame(1, {1 + 12 * shard_index}, 24, 12)',
            'inherited_columns = t.list_columns()', 'assigned_columns = []']
     for col in shard['columns']:
-        lines+=[f'c = t.add_column({q(col["name"])}, sigma.formula.const_number(0))',
+        lines+=[f'c = t.add_column({q(col["name"])}, sigma.formula.const_num(0))',
                 'assigned_columns.append({"logicalColumnId": '+q(col['id'])+', "actualColumnId": c.id(), "name": '+q(col['name'])+'})']
     lines.extend(['for inherited_column in inherited_columns:', '    inherited_column.delete()'])
     lines.append(f'print({{"logicalElementId": {q(shard["id"])}, "actualElementId": t.id(), "name": {q(shard["name"])}, "columns": assigned_columns}})')

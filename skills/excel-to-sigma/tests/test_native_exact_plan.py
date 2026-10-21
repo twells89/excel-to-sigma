@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts/lib'))
 from source_inputs import build_source_input_plan
 import test_native_calculations
+from test_regional_canary_inputs import check_formula_api_contract
 from native_exact_plan import (build_exact_native_calculation_plan,lower_exact_native_calculations,
     prepare_exact_native_scaffold,confirm_exact_native_scaffold,prepare_exact_native_update,confirm_exact_native_readback)
 from native_calculations import build_native_calculation_backup
@@ -108,6 +109,39 @@ class ExactPlanningTests(unittest.TestCase):
         self.assertEqual(p['formulas']['Sheet!A1']['localExpectedError'],'#DIV/0!')
         self.assertEqual(p['formulas']['Sheet!A2']['localExpected'],5)
 
+    def test_reviewed_numeric_blank_formula_result_is_zero_for_downstream_aggregates(self):
+        path,old=self.source();book=load_workbook(path)
+        book['Ledger Renamed']['B2']=None
+        book['Ledger Renamed']['D2']='=B2'
+        book['Summary Renamed']['A1']="=COUNT('Ledger Renamed'!D2)"
+        book['Summary Renamed']['A2']="=MIN('Ledger Renamed'!D2,5)"
+        book['Summary Renamed']['A3']='=IF(TRUE,"",0)'
+        book['Summary Renamed']['A4']='=1/0'
+        book['Summary Renamed']['A5']="=COUNT('Ledger Renamed'!B2)"
+        book['Summary Renamed']['A6']="=MIN('Ledger Renamed'!B2,5)"
+        book.save(path)
+        decisions=copy.deepcopy(old['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        decisions['features'][0]['reviewedBlankColumns']=['Amount']
+        inputs=build_source_input_plan(path,decisions,connection_id='connection',folder_id='folder')
+        plan=build_exact_native_calculation_plan(path,inputs)
+        for cell,expected,kind in [('Ledger Renamed!D2',0,'number'),
+                                    ('Summary Renamed!A1',1,'number'),
+                                    ('Summary Renamed!A2',0,'number'),
+                                    ('Summary Renamed!A3','','text'),
+                                    ('Summary Renamed!A5',0,'number'),
+                                    ('Summary Renamed!A6',5,'number')]:
+            with self.subTest(cell=cell):
+                record=plan['formulas'][cell]
+                self.assertEqual(record['status'],'ready-to-bind')
+                self.assertEqual(record['localExpected'],expected)
+                self.assertEqual(record['sourceResultClass'],kind)
+        self.assertEqual(plan['formulas']['Summary Renamed!A4']['sourceResultClass'],'excel-error')
+        assigned={'ledger':{'elementId':'actual-input','name':'tblLedger','rowIdColumn':'Row ID','rows':{'0':'actual-a','1':'actual-b'}}}
+        lowered=lower_exact_native_calculations(plan,assigned)
+        direct=lowered['formulas']['Ledger Renamed!D2']['lanes']
+        self.assertIn('"n"',direct['kind'])
+        self.assertNotEqual(direct['kind'],'"z"')
+
     def test_assigned_scaffold_ids_guarded_formula_update_and_runtime_separation(self):
         path,inputs=self.source();native=build_exact_native_calculation_plan(path,inputs)
         assigned={'ledger':{'elementId':'actual-input','name':'tblLedger','rowIdColumn':'Row ID','rows':{'0':'actual-a','1':'actual-b'}}}
@@ -133,6 +167,8 @@ class ExactPlanningTests(unittest.TestCase):
             proposal=prepare_exact_native_scaffold(native,inputs,manifest,receipt,current,rows,backup=backup,
               seed_binding={'elementId':'actual-seed','documentId':'actual-doc','documentVersion':current['documentVersion'],'queriedRows':[{'C0':1}]},page_id='page',shard_index=index)
             ast.parse(proposal['program']);self.assertNotIn('parse_formula',proposal['program'])
+            check_formula_api_contract(proposal['program'])
+            self.assertIn('sigma.formula.const_num(0)',proposal['program'])
             saved=copy.deepcopy(current);saved['documentVersion']+=1
             saved['contents']['elements'].append({'id':'assigned-'+str(index),'kind':'table','name':shard['name'],
                'source':{'kind':'table','elementId':'actual-seed'} if shard['source']['kind']=='sql' else shard['source'],

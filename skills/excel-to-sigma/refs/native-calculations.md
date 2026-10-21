@@ -135,7 +135,7 @@ actual document/version/element IDs and exact `queriedRows: [{"C0": 1}]`.
 assigned staging receipt, fresh current document, observed rows, backup,
 `--seed-binding`, `--page-id`, and `--shard-index`. It emits **one** MCP program
 using documented `get_page`, `add_table(source.element(...))`, `set_name`,
-`add_column`, `const_number`, and column/element `id()` calls. Columns are clearly
+`add_column`, `const_num`, and column/element `id()` calls. Columns are clearly
 unverified placeholders. `confirm-scaffold` reads actual server-assigned element
 and column IDs; authored IDs are never substituted for returned identities.
 
