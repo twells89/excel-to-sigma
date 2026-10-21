@@ -71,10 +71,18 @@ class NativeGraphReference:
 
         def run(node, current_table=table, row_index=index):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'Lookup':
-                value_node, key_node, key_column = node.args
+                if len(node.args) < 3 or len(node.args) % 2 != 1:
+                    raise AssertionError('Lookup requires one or more local/related key pairs')
+                value_node, key_node, key_column = node.args[:3]
                 target, key_field = column(key_column)
                 wanted = run(key_node, current_table, row_index)
                 matches = [j for j, row in enumerate(self.tables[target]) if row['values'].get(key_field) == wanted]
+                for extra_index in range(3, len(node.args), 2):
+                    extra_target, extra_field = column(node.args[extra_index+1])
+                    if extra_target != target:
+                        raise AssertionError('Lookup related keys must share a table')
+                    extra_wanted = run(node.args[extra_index], current_table, row_index)
+                    matches = [j for j in matches if self.tables[target][j]['values'].get(extra_field) == extra_wanted]
                 if isinstance(value_node, ast.Call) and value_node.func.id in ('SumIf', 'CountIf', 'MinIf'):
                     operation = value_node.func.id; args = value_node.args
                     if operation == 'CountIf':
