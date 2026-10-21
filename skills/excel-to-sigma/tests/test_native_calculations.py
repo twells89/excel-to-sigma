@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.table import Table
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/lib"))
@@ -140,6 +140,47 @@ class NativeCalculationTests(unittest.TestCase):
         plan = build_native_calculation_plan(path)
         self.assertEqual(plan["formulas"]["Sheet!A1"]["status"], "unresolved")
         self.assertIn("text", plan["formulas"]["Sheet!A1"]["reason"])
+
+    def test_scalar_min_max_require_exact_plan_instead_of_sigma_aggregates(self):
+        path, _ = self.source()
+        book = load_workbook(path)
+        summary = book["Summary Renamed"]
+        cases = {"B1": "=MIN(1,2)", "B2": "=MAX(1,2)",
+                 "B3": "=MIN(1)", "B4": "=MAX(1)",
+                 "B5": "=MIN('Ledger Renamed'!B2,'Ledger Renamed'!B3)",
+                 "B6": "=MAX('Ledger Renamed'!B2,2)",
+                 "B7": "=1+MIN(1,2)", "B8": "=IF(TRUE,MAX(1,2),0)"}
+        for address, formula in cases.items():
+            summary[address] = formula
+        summary["C1"] = "=B1+1"
+        book.save(path)
+        decisions = {"sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(), "features": [{
+            "featureId": "ledger", "sheet": "Ledger Renamed", "table": "tblLedger", "role": "input",
+            "reviewed": True, "keyColumns": ["Account"],
+            "literalColumns": ["Account", "Amount", "Rate"],
+            "columnTypes": {"Account": "text", "Amount": "number", "Rate": "number"}}]}
+        inputs = build_source_input_plan(path, decisions, connection_id="connection", folder_id="folder")
+        plan = build_native_calculation_plan(path, inputs)
+        for address in cases:
+            with self.subTest(formula=cases[address]):
+                record = plan["formulas"][f"Summary Renamed!{address}"]
+                self.assertEqual(record["status"], "unresolved")
+                self.assertIn("exact", record["reason"])
+        self.assertEqual(plan["formulas"]["Summary Renamed!C1"]["status"], "unresolved")
+        lowered = lower_native_calculations(plan, {"ledger": {
+            "elementId": "ledger-input", "name": "Ledger Inputs", "rowIdColumn": "ID",
+            "rows": {"0": "a", "1": "b"}}})
+        self.assertTrue(all(f"Summary Renamed!{address}" not in lowered["formulas"] for address in cases))
+
+    def test_range_and_mixed_min_max_remain_unresolved_in_v1(self):
+        reference = lambda _cell, _arithmetic: "[input]"
+        single = {"kind": "range", "cells": ["Sheet!A1"]}
+        multiple = {"kind": "range", "cells": ["Sheet!A1", "Sheet!A2"]}
+        for name in ("MIN", "MAX"):
+            for args in ([single], [multiple], [multiple, {"kind": "number", "source": "2"}]):
+                with self.subTest(name=name, arguments=args):
+                    with self.assertRaisesRegex(UnsupportedExpression, "exact"):
+                        _render({"kind": "function", "name": name, "arguments": args}, reference)
 
     def test_finite_indirect_needs_exact_invalid_selector_error_semantics(self):
         bound = {"kind": "indirect", "selector": {"kind": "text", "value": "Base"},

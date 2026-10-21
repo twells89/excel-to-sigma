@@ -129,6 +129,7 @@ def _validate_namespaces(current, namespaces):
         by_id = {c.get("id"): c for c in actual.get("columns", [])}
         observed = (_observed_namespace_columns(current, actual, binding["nativeColumnReceipt"])
                     if binding.get("nativeColumnReceipt") is not None else None)
+        legacy_observed = None
         _require(len(by_id) == len(actual.get("columns", [])), "ambiguous namespace column IDs: " + alias)
         for logical, column in binding["columns"].items():
             _require(isinstance(column, dict) and isinstance(column.get("id"), str) and
@@ -143,11 +144,23 @@ def _validate_namespaces(current, namespaces):
                 if (column["id"] == "ID" and column["name"] == "ID" and
                         actual.get("kind") == "input-table"):
                     continue
-                ddl = binding.get("nativeDescribe", {}).get("structuredContent", {}).get("ddl", "")
-                _require(f'"{column["id"]}"' in ddl and f'"{column["name"]}"' in ddl and
-                         actual.get("source", {}).get("kind") == "table" and
-                         actual.get("source", {}).get("groupingId"),
-                         "unnamed grouped column needs observed native DDL: " + alias + "/" + logical)
+                if legacy_observed is None:
+                    describe = binding.get("nativeDescribe")
+                    _require(isinstance(describe, dict) and
+                             isinstance(describe.get("structuredContent"), dict) and
+                             actual.get("source", {}).get("kind") == "table" and
+                             actual.get("source", {}).get("groupingId"),
+                             "unnamed grouped column needs observed native DDL: " + alias + "/" + logical)
+                    # Bind every label to its physical ID using complete ordered
+                    # DDL matched to this workbook/element and saved formulas.
+                    columns = _projection_ddl_columns(describe["structuredContent"].get("ddl"), current, actual)
+                    _require(len({c["name"] for c in columns}) == len(columns) and
+                             all(rest.get("name") in (None, native["name"])
+                                 for rest, native in zip(actual["columns"], columns)),
+                             "legacy native namespace labels ambiguous or differ from REST: " + alias)
+                    legacy_observed = {c["id"]: c for c in columns}
+                _require(column["name"] == legacy_observed[column["id"]]["name"],
+                         "namespace label differs from complete native DDL: " + alias + "/" + logical)
             else:
                 _require(actual_column["name"] == column["name"],
                          "assigned column name changed: " + alias + "/" + logical)
@@ -163,6 +176,26 @@ def _validate_namespace_roles(current, namespaces, assigned_rows):
             _require(binding["elementId"] == receipt["elementId"] and
                      binding["name"] == receipt["name"],
                      "output namespace is not reconciled editable input: " + alias)
+            actual = _element(current, binding["elementId"])
+            for logical, column in binding["columns"].items():
+                # A valid physical ID/label pair alone does not establish its
+                # logical role: e.g. Source Ordinal must never become a target.
+                # The SQL result alias does not identify its physical column.
+                # Row IDs used by Lookups must keep the exact queried ID/name.
+                if logical == "Row ID":
+                    matches = [c for c in actual.get("columns", []) if c.get("id") == column["id"]]
+                    _require(len(matches) == 1 and
+                             receipt.get("rowIdQueryColumnId") == column["id"] and
+                             receipt.get("rowIdColumnName") == column["name"] and
+                             (matches[0].get("name") == column["name"] == "Row ID" or
+                              (column["id"] == column["name"] == "ID" and
+                               matches[0].get("name") in (None, "ID"))),
+                             "reconciled input column differs: " + alias + "/" + logical)
+                    continue
+                matches = [c for c in actual.get("columns", []) if c.get("name") == logical]
+                _require(len(matches) == 1 and column["id"] == matches[0].get("id") and
+                         column["name"] == logical,
+                    "reconciled input column differs: " + alias + "/" + logical)
     if "Rows" in namespaces:
         rows = _element(current, namespaces["Rows"]["elementId"])
         _require(rows.get("kind") == "table" and

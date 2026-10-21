@@ -14,13 +14,13 @@ import re
 import xml.etree.ElementTree as ET
 try:
     from .native_exact import (Scalar, Literal, Vector, compile_expression, evaluate_bound,
-        q, iff, both, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY, lane_dict, can_be_boolean)
+        q, iff, both, either, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY, lane_dict, can_be_boolean)
     from .excel_expression import UnsupportedExpression, ExcelCalcError
     from .workbook_expression import WorkbookContext
     from .source_inputs import validate_source_input_plan
 except ImportError:
     from native_exact import (Scalar, Literal, Vector, compile_expression, evaluate_bound,
-        q, iff, both, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY, lane_dict, can_be_boolean)
+        q, iff, both, either, eq, ne, first_error, criteria, criterion_spec, Fault, EMPTY, lane_dict, can_be_boolean)
     from excel_expression import UnsupportedExpression, ExcelCalcError
     from workbook_expression import WorkbookContext
     from source_inputs import validate_source_input_plan
@@ -153,7 +153,8 @@ def input_scalar(cell,bindings,lookup):
     if kind in ('date','datetime'):
         # Source input dates are date-only civil dates; the epoch is adjusted by
         # caller for 1904 sources. Time-zone validation remains a runtime gate.
-        return Scalar(number=f'((DateDiff("second", Date("1899-12-31"), {value}) / 86400) + If({value} >= Date("1900-03-01"), 1, 0))',kind=nullable)
+        serial=f'((DateDiff("second", Date("1899-12-31"), {value}) / 86400) + If({value} >= Date("1900-03-01"), 1, 0))'
+        return Scalar(number=iff(f'IsNull({value})','0',serial),kind=nullable)
     raise UnsupportedExpression(f'unqualified input type {kind} for {cell}')
 
 
@@ -225,16 +226,17 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
         if b['kind']!='input':continue
         a=assigned_rows.get(b['featureId'],{})
         if not a.get('elementId') or not a.get('name') or not a.get('rowIdColumn') or not a.get('rows',{}).get(str(b['rowIndex'])):raise ValueError('actual assigned row ID is required')
+    for feature in {b['featureId'] for b in bindings.values() if b['kind']=='input'}:
+        rows=assigned_rows[feature]['rows']
+        if len(set(rows.values()))!=len(rows):raise ValueError('actual assigned row IDs must be unique within each input table')
     def epoch_value(value,b):
-        return replace(value,number=f'({value.number} - 1462)') if plan['dateEpoch']=='1904' and b['valueType'] in ('date','datetime') else value
+        return replace(value,number=iff(eq(value.kind,'"z"'),'0',f'({value.number} - 1462)')) if plan['dateEpoch']=='1904' and b['valueType'] in ('date','datetime') else value
     def lookup(b):
         a=assigned_rows[b['featureId']]
         return f'Lookup([{a["name"]}/{b["column"]}], {q(a["rows"][str(b["rowIndex"])])}, [{a["name"]}/{a["rowIdColumn"]}])'
     def resolve(cell):
         if cell in outputs:return outputs[cell]
-        value=input_scalar(cell,bindings,lookup)
-        if plan['dateEpoch']=='1904' and bindings[cell]['valueType'] in ('date','datetime'):value=replace(value,number=f'({value.number} - 1462)')
-        return value
+        return epoch_value(input_scalar(cell,bindings,lookup),bindings[cell])
     # Lift complete formal calculated columns to ordinary row formulas. A
     # template is accepted only when EVERY source row emits the same symbolic
     # expression with its own input fields substituted. Historical literal
@@ -291,7 +293,7 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
         new.append({'id':'native_rows_'+digest(identity)[:16],'kind':'table','name':final_name,'source':{'kind':'table','elementId':a['elementId']},'columns':columns,'sourceFormulaCells':[],
                     'calculatedColumnDomain':{'sourceCells':cells,'sourceTable':table.name,'appendPolicy':'live-formal-table'}})
         aggregate_elements.extend(new)
-        desc={'featureId':feature,'column':col,'valueType':'number','scalar':Scalar(**lanes,may_be_boolean=compiled[0][2]),'rows':indices}
+        desc={'featureId':feature,'column':col,'valueType':'number','scalar':Scalar(**lanes,may_be_boolean=compiled[0][2]),'rows':dict(zip(cells,indices))}
         for c in cells:row_descriptors[c]=desc
         row_active.remove(identity);return desc
     def aggregate(node,run):
@@ -320,8 +322,11 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
             if any(not b or b['kind']!='input' for b in bs):
                 desc=row_column(n['cells'][0])
                 if not desc or any(row_descriptors.get(c) is not desc for c in n['cells']):return None
-                bs=[{**desc,'kind':'row-formula','rowIndex':i} for i in desc['rows']]
+                bs=[{**desc,'kind':'row-formula','rowIndex':desc['rows'][c]} for c in n['cells']]
             if len({(b['featureId'],b['column'],b['valueType']) for b in bs})!=1:return None
+            # One physical row predicate cannot represent repeated source
+            # positions. Preserve those through the scalar compiler instead.
+            if len({b['rowIndex'] for b in bs})!=len(bs):return None
             maps.append(bs)
         if len({bs[0]['featureId'] for bs in maps})!=1:return None
         if any([b['rowIndex'] for b in bs]!=[b['rowIndex'] for b in maps[0]] for bs in maps):return None
@@ -344,10 +349,19 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
         for bs,cn in zip(maps[int(name=='SUMIFS'):],criterion_nodes):
             row=bs[0]['scalar'] if bs[0]['kind']=='row-formula' else epoch_value(input_scalar('_row',{'_row':bs[0]},lambda b:f'[{a["name"]}/{b["column"]}]'),bs[0])
             condition,error=criteria(row,criterion_spec(cn,run),emit=row_emit);conditions.append(condition);errors.append(error)
+        typed_count=name in ('COUNT','COUNTA') and maps[0][0]['kind']=='row-formula'
+        if typed_count:
+            # Numeric lanes also hold placeholders for text/logical/error
+            # results. Count the typed result, including future formal rows.
+            row=maps[0][0]['scalar']
+            conditions.append(both(eq(row.kind,'"n"'),eq(row.error,EMPTY)) if name=='COUNT'
+                              else either(ne(row.kind,'"z"'),ne(row.error,EMPTY)))
         cond=row_emit(both(*conditions))
         summand=maps[0][0].get('scalar') if name in ('SUMIFS','SUM') else None
         needs_row_error=any(bs[0]['kind']=='row-formula' for bs in maps)
-        row_error=first_error(*errors,iff(cond,summand.error,EMPTY) if summand else EMPTY) if needs_row_error else EMPTY
+        # Criteria errors propagate for every requested row, even when its
+        # predicate does not match, but never from rows outside a finite range.
+        row_error=iff(included,first_error(*errors,iff(cond,summand.error,EMPTY) if summand else EMPTY),EMPTY) if needs_row_error else EMPTY
         row_error=row_emit(row_error)
         order='0'
         if needs_row_error:
@@ -373,13 +387,27 @@ def lower_exact_native_calculations(plan,assigned_rows,*,max_columns=64):
         result_field=maps[0][0]['column'];typ=maps[0][0]['valueType']
         if name in ('SUMIFS','SUM'):
             if typ not in ('number','date','datetime'):return None
-            element['columns'].append({'id':'native_value','name':'native_value','formula':maps[0][0]['scalar'].number if maps[0][0]['kind']=='row-formula' else f'[{a["name"]}/{result_field}]'})
+            if maps[0][0]['kind']=='row-formula':summand_formula=maps[0][0]['scalar'].number
+            elif typ in ('date','datetime'):
+                raw=epoch_value(input_scalar('_row',{'_row':maps[0][0]},lambda b:f'[{a["name"]}/{b["column"]}]'),maps[0][0])
+                summand_formula=iff(eq(raw.kind,'"n"'),raw.number,'0')
+            else:summand_formula=f'[{a["name"]}/{result_field}]'
+            element['columns'].append({'id':'native_value','name':'native_value','formula':summand_formula})
             expression=f'Coalesce(Lookup(SumIf([{prefix}/native_value], [{prefix}/native_match]), 1, [{prefix}/native_key]), 0)'
         else:
             condition=f'[{prefix}/native_match]'
-            if name=='COUNT':condition=both(condition,('False' if typ not in ('number','date','datetime') else f'Not(IsNull([{prefix}/{result_field}]))'))
-            if name=='COUNTA':condition=both(condition,f'Not(IsNull([{prefix}/{result_field}]))')
-            if name in ('COUNT','COUNTA'):element['columns'].append({'id':result_field,'name':result_field,'formula':maps[0][0]['scalar'].number if maps[0][0]['kind']=='row-formula' else f'[{a["name"]}/{result_field}]'})
+            if name in ('COUNT','COUNTA') and not typed_count:
+                # A source column can share a reserved helper name. Keep the
+                # copied value distinct from both generated and source columns.
+                occupied={b['column'] for b in bindings.values() if b.get('featureId')==feature}
+                occupied.update(c[k] for c in element['columns'] for k in ('id','name'))
+                occupied.add(a['rowIdColumn'])
+                count_field='native_count_value';suffix=0
+                while count_field in occupied:
+                    suffix+=1;count_field=f'native_count_value_{suffix}'
+                element['columns'].append({'id':count_field,'name':count_field,'formula':f'[{a["name"]}/{result_field}]'})
+                present=f'Not(IsNull([{prefix}/{count_field}]))'
+                condition=both(condition,'False' if name=='COUNT' and typ not in ('number','date','datetime') else present)
             expression=f'Coalesce(Lookup(CountIf({condition}), 1, [{prefix}/native_key]), 0)'
         error_formula=f'Coalesce(Lookup([{prefix}/native_error], Lookup(MinIf([{prefix}/native_order], [{prefix}/native_error] != ""), 1, [{prefix}/native_key]), [{prefix}/native_order]), "")'
         value=Scalar(number=graph.emit(expression),error=graph.emit(error_formula) if needs_row_error else first_error(*errors))

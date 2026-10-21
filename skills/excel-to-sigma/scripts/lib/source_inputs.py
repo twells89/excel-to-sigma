@@ -584,6 +584,28 @@ def validate_source_input_plan(plan, source_path=None) -> None:
             raise ValueError("source input plan differs from source bytes")
 
 
+def _normalized_datetime_key(value, name, date_only):
+    if value is None:
+        return value  # The seed planner reports missing business keys.
+    if isinstance(value, str):
+        if not _matches(value, "datetime"):
+            raise ValueError(f"invalid datetime key: {name}")
+        if "T" not in value:
+            return value
+        value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        if date_only:
+            if value.time() not in {dt.time.min, dt.time(12)}:
+                raise ValueError(f"queried date-only key has unexpected time: {name}")
+            return value.date().isoformat()
+        return value.isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    raise ValueError(f"invalid datetime key: {name}")
+
+
 def plan_source_seed(plan, feature_id, current_rows, *, row_id_column, prior_seed=None) -> dict:
     """Delegate three-way, row-ID-aware reconciliation to the existing planner."""
     validate_source_input_plan(plan)
@@ -596,27 +618,31 @@ def plan_source_seed(plan, feature_id, current_rows, *, row_id_column, prior_see
     date_only_keys = {name for name in date_keys if spec["rows"] and all(
         isinstance(row.get(name), str) and re.fullmatch(r"\d{4}-\d\d-\d\d", row[name])
         for row in spec["rows"])}
+
+    def normalized_row(row):
+        item = dict(row)
+        for name in date_keys:
+            if name in item:
+                item[name] = _normalized_datetime_key(item[name], name, name in date_only_keys)
+        return item
+
+    def key_token(row):
+        return tuple((type(row.get(name)), row.get(name)) for name in spec["keyColumns"])
+
+    # Match canonical instants using the full business key, then restore the
+    # reviewed spelling. Source rows and persisted seed keys remain unchanged.
+    source_keys = {}
+    if date_keys:
+        for row in spec["rows"]:
+            token = key_token(normalized_row(row))
+            if token in source_keys:
+                raise ValueError("duplicate source business key after datetime normalization")
+            source_keys[token] = {name: row[name] for name in date_keys}
     normalized_current = []
     for current in current_rows:
-        item = dict(current)
-        for name in date_keys:
-            value = item.get(name)
-            if isinstance(value, dt.datetime):
-                if value.tzinfo is not None:
-                    value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
-                if name in date_only_keys and value.time() in {dt.time.min, dt.time(12)}:
-                    item[name] = value.date().isoformat()
-                elif name in date_only_keys:
-                    raise ValueError(f"queried date-only key has unexpected time: {name}")
-                else:
-                    item[name] = value.isoformat()
-            elif isinstance(value, dt.date):
-                item[name] = value.isoformat()
-            elif isinstance(value, str) and name in date_only_keys and "T" in value:
-                parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-                if parsed.time() not in {dt.time.min, dt.time(12)}:
-                    raise ValueError(f"queried date-only key has unexpected time: {name}")
-                item[name] = parsed.date().isoformat()
+        item = normalized_row(current)
+        if date_keys:
+            item.update(source_keys.get(key_token(item), {}))
         normalized_current.append(item)
     return plan_seed(spec["rows"], normalized_current, spec["keyColumns"], row_id_column,
                      prior_seed=prior_seed,

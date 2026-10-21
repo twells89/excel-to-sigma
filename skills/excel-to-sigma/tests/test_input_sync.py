@@ -175,6 +175,54 @@ class TestSeedPlanner(unittest.TestCase):
         self.assertEqual(len(date_plan["conflicts"]), 0)
         self.assertEqual(len(text_plan["conflicts"]), 1)
 
+    def test_datetime_source_refresh_updates_pending_and_confirmed_baselines(self):
+        source = [{"Key": "A", "Due": "2026-06-30"}]
+        current = [{"Key": "A", "Due": dt.datetime(2026, 6, 30, 12),
+                    "Row ID": "server-42"}]
+        types = {"Key": "text", "Due": "datetime"}
+        initial = plan_seed(source, [], ["Key"], "Row ID", column_types=types)
+        confirmed = plan_seed(source, current, ["Key"], "Row ID",
+                              prior_seed=initial, column_types=types)
+
+        for baseline in (initial, confirmed):
+            with self.subTest(confirmed=baseline is confirmed):
+                refreshed = plan_seed(
+                    [{"Key": "A", "Due": "2026-07-31"}], current,
+                    ["Key"], "Row ID", prior_seed=baseline, column_types=types)
+
+                self.assertEqual(refreshed["conflicts"], [])
+                self.assertEqual(refreshed["inserts"], [])
+                self.assertEqual(len(refreshed["updates"]), 1)
+                self.assertEqual(refreshed["updates"][0]["rowId"], "server-42")
+                self.assertEqual(refreshed["updates"][0]["changes"],
+                                 {"Due": "2026-07-31"})
+                self.assertEqual(refreshed["seedRecords"][0]["confirmedMigrationValue"],
+                                 {"Key": "A", "Due": "2026-06-30"})
+                self.assertEqual(refreshed["seedRecords"][0]["pendingMigrationValue"],
+                                 {"Key": "A", "Due": "2026-07-31"})
+
+    def test_datetime_source_refresh_preserves_user_date_and_time_edits(self):
+        source = [{"Key": "A", "Due": "2026-06-30"}]
+        types = {"Key": "text", "Due": "datetime"}
+        initial = plan_seed(source, [], ["Key"], "Row ID", column_types=types)
+        confirmed = plan_seed(
+            source, [{"Key": "A", "Due": dt.datetime(2026, 6, 30, 12),
+                      "Row ID": "server-42"}],
+            ["Key"], "Row ID", prior_seed=initial, column_types=types)
+
+        for baseline in (initial, confirmed):
+            for edited in (dt.datetime(2026, 7, 1, 12), dt.datetime(2026, 6, 30, 13)):
+                with self.subTest(confirmed=baseline is confirmed, edited=edited):
+                    refreshed = plan_seed(
+                        [{"Key": "A", "Due": "2026-07-31"}],
+                        [{"Key": "A", "Due": edited, "Row ID": "server-42"}],
+                        ["Key"], "Row ID", prior_seed=baseline, column_types=types)
+
+                    self.assertEqual(refreshed["updates"], [])
+                    self.assertEqual(len(refreshed["conflicts"]), 1)
+                    self.assertEqual(refreshed["conflicts"][0]["columns"], ["Due"])
+                    self.assertEqual(refreshed["conflicts"][0]["current"]["Due"], edited)
+
 
 class TestMcpPrograms(unittest.TestCase):
     def manifest_for(self, architecture):

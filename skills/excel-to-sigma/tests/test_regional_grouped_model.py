@@ -21,6 +21,7 @@ from lib.regional_grouped_phases import (prepare_output_scaffold_program,
     prepare_output_contents_patch, confirm_output_contents_patch,
     prepare_totals_grouping_program, bind_full_214_source_manifest)
 from native_graph_reference import NativeGraphReference
+from test_regional_full_reconciliation import capture_query_evidence
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "regional-grouped"
 INPUT = FIXTURES / "input-plan.json.gz"
@@ -46,7 +47,11 @@ def synthetic_assigned_rows(input_plan):
             rows.append({**values, "Source Key": key, "Source Ordinal": index + 1,
                          "ID": f"test-only-{feature}-{index}"})
         observed[feature] = {"elementId": element_id, "name": feature,
-                             "rowIdColumn": "ID", "queryRows": rows}
+                             "documentId": "test-only-full-inputs", "documentVersion": 1,
+                             "snapshotId": "test-only-snapshot-" + feature,
+                             "columnIds": {name: name for name in names},
+                             "rowIdQueryColumnId": "ID", "rowIdColumn": "ID", "queryRows": rows}
+        capture_query_evidence(observed[feature])
     current = {"workbookId": "test-only-full-inputs", "documentVersion": 1,
                "contents": {"elements": elements}}
     return validate_full_assigned_rows(input_plan, current, observed)
@@ -317,7 +322,7 @@ class RegionalGroupedModelTest(unittest.TestCase):
         elements = []
         required = {
             "Summary Regions": ("input-table", ["Region", "Source Ordinal", "Source Key"]),
-            "Regions": ("input-table", ["Region", "FY26 Target", "Row ID"]),
+            "Regions": ("input-table", ["Region", "FY26 Target", "Source Ordinal", "Row ID"]),
             "Grouped": ("table", ["Revenue Sum", "First Error Ordinal", "Group Key"]),
             "Rows": ("table", ["Revenue Error", "Source Ordinal"]),
         }
@@ -340,7 +345,8 @@ class RegionalGroupedModelTest(unittest.TestCase):
                          "columns": [{"id": "ID"}]})
         assigned["features"]["sales-forecast"].update({"elementId": "id-Sales", "name": "Sales"})
         assigned["features"]["summary-regions"].update({"elementId": "id-Summary Regions", "name": "Summary Regions"})
-        assigned["features"]["regions"].update({"elementId": "id-Regions", "name": "Regions"})
+        assigned["features"]["regions"].update({"elementId": "id-Regions", "name": "Regions",
+            "rowIdQueryColumnId": "Regions-Row ID", "rowIdColumnName": "Row ID"})
         assigned.update({"documentId": current["workbookId"], "documentVersion": current["documentVersion"],
                          "contentsHash": digest(current["contents"])})
         scaffold = prepare_output_scaffold_program(graph, current, assigned, output_element="region-summary",
@@ -362,6 +368,29 @@ class RegionalGroupedModelTest(unittest.TestCase):
             output_element="region-summary", output_element_id="region-output",
             source_element_id="id-Summary Regions", assigned_columns=output_columns,
             namespaces=namespaces)
+        # The native implicit ID is the one supported logical-name alias.
+        implicit = copy.deepcopy(observed)
+        next(e for e in implicit["contents"]["elements"] if e["id"] == "id-Regions")["columns"].append({"id": "ID"})
+        implicit_namespaces = copy.deepcopy(namespaces)
+        implicit_namespaces["Regions"]["columns"]["Row ID"] = {"id": "ID", "name": "ID"}
+        assigned["features"]["regions"].update({"rowIdQueryColumnId": "ID", "rowIdColumnName": "ID"})
+        assigned["contentsHash"] = digest(implicit["contents"])
+        implicit_patch = prepare_output_contents_patch(graph, implicit, scaffold, assigned,
+            output_element="region-summary", output_element_id="region-output",
+            source_element_id="id-Summary Regions", assigned_columns=output_columns,
+            namespaces=implicit_namespaces)
+        implicit_output = next(e for e in implicit_patch["contents"]["elements"] if e["id"] == "region-output")
+        self.assertIn("[Regions/ID]", next(c for c in implicit_output["columns"] if c["name"] == "Target Number")["formula"])
+        assigned["features"]["regions"].update({"rowIdQueryColumnId": "Regions-Row ID", "rowIdColumnName": "Row ID"})
+        assigned["contentsHash"] = digest(observed["contents"])
+        swapped = copy.deepcopy(namespaces)
+        swapped["Regions"]["columns"]["FY26 Target"] = copy.deepcopy(
+            swapped["Regions"]["columns"]["Source Ordinal"])
+        with self.assertRaisesRegex(ValueError, "reconciled input column"):
+            prepare_output_contents_patch(graph, observed, scaffold, assigned,
+                output_element="region-summary", output_element_id="region-output",
+                source_element_id="id-Summary Regions", assigned_columns=output_columns,
+                namespaces=swapped)
         wrong = copy.deepcopy(observed)
         wrong["contents"]["elements"][-1]["source"]["elementId"] = "id-Regions"
         assigned["contentsHash"] = digest(wrong["contents"])
@@ -415,6 +444,7 @@ class RegionalGroupedModelTest(unittest.TestCase):
             names += ["Source Key", "Source Ordinal", "Row ID"]
             element = add(alias, receipt["elementId"], receipt["name"], "input-table", None, names)
             element["columns"].append({"id": "ID"})
+            receipt.update({"rowIdQueryColumnId": alias + ":Row ID", "rowIdColumnName": "Row ID"})
         record = canary["elements"][0]["columns"]
         row_names = [c["name"] for c in record] + ["Product Key", "Month Key", "Revenue Sum"]
         rows = add("Rows", "Rows", "Rows", "table", assigned["features"]["sales-forecast"]["elementId"], row_names)
@@ -515,6 +545,90 @@ class RegionalGroupedModelTest(unittest.TestCase):
         self.assertEqual(manifest["sourceMappings"]["Summary!G4"]["sourceInputPhysicalRowId"],
                          assigned["features"]["summary-regions"]["rows"]["0"])
         self.assertIsNone(manifest["sourceMappings"]["Summary!B8"]["sourceInputPhysicalRowId"])
+        # Legacy describe evidence must pair each native label with its own ID.
+        # Both labels still occur in a complete, correct DDL after this swap.
+        legacy_current, legacy_namespaces = copy.deepcopy(current), copy.deepcopy(namespaces)
+        flat = next(e for e in legacy_current["contents"]["elements"] if e["id"] == "Grouped")
+        ddl = [f'-- Workbook ID: "{current["workbookId"]}"', '-- Element ID: "Grouped"',
+               'CREATE TABLE "workbook"."Grouped" (']
+        for index, item in enumerate(flat["columns"]):
+            item["id"] = f"legacy-grouped-{index}"
+            legacy_namespaces["Grouped"]["columns"][item["name"]]["id"] = item["id"]
+            comma = "," if index < len(flat["columns"]) - 1 else ""
+            kind = "text" if item["name"] == "Group Key" else "number"
+            ddl.append(f'  "{item["id"]}" {kind}{comma} -- "{item["name"]}" | Formula: {item["formula"]}')
+            del item["name"]
+        ddl.append(");")
+        legacy_namespaces["Grouped"]["nativeDescribe"] = {"structuredContent": {"ddl": "\n".join(ddl)}}
+
+        def emit_legacy_output(doc, aliases):
+            pending = copy.deepcopy(doc)
+            target = next(e for e in pending["contents"]["elements"] if e["id"] == "Region Summary")
+            output_ids = {c["name"]: c["id"] for c in target["columns"]
+                          if c["name"] in graph["formulaColumns"]["region-summary"]}
+            for item in target["columns"]:
+                if item["id"] in output_ids.values():
+                    item["formula"] = "0"
+            source_id = assigned["features"]["summary-regions"]["elementId"]
+            scaffold = {"documentId": pending["workbookId"], "sourceSha256": graph["sourceSha256"],
+                        "logicalElement": "region-summary", "sourceElementId": source_id}
+            return prepare_output_contents_patch(graph, pending, scaffold, fresh(pending),
+                output_element="region-summary", output_element_id="Region Summary",
+                source_element_id=source_id, assigned_columns=output_ids, namespaces=aliases)
+
+        with self.subTest(legacy="valid", entrypoint="formula-emission"):
+            emitted = emit_legacy_output(legacy_current, legacy_namespaces)
+            target = next(e for e in emitted["contents"]["elements"] if e["id"] == "Region Summary")
+            self.assertIn("[Grouped/Revenue Sum]", column(target, "Quarter 1 Matched Revenue")["formula"])
+        with self.subTest(legacy="valid", entrypoint="final-manifest"):
+            self.assertEqual(bind(legacy_current, aliases=legacy_namespaces)["sourceFormulaCount"], 214)
+        swapped_grouped = copy.deepcopy(legacy_namespaces)
+        swapped_grouped["Grouped"]["columns"]["Revenue Sum"]["name"] = "First Error Ordinal"
+        swapped_grouped["Grouped"]["columns"]["First Error Ordinal"]["name"] = "Revenue Sum"
+        with self.subTest(legacy="swapped-labels", entrypoint="formula-emission"):
+            with self.assertRaisesRegex(ValueError, "namespace label"):
+                emit_legacy_output(legacy_current, swapped_grouped)
+        changed = copy.deepcopy(legacy_current)
+        target = next(e for e in changed["contents"]["elements"] if e["id"] == "Region Summary")
+        for name, formula in bind_full_output_formulas(graph, swapped_grouped, element="region-summary").items():
+            column(target, name)["formula"] = formula
+        self.assertIn("[Grouped/First Error Ordinal]", column(target, "Quarter 1 Matched Revenue")["formula"])
+        with self.subTest(legacy="swapped-labels", entrypoint="final-manifest"):
+            with self.assertRaisesRegex(ValueError, "namespace label"):
+                bind(changed, aliases=swapped_grouped)
+        complete_ddl = "\n".join(ddl)
+        invalid_ddls = {
+            "foreign-workbook": complete_ddl.replace(current["workbookId"], "foreign-workbook"),
+            "foreign-element": complete_ddl.replace('"Grouped"', '"foreign-element"'),
+            "incomplete": "\n".join(ddl[:3] + ddl[4:]),
+            "formula-drift": complete_ddl.replace("Formula: [Rows/Revenue Sum]", "Formula: 0"),
+            "id-order-drift": complete_ddl.replace("legacy-grouped-1", "wrong-column"),
+            "ambiguous-label": complete_ddl.replace('-- "First Error Ordinal"', '-- "Revenue Sum"'),
+            "unstructured": '"legacy-grouped-0" "Group Key" "legacy-grouped-1" "Revenue Sum" '
+                            '"legacy-grouped-2" "First Error Ordinal"',
+            "missing-ddl": None,
+        }
+        for case, invalid_ddl in invalid_ddls.items():
+            invalid = copy.deepcopy(legacy_namespaces)
+            invalid["Grouped"]["nativeDescribe"]["structuredContent"]["ddl"] = invalid_ddl
+            with self.subTest(legacy=case, entrypoint="formula-emission"):
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    emit_legacy_output(legacy_current, invalid)
+            with self.subTest(legacy=case, entrypoint="final-manifest"):
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    bind(legacy_current, aliases=invalid)
+        # Installed formulas can agree with a forged namespace while reading
+        # the wrong business input. Binding must reject that mapping itself.
+        swapped = copy.deepcopy(namespaces)
+        swapped["Regions"]["columns"]["FY26 Target"] = copy.deepcopy(
+            swapped["Regions"]["columns"]["Source Ordinal"])
+        changed = copy.deepcopy(current)
+        target = next(e for e in changed["contents"]["elements"] if e["id"] == "Region Summary")
+        for name, formula in bind_full_output_formulas(graph, swapped, element="region-summary").items():
+            column(target, name)["formula"] = formula
+        self.assertIn("[regions/Source Ordinal]", column(target, "Target Number")["formula"])
+        with self.assertRaisesRegex(ValueError, "reconciled input column"):
+            bind(changed, aliases=swapped)
         for alias, name in (("Region Summary", "Quarter 1 Number"),
                             ("Rows", "h0"), ("Product Rows", "Product Error Ordinal"),
                             ("Product Grouped", "Revenue Sum"), ("Totals", "Quarter Total 1 Sum")):
@@ -592,7 +706,11 @@ class RegionalGroupedModelTest(unittest.TestCase):
                 rows.append({**values, "Source Key": key, "Source Ordinal": index + 1,
                              "ID": f"physical-{feature}-{index}"})
             observed[feature] = {"elementId": feature, "name": feature,
-                                 "rowIdColumn": "ID", "queryRows": rows}
+                                 "documentId": "test-only", "documentVersion": 1,
+                                 "snapshotId": "test-only-snapshot-" + feature,
+                                 "columnIds": {name: name for name in columns},
+                                 "rowIdQueryColumnId": "ID", "rowIdColumn": "ID", "queryRows": rows}
+            capture_query_evidence(observed[feature])
         current = {"workbookId": "test-only", "documentVersion": 1,
                    "contents": {"elements": elements}}
         self.assertEqual(set(validate_full_assigned_rows(self.inputs, current, observed)["features"]), set(inputs))
@@ -600,6 +718,7 @@ class RegionalGroupedModelTest(unittest.TestCase):
         self.assertEqual(observed["summary-months"]["queryRows"][0]["Source Key"], "Summary!A12")
         self.assertEqual(observed["summary-products"]["queryRows"][0]["Source Key"], "Summary!B11")
         observed["sales-forecast"]["queryRows"][0]["Month"] = "2026-01-01T12:00:00.000Z"
+        capture_query_evidence(observed["sales-forecast"])
         self.assertEqual(set(validate_full_assigned_rows(self.inputs, current, observed)["features"]), set(inputs))
         for drift in ("2026-01-01T12:34:56.000Z", "2026-01-01T12:00:00.000+01:00"):
             observed["sales-forecast"]["queryRows"][0]["Month"] = drift

@@ -707,16 +707,31 @@ def _excel_equal(left, right):
     return left == right
 
 
+NUMERIC_TEXT = r"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$"
+
+
+def _parse_criterion(criterion):
+    """Separate blank references (numeric zero) from empty criterion text.
+
+    Numeric recognition uses the native compiler's grammar; Python float alone
+    also accepts non-Excel spellings such as inf/NaN and digit separators.
+    Preserve whitespace for nonnumeric text and wildcard criteria.
+    """
+    if not isinstance(criterion, str):
+        return "=", 0 if criterion is None else criterion
+    match = re.match(r"^(<=|>=|<>|=|<|>)(.*)$", criterion)
+    operator, operand = match.groups() if match else ("=", criterion)
+    if operand == "": return operator, None
+    if re.fullmatch(NUMERIC_TEXT, operand.strip()):
+        number = float(operand)
+        if not math.isfinite(number):
+            raise UnsupportedExpression("nonfinite numeric criterion requires Excel oracle")
+        return operator, number
+    return operator, operand
+
+
 def _criteria_match(value, criterion):
-    if isinstance(criterion, str):
-        match = re.match(r"^(<=|>=|<>|=|<|>)(.*)$", criterion)
-        operator, operand = match.groups() if match else ("=", criterion)
-        if operand == "": target = None
-        else:
-            try: target = float(operand)
-            except ValueError: target = operand
-    else:
-        operator, target = "=", criterion
+    operator, target = _parse_criterion(criterion)
     if isinstance(target, str) and any(char in target for char in "*?~") and operator in ("=", "<>"):
         pattern = []
         index = 0
@@ -730,8 +745,17 @@ def _criteria_match(value, criterion):
             index += 1
         result = re.fullmatch("".join(pattern), _excel_text(value), flags=re.IGNORECASE) is not None
         return result if operator == "=" else not result
-    if operator == "=": return _excel_equal(value, target) or value is None and target in ("", 0)
-    if operator == "<>": return not _criteria_match(value, target)
+    if operator in ("=", "<>"):
+        if target is None:
+            result = value is None or value == ""
+        # Criteria equality accepts numeric text in the range; keep ordinary
+        # comparison/lookup equality and ordered criteria type-sensitive.
+        elif (_is_number(target) and isinstance(value, str)
+              and re.fullmatch(NUMERIC_TEXT, value.strip())):
+            result = float(value) == target
+        else:
+            result = _excel_equal(value, target) or value is None and target == 0
+        return result if operator == "=" else not result
     if value is None: return False
     if _is_number(value) and _is_number(target):
         left, right = value, target

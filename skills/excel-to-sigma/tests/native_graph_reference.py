@@ -6,6 +6,7 @@ executes no target calls and is not Sigma runtime evidence.
 """
 import ast
 import copy
+import datetime as dt
 import re
 from native_formula_reference import evaluate_native
 
@@ -97,14 +98,19 @@ class NativeGraphReference:
                 return run(node.args[1] if run(node.args[0], current_table, row_index) else node.args[2], current_table, row_index)
             # Replace nested table operations with values, then let the separate
             # scalar implementation evaluate operators/functions independently.
+            def literal(value):
+                if isinstance(value, (dt.date, dt.datetime)):
+                    return ast.Call(func=ast.Name(id='Date', ctx=ast.Load()),
+                                    args=[ast.Constant(value.isoformat())], keywords=[])
+                return ast.Constant(value)
             class Resolve(ast.NodeTransformer):
                 def visit_Name(self, child):
                     if child.id in refs:
-                        return ast.Constant(run(child, current_table, row_index))
+                        return literal(run(child, current_table, row_index))
                     return child
                 def visit_Call(self, child):
                     if child.func.id in ('Lookup', 'If'):
-                        return ast.Constant(run(child, current_table, row_index))
+                        return literal(run(child, current_table, row_index))
                     return self.generic_visit(child)
             return evaluate_native(ast.unparse(Resolve().visit(copy.deepcopy(node))))
         return run(tree)

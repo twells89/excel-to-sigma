@@ -6,7 +6,7 @@ exception and cannot be caught by IFERROR. Expressions may be materialized by
 ``emit`` into a bounded, deduplicated dependency graph; no cache is consulted.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP, ROUND_UP
 import calendar
@@ -14,9 +14,9 @@ import json
 import math
 import re
 try:
-    from .excel_expression import ExcelCalcError, UnsupportedExpression
+    from .excel_expression import ExcelCalcError, UnsupportedExpression, NUMERIC_TEXT, _parse_criterion
 except ImportError:
-    from excel_expression import ExcelCalcError, UnsupportedExpression
+    from excel_expression import ExcelCalcError, UnsupportedExpression, NUMERIC_TEXT, _parse_criterion
 
 EMPTY='""'
 SCALAR_LANES=('number','text','logical','kind','error')
@@ -114,8 +114,6 @@ def select(condition,yes,no):
         return Vector(tuple(select(condition,a,b) for a,b in zip(yes.values,no.values)),yes.width)
     return Scalar(*(iff(condition,getattr(yes,k),getattr(no,k)) for k in SCALAR_LANES),may_be_boolean=can_be_boolean(yes)or can_be_boolean(no))
 
-NUMERIC_TEXT=r'^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'
-
 def numeric(value):
     value=scalar(value)
     text_number=f'RegexpMatch(Trim({value.text}), {q(NUMERIC_TEXT)})'
@@ -171,26 +169,50 @@ def criterion_spec(node,compile):
     operator syntax requires a guarded error obligation (never silent equality).
     """
     if node['kind']=='text':
-        match=re.match(r'^(<=|>=|<>|=|<|>)(.*)$',node['value'])
-        op,raw=match.groups() if match else ('=',node['value'])
-        if raw=='':return op,Literal.blank(),None
-        try:return op,Literal.number(float(raw)),None
-        except ValueError:return op,Literal.text(raw),wildcard_pattern(raw) if any(c in raw for c in '*?~') else None
+        op,target=_parse_criterion(node['value'])
+        if target is None:return op,Literal.blank(),None
+        if isinstance(target,str):return op,Literal.text(target),wildcard_pattern(target) if any(c in target for c in '*?~') else None
+        return op,Literal.number(target),None
     if node['kind']=='binary' and node['operator']=='&' and node['left']['kind']=='text' and node['left']['value'] in ('<=','>=','<>','=','<','>'):
-        return node['left']['value'],scalar(compile(node['right'])),None
+        op=node['left']['value'];target=scalar(compile(node['right']))
+        if target.kind in ('"n"','"z"') or can_be_boolean(target):return op,target,None
+        # Concatenation makes a criterion string: a text operand such as "1"
+        # must be parsed just like ">1", rather than compared as typed text.
+        return '=',Scalar(text=f'Concat({q(op)}, {text_value(target)})',kind='"t"',error=target.error),'dynamic'
     target=scalar(compile(node))
+    # A typed blank criterion is numeric zero. Empty text is parsed separately
+    # below and keeps its empty-cell matcher, including operator concatenation.
+    target=select(eq(target.kind,'"z"'),Scalar(error=target.error),target)
     return '=',target,'dynamic'
 
 
-def criteria(value,spec,emit=lambda f:f):
+def ordered_criterion(value,target,op):
+    # Criteria ordering does not use Excel's ordinary cross-type rank. Empty
+    # operands compare as numeric zero; blank range cells never match ordering.
+    target_kind=iff(eq(target.kind,'"z"'),'"n"',target.kind)
+    return both(ne(value.kind,'"z"'),eq(value.kind,target_kind),compare(value,target,op))
+
+
+def criterion_equal(value,target):
+    # COUNTIFS/SUMIFS numeric equality also accepts numbers stored as text.
+    # This coercion belongs to criteria, not ordinary comparisons or lookups.
+    isnum=f'RegexpMatch(Trim({value.text}), {q(NUMERIC_TEXT)})'
+    converted=iff(isnum,f'Number({value.text})','0')
+    return iff(both(eq(target.kind,'"n"'),eq(value.kind,'"t"'),isnum),
+               eq(converted,target.number),compare(value,target))
+
+
+def criteria(value,spec,emit=lambda f:f,*,numeric_text=True):
     op,target,pattern=spec
     if can_be_boolean(value) or can_be_boolean(target):raise UnsupportedExpression('Boolean criteria semantics await actual Excel oracle')
     nativeop='!=' if op=='<>' else op
-    if pattern and pattern!='dynamic':
+    equal=criterion_equal if numeric_text else compare
+    if pattern and pattern!='dynamic' and op in ('=','<>'):
         matched=both(eq(value.kind,'"t"'),f'RegexpMatch(Lower({value.text}), {q(pattern.lower())})')
         return (f'Not({matched})' if op=='<>' else matched),first_error(value.error,target.error)
-    matched=compare(value,target,nativeop)
-    if target.kind=='"z"':
+    matched=ordered_criterion(value,target,nativeop) if op in ('<','>','<=','>=') else equal(value,target)
+    if op=='<>':matched=f'Not({matched})'
+    if target.kind=='"z"' and op in ('=','<>'):
         matched=either(eq(value.kind,'"z"'),both(eq(value.kind,'"t"'),eq(value.text,EMPTY)))
         if op=='<>':matched=f'Not({matched})'
     error=first_error(value.error,target.error)
@@ -203,7 +225,9 @@ def criteria(value,spec,emit=lambda f:f):
         operator=emit(operator)
         operand=f'RegexpReplace({raw}, "^(<=|>=|<>|=|<|>)", "")'
         operand=emit(operand)
-        isnum=f'RegexpMatch({operand}, {q(NUMERIC_TEXT)})'
+        # Exact lookups reuse wildcard parsing, but their textual sought value
+        # must retain its type instead of becoming a numeric criterion.
+        isnum=f'RegexpMatch(Trim({operand}), {q(NUMERIC_TEXT)})' if numeric_text else 'False'
         isnum=emit(isnum)
         dynamic=Scalar(number=iff(isnum,f'Number({operand})','0'),text=operand,
                        kind=iff(eq(operand,EMPTY),'"z"',iff(isnum,'"n"','"t"')))
@@ -221,16 +245,18 @@ def criteria(value,spec,emit=lambda f:f):
         pattern_expr=emit(pattern_expr)
         wild=both(eq(value.kind,'"t"'),f'RegexpMatch(Lower({value.text}), Lower({pattern_expr}))')
         wild=emit(wild)
-        equality=emit(compare(value,dynamic))
+        equality=emit(equal(value,dynamic))
         equality=iff(eq(dynamic.kind,'"z"'),either(eq(value.kind,'"z"'),both(eq(value.kind,'"t"'),eq(value.text,EMPTY))),equality)
         equality=iff(both(eq(dynamic.kind,'"t"'),f'RegexpMatch({operand}, "[*?~]")'),wild,equality)
         equality=emit(equality)
         result=equality
         for excel,native in (('<>','!='),('<','<'),('>','>'),('<=','<='),('>=','>=')):
-            cond=f'Not({equality})' if excel=='<>' else both(ne(value.kind,'"z"'),eq(value.kind,dynamic.kind),compare(value,dynamic,native))
+            cond=f'Not({equality})' if excel=='<>' else ordered_criterion(value,dynamic,native)
             cond=emit(cond)
             result=emit(iff(eq(operator,q(excel)),cond,result))
-        matched=iff(eq(target.kind,'"t"'),result,compare(value,target,nativeop))
+        fallback=equal(value,target)
+        if op=='<>':fallback=f'Not({fallback})'
+        matched=iff(eq(target.kind,'"t"'),result,fallback)
     return matched,error
 
 
@@ -298,8 +324,9 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
             a=scalar(run(args[0]));condition,e=logical(a)
             b=run(args[1]);c=run(args[2]) if len(args)==3 else Literal.boolean(False)
             result=select(condition,b,c)
-            if isinstance(result,Vector):return result
-            return save(Scalar(result.number,result.text,result.logical,result.kind,merge_errors(e,result.error),may_be_boolean=can_be_boolean(result)))
+            def condition_error(value):return save(replace(value,error=merge_errors(e,value.error)))
+            if isinstance(result,Vector):return Vector(tuple(condition_error(v) for v in result.values),result.width,result.source)
+            return condition_error(result)
         if aggregate and name in ('SUMIFS','COUNTIFS','SUM','COUNT','COUNTA'):
             result=aggregate(n,run)
             if result is not None:return result
@@ -320,15 +347,15 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
                         terms.append(iff(both(eligible,eq(v.error,EMPTY)),'1','0'))
                 return save(Scalar(number=sum_terms(terms),error=merge_errors(*errors)))
             if name in ('AND','OR'):
-                bools=[];errors=[]
+                bools=[];errors=[];eligibilities=[]
                 for ast,value in zip(args,values):
                     referenced=isinstance(value,Vector) or ast['kind']=='reference'
                     for v in flatten([value]):
                         b,e=logical(v,reference=referenced);errors.append(e)
                         eligible=either(eq(v.kind,'"n"'),eq(v.kind,'"b"')) if referenced else 'True'
+                        eligibilities.append(eligible)
                         bools.append(iff(eligible,b,'True' if name=='AND' else 'False'))
-                e=merge_errors(*errors)
-                if all(v.kind in ('"z"','"t"') for v in flat) and all(isinstance(v,Vector) or a['kind']=='reference' for a,v in zip(args,values)):e=q('#VALUE!')
+                e=merge_errors(*errors,iff(either(*eligibilities),EMPTY,q('#VALUE!')))
                 return save(Scalar(logical=both(*bools) if name=='AND' else either(*bools),kind='"b"',error=e))
             numbers=[];present=[];errors=[]
             for ast,value in zip(args,values):
@@ -414,7 +441,7 @@ def compile_expression(node,reference,*,emit=lambda formula:formula,aggregate=No
                 condition=compare(key,sought)
                 if name in ('MATCH','VLOOKUP'):
                     escaped=select(eq(sought.kind,'"t"'),Scalar(text=f'Concat("=", {sought.text})',kind='"t"',error=sought.error),sought)
-                    condition,_lookup_error=criteria(key,('=',escaped,'dynamic'),emit=emit)
+                    condition,_lookup_error=criteria(key,('=',escaped,'dynamic'),emit=emit,numeric_text=False)
                 result=select(condition,select(eq(value.kind,'"z"'),Scalar(error=value.error),value),result)
                 result=select(ne(key.error,EMPTY),Scalar(error=key.error),result)
                 result=save(result)
@@ -517,16 +544,11 @@ def evaluate_bound(node,reference,*,epoch='1900'):
         return {'<':lambda:a<b,'>':lambda:a>b,'<=':lambda:a<=b,'>=':lambda:a>=b}[op]()
     def match(v,c):
         v,c=checked(v),checked(c)
-        m=re.match(r'^(<=|>=|<>|=|<|>)(.*)$',c) if isinstance(c,str) else None
-        op,target=m.groups() if m else ('=',c)
-        if isinstance(target,str):
-            if target=='':target=None
-            else:
-                try:target=float(target)
-                except ValueError:pass
+        op,target=_parse_criterion(c)
         if isinstance(target,str) and any(z in target for z in '*?~') and op in ('=','<>'):
             matched=isinstance(v,str) and re.fullmatch(wildcard_pattern(target),v,re.I) is not None
         elif target is None:matched=v is None or v==''
+        elif isinstance(target,(int,float)) and not isinstance(target,bool) and isinstance(v,str) and re.fullmatch(NUMERIC_TEXT,v.strip()):matched=float(v)==target
         else:matched=equal(v,target)
         if op in ('=','<>'):return matched if op=='=' else not matched
         if v is None:return False

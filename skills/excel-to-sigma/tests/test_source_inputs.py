@@ -513,6 +513,85 @@ class TestSourceInputs(SourceFixture):
         self.assertEqual(seed["orphans"], [])
         self.assertEqual(len(seed["unchanged"]), 2)
 
+    def timestamp_key_plan(self, first="2026-01-01T08:45:12", second="2026-02-01T08:45:12"):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.source)
+        wb["Sales Input"]["B2"] = first
+        wb["Sales Input"]["B3"] = second
+        wb.save(self.source); wb.close()
+        self.sha = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        decisions = self.decisions()
+        decisions["features"][0]["keyColumns"] = ["Business ID", "When"]
+        return self.build(decisions)
+
+    def test_timestamp_key_equivalent_instants_use_approved_spelling_without_mutation(self):
+        from datetime import datetime, timedelta, timezone
+        plan = self.timestamp_key_plan()
+        original_plan = copy.deepcopy(plan)
+        original_source = self.source.read_bytes()
+        rows = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]["rows"]
+        first = plan_source_seed(plan, "sales-entry", [], row_id_column="Row ID")
+        for observed in ("2026-01-01T08:45:12Z", "2026-01-01T08:45:12.000",
+                         "2026-01-01T03:45:12-05:00",
+                         datetime(2026, 1, 1, 3, 45, 12, tzinfo=timezone(timedelta(hours=-5)))):
+            with self.subTest(observed=observed):
+                current = [{**row, "Row ID": f"physical-{index}"} for index, row in enumerate(rows)]
+                current[0]["When"] = observed
+                original_current = copy.deepcopy(current)
+                seed = plan_source_seed(plan, "sales-entry", current, row_id_column="Row ID",
+                                        prior_seed=first)
+                self.assertEqual(seed["inserts"], [])
+                self.assertEqual(seed["orphans"], [])
+                self.assertEqual(len(seed["unchanged"]), 2)
+                self.assertEqual(seed["sourceHash"], first["sourceHash"])
+                self.assertEqual(seed["unchanged"][0]["source"]["When"], "2026-01-01T08:45:12")
+                self.assertEqual(current, original_current)
+                self.assertEqual(plan, original_plan)
+                self.assertEqual(self.source.read_bytes(), original_source)
+
+    def test_timestamp_key_preserves_fractional_source_spelling_for_composite_keys(self):
+        plan = self.timestamp_key_plan(second="2026-01-01T08:45:12.000")
+        rows = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]["rows"]
+        current = [{**row, "When": "2026-01-01T08:45:12Z", "Row ID": f"physical-{index}"}
+                   for index, row in enumerate(rows)]
+        seed = plan_source_seed(plan, "sales-entry", current, row_id_column="Row ID")
+        self.assertEqual(seed["inserts"], [])
+        self.assertEqual(seed["orphans"], [])
+        self.assertEqual(len(seed["unchanged"]), 2)
+
+    def test_timestamp_key_rejects_duplicate_observed_equivalent_instants(self):
+        plan = self.timestamp_key_plan()
+        row = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]["rows"][0]
+        for timestamp in ("2026-01-01T08:45:12", "2026-03-01T08:45:12"):
+            current = [{**row, "When": timestamp + suffix, "Row ID": f"physical-{index}"}
+                       for index, suffix in enumerate(("Z", ".000"))]
+            with self.subTest(timestamp=timestamp), self.assertRaisesRegex(ValueError, "duplicate current business key"):
+                plan_source_seed(plan, "sales-entry", current, row_id_column="Row ID")
+
+    def test_timestamp_key_rejects_invalid_observed_timestamp(self):
+        plan = self.timestamp_key_plan()
+        row = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]["rows"][0]
+        for invalid in ("not-a-timestamp", "2026-02-30T08:45:12Z", 42):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "datetime key"):
+                plan_source_seed(plan, "sales-entry", [{**row, "When": invalid, "Row ID": "physical-A"}],
+                                 row_id_column="Row ID")
+
+    def test_date_only_key_observed_offsets_use_utc_before_checking_time(self):
+        decisions = self.decisions()
+        decisions["features"][0]["keyColumns"] = ["Business ID", "When"]
+        plan = self.build(decisions)
+        rows = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]["rows"]
+        current = [{**row, "When": stamp, "Row ID": f"physical-{index}"}
+                   for index, (row, stamp) in enumerate(zip(rows, (
+                       "2025-12-31T19:00:00-05:00", "2026-02-01T12:00:00.000Z")))]
+        seed = plan_source_seed(plan, "sales-entry", current, row_id_column="Row ID")
+        self.assertEqual(seed["inserts"], [])
+        self.assertEqual(seed["orphans"], [])
+        self.assertEqual(len(seed["unchanged"]), 2)
+        current[0]["When"] = "2026-01-01T08:45:12Z"
+        with self.assertRaisesRegex(ValueError, "date-only key has unexpected time"):
+            plan_source_seed(plan, "sales-entry", current, row_id_column="Row ID")
+
     def test_cell_block_assumption_and_seed_resume_user_edits(self):
         decisions = self.decisions()
         decisions["features"] = [{"featureId": "rate-input", "sheet": "Assumptions",

@@ -2,6 +2,21 @@
 """Build the source-bound Regional grouped plan or full assigned-output packet.
 
 Offline only: this script never creates or updates Sigma objects.
+
+--observed-inputs is a JSON object keyed by the five input feature names.
+Each receipt must contain documentId, documentVersion, snapshotId, elementId,
+name, columnIds (business and Source Key/Source Ordinal names to actual IDs),
+rowIdQueryColumnId, rowIdColumn (the row dictionary key), queryRows,
+queryRequest, and resultHash. queryRequest is the captured workbook SELECT
+request with business columns in input-plan order, followed by Source Key,
+Source Ordinal, and row ID, each selected by actual ID AS its row key.
+resultHash is the canonical digest of {columns: [selected row keys in order],
+rows: [query values in that column order]}, preserving returned row order.
+The row-ID query column must be the observed system ID or named Row ID column.
+Capture these identities with a fresh query against the current document;
+preserve its snapshot identity and actual selected column IDs. Bare row
+projections and historical captures cannot establish freshness. Never stamp
+an old result with the current document version or an invented snapshot ID.
 """
 import argparse
 import hashlib
@@ -28,7 +43,8 @@ def main():
     parser.add_argument("--current", type=Path,
                         help="fresh full-document readback for all five input tables")
     parser.add_argument("--observed-inputs", type=Path,
-                        help="fresh five-input query snapshots with physical row IDs")
+                        help="five fresh query receipts with documentId/documentVersion/snapshotId, "
+                             "columnIds/rowIdQueryColumnId, and physical queryRows (see description)")
     args = parser.parse_args()
     sources = [p for p in (args.source, args.input_plan, args.native_plan,
                            args.canary, args.current, args.observed_inputs) if p]

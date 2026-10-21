@@ -119,6 +119,151 @@ class ExactFunctionTests(unittest.TestCase):
             if criterion=='<>':expected=28
             with self.subTest(criterion=criterion):self.assertEqual(evaluate_native(value.number),expected)
 
+    def test_ordered_criteria_compare_only_compatible_nonblank_values(self):
+        # Literal results distinguish numeric 2 from text "2" and exclude
+        # blanks, while ordinary Excel comparisons still rank unlike types.
+        base={'A1':'abc','A2':2,'A3':'2','A4':None,'A5':'','A6':0,'A7':-1,'A8':'zzz',
+              'B1':1,'B2':2,'B3':4,'B4':8,'B5':16,'B6':32,'B7':64,'B8':128}
+        for criterion,count,total in [('>1',1,2),('>=0',2,34),('<1',2,96),('<=0',2,96),
+                                      ('>abc',1,128),('>=abc',2,129),('<abc',2,20),('<=abc',3,21),
+                                      ('>',1,2),('>=',2,34),('<',1,64),('<=',2,96),
+                                      ('>a*',2,129),('<z*',3,21),('=0',2,40),('<>0',6,215),
+                                      ('',2,24),('<>',6,231)]:
+            values={**base,'C1':criterion}
+            for argument in ['"'+criterion+'"','C1']:
+                for function,expected in [('COUNTIFS',count),('SUMIFS',total)]:
+                    ranges='B1:B8,A1:A8' if function=='SUMIFS' else 'A1:A8'
+                    formula=f'={function}({ranges},{argument})'
+                    with self.subTest(formula=formula,criterion=criterion):
+                        self.assertEqual(self.value(formula,values),expected)
+                        result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                        self.assertEqual(evaluate_native(result.error),'')
+                        self.assertEqual(evaluate_native(result.number),expected)
+        ordinary=compile_expression(self.bound('="abc">1'),lambda _cell:Literal.blank())
+        self.assertTrue(evaluate_native(ordinary.logical))
+
+    def assert_source_and_native_criteria(self, values, cases):
+        for argument,count,total in cases:
+            for function,expected in [('COUNTIFS',count),('SUMIFS',total)]:
+                ranges='B1:B8,A1:A8' if function=='SUMIFS' else 'A1:A8'
+                formula=f'={function}({ranges},{argument})'
+                with self.subTest(formula=formula,engine='source'):
+                    self.assertEqual(self.value(formula,values),expected)
+                with self.subTest(formula=formula,engine='native'):
+                    result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                    self.assertEqual(evaluate_native(result.error),'')
+                    self.assertEqual(evaluate_native(result.number),expected)
+
+    def test_blank_reference_criterion_is_numeric_zero_not_literal_empty_text(self):
+        # Microsoft COUNTIFS Remarks supply the blank-reference-to-zero rule.
+        values={'A1':0,'A2':None,'A3':'','A4':'0','A5':2,'A6':3,'A7':4,'A8':5,
+                **{f'B{i}':2**(i-1) for i in range(1,9)},'C1':None,'C2':''}
+        self.assert_source_and_native_criteria(values,[('C1',3,11),('0',3,11),('"0"',3,11),
+                                                       ('""',2,6),('C2',2,6),('"="&C1',2,6),('"<>"&C1',6,249),('"<>"',6,249)])
+        self.assertEqual(self.value('=COUNTIFS(A1:A2,C1)',{'A1':0,'A2':2}),1)
+
+    def test_numeric_criteria_whitespace_preserves_text_operand_whitespace(self):
+        values={'A1':2,'A2':'2','A3':'002','A4':' 2 ','A5':None,'A6':'','A7':1,'A8':' abc ',
+                **{f'B{i}':2**(i-1) for i in range(1,9)},'C1':'>= 2','C2':' 2 ','C3':' abc '}
+        self.assert_source_and_native_criteria(values,[('">= 2"',1,1),('C1',1,1),('" 2 "',4,15),
+                                                       ('C2',4,15),('">="&C2',1,1),('C3',1,128),('" abc "',1,128)])
+
+    def test_nonfinite_spellings_are_text_in_literal_and_dynamic_criteria(self):
+        values={'A1':'inf','A2':'INF','A3':'NaN','A4':'-inf','A5':'Infinity','A6':2,'A7':None,'A8':'',
+                **{f'B{i}':2**(i-1) for i in range(1,9)},'C1':'inf','C2':'NaN','C3':'-inf'}
+        self.assert_source_and_native_criteria(values,[('"inf"',2,3),('C1',2,3),('"NaN"',1,4),('C2',1,4),
+                                                       ('"-inf"',1,8),('C3',1,8),('"Infinity"',1,16),('"<>NaN"',7,251)])
+
+    def test_equality_criteria_coalesce_numeric_range_text_without_coercing_ordering(self):
+        # Microsoft confirms COUNTIF converts numeric text when comparing:
+        # https://learn.microsoft.com/en-us/answers/questions/751679/countif-formula-issue
+        # These fixed counts/sums are independent of both local evaluators.
+        values={'A1':2,'A2':'2','A3':'002','A4':'abc','A5':None,'A6':'','A7':0,'A8':'0',
+                'B1':10,'B2':20,'B3':40,'B4':80,'B5':160,'B6':320,'B7':640,'B8':1280,'C1':'2'}
+        for argument,count,total in [('2',3,70),('"2"',3,70),('"002"',3,70),('C1',3,70),
+                                     ('"="&C1',3,70),('"<>2"',5,2480),('"<>"&C1',5,2480),
+                                     ('"abc"',1,80),('""',2,480),('"=0"',3,2080),
+                                     ('">1"',1,10),('">"&C1',0,0)]:
+            for function,expected in [('COUNTIFS',count),('SUMIFS',total)]:
+                ranges='B1:B8,A1:A8' if function=='SUMIFS' else 'A1:A8'
+                formula=f'={function}({ranges},{argument})'
+                with self.subTest(formula=formula,engine='source'):
+                    self.assertEqual(self.value(formula,values),expected)
+                with self.subTest(formula=formula,engine='native'):
+                    result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                    self.assertEqual(evaluate_native(result.error),'')
+                    self.assertEqual(evaluate_native(result.number),expected)
+
+    def test_equality_criteria_two_row_reviewer_repro(self):
+        values={'A1':2,'A2':'2','B1':10,'B2':20,'C1':'2'}
+        for argument,count,total in [('2',2,30),('"2"',2,30),('C1',2,30),('"="&C1',2,30),
+                                     ('"<>2"',0,0),('"<>"&C1',0,0)]:
+            for function,expected in [('COUNTIFS',count),('SUMIFS',total)]:
+                ranges='B1:B2,A1:A2' if function=='SUMIFS' else 'A1:A2'
+                formula=f'={function}({ranges},{argument})'
+                with self.subTest(formula=formula,engine='source'):
+                    self.assertEqual(self.value(formula,values),expected)
+                with self.subTest(formula=formula,engine='native'):
+                    result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                    self.assertEqual(evaluate_native(result.error),'')
+                    self.assertEqual(evaluate_native(result.number),expected)
+
+    def test_criteria_numeric_text_coercion_does_not_change_exact_numeric_lookups(self):
+        values={'A1':'2','A2':2,'B1':10,'B2':20}
+        for formula,expected in [('=MATCH(2,A1:A2,0)',2),('=VLOOKUP(2,A1:B2,2,FALSE)',20),
+                                 ('=XLOOKUP(2,A1:A2,B1:B2)',20)]:
+            with self.subTest(formula=formula):
+                self.assertEqual(self.value(formula,values),expected)
+                result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                self.assertEqual(evaluate_native(result.error),'')
+                self.assertEqual(evaluate_native(result.number),expected)
+
+    def test_exact_text_numeric_lookups_preserve_sought_type(self):
+        # Unlike equality criteria, exact lookups distinguish numeric 2 from
+        # text "2". The first row must not win when the sought value is text.
+        values={'A1':2,'A2':'2','B1':10,'B2':20,'C1':'2'}
+        for argument in ['"2"','C1']:
+            for formula,expected in [(f'=MATCH({argument},A1:A2,0)',2),
+                                     (f'=VLOOKUP({argument},A1:B2,2,FALSE)',20),
+                                     (f'=XLOOKUP({argument},A1:A2,B1:B2)',20)]:
+                with self.subTest(formula=formula,engine='source'):
+                    self.assertEqual(self.value(formula,values),expected)
+                with self.subTest(formula=formula,engine='native'):
+                    result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                    self.assertEqual(evaluate_native(result.error),'')
+                    self.assertEqual(evaluate_native(result.number),expected)
+
+    def test_ordered_numeric_and_date_templates_exclude_other_types(self):
+        values={'A1':'abc','A2':45352,'A3':'45352','A4':None,'A5':0,'A6':'',
+                'B1':1,'B2':2,'B3':4,'B4':8,'B5':16,'B6':32,'C1':45351}
+        for argument,count,total in [('">"&C1',1,2),('">"&DATE(2024,2,29)',1,2),
+                                     ('">="&C2',2,18),('"<="&C2',1,16)]:
+            for function,expected in [('COUNTIFS',count),('SUMIFS',total)]:
+                ranges='B1:B6,A1:A6' if function=='SUMIFS' else 'A1:A6'
+                formula=f'={function}({ranges},{argument})'
+                with self.subTest(formula=formula):
+                    self.assertEqual(self.value(formula,values),expected)
+                    result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                    self.assertEqual(evaluate_native(result.error),'')
+                    self.assertEqual(evaluate_native(result.number),expected)
+
+    def test_operator_templates_parse_numeric_text_as_criteria(self):
+        # Concatenation produces ">1" even when the referenced operand is
+        # text; criteria parsing then compares numbers, preserving range types.
+        values={'A1':2,'A2':'2','A3':1,'A4':0,'A5':None,'A6':'','A7':'abc',
+                'B1':1,'B2':2,'B3':4,'B4':8,'B5':16,'B6':32,'B7':64,'C1':'1','C2':0}
+        for operator,count,total in [('>',1,1),('>=',2,5),('<',1,8),('<=',2,12),
+                                     ('=',1,4),('<>',6,123)]:
+            for operand in ['C1','"1"','IF(C2=0,C1,1)']:
+                for function,expected in [('COUNTIFS',count),('SUMIFS',total)]:
+                    ranges='B1:B7,A1:A7' if function=='SUMIFS' else 'A1:A7'
+                    formula=f'={function}({ranges},"{operator}"&{operand})'
+                    with self.subTest(formula=formula):
+                        self.assertEqual(self.value(formula,values),expected)
+                        result=compile_expression(self.bound(formula,values),lambda c:Literal.value(values.get(c.split('!')[1])))
+                        self.assertEqual(evaluate_native(result.error),'')
+                        self.assertEqual(evaluate_native(result.number),expected)
+
     def test_sigma_roundup_oracle_is_ceiling_and_excel_lowering_is_away_from_zero(self):
         # Sigma official RoundUp examples are the native interpreter contract;
         # Excel ROUNDUP is a separate hand-derived expected result.
@@ -144,6 +289,9 @@ class ExactFunctionTests(unittest.TestCase):
         parent=self.bound('=COUNTIFS(A1:A1,">0")')
         with self.assertRaisesRegex(UnsupportedExpression,'Boolean criteria.*Excel oracle'):
             compile_expression_raw(parent,lambda c:child,emit=lambda f:'[helper]')
+        for operand in ['TRUE','IF(C1=7,TRUE,0)']:
+            with self.subTest(operand=operand),self.assertRaisesRegex(UnsupportedExpression,'Boolean criteria.*Excel oracle'):
+                compile_expression_raw(self.bound(f'=COUNTIFS(A1:A1,">"&{operand})'),lambda c:Literal.number(7),emit=lambda f:'[helper]')
 
     def test_finite_indirect_invalid_selector_is_ref_error_and_not_blank(self):
         for selector,result,error in [('Base',4,''),('Missing',0,'#REF!')]:

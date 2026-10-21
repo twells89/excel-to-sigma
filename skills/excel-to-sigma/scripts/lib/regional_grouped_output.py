@@ -98,7 +98,8 @@ def _same_input(actual, expected, source_type):
 def validate_full_assigned_rows(input_plan, current, observed):
     """Reconcile all five editable rowsets, source keys, and physical IDs."""
     inputs = input_plan["sharedInputArchitecture"]["inputs"]
-    _require(isinstance(current.get("documentVersion"), int) and
+    _require(isinstance(current.get("workbookId"), str) and current["workbookId"] and
+             type(current.get("documentVersion")) is int and
              isinstance(current.get("contents", {}).get("elements"), list) and
              set(observed) == set(inputs), "fresh full document and five query snapshots required")
     result = {"status": "FULL_ASSIGNED_ROWS_VERIFIED", "documentId": current["workbookId"],
@@ -109,15 +110,46 @@ def validate_full_assigned_rows(input_plan, current, observed):
     for feature, spec in inputs.items():
         source_types = {column["name"]: column["type"] for column in spec["columns"]}
         receipt = observed[feature]
+        _require(isinstance(receipt, dict) and
+                 receipt.get("documentId") == current["workbookId"] and
+                 type(receipt.get("documentVersion")) is int and
+                 receipt["documentVersion"] == current["documentVersion"] and
+                 isinstance(receipt.get("snapshotId"), str) and receipt["snapshotId"].strip(),
+                 "fresh full input query required (documentId, documentVersion, snapshotId): " + feature)
         matches = [e for e in current["contents"]["elements"] if e.get("id") == receipt.get("elementId")]
         _require(len(matches) == 1 and matches[0].get("kind") == "input-table" and
                  matches[0].get("name") == receipt.get("name"),
                  "actual editable input identity differs: " + feature)
-        columns = {c.get("name"): c.get("id") for c in matches[0].get("columns", [])}
-        _require(set(spec["rows"][0]) | {"Source Key", "Source Ordinal"} <= set(columns) and
+        actual_columns = matches[0].get("columns", [])
+        columns = {c.get("name"): c.get("id") for c in actual_columns}
+        required_columns = set(spec["rows"][0]) | {"Source Key", "Source Ordinal"}
+        _require(len(columns) == len(actual_columns) and
+                 len({c.get("id") for c in actual_columns}) == len(actual_columns) and
+                 required_columns <= set(columns) and
                  receipt.get("rowIdColumn") in ("ID", columns.get("Row ID")) and
                  any(c.get("id") == "ID" for c in matches[0].get("columns", [])),
                  "editable source/metadata/system-ID columns missing: " + feature)
+        _require(receipt.get("columnIds") == {name: columns[name] for name in required_columns} and
+                 receipt.get("rowIdQueryColumnId") in ("ID", columns.get("Row ID")) and
+                 isinstance(receipt.get("rowIdQueryColumnId"), str) and
+                 receipt["rowIdQueryColumnId"] and
+                 receipt["rowIdQueryColumnId"] not in {columns[name] for name in required_columns},
+                 "bound input query columnIds/rowIdQueryColumnId required: " + feature)
+        row_id_column = next(c for c in actual_columns if c.get("id") == receipt["rowIdQueryColumnId"])
+        row_id_name = row_id_column.get("name")
+        if row_id_column["id"] == "ID" and row_id_name is None:
+            row_id_name = "ID"
+        _require(row_id_name == "Row ID" or
+                 (row_id_column["id"] == "ID" and row_id_name == "ID"),
+                 "selected physical row-ID column identity is ambiguous: " + feature)
+        projection = [(column["name"], columns[column["name"]]) for column in spec["columns"]]
+        projection += [(name, columns[name]) for name in ("Source Key", "Source Ordinal")]
+        projection.append((receipt["rowIdColumn"], receipt["rowIdQueryColumnId"]))
+        select = ", ".join(f'"{column_id}" AS "{name}"' for name, column_id in projection)
+        expected_request = {"query": {"type": "workbook", "workbookId": current["workbookId"],
+            "sql": f'SELECT {select} FROM "workbook"."{receipt["elementId"]}"'}}
+        _require(receipt.get("queryRequest") == expected_request,
+                 "fresh input queryRequest does not match current workbook/element/column projection: " + feature)
         rows = receipt.get("queryRows")
         _require(isinstance(rows, list) and len(rows) == len(spec["rows"]),
                  "full queried source rowset missing: " + feature)
@@ -141,8 +173,15 @@ def validate_full_assigned_rows(input_plan, current, observed):
                      "actual physical row ID missing: " + feature + "/" + str(index))
             ids[str(index)] = row_id
         _require(len(set(ids.values())) == len(ids), "duplicate physical row ID: " + feature)
+        labels = [name for name, _ in projection]
+        _require(all(isinstance(row, dict) and set(row) == set(labels) for row in rows) and
+                 receipt.get("resultHash") == digest({"columns": labels,
+                    "rows": [[row[name] for name in labels] for row in rows]}),
+                 "input query resultHash/row projection differs from captured result: " + feature)
         result["features"][feature] = {"elementId": receipt["elementId"],
                                        "name": receipt["name"], "rowIdColumn": receipt["rowIdColumn"],
+                                       "rowIdQueryColumnId": row_id_column["id"],
+                                       "rowIdColumnName": row_id_name,
                                        "rows": ids}
     return result
 

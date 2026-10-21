@@ -149,7 +149,12 @@ def _render(node, reference, *, arithmetic=False):
     if kind == "function":
         name, args = node["name"], node["arguments"]
         simple = {"IF": ("If", 3), "ROUND": ("Round", 2), "ABS": ("Abs", 1),
-                  "INT": ("Floor", 1), "MIN": ("Min", None), "MAX": ("Max", None)}
+                  "INT": ("Floor", 1)}
+        if name in {"MIN", "MAX"}:
+            # Sigma Min/Max aggregate a field; Excel also accepts scalar and
+            # mixed arguments with different coercion and error semantics.
+            # v1 has no exact range aggregation lowering either.
+            raise UnsupportedExpression(f"function {name} requires exact native qualification; use exact=True")
         if name == "SUM":
             terms = []
             for arg in args:

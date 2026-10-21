@@ -193,13 +193,13 @@ def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=
         if confirmed is None and isinstance(legacy, dict):
             confirmed = legacy
         if isinstance(pending, dict) and all(
-                name in comparable and _same(comparable[name], value)
+                name in comparable and _same(comparable[name], value, types.get(name))
                 for name, value in pending.items()):
             confirmed = pending
         safe, conflicting = {}, []
         for name in changed_columns:
             if (isinstance(confirmed, dict) and name in confirmed
-                    and _same(comparable.get(name), confirmed[name])):
+                    and _same(comparable.get(name), confirmed[name], types.get(name))):
                 safe[name] = wanted[name]
             else:
                 conflicting.append(name)

@@ -68,7 +68,9 @@ def evaluate_native(formula, references=None):
                 return float(Decimal(str(args[0])).quantize(Decimal(1).scaleb(-int(args[1])if len(args)>1 else 0),rounding={'Round':ROUND_HALF_UP,'RoundUp':ROUND_CEILING,'RoundDown':ROUND_FLOOR,'Trunc':ROUND_DOWN}[name]))
             if name=='Date':return dt.datetime.fromisoformat(args[0])
             if name=='MakeDate':return dt.datetime(int(args[0]),int(args[1]),int(args[2]))
-            if name=='DateDiff':return (args[2]-args[1]).days
+            if name=='DateDiff':
+                delta=args[2]-args[1]
+                return delta.total_seconds() if args[0]=='second' else delta.days
             if name=='DatePart':return getattr(args[1],args[0])
             if name=='DateTrunc':return args[1].replace(day=1) if args[0]=='month' else args[1]
             if name=='DateAdd':
