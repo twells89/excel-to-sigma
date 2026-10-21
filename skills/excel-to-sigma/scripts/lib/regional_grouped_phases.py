@@ -12,7 +12,7 @@ import json
 from .native_exact_plan import digest
 from .native_frames import validate_native_grid_program
 from .regional_grouped_canary import bind_assigned_formula
-from .regional_grouped_model import build_grouped_model
+from .regional_grouped_model import build_grouped_model, _projection_ddl_columns
 from .regional_grouped_output import build_full_output_graph, bind_full_output_formulas
 from .source_inputs import validate_source_input_plan
 
@@ -90,6 +90,34 @@ def prepare_output_scaffold_program(graph, current, assigned_rows, *, output_ele
             "sourceElementId": source_element_id, "program": program}
 
 
+def _observed_namespace_columns(current, actual, receipt):
+    """Resolve omitted/aliased names only from complete source-bound native DDL.
+
+    Raw successful describe/SDK envelope admission belongs to the caller; this
+    typed receipt binds its full decoded metadata to the current saved source.
+    """
+    _require(isinstance(receipt, dict) and set(receipt) == {
+        "documentId", "documentVersion", "contentsHash", "elementId", "ddl",
+        "columns", "reviewedNameDifferences"}, "complete native namespace receipt required")
+    _require(actual.get("kind") == "table" and
+        receipt["documentId"] == current.get("workbookId") and
+        type(receipt["documentVersion"]) is int and
+        receipt["documentVersion"] == current.get("documentVersion") and
+        receipt["contentsHash"] == digest(current.get("contents")) and
+        receipt["elementId"] == actual.get("id"), "native namespace source/version/hash differs")
+    observed = _projection_ddl_columns(receipt["ddl"], current, actual)
+    _require(receipt["columns"] == observed and
+             len({c["name"] for c in observed}) == len(observed),
+             "complete native namespace IDs/order/types/formulas/names differ")
+    differences = [{"id": native["id"], "restName": rest.get("name"),
+                    "nativeName": native["name"]}
+                   for rest, native in zip(actual["columns"], observed)
+                   if rest.get("name") != native["name"]]
+    _require(receipt["reviewedNameDifferences"] == differences,
+             "native namespace name differences require exact ordered review")
+    return {column["id"]: column for column in observed}
+
+
 def _validate_namespaces(current, namespaces):
     _require(isinstance(namespaces, dict), "assigned namespace receipt required")
     for alias, binding in namespaces.items():
@@ -99,12 +127,18 @@ def _validate_namespaces(current, namespaces):
         actual = _element(current, binding["elementId"])
         _require(actual["name"] == binding["name"], "assigned namespace name changed: " + alias)
         by_id = {c.get("id"): c for c in actual.get("columns", [])}
+        observed = (_observed_namespace_columns(current, actual, binding["nativeColumnReceipt"])
+                    if binding.get("nativeColumnReceipt") is not None else None)
         _require(len(by_id) == len(actual.get("columns", [])), "ambiguous namespace column IDs: " + alias)
         for logical, column in binding["columns"].items():
             _require(isinstance(column, dict) and isinstance(column.get("id"), str) and
                      isinstance(column.get("name"), str), "incomplete column binding: " + alias + "/" + logical)
             actual_column = by_id.get(column["id"])
             _require(actual_column is not None, "assigned column absent: " + alias + "/" + logical)
+            if observed is not None:
+                _require(column["name"] == observed[column["id"]]["name"],
+                         "namespace label differs from complete native metadata: " + alias + "/" + logical)
+                continue
             if actual_column.get("name") is None:
                 if (column["id"] == "ID" and column["name"] == "ID" and
                         actual.get("kind") == "input-table"):
