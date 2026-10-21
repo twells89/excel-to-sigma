@@ -17,7 +17,8 @@ import warnings
 LIB = Path(__file__).resolve().parents[1] / "scripts" / "lib"
 sys.path.insert(0, str(LIB))
 from statistical_forecast import (StatisticalPortError, calculate, excel_serial,
-                                  forecast_linear, sample_stdev, trailing_three_average,
+                                  forecast_linear, interpolate_missing, sample_stdev,
+                                  trailing_three_average,
                                   typed_output_value)
 from statistical_runtime import CANDIDATE_REQUIRED, emit_preview_program
 from statistical_ets_candidate import CandidateFitError, forecast_with_diagnostics
@@ -49,6 +50,40 @@ def assert_literal_sigma_references(test, code, expected_titles):
 
 
 class StatisticalForecastTests(unittest.TestCase):
+    def test_adjacent_missing_ets_points_use_original_bounding_neighbors(self):
+        self.assertEqual(interpolate_missing([10, None, None, 40, 50, 60, 70, 80]),
+                         [10, 20, 30, 40, 50, 60, 70, 80])
+        # Three missing points out of ten are permitted, including two in a block.
+        self.assertEqual(interpolate_missing([10, None, None, 40, 50, None, 70, 80, 90, 100]),
+                         [10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
+        self.assertEqual(interpolate_missing([10, 20, 30, 40]), [10, 20, 30, 40])
+
+    def test_missing_ets_limit_and_unbounded_gaps_remain_guarded(self):
+        with self.assertRaisesRegex(StatisticalPortError, "TOO_MANY_MISSING_ETS_POINTS"):
+            interpolate_missing([10, None, None, None, 50, 60, 70, 80, 90])
+        for values in ([None, 10, 20, 30, 40, 50, 60, 70],
+                       [10, 20, 30, 40, 50, 60, 70, None]):
+            with self.subTest(values=values), self.assertRaisesRegex(
+                    StatisticalPortError, "UNBOUNDED_MISSING_ETS_POINT"):
+                interpolate_missing(values)
+
+    def test_calculate_passes_adjacent_completion_to_review_only_provider(self):
+        rows, targets = fixture()
+        for row in rows:
+            if row["SKU"] == "SKU-A100" and row["Month"] in (month(2023, 6), month(2023, 7)):
+                row["Demand"] = None
+        captured = []
+        def provider(values, seasonality, horizon):
+            captured.append((values, seasonality, horizon))
+            return [200.0] * horizon
+        result = calculate(rows, "SKU-A100", 12, .95, 2, targets,
+                           ets_forecaster=provider)
+        self.assertEqual(result["Status"], "REVIEW_REQUIRED")
+        self.assertFalse(result["ReadyToPublish"])
+        self.assertEqual(len(captured), 3)
+        self.assertEqual(captured[0][0][3:8], [108, 110, 112, 114, 116])
+        self.assertEqual(captured[0][1:], (12, 12))
+
     def test_sigma_literal_reference_ast_rejects_dynamic_names(self):
         for code in ("sigma.get_element(title)", "sigma.output(output_name, frame)",
                      "sigma.get_control('prefix' + variable)"):

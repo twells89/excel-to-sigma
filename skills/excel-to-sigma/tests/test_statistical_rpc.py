@@ -65,8 +65,12 @@ class RpcTests(unittest.TestCase):
         class Session:
             malformed = False
 
+            def __init__(self):
+                self.requests = []
+
             def call(self, name, raw):
                 self.assert_name = name
+                self.requests.append(json.loads(raw))
                 if self.malformed:
                     return "{}"
                 return server_fit(raw, fit_fn=lambda *_: {
@@ -93,7 +97,8 @@ class RpcTests(unittest.TestCase):
         for i in range(36):
             month = date(2023 + i // 12, i % 12 + 1, 1)
             for j, sku in enumerate(("SKU-A100", "SKU-B200", "SKU-C300")):
-                history.append({"Month": month, "SKU": sku, "Demand": 100.0 + i + 40*j})
+                demand = None if j == 0 and i in (5, 6) else 100.0 + i + 40*j
+                history.append({"Month": month, "SKU": sku, "Demand": demand})
         data = {"history": history,
                 "parameters": [{"Scope": "Parameters", "SelectedSKU": "SKU-A100",
                                 "Seasonality": 12, "ServiceLevel": 0.95, "LeadTime": 2}],
@@ -108,6 +113,7 @@ class RpcTests(unittest.TestCase):
         self.assertTrue(all(row[1] is False for row in output["rows"]))
         self.assertTrue(all(row[2] == "CANDIDATE_REVIEW_REQUIRED" for row in output["rows"]))
         self.assertEqual(session.assert_name, PROCEDURE)
+        self.assertEqual(session.requests[0]["values"][4:8], [104.0, 105.0, 106.0, 107.0])
         self.assertIn('"ETS" DOUBLE', output["schema"])
         session.malformed = True
         sigma = Sigma(frames)

@@ -161,7 +161,7 @@ def interpolate_missing(values):
         if value is not None:
             continue
         left = index - 1
-        while left >= 0 and result[left] is None:
+        while left >= 0 and values[left] is None:
             left -= 1
         right = index + 1
         while right < len(result) and values[right] is None:
