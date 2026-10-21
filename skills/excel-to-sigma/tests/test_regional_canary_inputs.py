@@ -161,6 +161,96 @@ class RegionalCanaryInputsTest(unittest.TestCase):
                               binding=bindings[feature], query=queries[feature])}
                 for feature in bindings}
 
+    def add_query_lineage(self, current, bindings, queries, feature, *, alias="ID"):
+        binding, query = bindings[feature], queries[feature]
+        binding["rowIdQueryColumnId"] = alias
+        query["rowIdQueryColumnId"] = alias
+        spec = self.plan["features"][feature]
+        columns = [{"id": binding["columnIds"][c["name"]], "name": c["name"]}
+                   for c in spec["columns"]] + [{"id": alias, "name": "ID"}]
+        selection = ', '.join(f'"{c["id"]}" AS "{c["name"]}"' for c in columns)
+        request = {"query": {"type": "workbook", "workbookId": current["workbookId"],
+            "sql": f'SELECT {selection} FROM "workbook"."{binding["elementId"]}"'}}
+        ddl_columns = [f'  "{binding["columnIds"][c["name"]]}" {c["type"]}, -- '
+            f'"{c["name"]}" | Formula: [New Input Table/{binding["columnIds"][c["name"]]}]'
+            for c in spec["columns"]]
+        ddl_columns.append(f'  "{alias}" text -- "ID" | Formula: [New Input Table/ID]')
+        ddl = '\n'.join(['-- Type: "input-table"',
+            f'-- Workbook ID: "{current["workbookId"]}"',
+            f'-- Element ID: "{binding["elementId"]}"',
+            f'CREATE TABLE "workbook"."{binding["elementId"]}" (', *ddl_columns, ');'])
+        labels = [c["name"] for c in columns]
+        query["queryRequest"] = request
+        query["columns"] = columns
+        binding["rowIdQueryLineage"] = {"documentId": current["workbookId"],
+            "documentVersion": current["documentVersion"], "elementId": binding["elementId"],
+            "snapshotId": query["snapshotId"], "ddl": ddl, "columns": columns,
+            "queryRequest": request, "count": len(query["rows"]),
+            "resultHash": digest({"columns": labels,
+                "rows": [[row[name] for name in labels] for row in query["rows"]]})}
+
+    def test_actual_physical_id_query_is_accepted_only_with_exact_fresh_lineage(self):
+        current, bindings, queries = self.setup_document()
+        feature = "sales-forecast"
+        self.add_query_lineage(current, bindings, queries, feature)
+        observed = self.observed(current, bindings, queries)
+        self.assertEqual(observed[feature]["receipt"]["rowIdQueryColumnId"], "ID")
+        for attack in (lambda b, q: b.pop("rowIdQueryLineage"),
+                       lambda b, q: b["rowIdQueryLineage"].__setitem__("documentVersion", 6),
+                       lambda b, q: b["rowIdQueryLineage"].__setitem__("snapshotId", "stale"),
+                       lambda b, q: b["rowIdQueryLineage"].__setitem__("ddl", b["rowIdQueryLineage"]["ddl"].replace('"ID" text', '"invented" text')),
+                       lambda b, q: q["queryRequest"]["query"].__setitem__("sql", 'SELECT "foreign" FROM "workbook"."foreign"'),
+                       lambda b, q: b.__setitem__("rowIdColumnId", "FOREIGN"),
+                       lambda b, q: q["rows"][0].__setitem__("ID", "wrong-row"),
+                       lambda b, q: q["rows"][0].pop("Source Key"),
+                       lambda b, q: q["rows"][1].__setitem__("ID", q["rows"][0]["ID"])):
+            bad_bindings, bad_queries = copy.deepcopy(bindings), copy.deepcopy(queries)
+            attack(bad_bindings[feature], bad_queries[feature])
+            with self.assertRaises(ValueError):
+                self.observed(current, bad_bindings, bad_queries)
+
+    def test_query_alias_transition_preserves_physical_inputs_and_records_lineage(self):
+        before_current, bindings, queries = self.setup_document()
+        before = self.observed(before_current, bindings, queries)
+        after_current = copy.deepcopy(before_current)
+        after_current["documentVersion"] = 8
+        after_bindings, after_queries = copy.deepcopy(bindings), copy.deepcopy(queries)
+        for feature in bindings:
+            after_queries[feature]["documentVersion"] = 8
+            after_queries[feature]["snapshotId"] = f"fresh-{feature}"
+            self.add_query_lineage(after_current, after_bindings, after_queries, feature)
+        after = self.observed(after_current, after_bindings, after_queries)
+        confirmed = confirm_phase_input_stability(self.plan, SOURCE, self.base, self.candidate,
+            before_current, before, after_current, after)
+        self.assertEqual(set(confirmed["queryAliasLineage"]), set(bindings))
+        self.assertEqual(confirmed["queryAliasLineage"]["sales-forecast"]["afterQueryColumnId"], "ID")
+        # An arbitrary new distinct alias is not sufficient to authorize an
+        # alias transition, even though legacy distinct-ID receipts remain readable.
+        undocumented = copy.deepcopy(after)
+        for field in ("binding", "query"):
+            undocumented["sales-forecast"][field]["rowIdQueryColumnId"] = "invented"
+        undocumented["sales-forecast"]["binding"].pop("rowIdQueryLineage")
+        undocumented["sales-forecast"]["receipt"] = reconcile_input_rows(self.plan, after_current,
+            feature="sales-forecast", binding=undocumented["sales-forecast"]["binding"],
+            query=undocumented["sales-forecast"]["query"])
+        with self.assertRaises(ValueError):
+            confirm_phase_input_stability(self.plan, SOURCE, self.base, self.candidate,
+                before_current, before, after_current, undocumented)
+        # Freshly captured bad row values must still fail source reconciliation
+        # or physical-row conservation, even with a matching result evidence hash.
+        for attack in (lambda rows: rows[0].__setitem__("ID", "wrong-physical-row"),
+                       lambda rows: rows[1].__setitem__("ID", rows[0]["ID"]),
+                       lambda rows: rows[0].__setitem__("Source Key", "unknown-source-key"),
+                       lambda rows: rows[0].__setitem__("Source Ordinal", 999),
+                       lambda rows: rows[0].__setitem__("Units", 1234567)):
+            bad_bindings, bad_queries = copy.deepcopy(after_bindings), copy.deepcopy(after_queries)
+            attack(bad_queries["sales-forecast"]["rows"])
+            self.add_query_lineage(after_current, bad_bindings, bad_queries, "sales-forecast")
+            with self.assertRaises(ValueError):
+                bad_after = self.observed(after_current, bad_bindings, bad_queries)
+                confirm_phase_input_stability(self.plan, SOURCE, self.base, self.candidate,
+                    before_current, before, after_current, bad_after)
+
     def namespace(self, element, *, system_alias=None):
         columns = {c["name"]: {"id": c["id"], "name": c["name"]}
                    for c in element["columns"] if "name" in c}

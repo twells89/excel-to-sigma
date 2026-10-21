@@ -145,6 +145,60 @@ def prepare_input_create_program(plan, current, *, feature, page_id,
             "pageId": page_id, "connectionId": connection_id, "program": "\n".join(lines) + "\n"}
 
 
+def _validate_input_query_lineage(plan, feature, current, binding, query=None):
+    """Bind a current query-facing ID to observed DDL and the exact row query.
+
+    Previously saved distinct-ID receipts remain readable. Equality with the
+    physical ID, or any subsequent alias transition, requires this explicit
+    evidence; neither an invented alias nor equality alone establishes lineage.
+    """
+    lineage = binding.get("rowIdQueryLineage")
+    if lineage is None:
+        _require(binding["rowIdQueryColumnId"] != binding["rowIdColumnId"],
+                 "physical-ID query requires fresh DDL/query lineage")
+        return None
+    _require(isinstance(lineage, dict) and
+             lineage.get("documentId") == current["workbookId"] and
+             lineage.get("documentVersion") == current["documentVersion"] and
+             lineage.get("elementId") == binding["elementId"] and
+             isinstance(lineage.get("snapshotId"), str) and lineage["snapshotId"],
+             "fresh input DDL/query lineage scope required")
+    spec = _feature(plan, feature)
+    columns = [{"id": binding["columnIds"][c["name"]], "name": c["name"]}
+               for c in spec["columns"]]
+    columns.append({"id": binding["rowIdQueryColumnId"], "name": binding["rowIdColumn"]})
+    _require(len({c["id"] for c in columns}) == len(columns),
+             "query row ID overlaps a source field")
+    ddl_columns = [f'  "{binding["columnIds"][c["name"]]}" {c["type"]}, -- '
+        f'"{c["name"]}" | Formula: [New Input Table/{binding["columnIds"][c["name"]]}]'
+        for c in spec["columns"]]
+    ddl_columns.append(f'  "{binding["rowIdQueryColumnId"]}" text -- '
+        f'"{binding["rowIdColumn"]}" | Formula: [New Input Table/{binding["rowIdColumnId"]}]')
+    expected_ddl = '\n'.join(['-- Type: "input-table"',
+        f'-- Workbook ID: "{current["workbookId"]}"',
+        f'-- Element ID: "{binding["elementId"]}"',
+        f'CREATE TABLE "workbook"."{binding["elementId"]}" (', *ddl_columns, ');'])
+    select = ', '.join(f'"{c["id"]}" AS "{c["name"]}"' for c in columns)
+    expected_request = {"query": {"type": "workbook", "workbookId": current["workbookId"],
+        "sql": f'SELECT {select} FROM "workbook"."{binding["elementId"]}"'}}
+    _require(lineage.get("ddl") == expected_ddl and lineage.get("columns") == columns and
+             lineage.get("queryRequest") == expected_request and
+             lineage.get("count") == len(spec["rows"]),
+             "input query IDs are not documented by exact DDL/request/count")
+    if query is not None:
+        labels = [c["name"] for c in columns]
+        rows = query.get("rows")
+        _require(query.get("snapshotId") == lineage["snapshotId"] and
+                 query.get("queryRequest") == expected_request and query.get("columns") == columns and
+                 isinstance(rows, list) and len(rows) == lineage["count"] and
+                 all(isinstance(row, dict) and set(row) == set(labels) for row in rows),
+                 "fresh input query projection differs from documented lineage")
+        _require(lineage.get("resultHash") == digest({"columns": labels,
+            "rows": [[row[name] for name in labels] for row in rows]}),
+            "input query values differ from observed result")
+    return lineage
+
+
 def _observed_schema(plan, feature, current, binding):
     validate_reviewed_input_plan(plan)
     spec = _feature(plan, feature)
@@ -187,9 +241,8 @@ def _observed_schema(plan, feature, current, binding):
     _require((implicit_id and binding.get("rowIdColumn") == "ID") or explicit_id,
              "actual input row ID physical column differs")
     _require(isinstance(binding.get("rowIdQueryColumnId"), str) and
-             binding["rowIdQueryColumnId"] and
-             binding["rowIdQueryColumnId"] != system_id,
-             "observed row ID query alias required separately from physical ID")
+             binding["rowIdQueryColumnId"], "explicit observed row ID query field required")
+    _validate_input_query_lineage(plan, feature, current, binding)
     return element
 
 
@@ -249,6 +302,7 @@ def reconcile_input_rows(plan, current, *, feature, binding, query):
              isinstance(query.get("snapshotId"), str) and query["snapshotId"] and
              isinstance(query.get("rows"), list),
              "fresh physical input query required")
+    lineage = _validate_input_query_lineage(plan, feature, current, binding, query)
     spec = _feature(plan, feature)
     observed = query["rows"]
     _require(len(observed) == len(spec["rows"]), "canary input row count differs")
@@ -282,6 +336,8 @@ def reconcile_input_rows(plan, current, *, feature, binding, query):
               "rowIdQueryColumnId": binding["rowIdQueryColumnId"],
               "connectionId": element["source"]["connectionId"],
               "rows": mappings}
+    if lineage is not None:
+        record["rowIdQueryLineageHash"] = digest(lineage)
     return {**record, "receiptHash": digest(record)}
 
 
@@ -315,18 +371,29 @@ def confirm_phase_input_stability(plan, source_path, base_input_plan, candidate,
     _require(before_current["workbookId"] == after_current["workbookId"] and
              after_current["documentVersion"] > before_current["documentVersion"],
              "post-mutation document version did not advance")
+    aliases = {}
     for feature in FEATURES:
         for field in ("elementId", "name", "columnIds", "rowIdColumn", "rowIdColumnId",
-                      "rowIdQueryColumnId", "connectionId", "rows"):
+                      "connectionId", "rows"):
             _require(before[feature][field] == after[feature][field],
                      f"canary physical source or metadata drifted after native edit: {feature}/{field}")
         _require(before[feature]["querySnapshotId"] != after[feature]["querySnapshotId"],
                  "post-mutation source query reused an earlier snapshot")
+        if before[feature]["rowIdQueryColumnId"] != after[feature]["rowIdQueryColumnId"]:
+            _require(after[feature].get("rowIdQueryLineageHash"),
+                     "changed input query alias requires fresh DDL/query lineage")
+        aliases[feature] = {"physicalColumnId": after[feature]["rowIdColumnId"],
+            "beforeQueryColumnId": before[feature]["rowIdQueryColumnId"],
+            "afterQueryColumnId": after[feature]["rowIdQueryColumnId"],
+            "beforeReceiptHash": before[feature]["receiptHash"],
+            "afterReceiptHash": after[feature]["receiptHash"],
+            "afterLineageHash": after[feature].get("rowIdQueryLineageHash")}
     return {"status": "CONFIRMED_CANARY_INPUTS_STABLE_AFTER_EDIT",
             "sourceSha256": plan["sourceSha256"],
             "canaryInputPlanHash": plan["canaryInputPlanHash"],
             "documentId": after_current["workbookId"],
             "beforeDocumentVersion": before_current["documentVersion"],
             "afterDocumentVersion": after_current["documentVersion"],
+            "queryAliasLineage": aliases,
             "beforeQuerySnapshotIds": {f: before[f]["querySnapshotId"] for f in FEATURES},
             "afterQuerySnapshotIds": {f: after[f]["querySnapshotId"] for f in FEATURES}}
