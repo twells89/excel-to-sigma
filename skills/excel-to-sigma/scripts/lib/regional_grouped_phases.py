@@ -10,6 +10,7 @@ import copy
 import json
 
 from .native_exact_plan import digest
+from .native_frames import validate_native_grid_program
 from .regional_grouped_canary import bind_assigned_formula
 from .regional_grouped_model import build_grouped_model
 from .regional_grouped_output import build_full_output_graph, bind_full_output_formulas
@@ -81,10 +82,12 @@ def prepare_output_scaffold_program(graph, current, assigned_rows, *, output_ele
         lines.append(f'assigned.append({{"logicalName": {json.dumps(name)}, "actualId": c.id(), "name": c.name()}})')
     lines.extend(['for c in inherited:', '    c.delete()',
                   f'print({{"logicalElement": {json.dumps(output_element)}, "elementId": t.id(), "columns": assigned}})'])
+    program = "\n".join(lines) + "\n"
+    validate_native_grid_program(program, current=current, page_id=page_id)
     return {"status": "REGIONAL_OUTPUT_SCAFFOLD_PENDING_EXECUTION", "sourceSha256": graph["sourceSha256"],
             "documentId": current["workbookId"], "documentVersion": current["documentVersion"],
             "contentsHash": digest(current["contents"]), "logicalElement": output_element,
-            "sourceElementId": source_element_id, "program": "\n".join(lines) + "\n"}
+            "sourceElementId": source_element_id, "program": program}
 
 
 def _validate_namespaces(current, namespaces):
@@ -287,10 +290,12 @@ def prepare_totals_grouping_program(graph, current, region_confirmation, assigne
         lines.append(f'c = flat.add_column({json.dumps(name)}, sigma.formula.const_num(0))')
         lines.append(f'assigned.append({{"logicalName": {json.dumps(name)}, "actualId": c.id(), "name": c.name()}})')
     lines.append('print({"regionElementId": region.id(), "totalsElementId": flat.id(), "calculations": calcs, "outputColumns": assigned})')
+    program = "\n".join(lines) + "\n"
+    validate_native_grid_program(program, current=current, page_id=page_id)
     return {"status": "REGIONAL_TOTALS_GROUPING_PENDING_EXECUTION", "sourceSha256": graph["sourceSha256"],
             "documentId": current["workbookId"], "documentVersion": current["documentVersion"],
             "contentsHash": digest(current["contents"]), "logicalElement": "totals",
-            "sourceElementId": region_element_id, "program": "\n".join(lines) + "\n"}
+            "sourceElementId": region_element_id, "program": program}
 
 
 def _installed_column(current, namespaces, alias, logical):

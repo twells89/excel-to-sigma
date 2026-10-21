@@ -16,6 +16,7 @@ import json
 import re
 
 from .native_exact_plan import digest
+from .native_frames import validate_native_grid_program
 
 
 def _blocked(message):
@@ -535,10 +536,12 @@ def prepare_product_rows_scaffold_program(model, current, confirmation, *, row_e
         'error_order = product_rows.add_column("Product Error Ordinal", sigma.formula.const_num(0))',
         'print({"productRowsElementId": product_rows.id(), "errorOrdinalColumnId": error_order.id(), "columns": [{"id": c.id(), "name": c.name(), "formula": c.formula()} for c in product_rows.list_columns()]})',
     ]
+    program = "\n".join(lines) + "\n"
+    validate_native_grid_program(program, current=current, page_id=page_id)
     return {"status": "PRODUCT_ROWS_SCAFFOLD_PENDING_EXECUTION", "sourceSha256": model["sourceSha256"],
             "documentId": current["workbookId"], "documentVersion": current["documentVersion"],
             "contentsHash": digest(current["contents"]), "rowElementId": row_element_id,
-            "program": "\n".join(lines) + "\n"}
+            "program": program}
 
 
 def _projection_ddl_columns(ddl, current, element):
@@ -728,10 +731,12 @@ def prepare_product_grouping_program(model, current, confirmation, *, product_el
         'min_column = grouping.set_calculation("First Error Ordinal", sigma.formula.min(error_order))',
         'flat = p.add_table(grouping.to_source())',
         'flat.set_name("Regional Sales Product Month")',
-        f'flat.set_frame(26, {grid_row}, 24, 12)',
+        f'flat.set_frame(1, {grid_row}, 24, 12)',
         'print({"productRowsElementId": product_rows.id(), "groupedElementId": flat.id(), "sumColumnId": sum_column.id(), "minColumnId": min_column.id(), "flatColumns": [{"id": c.id(), "name": c.name()} for c in flat.list_columns()]})',
     ]
+    program = "\n".join(lines) + "\n"
+    validate_native_grid_program(program, current=current, page_id=page_id)
     return {"status": "PRODUCT_MONTH_GROUPING_PENDING_EXECUTION", "sourceSha256": model["sourceSha256"],
             "documentId": current["workbookId"], "documentVersion": current["documentVersion"],
             "contentsHash": digest(current["contents"]), "productElementId": product_element_id,
-            "program": "\n".join(lines) + "\n"}
+            "program": program}

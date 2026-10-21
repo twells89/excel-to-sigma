@@ -313,7 +313,8 @@ class RegionalGroupedModelTest(unittest.TestCase):
             namespaces[alias] = {"elementId": element_id, "name": alias,
                                  "columns": {name: {"id": alias + "-" + name, "name": name} for name in names}}
         current = {"workbookId": "test-doc", "documentVersion": 10,
-                   "contents": {"pages": [{"id": "test-page"}], "elements": elements}}
+                   "contents": {"pages": [{"id": "test-page"}], "elements": elements,
+                       "layout": '<Page type="grid" id="test-page" gridTemplateColumns="repeat(24, 1fr)"/>'}}
         elements.append({"id": "id-Sales", "name": "Sales", "kind": "input-table",
                          "columns": [{"id": "ID"}]})
         assigned["features"]["sales-forecast"].update({"elementId": "id-Sales", "name": "Sales"})
