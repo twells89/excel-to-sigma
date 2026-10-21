@@ -10,7 +10,10 @@ import copy
 import json
 
 from .native_exact_plan import digest
-from .regional_grouped_output import bind_full_output_formulas
+from .regional_grouped_canary import bind_assigned_formula
+from .regional_grouped_model import build_grouped_model
+from .regional_grouped_output import build_full_output_graph, bind_full_output_formulas
+from .source_inputs import validate_source_input_plan
 
 
 def _require(condition, message):
@@ -53,6 +56,10 @@ def prepare_output_scaffold_program(graph, current, assigned_rows, *, output_ele
     _fresh_inputs(graph, current, assigned_rows)
     source = _element(current, source_element_id)
     _page(current, page_id)
+    feature = {"region-summary": "summary-regions", "product-summary": "summary-months"}[output_element]
+    _require(source_element_id == assigned_rows["features"][feature]["elementId"] and
+             source.get("name") == assigned_rows["features"][feature]["name"],
+             "output source is not exact reconciled editable role: " + feature)
     _require(source.get("kind") == "input-table" and isinstance(grid_row, int) and grid_row >= 1,
              "ordinary source input and placement required")
     _require(not any(e.get("name") == {"region-summary": "Regional Summary",
@@ -110,7 +117,7 @@ def _validate_namespaces(current, namespaces):
 
 
 def _validate_namespace_roles(current, namespaces, assigned_rows):
-    input_aliases = {"Regions": "regions", "Summary Regions": "summary-regions",
+    input_aliases = {"Sales": "sales-forecast", "Regions": "regions", "Summary Regions": "summary-regions",
                      "Summary Months": "summary-months", "Summary Products": "summary-products"}
     for alias, feature in input_aliases.items():
         if alias in namespaces:
@@ -137,6 +144,11 @@ def _validate_namespace_roles(current, namespaces, assigned_rows):
                  product.get("source", {}).get("groupingId") and
                  parent.get("source", {}).get("elementId") == namespaces["Rows"]["elementId"],
                  "product/month grouped source lineage changed")
+    if "Product Rows" in namespaces:
+        product_rows = _element(current, namespaces["Product Rows"]["elementId"])
+        _require("Rows" in namespaces and product_rows.get("kind") == "table" and
+                 product_rows.get("source") == {"kind": "table", "elementId": namespaces["Rows"]["elementId"]},
+                 "product rows source lineage changed")
     if "Region Summary" in namespaces:
         region = _element(current, namespaces["Region Summary"]["elementId"])
         _require(region.get("kind") == "table" and
@@ -169,6 +181,18 @@ def prepare_output_contents_patch(graph, current, scaffold, assigned_rows, *, ou
     _fresh_inputs(graph, current, assigned_rows)
     output = _element(current, output_element_id)
     source = _element(current, source_element_id)
+    if output_element in ("region-summary", "product-summary"):
+        feature = {"region-summary": "summary-regions", "product-summary": "summary-months"}[output_element]
+        _require(source_element_id == assigned_rows["features"][feature]["elementId"] and
+                 source.get("name") == assigned_rows["features"][feature]["name"] and
+                 output.get("source") == {"kind": "table", "elementId": source_element_id},
+                 "output source is not exact reconciled editable role: " + feature)
+    else:
+        _require(scaffold.get("status") == "REGIONAL_TOTALS_GROUPING_PENDING_EXECUTION" and
+                 namespaces.get("Region Summary", {}).get("elementId") == source_element_id and
+                 output.get("source", {}).get("groupingId") and
+                 output.get("source", {}).get("elementId") == source_element_id,
+                 "totals source is not confirmed region-summary grouping")
     _require(output.get("kind") == "table" and
              output.get("source", {}).get("elementId") == source_element_id and
              source.get("kind") in ("input-table", "table"),
@@ -222,7 +246,9 @@ def prepare_totals_grouping_program(graph, current, region_confirmation, assigne
     _fresh_inputs(graph, current, assigned_rows)
     region = _element(current, region_element_id)
     _page(current, page_id)
-    _require(region.get("kind") == "table" and isinstance(grid_row, int) and grid_row >= 1,
+    _require(region.get("kind") == "table" and
+             region.get("source") == {"kind": "table", "elementId": assigned_rows["features"]["summary-regions"]["elementId"]} and
+             isinstance(grid_row, int) and grid_row >= 1,
              "actual region table/placement required")
     expected_names = set(graph["formulaColumns"]["region-summary"])
     by_name = {c.get("name"): c for c in region.get("columns", [])}
@@ -267,7 +293,107 @@ def prepare_totals_grouping_program(graph, current, region_confirmation, assigne
             "sourceElementId": region_element_id, "program": "\n".join(lines) + "\n"}
 
 
-def bind_full_214_source_manifest(graph, current, assigned_rows, namespaces):
+def _installed_column(current, namespaces, alias, logical):
+    binding = namespaces.get(alias, {}).get("columns", {}).get(logical)
+    _require(isinstance(binding, dict) and binding.get("id"),
+             "installed recipe column unassigned: " + alias + "/" + logical)
+    element = _element(current, namespaces[alias]["elementId"])
+    matches = [c for c in element.get("columns", []) if c.get("id") == binding["id"]]
+    _require(len(matches) == 1, "installed recipe column absent: " + alias + "/" + logical)
+    return matches[0]
+
+
+def _require_formula(current, namespaces, alias, logical, expected):
+    actual = _installed_column(current, namespaces, alias, logical)
+    _require(actual.get("formula") == expected,
+             "installed formula differs: " + alias + "/" + logical)
+
+
+def _require_grouping(current, namespaces, parent_alias, flat_alias, key_names,
+                      calculations):
+    parent = _element(current, namespaces[parent_alias]["elementId"])
+    flat = _element(current, namespaces[flat_alias]["elementId"])
+    groupings = parent.get("groupings")
+    _require(isinstance(groupings, list) and len(groupings) == 1 and
+             flat.get("source", {}).get("groupingId") == groupings[0].get("id"),
+             "installed grouping identity differs: " + flat_alias)
+    key_ids = [_installed_column(current, namespaces, parent_alias, name)["id"]
+               for name in key_names]
+    calc_ids = []
+    for formula in calculations:
+        matches = [c for c in parent["columns"] if c.get("formula") == formula]
+        _require(len(matches) == 1, "installed grouping calculation differs: " + formula)
+        calc_ids.append(matches[0]["id"])
+    _require(groupings[0].get("groupBy") == key_ids and
+             groupings[0].get("calculations") == calc_ids,
+             "installed grouping keys/calculation IDs differ: " + flat_alias)
+
+
+def _verify_installed_recipes(graph, current, namespaces):
+    """Compare saved source rows, helpers, aggregates and all output recipes."""
+    _require({"Sales", "Rows", "Grouped", "Product Rows", "Product Grouped",
+              "Region Summary", "Product Summary", "Totals"} <= set(namespaces),
+             "full assigned construction namespaces required")
+    record = graph["recordFormulaColumns"]
+    local = {c["name"]: namespaces["Rows"]["columns"][c["name"]]["name"] for c in record}
+    for column in record:
+        expected = bind_assigned_formula(column["formula"], namespaces=namespaces,
+                                         local_columns=local)
+        _require_formula(current, namespaces, "Rows", column["name"], expected)
+    for logical, formula in (("Product Key", "Lower([Sales/Product Line])"),
+                             ("Month Key", "[Sales/Month]")):
+        expected = bind_assigned_formula(formula, namespaces=namespaces, local_columns=local)
+        _require_formula(current, namespaces, "Rows", logical, expected)
+    rows = _element(current, namespaces["Rows"]["elementId"])
+    _require(sum(c.get("formula") == "Sum([Revenue Number])" for c in rows["columns"]) == 1 and
+             sum(c.get("formula") == "Min([First Error Ordinal (1)])" for c in rows["columns"]) == 1,
+             "region-quarter source grouping recipes differ")
+    for logical, source in (("Group Key", "Group Key"), ("Revenue Sum", "Revenue Sum"),
+                            ("First Error Ordinal", "First Error Ordinal")):
+        _require_formula(current, namespaces, "Grouped", logical,
+                         f'[{namespaces["Rows"]["name"]}/{source}]')
+    _require_grouping(current, namespaces, "Rows", "Grouped", ["Group Key"],
+                      ["Sum([Revenue Number])", "Min([First Error Ordinal (1)])"])
+    for logical in ("Product Key", "Month Key", "Revenue Number", "Revenue Error", "Source Ordinal"):
+        _require_formula(current, namespaces, "Product Rows", logical,
+                         f'[{namespaces["Rows"]["name"]}/{namespaces["Rows"]["columns"][logical]["name"]}]')
+    _require_formula(current, namespaces, "Product Rows", "Product Error Ordinal",
+                     'If([Revenue Error] != "", [Source Ordinal], Null)')
+    product_rows = _element(current, namespaces["Product Rows"]["elementId"])
+    _require(sum(c.get("formula") == "Sum([Revenue Number])" for c in product_rows["columns"]) == 1 and
+             sum(c.get("formula") == "Min([Product Error Ordinal])" for c in product_rows["columns"]) == 1,
+             "product-month source grouping recipes differ")
+    for logical in ("Product Key", "Month Key", "Revenue Sum", "First Error Ordinal"):
+        _require_formula(current, namespaces, "Product Grouped", logical,
+                         f'[{namespaces["Product Rows"]["name"]}/{logical}]')
+    _require_grouping(current, namespaces, "Product Rows", "Product Grouped",
+                      ["Product Key", "Month Key"],
+                      ["Sum([Revenue Number])", "Min([Product Error Ordinal])"])
+    for role, alias in (("region-summary", "Region Summary"),
+                        ("product-summary", "Product Summary"), ("totals", "Totals")):
+        bound = bind_full_output_formulas(graph, namespaces, element=role)
+        for logical, expected in bound.items():
+            _require_formula(current, namespaces, alias, logical, expected)
+    total_specs = graph["totalGrouping"]["calculations"].values()
+    region = _element(current, namespaces["Region Summary"]["elementId"])
+    for spec in total_specs:
+        for logical, expected in ((spec["sum"], f'Sum([{spec["source"]}])'),
+                                  (spec["errorOrdinal"], f'Min([{spec["errorSource"]}])')):
+            _require(sum(c.get("formula") == expected for c in region["columns"]) == 1,
+                     "totals source grouping recipe differs: " + logical)
+            _require_formula(current, namespaces, "Totals", logical,
+                             f'[{namespaces["Region Summary"]["name"]}/{namespaces["Region Summary"]["columns"][logical]["name"]}]')
+    total_formulas = []
+    for spec in graph["totalGrouping"]["calculations"].values():
+        total_formulas.extend((f'Sum([{spec["source"]}])',
+                               f'Min([{spec["errorSource"]}])'))
+    _require_grouping(current, namespaces, "Region Summary", "Totals", ["Total Key"],
+                      total_formulas)
+
+
+def bind_full_214_source_manifest(graph, current, assigned_rows, namespaces, *,
+                                  source_input_plan, source_native_plan, reviewed_canary,
+                                  phase_confirmations):
     """Freeze every source formula against read-back target element/column IDs.
 
     This is a construction receipt, not formula or runtime qualification. The
@@ -276,9 +402,40 @@ def bind_full_214_source_manifest(graph, current, assigned_rows, namespaces):
     """
     _require(graph.get("status") == "FULL_REGIONAL_FORMULAS_PENDING_ASSIGNED_BINDINGS" and
              graph.get("sourceFormulaCount") == 214, "full source formula graph required")
+    validate_source_input_plan(source_input_plan)
+    expected = build_full_output_graph(build_grouped_model(source_input_plan, source_native_plan),
+                                       reviewed_canary, assigned_rows)
+    _require(digest(graph) == digest(expected), "source-bound full graph differs")
     _fresh_inputs(graph, current, assigned_rows)
     _validate_namespaces(current, namespaces)
     _validate_namespace_roles(current, namespaces, assigned_rows)
+    required_phases = {"product-key": "PRODUCT_KEY_FORMULAS_CONFIRMED",
+                       "product-error": "PRODUCT_ERROR_FORMULA_CONFIRMED",
+                       "region-summary": "REGIONAL_OUTPUT_FORMULAS_CONFIRMED",
+                       "product-summary": "REGIONAL_OUTPUT_FORMULAS_CONFIRMED",
+                       "totals": "REGIONAL_OUTPUT_FORMULAS_CONFIRMED"}
+    _require(isinstance(phase_confirmations, dict) and set(phase_confirmations) == set(required_phases),
+             "all completed construction phase confirmations required")
+    for phase, status in required_phases.items():
+        receipt = phase_confirmations[phase]
+        _require(receipt.get("status") == status and
+                 receipt.get("documentId") == current.get("workbookId") and
+                 receipt.get("sourceSha256") == graph["sourceSha256"] and
+                 isinstance(receipt.get("documentVersion"), int) and
+                 receipt["documentVersion"] <= current["documentVersion"] and
+                 isinstance(receipt.get("contentsHash"), str) and len(receipt["contentsHash"]) == 64,
+                 "completed phase confirmation differs: " + phase)
+    for phase, alias in (("region-summary", "Region Summary"),
+                         ("product-summary", "Product Summary"), ("totals", "Totals")):
+        _require(phase_confirmations[phase].get("logicalElement") == phase and
+                 phase_confirmations[phase].get("outputElementId") == namespaces[alias]["elementId"],
+                 "output phase assigned element differs: " + phase)
+    _require(phase_confirmations["product-key"].get("rowElementId") == namespaces["Rows"]["elementId"] and
+             phase_confirmations["product-error"].get("rowElementId") == namespaces["Rows"]["elementId"] and
+             phase_confirmations["product-error"].get("productElementId") == namespaces["Product Rows"]["elementId"] and
+             phase_confirmations["product-error"].get("errorColumnId") == namespaces["Product Rows"]["columns"]["Product Error Ordinal"]["id"],
+             "product phase assigned IDs differ")
+    _verify_installed_recipes(graph, current, namespaces)
     roles = {"sales-rows": "Rows", "region-summary": "Region Summary",
              "product-summary": "Product Summary", "totals": "Totals"}
     for alias in roles.values():

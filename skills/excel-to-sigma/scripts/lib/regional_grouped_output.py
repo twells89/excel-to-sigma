@@ -8,6 +8,7 @@ row IDs are mandatory for the three product selectors and ordered targets.
 from __future__ import annotations
 
 import copy
+from datetime import date
 from decimal import Decimal
 import json
 
@@ -70,7 +71,7 @@ def _source_key(spec, index):
     return cells[0].rsplit("!", 1)[0] + "!row:" + str(spec["sourceRowNumbers"][index])
 
 
-def _same_input(actual, expected):
+def _same_input(actual, expected, source_type):
     if expected is None:
         return actual is None
     if isinstance(expected, (int, float)) and type(expected) is not bool:
@@ -78,8 +79,16 @@ def _same_input(actual, expected):
             return Decimal(str(actual)) == Decimal(str(expected))
         except (ValueError, TypeError):
             return False
-    if isinstance(expected, str) and len(expected) >= 10 and expected[4] == "-" and expected[7] == "-":
-        return isinstance(actual, str) and actual[:10] == expected[:10]
+    if source_type == "datetime":
+        try:
+            source_day = date.fromisoformat(expected)
+        except (TypeError, ValueError):
+            return False
+        # The observed Sigma datetime wire format for these source date-only
+        # cells is civil noon UTC. Accept only that exact serialization (or
+        # the source's canonical date form), never a changed time or offset.
+        canonical = source_day.isoformat()
+        return actual in (canonical, canonical + "T12:00:00.000Z")
     return type(actual) is type(expected) and actual == expected
 
 
@@ -95,6 +104,7 @@ def validate_full_assigned_rows(input_plan, current, observed):
               "sourceSha256": input_plan["sourceSha256"],
               "inputPlanHash": input_plan["inputPlanHash"], "features": {}}
     for feature, spec in inputs.items():
+        source_types = {column["name"]: column["type"] for column in spec["columns"]}
         receipt = observed[feature]
         matches = [e for e in current["contents"]["elements"] if e.get("id") == receipt.get("elementId")]
         _require(len(matches) == 1 and matches[0].get("kind") == "input-table" and
@@ -121,7 +131,7 @@ def validate_full_assigned_rows(input_plan, current, observed):
             _require(row is not None and row.get("Source Ordinal") == index + 1,
                      "source key/ordinal lineage differs: " + feature + "/" + str(index))
             for column, value in expected.items():
-                _require(_same_input(row.get(column), value),
+                _require(_same_input(row.get(column), value, source_types.get(column)),
                          "queried business input differs: " + feature + "/" + str(index) + "/" + column)
             row_id = row.get(receipt["rowIdColumn"])
             _require(isinstance(row_id, str) and row_id,
@@ -320,7 +330,10 @@ def bind_full_output_formulas(graph, namespaces, *, element):
     local = {name: name for name in columns}
     if element == "totals":
         for spec in graph["totalGrouping"]["calculations"].values():
-            local[spec["sum"]] = spec["sum"]
-            local[spec["errorOrdinal"]] = spec["errorOrdinal"]
+            for aggregate in (spec["sum"], spec["errorOrdinal"]):
+                binding = namespaces.get("Totals", {}).get("columns", {}).get(aggregate)
+                _require(isinstance(binding, dict) and isinstance(binding.get("name"), str),
+                         "observed totals aggregate binding missing: " + aggregate)
+                local[aggregate] = binding["name"]
     return {name: bind_assigned_formula(formula, namespaces=namespaces, local_columns=local)
             for name, formula in columns.items()}

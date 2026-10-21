@@ -1,8 +1,8 @@
 """Focused source and emitted-graph oracle for the Regional01 B4 canary."""
 from datetime import datetime
 from decimal import Decimal
+import gzip
 import json
-import os
 from pathlib import Path
 import sys
 import unittest
@@ -14,12 +14,11 @@ from lib.regional_grouped_canary import (build_candidate, source_rows, reference
 from native_graph_reference import NativeGraphReference
 
 
-ROOT = Path(os.environ.get("REGIONAL_PACKET_ROOT", Path(__file__).resolve().parents[5]))
-WORK = ROOT / "work"
-SOURCE = WORK / "broader-eight-source-replay-20261020/source-originals/01 Regional Sales Forecast.xlsx"
-INPUT = WORK / "complete-source-record-bindings-plans-20261020/01-regional-sales-forecast-xlsx.json"
-NATIVE = WORK / "complete-native-exact-replay-r1-20261020/01-regional-sales-forecast-xlsx.json"
-ORACLES = WORK / "six-excel-authoritative-oracles-20261020/excel-oracles.jsonl"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "regional-grouped"
+SOURCE = FIXTURES / "01 Regional Sales Forecast.xlsx"
+INPUT = FIXTURES / "input-plan.json.gz"
+NATIVE = FIXTURES / "native-plan.json.gz"
+ORACLE = FIXTURES / "b4-oracle.json"
 
 
 def evaluate_graph(candidate, sales, summary_region, *, injected_errors=None):
@@ -78,16 +77,12 @@ def evaluate_graph(candidate, sales, summary_region, *, injected_errors=None):
             ("number", "text", "logical", "kind", "error")}
 
 
-@unittest.skipUnless(SOURCE.exists() and INPUT.exists() and NATIVE.exists() and ORACLES.exists(),
-                     "source-bound Regional replay packet is not installed")
 class RegionalGroupedCanaryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.inputs = json.loads(INPUT.read_text())
-        cls.native = json.loads(NATIVE.read_text())
-        cls.oracle = next(json.loads(line) for line in ORACLES.read_text().splitlines()
-                          if '"sourceFile": "01 Regional Sales Forecast.xlsx"' in line
-                          and '"sheet": "Summary", "address": "B4"' in line)
+        cls.inputs = json.loads(gzip.decompress(INPUT.read_bytes()))
+        cls.native = json.loads(gzip.decompress(NATIVE.read_bytes()))
+        cls.oracle = json.loads(ORACLE.read_text())
         cls.candidate = build_candidate(SOURCE, cls.inputs, cls.native, cls.oracle)
 
     def test_baseline_matches_independent_excel_and_decimal(self):

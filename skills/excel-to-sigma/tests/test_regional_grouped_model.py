@@ -2,8 +2,8 @@
 from collections import Counter
 import copy
 from decimal import Decimal
+import gzip
 import json
-import os
 from pathlib import Path
 import sys
 import unittest
@@ -22,12 +22,11 @@ from lib.regional_grouped_phases import (prepare_output_scaffold_program,
     prepare_totals_grouping_program, bind_full_214_source_manifest)
 from native_graph_reference import NativeGraphReference
 
-ROOT = Path(os.environ.get("REGIONAL_PACKET_ROOT", Path(__file__).resolve().parents[5]))
-WORK = ROOT / "work"
-INPUT = WORK / "complete-source-record-bindings-plans-20261020/01-regional-sales-forecast-xlsx.json"
-NATIVE = WORK / "complete-native-exact-replay-r1-20261020/01-regional-sales-forecast-xlsx.json"
-SAVED = WORK / "regional-grouped-canary-20261020/root-after-summary-formula-source8.json"
-CANARY = WORK / "regional-grouped-canary-20261020/candidate.json"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "regional-grouped"
+INPUT = FIXTURES / "input-plan.json.gz"
+NATIVE = FIXTURES / "native-plan.json.gz"
+SAVED = FIXTURES / "saved-b4-readback.json"
+CANARY = FIXTURES / "canary.json.gz"
 
 
 def synthetic_assigned_rows(input_plan):
@@ -53,12 +52,11 @@ def synthetic_assigned_rows(input_plan):
     return validate_full_assigned_rows(input_plan, current, observed)
 
 
-@unittest.skipUnless(INPUT.exists() and NATIVE.exists(), "source-bound replay packet absent")
 class RegionalGroupedModelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.inputs = json.loads(INPUT.read_text())
-        cls.native = json.loads(NATIVE.read_text())
+        cls.inputs = json.loads(gzip.decompress(INPUT.read_bytes()))
+        cls.native = json.loads(gzip.decompress(NATIVE.read_bytes()))
         cls.model = build_grouped_model(cls.inputs, cls.native)
 
     def test_all_214_obligations_and_bounded_structure(self):
@@ -179,10 +177,9 @@ class RegionalGroupedModelTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "first-duplicate"):
             build_grouped_model(self.inputs, reordered)
 
-    @unittest.skipUnless(CANARY.exists(), "reviewed canary candidate absent")
     def test_full_output_formulas_and_source_forward_edges(self):
         assigned = synthetic_assigned_rows(self.inputs)
-        graph = build_full_output_graph(self.model, json.loads(CANARY.read_text()), assigned)
+        graph = build_full_output_graph(self.model, json.loads(gzip.decompress(CANARY.read_bytes())), assigned)
         self.assertEqual(graph["sourceFormulaCount"], 214)
         self.assertEqual(graph["constructionBudget"], {"tables": 7, "formulaAndAggregateColumns": 145})
         self.assertEqual({k: len(v) for k, v in graph["formulaColumns"].items()},
@@ -203,6 +200,8 @@ class RegionalGroupedModelTest(unittest.TestCase):
             "Product Grouped": ["Revenue Sum", "First Error Ordinal", "Product Key", "Month Key"],
             "Rows": ["Revenue Error", "Source Ordinal"],
             "Region Summary": ["Quarter 1 Error", "Quarter 2 Error", "Quarter 3 Error", "Quarter 4 Error", "Annual Error", "Source Ordinal"],
+            "Totals": [name for spec in graph["totalGrouping"]["calculations"].values()
+                       for name in (spec["sum"], spec["errorOrdinal"])],
         }
         namespaces = {name: {"name": name, "columns": {column: {"name": column, "id": column}
                       for column in columns}} for name, columns in names.items()}
@@ -210,11 +209,13 @@ class RegionalGroupedModelTest(unittest.TestCase):
             bound = bind_full_output_formulas(graph, namespaces, element=element)
             self.assertEqual(set(bound), set(graph["formulaColumns"][element]))
             self.assertFalse(any("__native" in formula for formula in bound.values()))
+        namespaces["Totals"]["columns"]["Quarter Total 1 Sum"]["name"] = "Observed Quarter Sum"
+        rebound = bind_full_output_formulas(graph, namespaces, element="totals")
+        self.assertEqual(rebound["Quarter Total 1 Number"], "[Observed Quarter Sum]")
 
-    @unittest.skipUnless(CANARY.exists(), "reviewed canary candidate absent")
     def test_emitted_grouped_graph_all_70_nonrecord_baselines(self):
         assigned = synthetic_assigned_rows(self.inputs)
-        graph = build_full_output_graph(self.model, json.loads(CANARY.read_text()), assigned)
+        graph = build_full_output_graph(self.model, json.loads(gzip.decompress(CANARY.read_bytes())), assigned)
         inputs = self.inputs["sharedInputArchitecture"]["inputs"]
         sales = inputs["sales-forecast"]["rows"]
         region_rows = []
@@ -286,12 +287,11 @@ class RegionalGroupedModelTest(unittest.TestCase):
                 self.assertEqual(Decimal(str(number)).quantize(places),
                                  Decimal(str(expected)).quantize(places), cell)
 
-    @unittest.skipUnless(CANARY.exists(), "reviewed canary candidate absent")
     def test_full_output_scaffold_patch_and_totals_grouping_contract(self):
         import ast
         from lib.native_exact_plan import digest
         assigned = synthetic_assigned_rows(self.inputs)
-        graph = build_full_output_graph(self.model, json.loads(CANARY.read_text()), assigned)
+        graph = build_full_output_graph(self.model, json.loads(gzip.decompress(CANARY.read_bytes())), assigned)
         namespaces = {}
         elements = []
         required = {
@@ -323,6 +323,9 @@ class RegionalGroupedModelTest(unittest.TestCase):
                          "contentsHash": digest(current["contents"])})
         scaffold = prepare_output_scaffold_program(graph, current, assigned, output_element="region-summary",
             source_element_id="id-Summary Regions", page_id="test-page", grid_row=30)
+        with self.assertRaisesRegex(ValueError, "exact reconciled editable role"):
+            prepare_output_scaffold_program(graph, current, assigned, output_element="region-summary",
+                source_element_id="id-Regions", page_id="test-page", grid_row=30)
         ast.parse(scaffold["program"])
         observed = copy.deepcopy(current)
         observed["documentVersion"] += 1
@@ -337,6 +340,15 @@ class RegionalGroupedModelTest(unittest.TestCase):
             output_element="region-summary", output_element_id="region-output",
             source_element_id="id-Summary Regions", assigned_columns=output_columns,
             namespaces=namespaces)
+        wrong = copy.deepcopy(observed)
+        wrong["contents"]["elements"][-1]["source"]["elementId"] = "id-Regions"
+        assigned["contentsHash"] = digest(wrong["contents"])
+        with self.assertRaisesRegex(ValueError, "exact reconciled editable role"):
+            prepare_output_contents_patch(graph, wrong, scaffold, assigned,
+                output_element="region-summary", output_element_id="region-output",
+                source_element_id="id-Summary Regions", assigned_columns=output_columns,
+                namespaces=namespaces)
+        assigned["contentsHash"] = digest(observed["contents"])
         self.assertEqual(patch["ifMatchDocumentVersion"], observed["documentVersion"])
         self.assertNotEqual(patch["beforeContentsHash"], patch["expectedContentsHash"])
         saved = copy.deepcopy(observed)
@@ -353,60 +365,160 @@ class RegionalGroupedModelTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "BLOCKED"):
             confirm_output_contents_patch(patch, observed)
 
-    @unittest.skipUnless(CANARY.exists(), "reviewed canary candidate absent")
-    def test_final_214_manifest_uses_actual_assigned_columns_and_source_row_ids(self):
+    def test_final_214_manifest_uses_installed_recipes_and_confirmed_ids(self):
         from lib.native_exact_plan import digest
+        from lib.regional_grouped_canary import bind_assigned_formula
+        canary = json.loads(gzip.decompress(CANARY.read_bytes()))
         assigned = synthetic_assigned_rows(self.inputs)
-        graph = build_full_output_graph(self.model, json.loads(CANARY.read_text()), assigned)
+        graph = build_full_output_graph(self.model, canary, assigned)
         elements = []
         namespaces = {}
-        for alias, feature in (("Regions", "regions"), ("Summary Regions", "summary-regions"),
-                               ("Summary Months", "summary-months"), ("Summary Products", "summary-products")):
-            receipt = assigned["features"][feature]
-            names = {"Region", "FY26 Target", "Row ID", "Source Ordinal", "Source Key",
-                     "Month", "Product Line"}
-            columns = [{"id": alias + name, "name": name, "formula": "1"} for name in names]
-            columns.append({"id": "ID"})
-            elements.append({"id": receipt["elementId"], "name": receipt["name"],
-                             "kind": "input-table", "columns": columns})
-            namespaces[alias] = {"elementId": receipt["elementId"], "name": receipt["name"],
-                "columns": {name: {"id": alias + name, "name": name} for name in names}}
-        specs = (("Rows", "sales-rows", assigned["features"]["sales-forecast"]["elementId"], None),
-                 ("Grouped", "region-quarter", "Rows", "g1"),
-                 ("Product Rows", "product-rows", "Rows", None),
-                 ("Product Grouped", "product-month", "Product Rows", "g2"),
-                 ("Region Summary", "region-summary", assigned["features"]["summary-regions"]["elementId"], None),
-                 ("Product Summary", "product-summary", assigned["features"]["summary-months"]["elementId"], None),
-                 ("Totals", "totals", "Region Summary", "g3"))
-        for alias, role, source, grouping in specs:
-            names = {name for mapping in graph["sourceMappings"].values()
-                     if mapping["targetElement"] == role for name in mapping["laneColumnNames"].values()}
-            columns = [{"id": alias + name, "name": name, "formula": "1"} for name in names]
-            element = {"id": alias, "name": alias, "kind": "table", "columns": columns,
-                       "source": {"kind": "table", "elementId": source}}
-            if grouping:
-                element["source"]["groupingId"] = grouping
+        def add(alias, element_id, element_name, kind, source, names, grouping=None):
+            columns = [{"id": alias + ":" + name, "name": name, "formula": "0"} for name in names]
+            element = {"id": element_id, "name": element_name, "kind": kind, "columns": columns}
+            if source is not None:
+                element["source"] = {"kind": "table", "elementId": source}
+                if grouping:
+                    element["source"]["groupingId"] = grouping
             elements.append(element)
-            namespaces[alias] = {"elementId": alias, "name": alias,
-                "columns": {name: {"id": alias + name, "name": name} for name in names}}
-        sales = assigned["features"]["sales-forecast"]
-        elements.append({"id": sales["elementId"], "name": sales["name"], "kind": "input-table",
-                         "columns": [{"id": "ID"}]})
+            namespaces[alias] = {"elementId": element_id, "name": element_name,
+                "columns": {name: {"id": alias + ":" + name, "name": name} for name in names}}
+            return element
+        inputs = (("Sales", "sales-forecast"), ("Regions", "regions"),
+                  ("Summary Regions", "summary-regions"), ("Summary Months", "summary-months"),
+                  ("Summary Products", "summary-products"))
+        for alias, feature in inputs:
+            receipt = assigned["features"][feature]
+            names = [c["name"] for c in self.inputs["sharedInputArchitecture"]["inputs"][feature]["columns"]]
+            names += ["Source Key", "Source Ordinal", "Row ID"]
+            element = add(alias, receipt["elementId"], receipt["name"], "input-table", None, names)
+            element["columns"].append({"id": "ID"})
+        record = canary["elements"][0]["columns"]
+        row_names = [c["name"] for c in record] + ["Product Key", "Month Key", "Revenue Sum"]
+        rows = add("Rows", "Rows", "Rows", "table", assigned["features"]["sales-forecast"]["elementId"], row_names)
+        rows["columns"].append({"id": "rows-aggregate-error", "name": "First Error Ordinal",
+                                "formula": "Min([First Error Ordinal (1)])"})
+        grouped = add("Grouped", "Grouped", "Grouped", "table", "Rows",
+                      ["Group Key", "Revenue Sum", "First Error Ordinal"], "g1")
+        product_rows = add("Product Rows", "Product Rows", "Product Rows", "table", "Rows",
+                           ["Product Key", "Month Key", "Revenue Number", "Revenue Error",
+                            "Source Ordinal", "Product Error Ordinal", "Revenue Sum", "First Error Ordinal"])
+        product_grouped = add("Product Grouped", "Product Grouped", "Product Grouped", "table",
+                              "Product Rows", ["Product Key", "Month Key", "Revenue Sum",
+                                               "First Error Ordinal"], "g2")
+        region_names = list(graph["formulaColumns"]["region-summary"])
+        for spec in graph["totalGrouping"]["calculations"].values():
+            region_names += [spec["sum"], spec["errorOrdinal"]]
+        region = add("Region Summary", "Region Summary", "Region Summary", "table",
+                     assigned["features"]["summary-regions"]["elementId"], region_names)
+        product = add("Product Summary", "Product Summary", "Product Summary", "table",
+                      assigned["features"]["summary-months"]["elementId"],
+                      list(graph["formulaColumns"]["product-summary"]))
+        totals_names = list(graph["formulaColumns"]["totals"])
+        for spec in graph["totalGrouping"]["calculations"].values():
+            totals_names += [spec["sum"], spec["errorOrdinal"]]
+        totals = add("Totals", "Totals", "Totals", "table", "Region Summary", totals_names, "g3")
+        def column(element, name):
+            return next(c for c in element["columns"] if c.get("name") == name)
+        local = {c["name"]: c["name"] for c in record}
+        for recipe in record:
+            column(rows, recipe["name"])["formula"] = bind_assigned_formula(
+                recipe["formula"], namespaces=namespaces, local_columns=local)
+        column(rows, "Product Key")["formula"] = f'Lower([{namespaces["Sales"]["name"]}/Product Line])'
+        column(rows, "Month Key")["formula"] = f'[{namespaces["Sales"]["name"]}/Month]'
+        column(rows, "Revenue Sum")["formula"] = "Sum([Revenue Number])"
+        for name in ("Group Key", "Revenue Sum", "First Error Ordinal"):
+            column(grouped, name)["formula"] = f'[Rows/{name}]'
+        for name in ("Product Key", "Month Key", "Revenue Number", "Revenue Error", "Source Ordinal"):
+            column(product_rows, name)["formula"] = f'[Rows/{name}]'
+        column(product_rows, "Product Error Ordinal")["formula"] = 'If([Revenue Error] != "", [Source Ordinal], Null)'
+        column(product_rows, "Revenue Sum")["formula"] = "Sum([Revenue Number])"
+        column(product_rows, "First Error Ordinal")["formula"] = "Min([Product Error Ordinal])"
+        for name in ("Product Key", "Month Key", "Revenue Sum", "First Error Ordinal"):
+            column(product_grouped, name)["formula"] = f'[Product Rows/{name}]'
+        for role, element in (("region-summary", region), ("product-summary", product), ("totals", totals)):
+            for name, formula in bind_full_output_formulas(graph, namespaces, element=role).items():
+                column(element, name)["formula"] = formula
+        for spec in graph["totalGrouping"]["calculations"].values():
+            column(region, spec["sum"])["formula"] = f'Sum([{spec["source"]}])'
+            column(region, spec["errorOrdinal"])["formula"] = f'Min([{spec["errorSource"]}])'
+            for name in (spec["sum"], spec["errorOrdinal"]):
+                column(totals, name)["formula"] = f'[Region Summary/{name}]'
+        rows["groupings"] = [{"id": "g1", "groupBy": [column(rows, "Group Key")["id"]],
+                              "calculations": [column(rows, "Revenue Sum")["id"],
+                                               "rows-aggregate-error"]}]
+        product_rows["groupings"] = [{"id": "g2", "groupBy": [column(product_rows, "Product Key")["id"],
+                                                              column(product_rows, "Month Key")["id"]],
+                                      "calculations": [column(product_rows, "Revenue Sum")["id"],
+                                                       column(product_rows, "First Error Ordinal")["id"]]}]
+        total_calc_ids = []
+        for spec in graph["totalGrouping"]["calculations"].values():
+            total_calc_ids += [column(region, spec["sum"])["id"],
+                               column(region, spec["errorOrdinal"])["id"]]
+        region["groupings"] = [{"id": "g3", "groupBy": [column(region, "Total Key")["id"]],
+                                "calculations": total_calc_ids}]
         current = {"workbookId": "test-full-assigned", "documentVersion": 8,
                    "contents": {"elements": elements}}
-        assigned.update({"documentId": current["workbookId"],
-                         "documentVersion": current["documentVersion"],
-                         "contentsHash": digest(current["contents"])})
-        manifest = bind_full_214_source_manifest(graph, current, assigned, namespaces)
+        def fresh(doc):
+            receipt = copy.deepcopy(assigned)
+            receipt.update({"documentId": doc["workbookId"], "documentVersion": doc["documentVersion"],
+                            "contentsHash": digest(doc["contents"])})
+            return receipt
+        phases = {}
+        for key, status in (("product-key", "PRODUCT_KEY_FORMULAS_CONFIRMED"),
+                            ("product-error", "PRODUCT_ERROR_FORMULA_CONFIRMED"),
+                            ("region-summary", "REGIONAL_OUTPUT_FORMULAS_CONFIRMED"),
+                            ("product-summary", "REGIONAL_OUTPUT_FORMULAS_CONFIRMED"),
+                            ("totals", "REGIONAL_OUTPUT_FORMULAS_CONFIRMED")):
+            phases[key] = {"status": status, "documentId": current["workbookId"],
+                           "documentVersion": 7, "contentsHash": "a" * 64,
+                           "sourceSha256": graph["sourceSha256"]}
+        phases["product-key"]["rowElementId"] = "Rows"
+        phases["product-error"].update({"rowElementId": "Rows", "productElementId": "Product Rows",
+                                        "errorColumnId": namespaces["Product Rows"]["columns"]["Product Error Ordinal"]["id"]})
+        for key, alias in (("region-summary", "Region Summary"),
+                           ("product-summary", "Product Summary"), ("totals", "Totals")):
+            phases[key].update({"logicalElement": key, "outputElementId": alias})
+        def bind(doc=current, graph_value=graph, phase_value=phases, aliases=namespaces):
+            return bind_full_214_source_manifest(graph_value, doc, fresh(doc), aliases,
+                source_input_plan=self.inputs, source_native_plan=self.native,
+                reviewed_canary=canary, phase_confirmations=phase_value)
+        manifest = bind()
         self.assertEqual(manifest["sourceFormulaCount"], 214)
         self.assertEqual(manifest["roleCounts"], {"sales-rows": 144, "region-summary": 28,
                                                   "product-summary": 36, "totals": 6})
         self.assertEqual(manifest["sourceMappings"]["Summary!G4"]["sourceInputPhysicalRowId"],
                          assigned["features"]["summary-regions"]["rows"]["0"])
-        self.assertEqual(manifest["sourceMappings"]["Summary!B8"]["sourceInputPhysicalRowId"], None)
-        del namespaces["Region Summary"]["columns"]["Ratio Number"]
-        with self.assertRaisesRegex(ValueError, "assigned lane column missing"):
-            bind_full_214_source_manifest(graph, current, assigned, namespaces)
+        self.assertIsNone(manifest["sourceMappings"]["Summary!B8"]["sourceInputPhysicalRowId"])
+        for alias, name in (("Region Summary", "Quarter 1 Number"),
+                            ("Rows", "h0"), ("Product Rows", "Product Error Ordinal"),
+                            ("Product Grouped", "Revenue Sum"), ("Totals", "Quarter Total 1 Sum")):
+            changed = copy.deepcopy(current)
+            target = next(e for e in changed["contents"]["elements"] if e["id"] == alias)
+            column(target, name)["formula"] = "0"
+            with self.assertRaisesRegex(ValueError, "installed formula|grouping recipe"):
+                bind(changed)
+        changed = copy.deepcopy(current)
+        target = next(e for e in changed["contents"]["elements"] if e["id"] == "Product Rows")
+        target["groupings"][0]["groupBy"].reverse()
+        with self.assertRaisesRegex(ValueError, "installed grouping keys"):
+            bind(changed)
+        changed_graph = copy.deepcopy(graph)
+        changed_graph["formulaColumns"]["region-summary"]["Quarter 1 Number"] = "0"
+        with self.assertRaisesRegex(ValueError, "source-bound full graph differs"):
+            bind(graph_value=changed_graph)
+        changed_graph = copy.deepcopy(graph)
+        changed_graph["sourceMappings"]["Summary!B4"]["sourceDependencies"] = []
+        with self.assertRaisesRegex(ValueError, "source-bound full graph differs"):
+            bind(graph_value=changed_graph)
+        incomplete = copy.deepcopy(phases)
+        del incomplete["product-summary"]
+        with self.assertRaisesRegex(ValueError, "all completed construction phase"):
+            bind(phase_value=incomplete)
+        missing = copy.deepcopy(namespaces)
+        del missing["Region Summary"]["columns"]["Ratio Number"]
+        with self.assertRaisesRegex(ValueError, "assigned lane column missing|installed recipe column"):
+            bind(aliases=missing)
 
     def test_renamed_source_file_and_unsupported_ast_fail_closed(self):
         changed = json.loads(json.dumps(self.native))
@@ -453,11 +565,17 @@ class RegionalGroupedModelTest(unittest.TestCase):
         current = {"workbookId": "test-only", "documentVersion": 1,
                    "contents": {"elements": elements}}
         self.assertEqual(set(validate_full_assigned_rows(self.inputs, current, observed)["features"]), set(inputs))
+        observed["sales-forecast"]["queryRows"][0]["Month"] = "2026-01-01T12:00:00.000Z"
+        self.assertEqual(set(validate_full_assigned_rows(self.inputs, current, observed)["features"]), set(inputs))
+        for drift in ("2026-01-01T12:34:56.000Z", "2026-01-01T12:00:00.000+01:00"):
+            observed["sales-forecast"]["queryRows"][0]["Month"] = drift
+            with self.assertRaisesRegex(ValueError, "queried business input differs"):
+                validate_full_assigned_rows(self.inputs, current, observed)
+        observed["sales-forecast"]["queryRows"][0]["Month"] = "2026-01-01"
         observed["regions"]["queryRows"][0]["FY26 Target"] += 1
         with self.assertRaisesRegex(ValueError, "queried business input differs"):
             validate_full_assigned_rows(self.inputs, current, observed)
 
-    @unittest.skipUnless(SAVED.exists(), "saved B4 staging readback absent")
     def test_guarded_product_grouping_phases(self):
         current = json.loads(SAVED.read_text())
         rows = next(e for e in current["contents"]["elements"] if e.get("name") == "Regional Sales Rows")
