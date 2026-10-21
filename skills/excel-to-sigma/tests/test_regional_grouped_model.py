@@ -213,6 +213,27 @@ class RegionalGroupedModelTest(unittest.TestCase):
         rebound = bind_full_output_formulas(graph, namespaces, element="totals")
         self.assertEqual(rebound["Quarter Total 1 Number"], "[Observed Quarter Sum]")
 
+    def test_totals_error_lanes_use_grouped_ordinals_without_collapsed_lookup(self):
+        assigned = synthetic_assigned_rows(self.inputs)
+        graph = build_full_output_graph(self.model, json.loads(gzip.decompress(CANARY.read_bytes())), assigned)
+        region = graph["formulaColumns"]["region-summary"]
+        totals = graph["formulaColumns"]["totals"]
+        for quarter in range(1, 5):
+            lane = f"Quarter Total {quarter}"
+            self.assertEqual(region[f"Quarter {quarter} Error Ordinal"],
+                             f'If([Quarter {quarter} Error] != "", [Source Ordinal], Null)')
+            self.assertEqual(graph["totalGrouping"]["calculations"][lane]["errorSource"],
+                             f"Quarter {quarter} Error Ordinal")
+            self.assertEqual(totals[lane + " Error"],
+                             f'If(IsNull([{lane} First Error Ordinal]), "", "#VALUE!")')
+        self.assertEqual(region["Annual Error Ordinal"],
+                         'If([Annual Error] != "", [Source Ordinal], Null)')
+        self.assertEqual(totals["Grand Total Error"],
+                         'If(IsNull([Grand Total First Error Ordinal]), "", "#VALUE!")')
+        self.assertTrue(all("Lookup([Region Summary/" not in totals[lane + " Error"]
+                            for lane in ("Quarter Total 1", "Quarter Total 2",
+                                         "Quarter Total 3", "Quarter Total 4", "Grand Total")))
+
     def test_emitted_grouped_graph_all_70_nonrecord_baselines(self):
         assigned = synthetic_assigned_rows(self.inputs)
         graph = build_full_output_graph(self.model, json.loads(gzip.decompress(CANARY.read_bytes())), assigned)
@@ -425,6 +446,9 @@ class RegionalGroupedModelTest(unittest.TestCase):
         for recipe in record:
             column(rows, recipe["name"])["formula"] = bind_assigned_formula(
                 recipe["formula"], namespaces=namespaces, local_columns=local)
+            if recipe["name"] in ("h0", "h1", "h2"):
+                column(rows, recipe["name"])["formula"] = column(rows, recipe["name"])["formula"].replace(
+                    "Not(", "Not (")
         column(rows, "Product Key")["formula"] = f'Lower([{namespaces["Sales"]["name"]}/Product Line])'
         column(rows, "Month Key")["formula"] = f'[{namespaces["Sales"]["name"]}/Month]'
         column(rows, "Revenue Sum")["formula"] = "Sum([Revenue Number])"
@@ -499,6 +523,11 @@ class RegionalGroupedModelTest(unittest.TestCase):
             column(target, name)["formula"] = "0"
             with self.assertRaisesRegex(ValueError, "installed formula|grouping recipe"):
                 bind(changed)
+        changed = copy.deepcopy(current)
+        target = next(e for e in changed["contents"]["elements"] if e["id"] == "Rows")
+        column(target, "h0")["formula"] = column(target, "h0")["formula"].replace("Not (", "Not  (", 1)
+        with self.assertRaisesRegex(ValueError, "installed formula"):
+            bind(changed)
         changed = copy.deepcopy(current)
         target = next(e for e in changed["contents"]["elements"] if e["id"] == "Product Rows")
         target["groupings"][0]["groupBy"].reverse()

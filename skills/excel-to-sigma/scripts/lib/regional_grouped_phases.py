@@ -11,7 +11,7 @@ import json
 
 from .native_exact_plan import digest
 from .native_frames import validate_native_grid_program
-from .regional_grouped_canary import bind_assigned_formula
+from .regional_grouped_canary import bind_assigned_formula, _canonical_not_call_spacing
 from .regional_grouped_model import build_grouped_model, _projection_ddl_columns
 from .regional_grouped_output import build_full_output_graph, bind_full_output_formulas
 from .source_inputs import validate_source_input_plan
@@ -378,6 +378,13 @@ def _verify_installed_recipes(graph, current, namespaces):
     for column in record:
         expected = bind_assigned_formula(column["formula"], namespaces=namespaces,
                                          local_columns=local)
+        if column["name"] in ("h0", "h1", "h2"):
+            # The reviewed native readback renders these four Not calls with
+            # one ASCII space. Demand that exact rendering, not loose formula
+            # whitespace equivalence, for each of these three helpers.
+            expected, insertions = _canonical_not_call_spacing(expected)
+            _require(len(insertions) == 4,
+                     "reviewed record Not-call rendering changed: " + column["name"])
         _require_formula(current, namespaces, "Rows", column["name"], expected)
     for logical, formula in (("Product Key", "Lower([Sales/Product Line])"),
                              ("Month Key", "[Sales/Month]")):

@@ -11,6 +11,7 @@ import copy
 from datetime import date
 from decimal import Decimal
 import json
+import re
 
 from .native_exact_plan import digest
 
@@ -290,10 +291,20 @@ def build_full_output_graph(model, canary, assigned_rows):
         mappings[cell]["targetRowIndex"] = 0
         mappings[cell]["laneColumnNames"] = {lane.lower(): "Total Label " + lane for lane in LANES}
     _require(len(_source_fields(model, "text")) == 1, "source label vertex missing")
+    record_columns = next(e["columns"] for e in canary["elements"] if e["id"] == "regional_sales_rows")
+    row_formulas = {c["name"]: c["formula"] for c in record_columns}
+    row_error_tokens = set(re.findall(r"#[A-Z0-9/!?]+", " ".join(
+        row_formulas.get(name, "") for name in ("h0", "h1", "h2"))))
+    _require(row_formulas.get("Revenue Error") == "[h4]" and
+             row_formulas.get("h4") == "[h2]" and row_error_tokens == {"#VALUE!"},
+             "grouped Totals error domain is not limited to #VALUE!")
     totals_columns = {}
     for field, spec in totals.items():
+        # Grouping collapses Region Summary row columns. The grouped minimum
+        # ordinal still says whether an included source Revenue error exists;
+        # this pinned Units×Avg Price source emits only #VALUE! in that lane.
         _numeric_lanes(totals_columns, field, f'[{spec["sum"]}]',
-                       f'If(IsNull([{field} First Error Ordinal]), "", Lookup([Region Summary/{"Annual Error" if field == "Grand Total" else "Quarter " + field.split()[-1] + " Error"}], [{field} First Error Ordinal], [Region Summary/Source Ordinal]))')
+                       f'If(IsNull([{field} First Error Ordinal]), "", "#VALUE!")')
     _add(totals_columns, "Total Label Number", "0")
     _add(totals_columns, "Total Label Text", '"Total"')
     _add(totals_columns, "Total Label Logical", "False")
@@ -302,7 +313,6 @@ def build_full_output_graph(model, canary, assigned_rows):
     _require(set(mappings) == set(model["sourceMappings"]) and
              all(set(m.get("laneColumnNames", {})) == {x.lower() for x in LANES} for m in mappings.values()),
              "one or more source outputs lack five lane bindings")
-    record_columns = next(e["columns"] for e in canary["elements"] if e["id"] == "regional_sales_rows")
     formula_count = (len(record_columns) + 2 + 2 + 2 + len(region) + len(product) +
                      2 * len(totals) + len(totals_columns))
     return {"status": "FULL_REGIONAL_FORMULAS_PENDING_ASSIGNED_BINDINGS",
