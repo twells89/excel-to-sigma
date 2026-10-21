@@ -73,7 +73,7 @@ The logical construction is:
    current=<fresh document>, source_path=..., base_input_plan=...,
    canary_input_plan=..., observed_inputs=<fresh two-input receipts>)`.
    It emits one documented `get_page` / `add_table(source.element(...))` /
-   `add_column(..., const_number(0))` SDK program. Execute only in a disposable
+   `add_column(..., const_num(0))` SDK program. Execute only in a disposable
    staging document. Read back its actual element ID and every column ID, and
    check the full document/layout for foreign changes. After every native
    structural edit, query both ordinary inputs again and call

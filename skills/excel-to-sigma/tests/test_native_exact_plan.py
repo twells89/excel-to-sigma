@@ -1,6 +1,7 @@
 """Real source/input planning plus synthetic protocol receipts (no target calls)."""
 import ast
 import copy
+import datetime
 import json
 import tempfile
 from openpyxl import Workbook, load_workbook
@@ -11,9 +12,12 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts/lib'))
 from source_inputs import build_source_input_plan
 import test_native_calculations
-from test_regional_canary_inputs import check_formula_api_contract
+from test_regional_canary_inputs import SDK_FORMULA, check_formula_api_contract
 from native_exact_plan import (build_exact_native_calculation_plan,lower_exact_native_calculations,
-    prepare_exact_native_scaffold,confirm_exact_native_scaffold,prepare_exact_native_update,confirm_exact_native_readback)
+    prepare_exact_native_scaffold,confirm_exact_native_scaffold,prepare_exact_native_update,confirm_exact_native_readback,
+    _formula_result,input_scalar)
+from native_exact import compile_expression
+from native_formula_reference import evaluate_native
 from native_calculations import build_native_calculation_backup
 from migration_manifest import build_manifest
 from input_sync import build_artifact_records
@@ -187,6 +191,52 @@ class ExactPlanningTests(unittest.TestCase):
         self.assertIn('"n"',direct['kind'])
         self.assertNotEqual(direct['kind'],'"z"')
 
+    def test_blank_datetime_formula_emits_zero_number_lane_and_preserves_raw_blank(self):
+        path,old=self.source();book=load_workbook(path)
+        book['Ledger Renamed']['E1']='At'
+        book['Ledger Renamed']['E2']=None
+        book['Ledger Renamed']['E3']=datetime.datetime(2024,1,1)
+        book['Ledger Renamed'].tables['tblLedger'].ref='A1:E3'
+        book['Ledger Renamed']['D2']='=E2'
+        book['Summary Renamed']['A1']="=COUNT('Ledger Renamed'!D2)"
+        book['Summary Renamed']['A2']="=MIN('Ledger Renamed'!D2,5)"
+        book['Summary Renamed']['A3']="=IF(TRUE,'Ledger Renamed'!E2,\"\")"
+        book['Summary Renamed']['A4']='=COUNT(A3)'
+        book['Summary Renamed']['A5']="=IF(FALSE,0,'Ledger Renamed'!E2)"
+        book['Summary Renamed']['A6']="=COUNT('Ledger Renamed'!E2)"
+        book['Summary Renamed']['A7']="=MIN('Ledger Renamed'!E2,5)"
+        book['Summary Renamed']['A8']="=IF(TRUE,1/0,'Ledger Renamed'!E2)"
+        book.save(path)
+        decisions=copy.deepcopy(old['decisions']);decisions['sourceSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        decisions['features'][0]['literalColumns'].append('At')
+        decisions['features'][0]['columnTypes']['At']='datetime'
+        decisions['features'][0]['reviewedBlankColumns']=['At']
+        inputs=build_source_input_plan(path,decisions,connection_id='connection',folder_id='folder')
+        plan=build_exact_native_calculation_plan(path,inputs)
+        for cell,expected,kind in [('Ledger Renamed!D2',0,'number'),('Summary Renamed!A1',1,'number'),
+                                   ('Summary Renamed!A2',0,'number'),('Summary Renamed!A3',0,'number'),
+                                   ('Summary Renamed!A4',1,'number'),('Summary Renamed!A5',0,'number'),
+                                   ('Summary Renamed!A6',0,'number'),('Summary Renamed!A7',5,'number')]:
+            with self.subTest(cell=cell):
+                record=plan['formulas'][cell]
+                self.assertEqual(record['status'],'ready-to-bind')
+                self.assertEqual(record['localExpected'],expected)
+                self.assertEqual(record['sourceResultClass'],kind)
+        self.assertEqual(plan['formulas']['Summary Renamed!A8']['localExpectedError'],'#DIV/0!')
+        raw=input_scalar('Ledger Renamed!E2',plan['bindings'],lambda _binding:'Null')
+        self.assertEqual(evaluate_native(raw.kind),'z')
+        self.assertIn('DateDiff(',raw.number)
+        for cell in ('Ledger Renamed!D2','Summary Renamed!A3','Summary Renamed!A5'):
+            with self.subTest(emitted_cell=cell):
+                compiled=_formula_result(compile_expression(plan['formulas'][cell]['ast'],
+                    lambda _reference:raw))
+                self.assertEqual(evaluate_native(compiled.kind),'n')
+                self.assertEqual(evaluate_native(compiled.number),0)
+                self.assertEqual(evaluate_native(compiled.error),'')
+        fault=_formula_result(compile_expression(plan['formulas']['Summary Renamed!A8']['ast'],
+            lambda _reference:raw))
+        self.assertEqual(evaluate_native(fault.error),'#DIV/0!')
+
     def test_assigned_scaffold_ids_guarded_formula_update_and_runtime_separation(self):
         path,inputs=self.source();native=build_exact_native_calculation_plan(path,inputs)
         assigned={'ledger':{'elementId':'actual-input','name':'tblLedger','rowIdColumn':'Row ID','rows':{'0':'actual-a','1':'actual-b'}}}
@@ -212,7 +262,19 @@ class ExactPlanningTests(unittest.TestCase):
             proposal=prepare_exact_native_scaffold(native,inputs,manifest,receipt,current,rows,backup=backup,
               seed_binding={'elementId':'actual-seed','documentId':'actual-doc','documentVersion':current['documentVersion'],'queriedRows':[{'C0':1}]},page_id='page',shard_index=index)
             ast.parse(proposal['program']);self.assertNotIn('parse_formula',proposal['program'])
-            check_formula_api_contract(proposal['program'])
+            formula_calls=[call for call in ast.walk(ast.parse(proposal['program']))
+                           if isinstance(call,ast.Call) and isinstance(call.func,ast.Attribute)
+                           and ast.unparse(call.func.value)=='sigma.formula']
+            self.assertTrue(formula_calls)
+            for call in formula_calls:
+                self.assertEqual(call.func.attr,'const_num')
+                self.assertEqual(len(call.args),1)
+                self.assertEqual(call.keywords,[])
+                self.assertIsInstance(call.args[0],ast.Constant)
+                self.assertEqual(call.args[0].value,0)
+            # Local MCP SDK documentation offers a second, independent check;
+            # a clean source checkout still runs the structural contract above.
+            if SDK_FORMULA.is_file():check_formula_api_contract(proposal['program'])
             self.assertIn('sigma.formula.const_num(0)',proposal['program'])
             saved=copy.deepcopy(current);saved['documentVersion']+=1
             saved['contents']['elements'].append({'id':'assigned-'+str(index),'kind':'table','name':shard['name'],

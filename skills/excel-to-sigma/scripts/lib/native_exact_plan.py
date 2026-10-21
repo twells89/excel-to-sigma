@@ -54,7 +54,8 @@ def _helper_tokens(formula,prefix):
 def _formula_result(value):
     """Excel scalar formula results turn a successful blank into numeric zero."""
     if isinstance(value,Vector):return value
-    return replace(value,kind=iff(both(eq(value.kind,'"z"'),eq(value.error,EMPTY)),'"n"',value.kind))
+    blank=both(eq(value.kind,'"z"'),eq(value.error,EMPTY))
+    return replace(value,number=iff(blank,'0',value.number),kind=iff(blank,'"n"',value.kind))
 
 
 def build_exact_native_calculation_plan(source_path,source_input_plan=None):
