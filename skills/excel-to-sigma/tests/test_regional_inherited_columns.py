@@ -1,4 +1,5 @@
 """Portable exact-DDL receipt when Sigma REST omits inherited table names."""
+import ast
 import copy
 import gzip
 import json
@@ -9,7 +10,8 @@ import unittest
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path[:0] = [str(SCRIPTS), str(SCRIPTS / 'lib')]
 from lib.native_exact_plan import digest
-from lib.regional_grouped_model import build_grouped_model, prepare_product_error_patch
+from lib.regional_grouped_model import (build_grouped_model, prepare_product_error_patch,
+    confirm_product_error_patch, prepare_product_grouping_program)
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'regional-grouped'
 
@@ -183,6 +185,76 @@ class InheritedColumnReceiptTest(unittest.TestCase):
             prepare_product_error_patch(self.model, named, self.scaffold,
                 row_element_id=self.parent['id'], product_element_id=self.child['id'],
                 error_column_id='assigned-error', inherited_column_receipt=receipt)
+
+    def grouping_state(self):
+        patch = self.patch(self.receipt())
+        saved = copy.deepcopy(self.current)
+        saved['documentVersion'] += 1
+        saved['contents'] = patch['contents']
+        confirmation = confirm_product_error_patch(patch, saved)
+        self.current = saved
+        self.parent = next(e for e in saved['contents']['elements'] if e['id'] == self.parent['id'])
+        self.child = next(e for e in saved['contents']['elements'] if e['id'] == self.child['id'])
+        ddl_receipt = self.receipt()
+        sdk = {'documentId': saved['workbookId'], 'documentVersion': saved['documentVersion'],
+               'contentsHash': digest(saved['contents']), 'elementId': self.child['id'],
+               'columns': [{'id': c['id'], 'name': name, 'formula': c['formula']}
+                           for c, name in zip(self.child['columns'],
+                                              self.labels + ['Product Error Ordinal'])],
+               'reviewedNameDifferences': []}
+        return confirmation, ddl_receipt, sdk
+
+    def group(self, confirmation, ddl_receipt=None, sdk_receipt=None):
+        return prepare_product_grouping_program(self.model, self.current, confirmation,
+            product_element_id=self.child['id'],
+            page_id=self.current['contents']['pages'][0]['id'], grid_row=130,
+            inherited_column_receipt=ddl_receipt, sdk_metadata_receipt=sdk_receipt)
+
+    def test_grouping_uses_complete_saved_formula_and_actual_sdk_projection(self):
+        confirmation, ddl_receipt, sdk = self.grouping_state()
+        with self.assertRaisesRegex(ValueError, 'BLOCKED'):
+            self.group(confirmation)
+        with self.assertRaisesRegex(ValueError, 'BLOCKED'):
+            self.group(confirmation, ddl_receipt)
+        packet = self.group(confirmation, ddl_receipt, sdk)
+        tree = ast.parse(packet['program'])
+        metadata = next(n.test.comparators[0] for n in tree.body if isinstance(n, ast.If)
+                        and isinstance(n.test, ast.Compare) and isinstance(n.test.left, ast.Name)
+                        and n.test.left.id == 'actual')
+        self.assertEqual(ast.literal_eval(metadata), sdk['columns'])
+        for column in ['child-20', 'child-21', 'child-8', 'assigned-error']:
+            self.assertIn('get_column("' + column + '")', packet['program'])
+        self.assertEqual(packet['contentsHash'], digest(self.current['contents']))
+
+    def test_grouping_rejects_stale_projection_or_ddl_or_confirmation(self):
+        confirmation, ddl_receipt, sdk = self.grouping_state()
+        variants = []
+        for key, value in [('documentId', 'foreign'), ('documentVersion', sdk['documentVersion'] - 1),
+                           ('contentsHash', '0' * 64), ('elementId', 'foreign')]:
+            x = copy.deepcopy(sdk)
+            x[key] = value
+            variants.append(x)
+        x = copy.deepcopy(sdk)
+        x['columns'].reverse()
+        variants.append(x)
+        x = copy.deepcopy(sdk)
+        x['columns'][-1]['formula'] = '0'
+        variants.append(x)
+        x = copy.deepcopy(sdk)
+        x['columns'][0]['name'] = 'unreviewed'
+        variants.append(x)
+        for index, receipt in enumerate(variants):
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'BLOCKED'):
+                self.group(confirmation, ddl_receipt, receipt)
+        wrong = copy.deepcopy(ddl_receipt)
+        wrong['productDdl'] = wrong['productDdl'].replace(
+            'Formula: If([Revenue Error] != "", [Source Ordinal], Null)', 'Formula: 0')
+        with self.assertRaisesRegex(ValueError, 'BLOCKED'):
+            self.group(confirmation, wrong, sdk)
+        wrong = copy.deepcopy(confirmation)
+        wrong['errorColumnId'] = 'foreign'
+        with self.assertRaisesRegex(ValueError, 'BLOCKED'):
+            self.group(wrong, ddl_receipt, sdk)
 
 
 if __name__ == '__main__':

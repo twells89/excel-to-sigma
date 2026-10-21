@@ -575,7 +575,7 @@ def _projection_ddl_columns(ddl, current, element):
     return result
 
 
-def _unnamed_product_projection(current, rows, product, receipt):
+def _unnamed_product_projection(current, rows, product, receipt, *, error_formula="0"):
     """Use full observed native DDL only for omitted inherited REST names."""
     if not isinstance(receipt, dict) or set(receipt) != {
             "documentId", "documentVersion", "contentsHash", "rowElementId",
@@ -614,8 +614,8 @@ def _unnamed_product_projection(current, rows, product, receipt):
     if (last_rest.get("name") != last_observed["name"] or
             last_observed["name"] != "Product Error Ordinal" or
             last_observed["type"] != "number" or
-            last_observed["formula"] != "0"):
-        _blocked("projected error placeholder differs")
+            last_observed["formula"] != error_formula):
+        _blocked("projected error ordinal formula differs")
     return {column["name"]: column for column in child}
 
 
@@ -668,8 +668,14 @@ def confirm_product_error_patch(packet, after):
 
 
 def prepare_product_grouping_program(model, current, confirmation, *, product_element_id,
-                                     page_id, grid_row):
-    """Group product/month rows using read-back unique projection IDs."""
+                                     page_id, grid_row, inherited_column_receipt=None,
+                                     sdk_metadata_receipt=None):
+    """Group with exact IDs, requiring DDL plus SDK evidence for omitted names.
+
+    The inherited receipt carries the confirmed error formula. Its full DDL
+    name projection is the reference for the complete SDK receipt, so no
+    further SDK name differences are permitted in this optional path.
+    """
     if model.get("status") != "OFFLINE_GROUPED_MODEL_PENDING_STAGING" or confirmation.get("status") != "PRODUCT_ERROR_FORMULA_CONFIRMED" or confirmation.get("documentId") != current.get("workbookId") or confirmation.get("documentVersion") != current.get("documentVersion") or confirmation.get("contentsHash") != digest(current.get("contents")) or confirmation.get("productElementId") != product_element_id:
         _blocked("confirmed fresh product error readback required")
     elements = current.get("contents", {}).get("elements", [])
@@ -678,15 +684,30 @@ def prepare_product_grouping_program(model, current, confirmation, *, product_el
         _blocked("saved product projection/source differs")
     if not isinstance(grid_row, int) or grid_row < 1 or not any(p.get("id") == page_id for p in current["contents"].get("pages", [])):
         _blocked("observed placement/page required")
+    observed_names = None
+    guard_source = products[0]
+    if inherited_column_receipt is not None:
+        parents = [e for e in elements if e.get("id") == confirmation["rowElementId"]]
+        if len(parents) != 1 or sdk_metadata_receipt is None:
+            _blocked("complete parent DDL and actual SDK grouping metadata required")
+        observed_names = _unnamed_product_projection(current, parents[0], products[0],
+            inherited_column_receipt,
+            error_formula='If([Revenue Error] != "", [Source Ordinal], Null)')
+        if not isinstance(sdk_metadata_receipt, dict) or sdk_metadata_receipt.get("reviewedNameDifferences") != []:
+            _blocked("SDK grouping names must exactly match the reviewed complete DDL")
+        by_id = {c["id"]: c for c in observed_names.values()}
+        guard_source = dict(products[0], columns=[dict(c, name=by_id[c["id"]]["name"])
+                                                for c in products[0]["columns"]])
     names = {}
     for name in ("Product Key", "Month Key", "Revenue Number", "Product Error Ordinal"):
-        matches = [c for c in products[0]["columns"] if c.get("name") == name]
+        matches = ([observed_names[name]] if observed_names is not None and name in observed_names else
+                   [c for c in products[0]["columns"] if c.get("name") == name])
         if len(matches) != 1 or not matches[0].get("id"):
             _blocked("saved product grouping input ambiguous: " + name)
         names[name] = matches[0]
     if names["Product Error Ordinal"].get("id") != confirmation["errorColumnId"] or names["Product Error Ordinal"].get("formula") != 'If([Revenue Error] != "", [Source Ordinal], Null)':
         _blocked("saved product error-order formula differs")
-    expected = [{"id": c["id"], "name": c.get("name"), "formula": c.get("formula")} for c in products[0]["columns"]]
+    expected = _row_sdk_metadata_guard(current, guard_source, sdk_metadata_receipt)
     lines = [
         "# STAGING ONLY: read back assigned grouping/flat IDs after this mutation.",
         "from sigma.levelTable import LevelTable",
