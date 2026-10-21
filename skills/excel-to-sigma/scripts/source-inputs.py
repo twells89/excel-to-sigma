@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -12,10 +13,20 @@ from source_inputs import build_source_input_plan  # noqa: E402
 from source_reshape import unpivot_source_table  # noqa: E402
 
 
-def _write(out, source, payload):
-    if Path(out).resolve() == Path(source).resolve():
-        raise ValueError("output aliases source workbook")
-    Path(out).write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+def _guard_output(args):
+    output = Path(args.out)
+    for name in ("source", "decisions", "axis_values"):
+        value = getattr(args, name, None)
+        if value:
+            source = Path(value)
+            if (output.resolve() == source.resolve() or
+                    (output.exists() and source.exists() and os.path.samefile(output, source))):
+                raise ValueError("source input output aliases input artifact: " + name)
+
+
+def _write(args, payload):
+    _guard_output(args)
+    Path(args.out).write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def main(argv=None):
@@ -32,8 +43,7 @@ def main(argv=None):
     reshape.add_argument("--axis-name", required=True); reshape.add_argument("--value-name", required=True)
     reshape.add_argument("--axis-values"); reshape.add_argument("--out", required=True)
     args = parser.parse_args(argv)
-    if Path(args.out).resolve() == Path(args.source).resolve():
-        raise ValueError("output aliases source workbook")
+    _guard_output(args)
     if args.command == "plan":
         payload = build_source_input_plan(args.source, args.decisions,
                                           connection_id=args.connection, folder_id=args.folder)
@@ -43,7 +53,7 @@ def main(argv=None):
                                        key_columns=args.key_column, value_columns=args.value_column,
                                        axis_name=args.axis_name, value_name=args.value_name,
                                        axis_values=axis)
-    _write(args.out, args.source, payload)
+    _write(args, payload)
     return 0
 
 

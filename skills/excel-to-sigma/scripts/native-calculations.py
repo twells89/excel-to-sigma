@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -19,6 +20,20 @@ from native_exact_plan import (prepare_exact_native_scaffold, confirm_exact_nati
 
 def _read(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _guard_output(args):
+    destination = Path(args.out)
+    for name in ("source", "input_plan", "native_plan", "assigned_rows", "manifest",
+                 "staging_receipt", "current", "observed_rows", "backup",
+                 "prior_readbacks", "native_bindings", "seed_binding", "proposal", "readback"):
+        value = getattr(args, name, None)
+        if value:
+            source = Path(value)
+            if (destination.resolve() == source.resolve() or
+                    (destination.exists() and source.exists() and
+                     os.path.samefile(destination, source))):
+                raise ValueError("native calculation output aliases input artifact: " + name)
 
 
 def main(argv=None):
@@ -59,6 +74,7 @@ def main(argv=None):
     for command in (plan, lower, bind, backup, update, confirm, scaffold, scaffold_confirm):
         command.add_argument("--out", required=True)
     args = parser.parse_args(argv)
+    _guard_output(args)
     if args.command == "plan":
         result = build_native_calculation_plan(args.source, _read(args.input_plan) if args.input_plan else None, exact=args.exact)
     elif args.command == "lower-candidate":
@@ -106,8 +122,7 @@ def main(argv=None):
         confirmer = confirm_exact_native_readback if proposal.get("status") == "GUARDED_EXACT_REST_CANDIDATE_PENDING_READBACK" else confirm_native_calculation_readback
         result = confirmer(proposal, _read(args.readback))
     destination = Path(args.out)
-    if args.command == "plan" and destination.resolve() == Path(args.source).resolve():
-        raise ValueError("native plan output cannot overwrite source workbook")
+    _guard_output(args)
     destination.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 

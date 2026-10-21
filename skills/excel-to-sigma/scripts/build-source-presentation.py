@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,23 @@ def _write(path, value):
                           encoding="utf-8")
 
 
+def _aliases(first, second):
+    first, second = Path(first), Path(second)
+    return (first.resolve() == second.resolve() or
+            (first.exists() and second.exists() and os.path.samefile(first, second)))
+
+
+def _guard_outputs(args):
+    for name in ("source", "bindings", "manifest", "approval", "staging_receipt",
+                 "openapi", "contents"):
+        source = getattr(args, name)
+        if source and (_aliases(source, args.out) or
+                       (args.plan_out and _aliases(source, args.plan_out))):
+            raise ValueError("presentation output aliases input artifact: " + name)
+    if args.plan_out and _aliases(args.out, args.plan_out):
+        raise ValueError("plan and result output paths alias")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", help="source .xlsx or .xlsm")
@@ -41,9 +59,8 @@ def main(argv=None):
         parser.error("logical preview cannot be integrated into a PUT body")
     if args.contents and not args.bindings:
         parser.error("--contents requires --bindings")
+    _guard_outputs(args)
     plan = build_source_plan(args.source)
-    if args.plan_out:
-        _write(args.plan_out, plan)
     if not args.bindings:
         result = plan
     else:
@@ -71,6 +88,10 @@ def main(argv=None):
                           "sourceHash": plan["sourceHash"],
                           "presentationPlanHash": plan["planHash"],
                           "presentationArtifactHash": result["artifactHash"]}
+    _guard_outputs(args)
+    if args.plan_out:
+        _write(args.plan_out, plan)
+    _guard_outputs(args)
     _write(args.out, result)
     print(json.dumps({"source": plan["source"]["name"], "charts": len(plan["charts"]),
                       "presentationPlanHash": plan["planHash"],
