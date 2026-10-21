@@ -718,7 +718,8 @@ def fixture_bindings(plan):
                 targets.append(bound)
                 # A business view projects the full source table. Only rules
                 # covering that same table can be shared with its projections.
-                if source_table and rule["sheet"] == source_table[0]:
+                if (source_table and source_name == source_table[0]
+                        and rule["sheet"] == source_table[0]):
                     areas = [range_boundaries(area) for area in rule["range"].split()]
                     # A multi-area rule can include other fields or omit rows;
                     # its original bound target remains, but a full-row view
@@ -1042,7 +1043,12 @@ def approved_business_bindings(plan, manifest, staging_receipt):
         for rule in rules:
             fields=rule.get("fields") or [rule["field"]]
             resolved=[columns.get(f"{rule['sheet']}!{field.strip()}") for field in fields]
-            result[key][rule["id"]]=resolved if all(resolved) else []
+            targets=resolved if all(resolved) else []
+            if key=="conditionalTargets" and targets:
+                view_ids={result["mainElementId"],result["detailElementId"]}
+                targets += [target for target in result[key][rule["id"]]
+                    if target["elementId"] in view_ids]
+            result[key][rule["id"]]=targets
             if not all(resolved):
                 result["unresolvedTargetReasons"][rule["id"]]="source rule has no complete source-identity target in the approved native graph"
     for chart in plan["charts"]:

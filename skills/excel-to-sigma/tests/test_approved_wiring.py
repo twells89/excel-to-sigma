@@ -386,6 +386,16 @@ class TestApprovedWiring(unittest.TestCase):
                     for target in bindings['validationTargets'][rule['id']]:
                         if target['elementId'] == staging['targetBindings'][primary]['elementId']:
                             self.assertIn(target['columnId'], staging['targetBindings'][primary]['columnIds'].values())
+                source_rules = [rule for rule in extracted['conditionalFormats']
+                    if rule['status'] == 'supported'
+                    and rule['sheet'] == presentation.BUSINESS_TABLES[workflow][0]]
+                for rule in source_rules:
+                    element_ids = {target['elementId']
+                        for target in bindings['conditionalTargets'][rule['id']]}
+                    expected_views = set() if workflow == 'forecast' else {
+                        workflow+'-main-view', workflow+'-detail-view'}
+                    self.assertEqual(element_ids & {
+                        workflow+'-main-view', workflow+'-detail-view'}, expected_views)
 
     def test_pending_replacement_cannot_claim_an_unemitted_target(self):
         with tempfile.TemporaryDirectory() as directory:
