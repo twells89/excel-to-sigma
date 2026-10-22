@@ -71,6 +71,15 @@ class EvalError(Exception):
         self.code = code
 
 
+class Unmodelled(EvalError):
+    """Excel semantics this drafter does not reproduce in Sigma; never caught by ``IFERROR``."""
+
+
+# Errors ``IFERROR`` catches. These are the two the emitter can test for in Sigma (a zero/blank
+# denominator, an exact lookup that finds nothing); any other error fails the draft loudly.
+CAUGHT_ERRORS = ("#DIV/0!", "#N/A")
+
+
 # ----------------------------------------------------------------- values
 def parse_date(value):
     """ISO string / date / datetime -> date (time-of-day is refused, never dropped)."""
@@ -129,6 +138,19 @@ def _compare(sym, a, b):
     if isinstance(a, date) != isinstance(b, date):
         raise EvalError("#VALUE!", f"cannot compare {a!r} with {b!r}")
     return {"=": a == b, "<>": a != b, "<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[sym]
+
+
+def _compare_crit(sym, a, b):
+    """Excel *criteria* semantics (SUMIFS/COUNTIFS/AVERAGEIFS...), which differ from ``=A1<5``:
+    a blank cell satisfies only ``<>`` (and ``=""`` / ``<>""``), and an ordering/equality criterion
+    never matches a cell of the other type (text vs number)."""
+    if a is None or a == "":
+        if b == "" or b is None:
+            return sym == "="
+        return sym == "<>"
+    if isinstance(b, str) != isinstance(a, str) or isinstance(b, date) != isinstance(a, date):
+        return sym == "<>"
+    return _compare(sym, a, b)
 
 
 def _truthy(x):
@@ -197,12 +219,13 @@ def validate_ir(node, where="expression"):
 
 
 class Env:
-    __slots__ = ("row", "cols", "key", "period", "prev", "group", "cum", "idx")
+    __slots__ = ("row", "cols", "key", "period", "prev", "group", "cum", "idx", "crit")
 
     def __init__(self, row=None, cols=None, key=None, period=None, prev=None, group=None,
-                 cum=None, idx=None):
+                 cum=None, idx=None, crit=False):
         self.row, self.cols, self.key, self.period = row, cols, key, period
         self.prev, self.group, self.cum, self.idx = prev, group, cum, idx
+        self.crit = crit      # evaluating an aggregate criterion (Excel criteria semantics)
 
 
 class Model:
@@ -243,7 +266,8 @@ class Model:
                 if "expr" in column:
                     for number, row in enumerate(rows):
                         try:
-                            row[column["name"]] = self.ev(column["expr"], Env(row=row, idx=number))
+                            value = self.ev(column["expr"], Env(row=row, idx=number))
+                            row[column["name"]] = 0 if value is None else value   # a formula cell is never blank
                         except EvalError as error:
                             raise EvalError(error.code, f"table {name!r} column {column['name']!r} "
                                             f"row {number + 1}: {error}") from error
@@ -323,7 +347,7 @@ class Model:
         sym = node[1]
         a, b = self.ev(node[2], env), self.ev(node[3], env)
         if sym in COMPARE:
-            return _compare(sym, a, b)
+            return (_compare_crit if env.crit else _compare)(sym, a, b)
         a, b = _num(a), _num(b)
         if sym == "+":
             return a + b
@@ -349,9 +373,17 @@ class Model:
         if name == "IFERROR":
             try:
                 return self.ev(args[0], env)
-            except EvalError:
+            except Unmodelled:
+                raise
+            except EvalError as error:
+                if error.code not in CAUGHT_ERRORS:
+                    raise
                 return self.ev(args[1], env)
         values = [self.ev(a, env) for a in args]
+        if name in ("AND", "OR") and any(v is None for v in values):
+            # Excel's AND/OR skip references to blank cells (and are #VALUE! when nothing is left);
+            # Sigma's three-valued logic differs again, so refuse rather than guess.
+            raise Unmodelled("#VALUE!", f"{name} over a blank cell is not supported")
         if name == "AND":
             return all(_truthy(v) for v in values)
         if name == "OR":
@@ -361,6 +393,10 @@ class Model:
         if name == "SUM":
             return sum(_num(v) for v in values)
         if name in ("MIN", "MAX"):
+            if any(v is None for v in values):
+                # Excel's MIN/MAX ignore a reference to a blank cell (it is not 0); Sigma's
+                # Least/Greatest follow SQL NULL rules. Neither equals this evaluator's 0.
+                raise Unmodelled("#VALUE!", f"{name} over a blank cell is not supported")
             numbers = [_num(v) for v in values]
             return min(numbers) if name == "MIN" else max(numbers)
         if name == "ABS":
@@ -387,6 +423,8 @@ class Model:
             number, multiple = _num(values[0]), _num(values[1])
             if multiple == 0:
                 return 0
+            if number > 0 > multiple:
+                raise EvalError("#NUM!", "CEILING of a positive number to a negative multiple")
             return math.ceil(number / multiple) * multiple
         if name == "EOMONTH0":
             return eomonth0(values[0])
@@ -406,7 +444,7 @@ class Model:
             raise EvalError("#VALUE!", "aggregate outside a summary frame")
         picked = []
         for row in env.group:
-            if flt is not None and not _truthy(self.ev(flt, Env(row=row))):
+            if flt is not None and not _truthy(self.ev(flt, Env(row=row, crit=True))):
                 continue
             picked.append(row)
         if fn == "count" and column is None:
@@ -480,7 +518,8 @@ class Model:
                 env = env_for(row, number)
                 env.cum, env.idx = cum, number
                 try:
-                    row[column["name"]] = self.ev(expr, env)
+                    value = self.ev(expr, env)
+                    row[column["name"]] = 0 if value is None else value
                 except EvalError as error:
                     raise EvalError(error.code, f"frame {frame['title']!r} column {column['name']!r} "
                                     f"row {number + 1}: {error}") from error
@@ -552,8 +591,8 @@ class Model:
             cols = {by: key}
             for column in frame["columns"]:
                 try:
-                    cols[column["name"]] = self.ev(column["expr"], Env(cols=cols, key=key,
-                                                                       group=groups[key]))
+                    value = self.ev(column["expr"], Env(cols=cols, key=key, group=groups[key]))
+                    cols[column["name"]] = 0 if value is None else value
                 except EvalError as error:
                     raise EvalError(error.code, f"frame {frame['title']!r} {key!r} column "
                                     f"{column['name']!r}: {error}") from error
@@ -608,8 +647,20 @@ def compute(plan):
     return model
 
 
-def values_match(got, want, tolerance):
-    """Numbers within ``tolerance`` (absolute); text/bool/date exact; blank == empty string."""
+# The oracle recomputes the same arithmetic Excel did, so only float noise (summation order, the
+# 15-17 significant digits Excel caches) may remain. ``tolerance=None`` selects this tight default; a
+# number passed explicitly (``--tolerance``) is an absolute limit and overrides it.
+ABS_FLOOR, REL_LIMIT = 1e-6, 1e-12
+
+
+def tolerance_for(want, tolerance=None):
+    if tolerance is not None:
+        return tolerance
+    return max(ABS_FLOOR, REL_LIMIT * abs(want))
+
+
+def values_match(got, want, tolerance=None):
+    """Numbers within the tolerance (tight relative/absolute default); text/bool/date exact; blank == empty string."""
     if isinstance(want, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", want) and isinstance(got, date):
         return got.isoformat() == want
     if got is None:
@@ -619,13 +670,13 @@ def values_match(got, want, tolerance):
     if isinstance(got, bool) or isinstance(want, bool):
         return got == want
     if isinstance(got, (int, float)) and isinstance(want, (int, float)):
-        return abs(got - want) <= tolerance
+        return abs(got - want) <= tolerance_for(want, tolerance)
     if isinstance(got, date) and isinstance(want, str):
         return got.isoformat() == want
     return got == want
 
 
-def check_cells(plan, model, tolerance=0.01):
+def check_cells(plan, model, tolerance=None):
     """Compare every recorded source cell with the plan's recomputation.
 
     Returns ``(checked, problems)``; ``problems`` names sheet!cell, the expected cached
@@ -650,7 +701,7 @@ def check_cells(plan, model, tolerance=0.01):
     return checked, problems
 
 
-def parity_lines(plan, model, tolerance=0.01):
+def parity_lines(plan, model, tolerance=None):
     """``(ok, lines)``: headline parity of the plan's summary targets.
 
     One line per summary frame (cells matched / total), one per numeric column (plan total vs
@@ -689,7 +740,7 @@ def parity_lines(plan, model, tolerance=0.01):
     lines = heads + lines
     for frame_id, group in frames.items():
         for column, (got, want) in group["columns"].items():
-            state = "PASS" if abs(got - want) <= tolerance * max(1, group["total"]) else "FAIL"
+            state = "PASS" if abs(got - want) <= tolerance_for(want, tolerance) * max(1, group["total"]) else "FAIL"
             if state == "FAIL":
                 ok = False
             lines.append(f"PARITY {state} {group['label']} / {column} total: plan={got:,.2f} "
@@ -758,15 +809,62 @@ def sigma_number(value):
     return repr(value)
 
 
+BLANK_DEFAULT = {"number": "0", "text": '""', "boolean": "False", "datetime": 'Date("1900-01-01")'}
+NUMERIC_FUNCTIONS = {"SUM", "ABS", "ROUND", "CEILING", "MOD", "MONTH", "YEAR"}
+
+
 class Emitter:
-    """Renders IR as a Sigma formula. ``col``/``key``/``period``/``prev`` are element-specific."""
+    """Renders IR as a Sigma formula. ``col``/``key``/``period``/``prev`` are element-specific.
+
+    Excel and Sigma disagree about blanks: Excel reads a blank cell as 0 / "" / FALSE depending on
+    the other operand, Sigma reads it as NULL (which poisons arithmetic and makes ``<>`` unknown).
+    The emitter therefore wraps every operand that *can* be blank (``blankable`` columns, lookups
+    into blank-capable columns, IF branches returning them) in ``Coalesce(.., 0 | "" | False)``
+    exactly where Excel would have coerced it, so the emitted formula agrees with the Python oracle
+    (``Model``). Columns without a blank in the plan data are emitted unchanged.
+    """
 
     def __init__(self, col, key=None, period=None, prev=None, coltype=None, count_ref=None,
-                 agg_source=None, agg_col=None):
+                 agg_source=None, agg_col=None, blankable=None, tables=None):
         self.col, self.key_ref, self.period_ref, self.prev_ref = col, key, period, prev
         self.coltype, self.count_ref = coltype, count_ref
         self.agg_source = agg_source  # Emitter used inside aggregate filters (source columns)
         self.agg_col = agg_col        # name -> source column ref for aggregate values
+        self._blankable = blankable or (lambda name: False)
+        self.own_blank = {}           # calculated columns emitted so far -> may be blank
+        self.tables = tables or {"types": {}, "blank": {}}   # per plan table: column types / blank-capable
+
+    # ---- shape knowledge
+    def blankable(self, name):
+        return self.own_blank[name] if name in self.own_blank else bool(self._blankable(name))
+
+    def column_formula(self, name, expr):
+        """Formula of a calculated column. A formula cell never holds a blank in Excel (a result that is
+        a reference to a blank cell shows 0), so a possibly-blank result is ``Coalesce(.., 0)``."""
+        text = self.emit(expr)
+        if self.may_null(expr):
+            text = f"Coalesce({text}, 0)"
+        self.own_blank[name] = False
+        return text
+
+    def may_null(self, node):
+        """True when the emitted Sigma value can be NULL where Excel would show a blank (0 / "")."""
+        tag = node[0]
+        if tag == "null" or tag == "prev":
+            return True
+        if tag == "c":
+            return self.blankable(node[1])
+        if tag == "lk":
+            return bool(self.tables["blank"].get(node[1], {}).get(node[4]))
+        if tag == "f":
+            name, args = node[1], node[2:]
+            if name == "IF":
+                return self.may_null(args[1]) or self.may_null(args[2])
+            if name == "IFERROR":
+                return self.may_null(args[0]) or self.may_null(args[1])
+            if name in ("EOMONTH0", "ADDDAYS"):
+                return self.may_null(args[0])
+        return False
 
     def type_of(self, node):
         tag = node[0]
@@ -776,13 +874,56 @@ class Emitter:
             return "number"
         if tag == "d":
             return "datetime"
+        if tag == "b":
+            return "boolean"
         if tag == "c" and self.coltype:
             return self.coltype(node[1])
         if tag == "lk":
+            found = self.tables["types"].get(node[1], {}).get(node[4])
+            if found:
+                return found
             return "text" if node[5] is not None and node[5][0] == "s" else None
         if tag == "pt":
             return "text"
+        if tag == "p":
+            return "number"
+        if tag == "pd":
+            return "datetime"
+        if tag == "neg" or tag == "agg" or tag in ("cumsum", "cummin"):
+            return "number"
+        if tag == "op":
+            return "number" if node[1] in ARITH else "boolean"
+        if tag == "f":
+            name, args = node[1], node[2:]
+            if name in ("AND", "OR", "NOT"):
+                return "boolean"
+            if name in ("IF",):
+                return self.type_of(args[1]) or self.type_of(args[2])
+            if name == "IFERROR":
+                return self.type_of(args[0]) or self.type_of(args[1])
+            if name in ("MIN", "MAX") or name in NUMERIC_FUNCTIONS:
+                return "number"
+            if name in ("EOMONTH0", "ADDDAYS"):
+                return "datetime"
+            if name == "CONCAT":
+                return "text"
         return None
+
+    def num(self, node):
+        """Emit ``node`` as an arithmetic operand (a blank is 0)."""
+        text = self.emit(node)
+        return f"Coalesce({text}, 0)" if self.may_null(node) else text
+
+    def operand(self, node, other):
+        """Emit ``node`` as one side of a comparison with ``other`` (a blank takes the other's type)."""
+        text = self.emit(node)
+        if not self.may_null(node):
+            return text
+        kind = self.type_of(other) or self.type_of(node)
+        if kind not in BLANK_DEFAULT:
+            raise PlanError(f"cannot tell whether a blank in {text} should read as 0 or \"\" in this "
+                            "comparison; compare it with a literal or a typed column")
+        return f"Coalesce({text}, {BLANK_DEFAULT[kind]})"
 
     def emit(self, node):
         tag = node[0]
@@ -812,15 +953,22 @@ class Emitter:
             value_col = {"p": "Value", "pt": "Text Value", "pd": "Date Value"}[tag]
             return (f'Lookup([{PARAM_TABLE}/{value_col}], {SIGMA_STRING(node[1])}, [{PARAM_TABLE}/Parameter])')
         if tag == "neg":
-            return f"(-{self.emit(node[1])})"
+            return f"(-{self.num(node[1])})"
         if tag == "op":
             return self._op(node)
         if tag == "f":
             return self._fn(node)
         if tag == "lk":
             _, table, key, key_col, value_col, default = node
-            lookup = f"Lookup([{table}/{value_col}], {self.emit(key)}, [{table}/{key_col}])"
-            return lookup if default is None else f"Coalesce({lookup}, {self.emit(default)})"
+            key_text = self.emit(key)
+            lookup = f"Lookup([{table}/{value_col}], {key_text}, [{table}/{key_col}])"
+            if default is None:
+                return lookup
+            if self.may_null(node):
+                # the value column has blanks: a key that IS found with a blank value is Excel's 0/"",
+                # not the default, so "found" is tested on the key column itself
+                return f"If({self._not_found(node)}, {self.emit(default)}, {lookup})"
+            return f"Coalesce({lookup}, {self.emit(default)})"
         if tag == "agg":
             return self._agg(node)
         if tag == "cumsum":
@@ -829,7 +977,19 @@ class Emitter:
             return f"CumulativeMin({self.emit(node[1])})"
         raise PlanError(f"cannot emit IR node {tag!r}")
 
-    def _op(self, node):
+    def _not_found(self, node):
+        _, table, key, key_col, _, _ = node
+        return f"IsNull(Lookup([{table}/{key_col}], {self.emit(key)}, [{table}/{key_col}]))"
+
+    def emit_crit(self, node):
+        """Emit an aggregate criterion with Excel *criteria* semantics (a blank matches only ``<>``)."""
+        if node[0] == "f" and node[1] == "AND":
+            return "(" + " and ".join(self.emit_crit(a) for a in node[2:]) + ")"
+        if node[0] == "op" and node[1] in COMPARE:
+            return self._op(node, crit=True)
+        return self.emit(node)
+
+    def _op(self, node, crit=False):
         sym, a, b = node[1], node[2], node[3]
         if sym in ("=", "<>"):
             for left, right in ((a, b), (b, a)):
@@ -842,52 +1002,105 @@ class Emitter:
                         test = f"IsNull({left_text})"
                     return test if sym == "=" else f"Not({test})"
         if sym == "^":
-            return f"Power({self.emit(a)}, {self.emit(b)})"
+            return f"Power({self.num(a)}, {self.num(b)})"
         symbol = {"<>": "!="}.get(sym, sym)
-        return f"({self.emit(a)} {symbol} {self.emit(b)})"
+        if sym in COMPARE:
+            if crit:
+                left, right = self.emit(a), self.emit(b)
+                if sym == "<>" and a[0] == "c" and self.blankable(a[1]):
+                    return f"(IsNull({left}) or {left} != {right})"
+                return f"({left} {symbol} {right})"
+            return f"({self.operand(a, b)} {symbol} {self.operand(b, a)})"
+        return f"({self.num(a)} {symbol} {self.num(b)})"
 
     def _fn(self, node):
         name, args = node[1], node[2:]
-        out = [self.emit(a) for a in args]
+        if name == "IFERROR":
+            guard = self._guard(args[0])
+            if guard is None:
+                return self.emit(args[0])
+            return f"If({guard}, {self.emit(args[1])}, {self.emit(args[0])})"
         if name == "IF":
-            return f"If({out[0]}, {out[1]}, {out[2]})"
+            cond = self.emit(args[0])
+            if self.may_null(args[0]):
+                cond = f"Coalesce({cond}, False)"
+            return f"If({cond}, {self.emit(args[1])}, {self.emit(args[2])})"
+        if name in ("MIN", "MAX"):
+            return f"{'Least' if name == 'MIN' else 'Greatest'}({', '.join(self.emit(a) for a in args)})"
+        if name == "SUM":
+            return "(" + " + ".join(self.num(a) for a in args) + ")"
+        if name == "ABS":
+            return f"Abs({self.num(args[0])})"
+        if name == "MOD":
+            # Excel's MOD takes the sign of the divisor; SQL/Sigma Mod may take the dividend's.
+            # Mod(Mod(a, b) + b, b) is the divisor-signed remainder under either convention.
+            a, b = self.num(args[0]), self.num(args[1])
+            return f"Mod(Mod({a}, {b}) + {b}, {b})"
+        if name == "ROUND":
+            return f"Round({self.num(args[0])}, {self.num(args[1])})"
+        if name == "CEILING":
+            a, b = self.num(args[0]), self.num(args[1])
+            return f"(Ceiling({a} / {b}) * {b})"
+        out = [self.emit(a) for a in args]
         if name == "AND":
             return "(" + " and ".join(out) + ")"
         if name == "OR":
             return "(" + " or ".join(out) + ")"
         if name == "NOT":
-            return f"Not({out[0]})"
-        if name == "SUM":
-            return "(" + " + ".join(out) + ")"
-        if name == "MIN":
-            return f"Least({', '.join(out)})"
-        if name == "MAX":
-            return f"Greatest({', '.join(out)})"
-        if name == "ABS":
-            return f"Abs({out[0]})"
-        if name == "MOD":
-            return f"Mod({out[0]}, {out[1]})"
+            cond = out[0]
+            if self.may_null(args[0]):
+                cond = f"Coalesce({cond}, False)"
+            return f"Not({cond})"
         if name == "ADDDAYS":
-            return f'DateAdd("day", {out[1]}, {out[0]})'
+            return f'DateAdd("day", {self.num(args[1])}, {out[0]})'
         if name == "CONCAT":
             return f"Concat({', '.join(out)})"
-        if name == "ROUND":
-            return f"Round({out[0]}, {out[1]})"
-        if name == "CEILING":
-            return f"(Ceiling({out[0]} / {out[1]}) * {out[1]})"
         if name == "EOMONTH0":
             return f'DateAdd("day", -1, DateAdd("month", 1, DateTrunc("month", {out[0]})))'
         if name == "MONTH":
             return f'DatePart("month", {out[0]})'
         if name == "YEAR":
             return f'DatePart("year", {out[0]})'
-        if name == "IFERROR":
-            first = args[0]
-            if first[0] == "op" and first[1] == "/":
-                den = self.emit(first[3])
-                return f"If(IsNull({den}) or {den} = 0, {out[1]}, {out[0]})"
-            return f"Coalesce({out[0]}, {out[1]})"
         raise PlanError(f"cannot emit function {name}")
+
+    def _guard(self, node):
+        """Boolean Sigma text that is true exactly when evaluating ``node`` raises one of the errors
+        ``IFERROR`` catches (``CAUGHT_ERRORS``: a zero/blank denominator, a missed exact lookup, an
+        AVERAGEIFS over nothing); ``None`` when it cannot. Branches an ``IF`` does not take, and the
+        operands of a nested ``IFERROR``, contribute only when they are actually evaluated."""
+        tag = node[0]
+        parts = []
+        if tag == "op":
+            parts += [self._guard(node[2]), self._guard(node[3])]
+            if node[1] == "/" and not (node[3][0] == "n" and node[3][1] != 0):
+                den = self.emit(node[3])
+                parts.append(f"IsNull({den}) or {den} = 0")
+        elif tag == "neg":
+            parts.append(self._guard(node[1]))
+        elif tag == "lk":
+            parts.append(self._guard(node[2]))
+            if node[5] is None:
+                parts.append(self._not_found(node))
+            else:
+                parts.append(self._guard(node[5]))
+        elif tag == "agg":
+            if node[1] == "avg":
+                parts.append(f"IsNull({self.emit(node)})")
+        elif tag == "f":
+            name, args = node[1], node[2:]
+            if name == "IF":
+                parts.append(self._guard(args[0]))
+                then_g, else_g = self._guard(args[1]), self._guard(args[2])
+                if then_g or else_g:
+                    parts.append(f"If({self.emit(args[0])}, {then_g or 'False'}, {else_g or 'False'})")
+            elif name == "IFERROR":
+                inner, fallback = self._guard(args[0]), self._guard(args[1])
+                if inner and fallback:
+                    parts.append(f"If({inner}, {fallback}, False)")
+            else:
+                parts += [self._guard(a) for a in args]
+        parts = [p for p in parts if p]
+        return " or ".join(parts) if parts else None
 
     def _agg(self, node):
         _, fn, column, flt = node
@@ -895,7 +1108,7 @@ class Emitter:
         if source is None:
             raise PlanError("aggregate outside a summary frame")
         value = self.agg_col(column) if column is not None else None
-        cond = source.emit(flt) if flt is not None else None
+        cond = source.emit_crit(flt) if flt is not None else None
         # Excel's SUMIFS/COUNTIFS/MINIFS/MAXIFS give 0 for an empty match, Sigma's conditional
         # aggregates give NULL (which then poisons any arithmetic), so they are wrapped in
         # Coalesce(.., 0). AVERAGEIFS stays unwrapped: an empty match is #DIV/0! in Excel.
@@ -1131,19 +1344,21 @@ def _calc_columns(plan, frame, fid, own, emitter):
                             "with another column; rename it in the plan")
         own.add(column["name"])
         out.append(_with_format(plan, column, {"id": f"{fid}_k{number}", "name": column["name"],
-                                               "formula": emitter.emit(column["expr"])}))
+                                               "formula": emitter.column_formula(column["name"], column["expr"])}))
     return out
 
 
-def _summary_columns(plan, frame, fid, src_types, src_label):
+def _summary_columns(plan, frame, fid, src_types, src_label, src_blank=None, info=None):
     """Group-level calculation columns of a summary frame (``src_label`` None = inside the source)."""
     by = frame["by"]
+    src_blank = src_blank or {}
     ref = (lambda n: f"[{n}]") if src_label is None else (lambda n: f"[{src_label}/{n}]")
-    src_em = Emitter(col=ref, key=ref(by), coltype=lambda n: src_types.get(n))
+    src_em = Emitter(col=ref, key=ref(by), coltype=lambda n: src_types.get(n),
+                     blankable=lambda n: src_blank.get(n, False), tables=info)
     own_types = {c["name"]: c["type"] for c in frame["columns"]}
     own_types[by] = src_types.get(by, "text")
     em = Emitter(col=lambda n: f"[{n}]", key=f"[{by}]", coltype=lambda n: own_types.get(n),
-                 count_ref=ref(by), agg_source=src_em, agg_col=ref)
+                 count_ref=ref(by), agg_source=src_em, agg_col=ref, tables=info)
     return _calc_columns(plan, frame, fid, {by}, em)
 
 
@@ -1156,6 +1371,26 @@ def _frame_types(plan, frame, types):
     return own
 
 
+def blank_map(plan):
+    """``{table: {column: has a blank cell in the plan data}}`` for every literal column."""
+    out = {}
+    for table in all_tables(plan):
+        rows = table.get("rows", [])
+        out[table["name"]] = {c["name"]: any(row[i] is None for row in rows)
+                              for i, c in enumerate(literal_columns(table))}
+    return out
+
+
+def _table_info(plan, types):
+    """Column types and blank-capable flags per table (literal columns that hold a blank)."""
+    info = {"types": types, "blank": blank_map(plan)}
+    for table in all_tables(plan):      # calculated columns are never blank (see Emitter.column_formula)
+        for column in table["columns"]:
+            if "expr" in column:
+                info["blank"][table["name"]][column["name"]] = False
+    return info
+
+
 def build_parts(plan, dm_id, dm_elements):
     """Return ``{"inputs", "hidden", "visible"}`` element lists for the workbook pages.
 
@@ -1166,6 +1401,9 @@ def build_parts(plan, dm_id, dm_elements):
     ids = _Names()
     tables = all_tables(plan)
     types = {t["name"]: {c["name"]: c["type"] for c in t["columns"]} for t in tables}
+    info = _table_info(plan, types)
+    blank = info["blank"]
+    frame_blank = {}
     inputs, hidden, visible = [], [], []
     wrapper = {}
     expansion_bases = {f["base"] for f in plan["frames"] if f["kind"] == "expansion"}
@@ -1192,10 +1430,12 @@ def build_parts(plan, dm_id, dm_elements):
         columns = [_with_format(plan, c, {"id": f"{element_id}_c{i}", "name": c["name"],
                                           "formula": f"[{prefix}/{c['name']}]"})
                    for i, c in enumerate(cols, 1)]
-        em = Emitter(col=lambda n: f"[{n}]", coltype=lambda n, t=types[name]: t.get(n))
+        em = Emitter(col=lambda n: f"[{n}]", coltype=lambda n, t=types[name]: t.get(n),
+                     blankable=lambda n, f=blank[name]: f.get(n, False), tables=info)
         for number, column in enumerate((c for c in table["columns"] if "expr" in c), 1):
             columns.append(_with_format(plan, column, {"id": f"{element_id}_k{number}", "name": column["name"],
-                                                       "formula": em.emit(column["expr"])}))
+                                                       "formula": em.column_formula(column["name"],
+                                                                                    column["expr"])}))
         if name in expansion_bases:
             columns.append({"id": f"{element_id}_jk", "name": "Join Key", "formula": "1"})
         hidden.append({"id": element_id, "kind": "table", "name": name, "source": source, "columns": columns})
@@ -1239,8 +1479,10 @@ def build_parts(plan, dm_id, dm_elements):
                 else:
                     columns.append({"id": f"{fid}_b{number}", "name": name, "formula": f"[XJ/{name}]"})
             em = Emitter(col=lambda n: f"[{n}]", period=f"[{axis['name']}]",
-                         coltype=lambda n: frame_types.get(n))
+                         coltype=lambda n: frame_types.get(n),
+                         blankable=lambda n, f=blank[base]: f.get(n, False), tables=info)
             columns += _calc_columns(plan, frame, fid, {c["name"] for c in columns}, em)
+            frame_blank[frame["id"]] = dict(blank[base], **em.own_blank)
             hidden.append({"id": fid, "kind": "table", "name": frame["title"], "source": source,
                            "columns": columns})
             element_of[frame["id"]] = fid
@@ -1254,14 +1496,17 @@ def build_parts(plan, dm_id, dm_elements):
             columns = [{"id": f"{fid}_b{i}", "name": n, "formula": f"[{table}/{n}]"}
                        for i, n in enumerate(needed)]
             em = Emitter(col=lambda n: f"[{n}]", key=f"[{frame['rowKey']}]",
-                         period=f"[{frame['periodKey']}]", coltype=lambda n: frame_types.get(n))
+                         period=f"[{frame['periodKey']}]", coltype=lambda n: frame_types.get(n),
+                         blankable=lambda n, f=blank[table]: f.get(n, False), tables=info)
             own = {c["name"] for c in columns}
             columns += _calc_columns(plan, frame, fid, own, em)
+            frame_blank[frame["id"]] = dict(blank[table], **em.own_blank)
             by_id = next(c["id"] for c in columns if c["name"] == frame["rowKey"])
             period_id = next(c["id"] for c in columns if c["name"] == frame["periodKey"])
             calc_ids = []
             for summary in merged.get(frame["id"], []):
-                extra = _summary_columns(plan, summary, f"{fid}_s", frame_types, None)
+                extra = _summary_columns(plan, summary, f"{fid}_s", frame_types, None,
+                                         frame_blank.get(frame["id"]), info)
                 for column in extra:
                     if column["name"] in own:
                         raise PlanError(f"frame {summary['title']!r}: column {column['name']!r} collides "
@@ -1278,19 +1523,21 @@ def build_parts(plan, dm_id, dm_elements):
             element_of[frame["id"]] = fid
             visible.append(_pivot(plan, frame, fid, ids, [frame["rowKey"]], frame["periodKey"], frame["periods"]))
         elif kind == "ledger":
-            hidden_or_visible = _ledger_elements(plan, frame, fid, ids, wrapper, types)
+            hidden_or_visible = _ledger_elements(plan, frame, fid, ids, wrapper, types, info)
             visible.extend(hidden_or_visible)
             element_of[frame["id"]] = fid
         else:
             source = frame["source"]
             if source["kind"] == "table":
                 src_id, src_label, src_types = wrapper[source["name"]], source["name"], types[source["name"]]
+                src_blank = blank[source["name"]]
             else:
                 parent = next(f for f in plan["frames"] if f["id"] == source["name"])
                 src_id, src_label = element_of[parent["id"]], parent["title"]
                 src_types = _frame_types(plan, parent, types)
+                src_blank = frame_blank.get(parent["id"])
             key_col = {"id": f"{fid}_key", "name": frame["by"], "formula": f"[{src_label}/{frame['by']}]"}
-            calcs = _summary_columns(plan, frame, fid, src_types, src_label)
+            calcs = _summary_columns(plan, frame, fid, src_types, src_label, src_blank, info)
             # hidden helper frames (ledger source aggregates) stay on the Model page
             (hidden if frame.get("hidden") else visible).append({
                 "id": fid, "kind": "table", "name": frame["title"],
@@ -1301,12 +1548,16 @@ def build_parts(plan, dm_id, dm_elements):
     return {"inputs": inputs, "hidden": hidden, "visible": visible}
 
 
-def _ledger_elements(plan, frame, fid, ids, wrapper, types):
+def _ledger_elements(plan, frame, fid, ids, wrapper, types, info=None):
     """Ledger frame -> the period table (one row per period) and its one-row total table."""
     spine, axis = frame["spine"], frame["axis"]
     own = {c["name"]: c for c in frame["columns"]}
     here = dict(types[spine], **{name: c["type"] for name, c in own.items()})
-    em = Emitter(col=lambda n: f"[{n}]", period=f"[{axis}]", coltype=lambda n: here.get(n))
+    spine_blank = (info or {"blank": {}})["blank"].get(spine, {})
+    # a number column's blank cells are emitted as 0 below, so only other spine columns stay blank-capable
+    em = Emitter(col=lambda n: f"[{n}]", period=f"[{axis}]", coltype=lambda n: here.get(n),
+                 blankable=lambda n: spine_blank.get(n, False) and n != axis and here.get(n) != "number",
+                 tables=info)
     columns, taken = [], set()
     for number, name in enumerate(frame["order"]):
         if name in taken:
@@ -1314,7 +1565,7 @@ def _ledger_elements(plan, frame, fid, ids, wrapper, types):
         taken.add(name)
         if name in own:
             columns.append(_with_format(plan, own[name], {"id": f"{fid}_k{number}", "name": name,
-                                                          "formula": em.emit(own[name]["expr"])}))
+                                                          "formula": em.column_formula(name, own[name]["expr"])}))
         else:       # spine columns: the period key and the manual line items (a blank cell is 0)
             ref = f"[{spine}/{name}]"
             columns.append({"id": f"{fid}_b{number}", "name": name,

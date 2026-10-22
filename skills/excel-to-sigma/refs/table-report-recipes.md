@@ -45,7 +45,7 @@ end the ledger). Section headings (a label alone on a row) are display only. Eac
 | `... * INDIRECT("Coll_"&Scenario)` | `lk` into the scenario table built from the named-range family `Coll_*` keyed by the selected-scenario text parameter | `Lookup([<Rate> by Scenario/<Rate>], Lookup([Parameters/Text Value], "Scenario", [Parameters/Parameter]), [<Rate> by Scenario/Scenario])` |
 | seed, then `=prev*(1+rate)` | closed form `seed*(1+rate)^(period-first)` | `seed * Power((1 + rate), ([Week] - 1))` |
 | date seed, then `=prev+7` | `ADDDAYS(seed, 7*(period-first))` from a **date** parameter | `DateAdd("day", (7 * ([Week] - 1)), Lookup([Parameters/Date Value], ...))` |
-| `IF(MOD(B$4,2)=0, amount, 0)` (cadence) | generic `IF`/`MOD` over the period | `If((Mod([Week], 2) = 0), amount, 0)` |
+| `IF(MOD(B$4,2)=0, amount, 0)` (cadence) | generic `IF`/`MOD` over the period | `If((Mod(Mod([Week], 2) + 2, 2) = 0), amount, 0)` (the divisor-signed form, as Excel's MOD) |
 | `=B10+B11`, `=SUM(B15:B18)`, `=B23-MinCash` | same-period column arithmetic; a named single cell is a parameter | `([Payroll] + [Rent] + ...)` |
 | `Beginning = prev Ending` (first = `OpeningCash`) with `Ending = Beginning + Net` | `Ending = Opening + CumulativeSum(Net)`, `Beginning = Ending - Net` | ungrouped table sorted by the period: `Opening + CumulativeSum([Net Cash Flow])` |
 | `MIN($B$23:B23)` (running window from the first period) | `cummin` | `CumulativeMin([Ending Cash])` |
@@ -69,10 +69,12 @@ with its cell); `prev` is supported only as the three recursions above.
 
 The drafter lowers every formula to an IR (`lib/table_report_model.py`), evaluates the IR in
 Python from the table data, and compares **every** recognised cell with Excel's cached value
-(tolerance 0.01; text flags exact, `""` equals blank). It then requires every formula cell in
+(float noise only: `abs <= max(1e-6, 1e-12*|value|)`, `--tolerance` sets an absolute limit; text flags exact, `""` equals blank). It then requires every formula cell in
 the workbook to be one of those verified cells. Any unrecognised formula, any mismatch and any
 formula cell outside a recognised grid raises `PlanDraftError` naming `Sheet!Cell` - nothing is
 coerced and cached values are never frozen into the plan as a conversion.
+
+Blanks follow Excel, not SQL: an operand that can be blank (a blank cell in the data, or a lookup into one) is emitted as `Coalesce(x, 0)` / `Coalesce(x, "")` where Excel reads it as 0 / "", aggregate criteria use Excel's criteria rules (a blank matches only `<>`), and a formula cell that would be a blank is `0`. `tests/sigma_formula_eval.py` evaluates the EMITTED formulas with SQL NULL logic and compares every verified cell with Excel's cached value.
 
 `build-table-report.py` re-runs the same check from the plan alone (`checks[]` hold the cached
 values) and then prints headline parity per summary frame and numeric column; a mismatch exits 1
@@ -81,7 +83,10 @@ before any spec is written or posted.
 ## Shapes that fail loudly (not a fallback)
 
 - `VLOOKUP`/`OFFSET`/`INDIRECT`/named ranges, `ROUNDUP`/`INT`/text functions, `&` text building,
-  non-numeric (e.g. date) parameter cells, `DATE` with cell arguments,
+  non-numeric (e.g. date) parameter cells, `MIN`/`MAX`/`AND`/`OR` over a blank cell, `IFERROR` around any error other than a
+  zero/blank denominator or a missed exact lookup, a row label or `MATCH` key containing `* ? ~`, text that differs only in
+  case (grouped labels, compared literals, lookup keys), an expansion grid whose shown columns do not identify one table row
+  (a unique column is added when one exists, flagged `EXPANSION_ROW_KEY_ADDED`), `DATE` with cell arguments,
   `EOMONTH(x, k)` with `k != 0`, approximate matches, wildcard criteria. (A period ledger accepts the
   `INDIRECT("prefix"&<named cell>)` scenario idiom, named single cells, `MOD` and text/date parameters;
   see above.)

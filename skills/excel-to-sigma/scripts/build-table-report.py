@@ -47,8 +47,9 @@ def parse_args(argv=None):
     parser.add_argument("--post", action="store_true", help="create the data model and workbook")
     parser.add_argument("--out-dir", default="/tmp/table-report-build",
                         help="where specs and seed CSVs are written (default: /tmp/table-report-build)")
-    parser.add_argument("--parity-tolerance", type=float, default=0.01,
-                        help="absolute tolerance for plan cells and parityTargets (default: 0.01)")
+    parser.add_argument("--parity-tolerance", type=float, default=None,
+                        help="absolute tolerance for plan cells and parityTargets (default: tight "
+                             "max(1e-6, 1e-12*|value|), i.e. float noise only)")
     return parser.parse_args(argv)
 
 
