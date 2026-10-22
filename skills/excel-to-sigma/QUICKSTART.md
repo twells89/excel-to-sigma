@@ -51,9 +51,10 @@ excluded — Sigma auto-populates them.)
 > Builds the empty input-table **structure** through REST. The CLI stops there;
 > seed the resulting table through Sigma MCP Code Mode or use UI CSV paste.
 > **Don't use `--linked` for a shippable
-> table** — linked context columns don't resolve via POST ("multiple values");
-> use the established UI path, or validate MCP `add_linked_input_table()`
-> end-to-end before shipping. See `refs/input-tables.md`.
+> table** — linked context columns don't resolve via POST ("multiple values").
+> For a linked table use `scripts/linked-input-program.py`, which emits the Sigma MCP
+> Code Mode programs (create, seed, edit; validated live 2026-10-22). See
+> `refs/input-tables.md`.
 
 ## 5. Load data + view  (MCP + UI — see refs/input-tables.md)
 

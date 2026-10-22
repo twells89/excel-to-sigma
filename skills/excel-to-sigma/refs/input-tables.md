@@ -2,8 +2,9 @@
 
 This is the part that was blocked until input tables shipped. Empty-table MCP
 seeding, updates, and downstream recalculation are live-verified with exact
-parity. UI publish, warehouse-view creation, and MCP-created linked tables were
-not tested in that regression. Read this before building the data-entry path.
+parity. Linked input tables created through MCP Code Mode were validated live
+2026-10-22 (see "Linked input tables" below). UI publish and warehouse-view
+creation were not tested. Read this before building the data-entry path.
 
 ## The mental model that matters
 
@@ -41,7 +42,8 @@ OpenAPI re-audited 2026-10; linked behavior retains the 2026-06 live warning:
 |---|---|---|
 | input-table **structure** | ✅ code rep — `POST /v2/workbooks` | columns, types, title, style, sort; validate first with `dryRun:true`. |
 | literal/range/dynamic-list/file **validation** | ✅ code rep | `values`, `valuesFrom`, inclusive `range`, and file constraints. Custom Excel validation formulas still need review. |
-| **linked** input table (inherited columns resolve) | ⚠️ path-dependent | REST spec creation historically yielded inherited columns showing **"multiple values"** (publish did not fix; verified 2026-06-10). Sigma MCP Code Mode now exposes `add_linked_input_table()`, but this run did not validate create/read/update behavior. Use the established UI path or run an end-to-end MCP regression before shipping. |
+| **linked** input table via REST spec | ❌ unsupported | REST spec creation yields inherited columns showing **"multiple values"** (publish does not fix; verified 2026-06-10). Do not POST linked tables. |
+| **linked** input table via **Sigma MCP Code Mode** | ✅ **VALIDATED live 2026-10-22** | `add_linked_input_table()` create, edit-mode, editable + formula columns, `update_rows()` by key, readback and downstream use all verified. Three `build_workbook` calls; `scripts/linked-input-program.py` emits them. See "Linked input tables" below. |
 | seed/update **rows** in an existing input table | ✅ **Sigma MCP Code Mode** | `build_workbook` with `InputTable.upsert_rows()` / `update_rows()`; verified live 2026-10-15. This is an MCP capability, not a REST endpoint or a feature of the CLI scripts in this skill. Query first: `upsert_rows()` does not enforce a natural-key uniqueness constraint. |
 | seed **records inside REST workbook code representation** | ❌ REST | records remain excluded from the workbook spec. Create the structure with REST, then seed through MCP or the UI. |
 | UI CSV/clipboard seed | ✅ UI | still available when MCP is not connected. |
@@ -93,28 +95,131 @@ to an ad-hoc input-table view.)
   title; `tableStyle` and `sort` persist too (treat like a `table` element).
   Column protection and broader admin policy remain UI/admin concerns.
 
-## Linked input tables — REST spec warning; MCP path not yet validated here
+## Linked input tables — REST unsupported; MCP Code Mode VALIDATED (2026-10-22)
 
-> **⚠️ CORRECTION (2026-06-10). An earlier version of this file called linked
-> input tables "the powerful path, API-authorable." That was wrong** — it was
-> validated only by structure (`/elements`), never by querying the data. When you
-> author a linked input table through REST workbook code representation, the **inherited
-> columns don't resolve: every row shows "multiple values."** Publishing does not
-> fix it, and re-POSTing a known-good UI-built linked table verbatim reproduces the
-> break. The linked-column key-correlation is server state the REST spec can't
-> carry. Sigma MCP Code Mode exposes `add_linked_input_table()`, but the empty-table
-> seed regression in this document did not test it. Use the established UI path or
-> prove MCP create/read/update end to end before shipping it.
+> **REST spec: still unsupported (2026-06-10 correction stands).** A linked input
+> table authored through REST workbook code representation creates the PK column,
+> the grain and the editable columns, but the **inherited columns show "multiple
+> values"** for every row. Publishing does not fix it and re-POSTing a UI-built
+> linked table verbatim reproduces the break: the key-correlation is server state
+> the REST spec cannot carry. Never auto-build linked tables through the spec.
 >
-> What a POST *does* create: the PK column + the grain (PK rows populate from the
-> parent) + editable entry columns. What it *cannot* create: working inherited/
-> linked context columns. So even the "blank forecast grid off a spine" idea gives
-> rows whose dimension context columns read "multiple values" — poor UX; do it in
-> the UI.
+> **MCP Code Mode: validated live 2026-10-22** (AWS US West production MCP, write-enabled
+> connection, Lumen Ridge data model as source). Use it for every linked table.
 
-The idea below is the *intended* design (and how a UI-built linked table looks).
-Do not POST it through the REST spec. Build it in the UI, or recreate it through
-MCP only after a live regression proves inherited columns and row updates work:
+### Live evidence summary
+
+- Source: a Lumen Ridge data model member ("Default Rate" per line item), grouped to
+  one row per Line Item with `Baseline Rate = max(Default Rate)`.
+- `describe` of the created element showed kind `linked-input-table` with `Line Item`
+  and `Baseline Rate` inherited from the grouped source, plus the editable and
+  formula columns; `list_primary_key_columns()` returned 1.
+- Query right after create: 20 rows, inherited `Baseline Rate` resolved per key
+  (e.g. Customer Support 0.01, Enterprise 0.035) — **no "multiple values"**.
+- After `update_rows` by key: 20 rows, 20 distinct keys, 2 overridden; Enterprise
+  `Effective Rate` (`coalesce(Override, Baseline)`) 0.045, Hosting 0.025, Support
+  unchanged at 0.01.
+- Element screenshot: values rendered, pencil icons on editable columns.
+- Downstream: a new table sourced from `lt.to_source()` on another page returned
+  20 rows, 2 overridden, Enterprise effective 0.045 / baseline 0.035.
+- **Emitter run (2026-10-22, throwaway workbook 9a9c30ea-fd74-401a-b2c6-421748bad9ac,
+  `emit --ids` flow):** calls 1 and 2 worked as generated. After the corrected call 3
+  (keys 'Subscription - Enterprise' 0.045 and 'Cloud Hosting' 0.025), readback:
+  `row_count` 20, `distinct_keys` 20, Override Rate non-null 2, Rationale non-null 2,
+  Override Rate sum 0.07, Baseline Rate sum 0.212, Effective Rate sum 0.227
+  (= 0.212 − 0.035 − 0.02 + 0.045 + 0.025). The first attempt, seeding the nonexistent key
+  'Hosting', failed atomically (see below). `readback.json` `expected` carries the seeded
+  counts and Override Rate sum (0.07); the baseline and effective sums depend on the source.
+
+### The 3-call recipe (`scripts/linked-input-program.py`)
+
+`scripts/linked-input-program.py emit --spec spec.json --out-dir out/` validates a
+JSON spec and writes `call1.py`, `call2.py`, `call3.py`, `readback.json` (SQL
+templates plus expected counts/sums) and `manifest.json`. It makes **no** MCP or
+REST call. Run each program through `build_workbook` in order. Spec fields: see
+`tests/fixtures/linked-input/spec.json` — `workbook` (`{id}` or `{name, description}`),
+`dataPage`, `page` (`{name}` created in call 1, or `{id}` of an existing page),
+`source` (`{kind: dataModel, inodeId, memberColumn}` or `{kind: element, elementId}`),
+`key`, `inherited` (`{name, aggregate: max|min|sum|avg, of, as?}`), `editable`
+(`number|text|datetime|boolean`), `formulas` (descriptors over `coalesce`, `add`,
+`subtract`, `multiply`, `divide`, plus unary `number`, `{col}` / `{const}` leaves),
+`table.editMode` (`draft` default, `published-explore`, `published-all-users`), `rows`
+(`{key: {...}, values: {...}}`, unique keys, at most 2,000), optional `sourceColumns`
+(from `describe`, enables collision and existence checks), and `sourceKeys` (distinct key
+values queried from the grouped source; the emitter refuses seed keys not in it).
+
+1. **Call 1** (`target: new` with name + description, or `existing`): hidden data page
+   plus the visible page, `base = data_page.add_table(<source>)` (the data model member
+   is picked by a column it contains, because every DM member reads "Custom SQL"), then
+   `plan_base = data_page.add_table(base.to_source())` grouped by the key with the
+   inherited columns as group calculations. Prints `dataPageId`, `pageId`, `planBaseId`.
+2. **Call 2** (`existing`, the id call 1 returned): re-fetch pages and the grouped table
+   (`isinstance` narrow to `Page` / `LevelTable`), then
+   `page.add_linked_input_table(plan_base.to_source(), lookup_columns={key: key},
+   source_columns={calc: linkedName})`, `set_edit_mode`, `add_editable_column`,
+   `add_formula_column`. **The grouped source must come from an earlier call** — call 1
+   commits it first. Prints `linkedTableId` and every column id.
+3. **Call 3** (`existing`): re-fetch the element (`isinstance` `LinkedInputTable`), narrow
+   each editable column to `LiteralEditableColumn`, then
+   `lt.update_rows([({key_col: 'value'}, {editable_col: value})])`. A linked table has no
+   `row_id`; rows are addressed by the key column.
+
+Capture the printed ids with `linked-input-program.py ids --from-output out.txt --out
+ids.json --workbook-id <id>` and re-run `emit --ids ids.json` so calls 2 and 3 carry real
+ids (otherwise they contain `<... ID>` placeholders). The `column:<name>=<id>` lines
+call 2 prints are **exactly the ids `describe` returns** for the linked element
+(live-verified 2026-10-22: Line Item `C4D9LE3LYP`, Baseline Rate `KzntvkpDNW`, Override
+Rate `LWP7CD4GQW`, Rationale `X25VJK2G2J`, Effective Rate `_Z1CQn3Lxq`, element
+`_QN9bCd1zA`), so `ids` collects them (with `linkedTableId`) and `emit --ids` fills the
+readback SQL from them — no separate `describe` step. `{"describe": {"elementId": ...,
+"columns": {name: columnId}}}` in `ids.json` remains an optional override. Run the SQL in
+`readback.json` through the `query` tool (`type: workbook`): rows, distinct keys
+(`row_count` must equal `distinct_keys`), non-null editable counts, sums, and the seeded
+rows. Compare to the `expected` block.
+
+### Seed keys must exist: `update_rows` is atomic (live 2026-10-22)
+
+`update_rows` with a key that is not in the source **fails the whole call**:
+`ValueError ... no row matches the key at index 1`, result `persisted: false`, and a
+readback showed **0 rows written** — the valid rows in the same call were not applied
+either. So pre-check every seed key before call 3:
+
+1. `query` the grouped source for its distinct key values
+   (`SELECT DISTINCT "<key col>" FROM ...`; e.g. 'Cloud Hosting' exists, 'Hosting' does not).
+2. Put them in the spec as `sourceKeys`. The emitter then refuses seed keys not in it and
+   names them. Without `sourceKeys` it emits a warning (also in `manifest.json` `call3Note`)
+   and cannot protect you. `sourceKeys` supports a single key column; check multi-key
+   seeds by hand.
+3. A failed call 3 is safe to fix and resubmit: nothing was written.
+
+### Requirements and rules the live run proved
+
+- **One row per key.** The linked source must have exactly one row per key: group the
+  source first (call 1 does) or confirm `COUNT(*) = COUNT(DISTINCT key)`. A coarser or
+  fanned-out source gives ambiguous inherited columns. Keep a human-edited grid under
+  about 2,000 rows.
+- A calculation name must not collide with a source column (it silently becomes
+  `Name (1)` while lookups keep returning the original) — the emitter rejects collisions.
+- Programs must obey the Code Mode dialect: no `def`/`class`/`lambda`/`while`, no slices,
+  no f-strings or `.format`, no `%`/`**`/`//`, single-clause comprehensions, `+`
+  concatenation. The emitter lints its own output. If the Sigma quickstart skill's
+  `scripts/check.py` is installed, run it on each program too.
+- `get_page` / `get_element` return base types: narrow with `isinstance` before use.
+- Seed dates at noon (the emitter does) or they render a day early.
+
+### Not yet tested
+
+- Published-mode edits by a non-editor user in the UI (permissions).
+- A warehouse view created over a linked input table.
+- Multi-column keys (emitted, but only a single key was validated live).
+- Aggregates other than `max` for inherited columns (`sum`/`min`/`avg` are documented
+  quickstart functions but were not run in the spike).
+
+### Legacy REST shape (do not POST)
+
+The YAML below is how a UI-built or MCP-built linked table looks in code
+representation. It documents the structure only; the REST spec cannot create working
+inherited columns:
 
 ```yaml
 # 1) the spine: any element whose rows define the grain — a warehouse/data-model
@@ -150,10 +255,9 @@ Why it's still the right *design*:
   generated spine (e.g. a custom-SQL `CALENDAR × CATEGORY × BU` cross-join) and the
   grain is correct by construction — solves the stale-spine problem ("derive, don't
   port"). Forecasters fill only the measure; dimension columns are read-only.
-- **The REST linkage is broken.** When built in the UI the inherited columns
-  resolve correctly; when POSTed they show "multiple values" (see correction
-  above). MCP has a dedicated linked-input-table SDK surface, but validate the
-  full create/read/update path before treating it as the replacement.
+- **The REST linkage is broken; MCP is the replacement.** Built in the UI or through
+  MCP Code Mode the inherited columns resolve correctly; POSTed through the REST spec
+  they show "multiple values" (see the correction above).
 
 Use **empty + CSV** (below) instead when you're seeding **starting values**
 (e.g. last year's actuals as a baseline to adjust), where the rows aren't simply a

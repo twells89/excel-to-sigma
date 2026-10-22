@@ -6,8 +6,8 @@ Two modes (see refs/input-tables.md):
   LINKED (⚠️ scaffold only — inherited columns do NOT resolve via POST):
     builds a custom-SQL spine element + a linked input table off it. The PK/grain
     and entry columns populate, but linked context columns render "multiple values"
-    (verified 2026-06-10; publish doesn't fix). Add the real linked columns in the
-    UI. Prefer building linked input tables entirely in the UI for now.
+    (verified 2026-06-10; publish doesn't fix). For a real linked table use
+    scripts/linked-input-program.py (Sigma MCP Code Mode, validated live 2026-10-22).
     python build-input-table-wb.py --name "Forecast Entry" --connection <writeConn> \
       --spine-sql spine.sql --spine-cols REGION,BRANCH,SUB_BRANCH,MONTH_DATE,CATEGORY_CODE \
       --key MONTH_DATE --entry-cols FORECAST_AMOUNT:number
@@ -113,10 +113,11 @@ def build_linked(args):
         "source": {"kind": "linked", "from": "spine"},
         "inputMode": "explore", "columns": it_cols,
     }]
-    desc = "Excel→Sigma linked input table SCAFFOLD — PK/grain + entry cols only; linked context cols do NOT resolve via POST (add in UI)."
+    desc = "Excel→Sigma linked input table SCAFFOLD — PK/grain + entry cols only; linked context cols do NOT resolve via POST. Use scripts/linked-input-program.py (MCP Code Mode) for a real linked table."
     nxt = ("⚠️ Linked CONTEXT columns will show 'multiple values' (POST can't author the "
-           "link — verified). This built the PK/grain + entry columns; add linked columns "
-           "in the UI, or rebuild the whole linked table in the UI. Then Publish + Create warehouse view.")
+           "link — verified). This built the PK/grain + entry columns only. Do not ship it: "
+           "rebuild the linked table with scripts/linked-input-program.py (Sigma MCP Code Mode, "
+           "validated live 2026-10-22), then Publish + Create warehouse view.")
     return desc, elements, nxt
 
 

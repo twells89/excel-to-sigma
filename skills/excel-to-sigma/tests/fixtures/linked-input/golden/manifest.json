@@ -1,0 +1,57 @@
+{
+  "calls": [
+    {
+      "call": 1,
+      "file": "call1.py",
+      "target": {
+        "type": "new",
+        "name": "Rate override inputs",
+        "description": "Linked input table of per-line-item rate overrides over the Lumen Ridge rate baseline, for FP&A."
+      },
+      "unresolvedPlaceholders": []
+    },
+    {
+      "call": 2,
+      "file": "call2.py",
+      "target": {
+        "type": "existing",
+        "workbookId": "<WORKBOOK ID>"
+      },
+      "unresolvedPlaceholders": [
+        "<DATA PAGE ID>",
+        "<PAGE ID>",
+        "<PLAN BASE ID>"
+      ]
+    },
+    {
+      "call": 3,
+      "file": "call3.py",
+      "target": {
+        "type": "existing",
+        "workbookId": "<WORKBOOK ID>"
+      },
+      "unresolvedPlaceholders": [
+        "<LINKED TABLE ID>",
+        "<PAGE ID>"
+      ]
+    }
+  ],
+  "idsToCapture": {
+    "call1": [
+      "dataPageId",
+      "pageId",
+      "planBaseId"
+    ],
+    "call2": [
+      "linkedTableId",
+      "column:<name> (also fills the readback SQL)"
+    ],
+    "describe": "optional override of the readback element/column ids"
+  },
+  "call3Note": "update_rows is atomic: one seed key absent from the grouped source fails the whole call (persisted:false, no rows written). Pre-query the source's distinct keys and set sourceKeys.",
+  "unvalidated": [
+    "published-mode edit by a non-editor user",
+    "warehouse view over a linked input table",
+    "no sourceKeys given: update_rows fails the whole call atomically ('no row matches the key') if any seed key is absent from the grouped source; query its distinct keys and pre-check the seeds"
+  ]
+}
