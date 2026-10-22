@@ -1,0 +1,15 @@
+{
+  "workbook": {"name": "Rate override inputs", "description": "Linked input table of per-line-item rate overrides over the Lumen Ridge rate baseline, for FP&A."},
+  "dataPage": {"name": "Data"},
+  "page": {"name": "Rate overrides"},
+  "source": {"kind": "dataModel", "inodeId": "ff3d2a9b-dd11-4dfd-b059-7b9dff60d1ed", "memberColumn": "Default Rate"},
+  "key": ["Line Item"],
+  "inherited": [{"name": "Baseline Rate", "aggregate": "max", "of": "Default Rate"}],
+  "table": {"name": "Rate overrides", "editMode": "published-all-users"},
+  "editable": [{"name": "Override Rate", "type": "number"}, {"name": "Rationale", "type": "text"}],
+  "formulas": [{"name": "Effective Rate", "formula": {"op": "coalesce", "args": [{"col": "Override Rate"}, {"col": "Baseline Rate"}]}}],
+  "rows": [
+    {"key": {"Line Item": "Subscription - Enterprise"}, "values": {"Override Rate": 0.045, "Rationale": "spike test"}},
+    {"key": {"Line Item": "Hosting"}, "values": {"Override Rate": 0.025, "Rationale": "spike test"}}
+  ]
+}

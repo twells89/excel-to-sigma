@@ -120,28 +120,26 @@ edit ambiguous cells before selecting the input surface.
 
 ### What's actually buildable via API today (validated 2026-06-10 by MCP query)
 
-> **Hard-won correction.** Earlier drafts claimed linked input tables were the
-> "powerful path, fully API, no seed." **That was wrong — validated only by
-> structure (`/elements`), never by querying the data.** A linked input table
-> authored through workbook code representation has **inherited columns that don't
-> resolve** — every row shows **"multiple values"** (publish doesn't fix it;
-> re-POSTing a known-good UI-built spec reproduces the break). The linked-column
-> key-correlation is state the REST spec can't carry. Sigma MCP exposes a
-> dedicated linked-input-table constructor, but validate that path separately. See
-> `refs/input-tables.md`.
+> **Hard-won correction.** A linked input table authored through the REST workbook
+> code representation has **inherited columns that don't resolve** — every row shows
+> **"multiple values"** (publish doesn't fix it; re-POSTing a known-good UI-built spec
+> reproduces the break), so REST linked tables stay unsupported. **Sigma MCP Code Mode
+> linked tables are validated live (2026-10-22):** `scripts/linked-input-program.py`
+> emits the 3-call create / seed / edit programs. See `refs/input-tables.md`.
 
 So, honestly, by usage pattern:
 
 | Need | API today? | How |
 |---|---|---|
 | **Edit-in-place of the migrated rows** (the common spreadsheet case) | ✅ with Sigma MCP Code Mode | create the empty input-table **structure** with REST, then pre-query and seed it through MCP `InputTable.upsert_rows()`; `update_rows()` targets returned/system row IDs. UI CSV remains the fallback. |
-| **Net-new entry at a grain** (blank forecast grid) | ⚠️ path-dependent | REST linked-off-spine creation leaves context columns as "multiple values"; UI works. MCP exposes `add_linked_input_table()`, but validate create/read/update end to end before shipping it. |
-| **Augment / annotate existing rows** (notes/flags beside live data) | ⚠️ path-dependent | needs working linked columns; use UI or a separately verified MCP linked-table build |
+| **Net-new entry at a grain** (blank forecast grid) | ✅ via MCP Code Mode | REST linked-off-spine creation still leaves context columns as "multiple values" — do not use it. Build the linked table through MCP: `scripts/linked-input-program.py` (validated live 2026-10-22, one row per key). |
+| **Augment / annotate existing rows** (notes/flags beside live data) | ✅ via MCP Code Mode | same MCP linked-table recipe (editable columns beside inherited source columns); published-mode edits by non-editors and warehouse views over the table remain untested |
 
 REST can scaffold input-table *structure* and build read-only DMs. Sigma MCP
-Code Mode can seed and update rows in an existing empty input table; it is a
-separate connector capability and is not invoked by this skill's CLI. Working
-linked context columns and warehouse-view creation still require UI/live review.
+Code Mode can seed and update rows in an existing empty input table and can create,
+seed and edit **linked** input tables (validated live 2026-10-22; this skill's
+`scripts/linked-input-program.py` only emits the programs, it never calls MCP).
+Warehouse-view creation still requires UI/live review.
 
 Design so the editable surfaces exist from day one, and seed them through MCP or
 the UI. **Don't build a read-only model and call it a migration.**
@@ -364,14 +362,15 @@ element and seed missing natural keys with MCP `InputTable.upsert_rows()`, or us
 the UI to **paste / upload** the Phase-1 CSV and **Publish**. Finally use
 **Warehouse views → Create new** in the UI.
 
-> **Do NOT auto-build linked input tables via the spec.** It looks like it works
+> **Do NOT auto-build linked input tables via the REST spec.** It looks like it works
 > (the POST succeeds, `/elements` shows the columns) but the **inherited columns
 > resolve to "multiple values"** — the REST spec omits the linked correlation
 > state (validated
 > 2026-06-10, publish doesn't fix it). `build-input-table-wb.py --linked` only
 > scaffolds the PK/grain + entry columns. If a usage pattern needs live context
-> columns beside editable cells, use the established UI path or validate MCP
-> `add_linked_input_table()` create/read/update behavior end to end.
+> columns beside editable cells, use the Sigma MCP Code Mode path (validated live
+> 2026-10-22): `scripts/linked-input-program.py` emits the 3-call create / seed /
+> edit programs over a one-row-per-key source. See `refs/input-tables.md`.
 
 ## Phase 4 — Source-swap the DM onto the view (`scripts/build-dm-on-view.py`)
 
@@ -412,7 +411,7 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | workbook create/validate/update | ✅ `POST /v2/workbooks` (`dryRun` then create), `PUT .../contents` |
 | input-table **structure** (columns/types; title, style, sort) | ✅ code representation |
 | input validation (literal/range/dynamic-list/file constraints) | ✅ code representation |
-| **linked** input table (inherited columns resolve) | ⚠️ REST spec POST yields "multiple values"; UI works; MCP `add_linked_input_table()` exists but was not validated in the 2026-10-15 empty-table seed regression |
+| **linked** input table (inherited columns resolve) | ❌ REST spec POST yields "multiple values"; ✅ MCP Code Mode `add_linked_input_table()` validated live 2026-10-22 (`scripts/linked-input-program.py`); UI works |
 | seed **records inside REST workbook code representation** | ❌ records are excluded from the spec |
 | seed/update rows in an existing input table | ✅ Sigma MCP Code Mode `build_workbook` with `InputTable.upsert_rows()` / `update_rows()`; pre-query natural keys because inserts do not deduplicate them automatically |
 | **Publish** for UI edits | ⚠️ UI; MCP row writes persisted and were immediately queryable in the 2026-10-15 regression, while published-mode UI permissions remain untested |
@@ -436,9 +435,8 @@ edit/restore, persistence, and table evidence. Each table readback must report
 the exact approved row count and typed `naturalKeys`; missing, extra, or
 same-count substituted keys block completion. Otherwise hand off
 CSV/clipboard import and **Publish**. In either path,
-**Create warehouse view** remains an explicit UI hand-off. Linked mode remains
-live-review until an end-to-end MCP create/read/update/query regression proves
-inherited columns work.
+**Create warehouse view** remains an explicit UI hand-off. Linked tables use the MCP
+recipe in `refs/input-tables.md` (`scripts/linked-input-program.py`), never the REST spec.
 
 `stage` audits the exact source bytes and always refuses `BLOCKED` or blocker
 severity. Pending review issues may be built in the isolated test workspace

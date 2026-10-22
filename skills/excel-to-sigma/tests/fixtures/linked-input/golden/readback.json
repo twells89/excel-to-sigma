@@ -1,0 +1,36 @@
+{
+  "queries": [
+    {
+      "name": "rows",
+      "sql": "SELECT \"<COLUMN ID: Line Item>\" AS \"Line Item\", \"<COLUMN ID: Baseline Rate>\" AS \"Baseline Rate\", \"<COLUMN ID: Override Rate>\" AS \"Override Rate\", \"<COLUMN ID: Rationale>\" AS \"Rationale\", \"<COLUMN ID: Effective Rate>\" AS \"Effective Rate\" FROM \"workbook\".\"<ELEMENT ID>\" ORDER BY 1"
+    },
+    {
+      "name": "distinct_keys",
+      "sql": "SELECT COUNT(*) AS \"row_count\", COUNT(DISTINCT \"<COLUMN ID: Line Item>\") AS \"distinct_keys\" FROM \"workbook\".\"<ELEMENT ID>\""
+    },
+    {
+      "name": "non_null_editable",
+      "sql": "SELECT COUNT(\"<COLUMN ID: Override Rate>\") AS \"Override Rate non-null\", COUNT(\"<COLUMN ID: Rationale>\") AS \"Rationale non-null\" FROM \"workbook\".\"<ELEMENT ID>\""
+    },
+    {
+      "name": "sums",
+      "sql": "SELECT SUM(\"<COLUMN ID: Override Rate>\") AS \"Override Rate sum\", SUM(\"<COLUMN ID: Baseline Rate>\") AS \"Baseline Rate sum\", SUM(\"<COLUMN ID: Effective Rate>\") AS \"Effective Rate sum\" FROM \"workbook\".\"<ELEMENT ID>\""
+    },
+    {
+      "name": "seeded_rows",
+      "sql": "SELECT \"<COLUMN ID: Line Item>\" AS \"Line Item\", \"<COLUMN ID: Baseline Rate>\" AS \"Baseline Rate\", \"<COLUMN ID: Override Rate>\" AS \"Override Rate\", \"<COLUMN ID: Rationale>\" AS \"Rationale\", \"<COLUMN ID: Effective Rate>\" AS \"Effective Rate\" FROM \"workbook\".\"<ELEMENT ID>\" WHERE \"<COLUMN ID: Line Item>\" IN ('Subscription - Enterprise', 'Hosting') ORDER BY 1"
+    }
+  ],
+  "expected": {
+    "seededKeys": 2,
+    "nonNullEditable": {
+      "Override Rate": 2,
+      "Rationale": 2
+    },
+    "numericEditableSums": {
+      "Override Rate": 0.07
+    },
+    "oneRowPerKey": "row_count must equal distinct_keys; both equal the source's distinct key count",
+    "note": "expected sums assume the editable columns were empty before the seed"
+  }
+}
