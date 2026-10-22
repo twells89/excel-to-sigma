@@ -17,11 +17,14 @@ description: >-
 > model reading `FROM` that view → section rollups — was proven with **exact
 > parity** on a representative 540-row forecast model. The read/output half (DM +
 > workbook from a landed seed) was validated earlier (2026-06-03). The discovery
-> + formula-translation layer is designed and spiked, not yet a general one-shot
-> converter; the cell-drawn actuals + driver-growth forecast archetype is the
-> exception (router, plan drafter, builder with source-bound local parity; shapes
-> outside it fail loudly). Complex-workbook support means **inventory + explicit
-> routing + parity**, not a promise that arbitrary Excel programs convert automatically.
+> + formula-translation layer is not a general one-shot converter; two archetypes
+> are the exception, each with a router gate, a plan drafter that verifies every
+> formula cell against Excel's cached values, and a builder with local parity:
+> **forecast** (cell-drawn P&L, any sections, month/quarter/week periods) and
+> **table-report** (formula grids over formal Tables). Both were validated live in
+> Sigma on 2026-10-22 with exact parity. Shapes outside them fail loudly.
+> Complex-workbook support means **inventory + explicit routing + parity**, not a
+> promise that arbitrary Excel programs convert automatically.
 
 **Start here — do not read every ref.** Run the router first; it picks the archetype
 and names the refs, decisions and commands for this workbook:
@@ -35,9 +38,11 @@ It runs the audit, discovery and (for macro files) macro classification, writes
 and prints JSON: `auditStatus`, `archetype`, `readRefs`, `beforePost`, `askUser`,
 `nextCommands`, `userHandoffs`, `routeReason`. Exit code 2 means `BLOCKED`. Read the refs
 it lists, ask the user the `askUser` questions, then run the `nextCommands` in order.
-`forecast` is named only when the plan drafter accepts the workbook's shape; a
-SUMIFS/driver workbook it rejects routes to `cell-model` (source inventory, then a
-source-specific Sigma MCP build) with the drafter's reason in `routeReason`.
+Routes are tried in order and each is named only when its drafter accepts the
+workbook: research template → `forecast` → `table-report` → `input-table`. A
+SUMIFS/driver workbook both drafters reject routes to `cell-model` (source
+inventory, then a source-specific Sigma MCP build) with the drafters' reasons in
+`routeReason`.
 
 | When | Read |
 |---|---|
@@ -45,6 +50,7 @@ source-specific Sigma MCP build) with the drafter's reason in `routeReason`.
 | Before `--post` or declaring completion | `refs/coverage-contract.md` — the fail-loud contract and hard completion gates |
 | Formal Table to input table (the data-entry path) | `refs/input-tables.md` (the source-swap goes through a warehouse view, not a direct DM binding), `refs/excel-translation.md` |
 | Cell-drawn planning / forecast model (no formal Table) | `refs/model-taxonomy.md`, `refs/forecast-recipes.md` |
+| Formula grids over formal Tables (pipeline by rep, headcount plan, inventory projection) | `refs/table-report-recipes.md` |
 | Broker / FactSet research model, or a fleet off one template | `refs/research-recipes.md`, `refs/research-template-coa.md` |
 | `.xlsm` / macros | `refs/macro-handling.md` |
 | Charts, validation, conditional formatting, formats to rebuild | `refs/presentation-migration.md`; `refs/generic-source-presentation.md` for the generic presentation inventory |
@@ -265,16 +271,31 @@ needs source evidence; the syntax `=prior` alone does not prove one.
 
 **Forecast path:** `migrate.py plan` -> `draft-forecast-plan.py` -> dry-run
 `build-forecast-model.py` -> `build-forecast-model.py --post`. The drafter derives the
-plan from the workbook, fails loudly on any shape it does not recognise (sheet, month
-row, sections, a mixed or unparsable forecast row, missing GL columns), and recomputes
-every line-month and GL month against Excel's cached values before writing it. It
-raises `FLAT_CARRY_POLICY` for `=prior` lines; the dry run reports it as pending and
-`--post` needs a source-bound disposition. The builder's local parity check compares
-the plan to `parityTargets` and exits 1 on any mismatch. Workbook line charts whose
-series are Total Revenue / Gross Profit / EBITDA / Net Income by month or quarter are
-recorded as `sourceCharts` (every point checked against cached values) and the builder
-emits a matching Sigma line chart; the drafter lists any other chart as not mapped, to
-rebuild by hand before dispositioning `CHARTS_PRESENT`.
+plan from the workbook: sections are discovered from the sheet with a sign role taken
+from the derived rows (Gross Margin = Net Sales − COGS, …); periods may be months,
+quarters (`Q3 FY25`) or weeks; forecast cells may be growth, YoY, percent-of-total,
+flat, manual or an external link (kept as manual values with an `EXTERNAL_LINK_VALUE`
+review issue); rates may come from several driver cells. It fails loudly on anything
+else, and recomputes every line, total and derived row per period against Excel's
+cached values before writing the plan. It raises `FLAT_CARRY_POLICY` for `=prior`
+lines; the dry run reports it as pending and `--post` needs a source-bound
+disposition. The builder's local parity check compares the plan to `parityTargets`
+(every derived row's FY or total value) and exits 1 on any mismatch; when the FY
+column covers only some periods, the KPI cards cover exactly those periods. Workbook
+line and bar charts whose series are the plan's totals or derived rows are recorded
+as `sourceCharts` (every point checked against cached values) and the builder emits a
+matching Sigma chart over the same period range; the drafter lists any other chart as
+not mapped, to rebuild by hand before dispositioning `CHARTS_PRESENT`.
+
+**Table-report path:** `migrate.py plan` -> `draft-table-report.py` -> dry-run
+`build-table-report.py` -> `build-table-report.py --post`. For workbooks whose
+outputs are formula grids over formal Excel Tables (SUMIFS/COUNTIFS summaries by
+row label and column header or date window, XLOOKUP/INDEX-MATCH lookups, running
+balances, row × period expansions). Tables people edit become input tables (seed them
+through Sigma MCP), read-only tables become data-model data, and every summary cell is
+recomputed from the table data and compared with Excel's cached value before the plan
+is written. See `refs/table-report-recipes.md` for the Sigma shapes (SumIf wrapped in
+`Coalesce(…, 0)`, Lookup, CumulativeSum by key, constant-key cross join).
 
 Present the detected map and confirm edit intent, source freshness, and formula
 dependencies before selecting a build. The live-actuals/driver-growth union in

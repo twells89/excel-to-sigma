@@ -74,10 +74,17 @@ Excel formal Table → Sigma input table → (publish) → SIGDS_ writeback
   deterministic sales, expense, and headcount fixtures.
 - ✅ Current Sigma `contents` API, dry-run validation, Actions, Python, stored
   procedures, input validation, and automation are OpenAPI-audited in CI.
-- ✅ Cell-drawn actuals + driver-growth forecast models: `migrate.py plan` → `draft-forecast-plan.py`
-  → `build-forecast-model.py` drafts, verifies against the workbook's cached values, and checks local
-  parity; unrecognised shapes fail loudly.
-- 🚧 Discovery + Excel-formula translation for other archetypes: spiked, not yet a one-shot converter.
+- ✅ Cell-drawn forecast P&Ls (any sections, month/quarter/week periods, growth, YoY,
+  percent-of-total, flat, manual and external-link lines): `migrate.py plan` →
+  `draft-forecast-plan.py` → `build-forecast-model.py`. Validated live in Sigma
+  (2026-10-22) with exact parity on a monthly and a quarterly model.
+- ✅ Formula grids over formal Tables (pipeline by rep, headcount and opex plan,
+  inventory projection): `draft-table-report.py` → `build-table-report.py`. Validated
+  live in Sigma (2026-10-22) with exact parity on every summary cell.
+- ✅ Linked input tables through Sigma MCP Code Mode: `linked-input-program.py` emits
+  the create / seed / edit programs. Validated live (2026-10-22).
+- 🚧 Other shapes route to a source inventory and a source-specific build; unrecognised
+  formulas fail loudly with the cell.
 
 See `skills/excel-to-sigma/SKILL.md` for the full workflow and `QUICKSTART.md` for
 a runnable walkthrough on the bundled sample fixture.
@@ -103,6 +110,9 @@ skills/excel-to-sigma/
     migrate.py                      router: audit + discover + archetype, prints the next steps as JSON
     audit-xlsx.py                   fail-loud workbook capability/routing manifest
     draft-forecast-plan.py          draft + verify a forecast model plan from a cell-drawn P&L
+    draft-table-report.py           draft + verify a plan for formula grids over formal Tables
+    build-table-report.py           build the table-report data model + workbook (dry run / --post)
+    linked-input-program.py         emit Sigma MCP programs for linked input tables
     audit-openapi.py                current Sigma code-rep drift gate
     xlsx-to-input-csv.py            Phase 1 — extract a Table to a paste-ready CSV
     build-input-table-wb.py         Phase 3 — POST the input-table workbook (API)
