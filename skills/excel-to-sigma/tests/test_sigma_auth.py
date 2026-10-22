@@ -422,16 +422,37 @@ class ApiTests(AuthTestCase):
         self.assertEqual(out, "")  # the first 401 is not an error to the caller
         self.assertNoTokens(out, err)
 
-    def test_401_refreshes_once_through_the_provider_and_retries(self):
+    def test_401_does_not_refresh_an_env_token_through_the_provider(self):
         os.environ.update({"SIGMA_API_TOKEN": ENV_TOKEN, "SIGMA_BASE_URL": BASE})
         self.mint_mock.side_effect = None
         self.mint_mock.return_value = provider_result()
+        http = self.patch_http(http_error(401))
+        result, error, _, _ = self.call("GET", "/v2/whoami")
+        self.assertIsNone(result)
+        self.assertIsInstance(error, sigma_auth.SigmaAuthError)
+        self.assertEqual([r[2] for r in http.requests], [f"Bearer {ENV_TOKEN}"])
+        self.mint_mock.assert_not_called()
+
+    def test_401_does_not_refresh_an_auth_json_token_through_the_provider(self):
+        self.write_auth_json(self.cwd)
+        self.patch_http(http_error(401))
+        _, error, _, _ = self.call("GET", "/v2/whoami")
+        self.assertIsInstance(error, sigma_auth.SigmaAuthError)
+        self.mint_mock.assert_not_called()
+
+    def test_401_refreshes_a_provider_token_with_the_same_auth_method(self):
+        os.environ["SIGMA_BASE_URL"] = BASE
+        self.mint_mock.side_effect = [
+            provider_result(token=ENV_TOKEN, method="browser"),
+            provider_result(method="browser"),
+        ]
         http = self.patch_http(http_error(401), {"ok": 1})
         result, error, _, _ = self.call("GET", "/v2/whoami")
         self.assertIsNone(error)
+        self.assertEqual(result, {"ok": 1})
         self.assertEqual([r[2] for r in http.requests],
                          [f"Bearer {ENV_TOKEN}", f"Bearer {PROVIDER_TOKEN}"])
-        self.mint_mock.assert_called_once_with()
+        self.assertEqual(self.mint_mock.call_args_list, [mock.call(), mock.call("browser")])
 
     def test_second_401_is_an_error_after_exactly_one_refresh(self):
         os.environ["SIGMA_CLI_PROFILE"] = "work"
@@ -478,17 +499,18 @@ class ApiTests(AuthTestCase):
         self.assertTrue(out.startswith("HTTP 500 "))
         self.assertEqual(out.strip().split(" ", 2)[2], "x" * 1500)
 
-    def test_proactive_refresh_after_fifty_minutes(self):
+    def test_proactive_refresh_does_not_switch_an_env_token_to_the_provider(self):
         old = time.time() - 51 * 60
         os.environ.update({"SIGMA_API_TOKEN": ENV_TOKEN, "SIGMA_BASE_URL": BASE,
                            "SIGMA_TOKEN_MINTED_AT": iso(old)})
         self.mint_mock.side_effect = None
         self.mint_mock.return_value = provider_result()
         http = self.patch_http({"ok": 1})
-        _, error, _, _ = self.call("GET", "/v2/whoami")
+        _, error, _, err = self.call("GET", "/v2/whoami")
         self.assertIsNone(error)
-        self.assertEqual(http.requests[0][2], f"Bearer {PROVIDER_TOKEN}")
-        self.mint_mock.assert_called_once_with()
+        self.assertEqual(http.requests[0][2], f"Bearer {ENV_TOKEN}")
+        self.assertIn("cannot be refreshed safely", err)
+        self.mint_mock.assert_not_called()
 
     def test_no_refresh_before_fifty_minutes(self):
         young = time.time() - 49 * 60
@@ -510,10 +532,11 @@ class ApiTests(AuthTestCase):
 
     def test_proactive_refresh_applies_to_a_long_running_session(self):
         now = {"t": 1_800_000_000.0}
-        os.environ.update({"SIGMA_API_TOKEN": ENV_TOKEN, "SIGMA_BASE_URL": BASE,
-                           "SIGMA_TOKEN_MINTED_AT": iso(now["t"])})
-        self.mint_mock.side_effect = None
-        self.mint_mock.return_value = provider_result(minted=iso(now["t"] + 51 * 60))
+        os.environ["SIGMA_BASE_URL"] = BASE
+        self.mint_mock.side_effect = [
+            provider_result(token=ENV_TOKEN, minted=iso(now["t"]), method="browser"),
+            provider_result(minted=iso(now["t"] + 51 * 60), method="browser"),
+        ]
         http = self.patch_http({"ok": 1}, {"ok": 2}, {"ok": 3})
         with mock.patch.object(sigma_auth, "_now", side_effect=lambda: now["t"]):
             self.call("GET", "/v2/a")
@@ -523,7 +546,7 @@ class ApiTests(AuthTestCase):
             self.call("GET", "/v2/c")      # fresh token is 10 minutes old: no refresh
         self.assertEqual([r[2] for r in http.requests],
                          [f"Bearer {ENV_TOKEN}", f"Bearer {PROVIDER_TOKEN}", f"Bearer {PROVIDER_TOKEN}"])
-        self.assertEqual(self.mint_mock.call_count, 1)
+        self.assertEqual(self.mint_mock.call_args_list, [mock.call(), mock.call("browser")])
 
     def test_failed_proactive_refresh_warns_and_keeps_going(self):
         old = time.time() - 55 * 60

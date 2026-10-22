@@ -626,7 +626,8 @@ def find_blocks(wf, covered, tabs):
                 while cell(row, run[-1] + 1) is not None:
                     run.append(run[-1] + 1)
                 headers = [cell(row, c) for c in run]
-                header_like = all(isinstance(h, (str, datetime, date)) and not _is_formula(h) for h in headers)
+                header_like = all((isinstance(h, (str, datetime, date)) or _is_number(h))
+                                  and not _is_formula(h) for h in headers)
                 if len(run) >= 2 and header_like and cell(row + 1, first) is not None:
                     last_row = row + 1
                     while last_row + 1 <= ws.max_row and cell(last_row + 1, first) is not None:
@@ -1321,7 +1322,10 @@ class Drafter:
             if isinstance(header, (datetime, date)):
                 first_ast = _parse(values[0], block.sheet, _addr(block.sheet, block.first_row, col))
                 hdr = lambda ref, hr=block.hr, c=col: bool(ref.address) and _rc(ref) == (hr, c)  # noqa: E731
-                if _contains_ref_to(first_ast, hdr):
+                prev = lambda ref, r=block.first_row, c=col: bool(ref.address) \
+                    and (ref.sheet or block.sheet) == block.sheet and _rc(ref) == (r, c - 1)  # noqa: E731
+                if _contains_ref_to(first_ast, hdr) or (
+                        matrix_cols and matrix_cols[-1] == col - 1 and _contains_ref_to(first_ast, prev)):
                     matrix_cols.append(col)
                     continue
             summary_cols.append(col)
@@ -1388,18 +1392,24 @@ class Drafter:
             if terms != tail_terms:
                 raise PlanDraftError(f"{_addr(block.sheet, block.first_row, first_col)}: the first period's "
                                      "formula differs from the running formula beyond its opening term")
-            delta_name = "Net Change"
-            if delta_name in {c.name for c in table.columns} | {measure}:
-                delta_name = f"{measure} Change"
-            columns.append({"name": delta_name, "type": "number", "expr": self.rebuild(terms)})
-            running_expr = ["op", "+", opening, ["cumsum", ["c", delta_name], row_key, period_key]]
-            columns.append({"name": measure, "type": "number", "expr": running_expr})
-            self.issues.append({
-                "code": "RUNNING_BALANCE_PARTITION_REVIEW", "severity": "review",
-                "route": "cumulative-sum-live-validation",
-                "message": f"{block.sheet}: the running balance is a CumulativeSum partitioned by {row_key} "
-                           f"and ordered by {period_key}; confirm the live query matches before relying on it.",
-                "evidence": [f"{block.sheet}!{get_column_letter(matrix_cols[0])}{block.first_row}"]})
+            if not terms:
+                first_value = ["f", "IF", ["op", "=", ["period"], ["d", periods[0].isoformat()]],
+                               opening, ["n", 0]]
+                columns.append({"name": measure, "type": "number",
+                                "expr": ["cumsum", first_value, row_key, period_key]})
+            else:
+                delta_name = "Net Change"
+                if delta_name in {c.name for c in table.columns} | {measure}:
+                    delta_name = f"{measure} Change"
+                columns.append({"name": delta_name, "type": "number", "expr": self.rebuild(terms)})
+                running_expr = ["op", "+", opening, ["cumsum", ["c", delta_name], row_key, period_key]]
+                columns.append({"name": measure, "type": "number", "expr": running_expr})
+                self.issues.append({
+                    "code": "RUNNING_BALANCE_PARTITION_REVIEW", "severity": "review",
+                    "route": "cumulative-sum-live-validation",
+                    "message": f"{block.sheet}: the running balance is a CumulativeSum partitioned by {row_key} "
+                               f"and ordered by {period_key}; confirm the live query matches before relying on it.",
+                    "evidence": [f"{block.sheet}!{get_column_letter(matrix_cols[0])}{block.first_row}"]})
         else:
             if len(matrix_cols) > 1 and norms[0] != norms[1]:
                 raise PlanDraftError(f"{_addr(block.sheet, block.first_row, first_col)}: first period formula "

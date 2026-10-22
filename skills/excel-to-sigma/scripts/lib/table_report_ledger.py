@@ -52,6 +52,21 @@ def _constant(ir):
     return not any(node[0] in NON_CONSTANT for node in trm.walk(ir))
 
 
+def _uses_row_labels(ws, sheet, lc, pcols, first_row, last_row):
+    """A row-label criterion identifies a keyed/summary grid, not a period ledger."""
+    for row in range(first_row, last_row + 1):
+        for col in pcols:
+            value = ws.cell(row, col).value
+            if not tr._is_formula(value):
+                continue
+            ast = tr._parse(value, sheet, tr._addr(sheet, row, col))
+            if tr._contains_ref_to(ast, lambda ref, row=row: bool(ref.address)
+                                   and (ref.sheet or sheet) == sheet
+                                   and tr._rc(ref) == (row, lc)):
+                return True
+    return False
+
+
 class Region:
     """One detected ledger: header row, label column, period columns, optional total column."""
 
@@ -102,6 +117,8 @@ def find_ledgers(reg):
                     if blank >= 2:
                         break
                 r += 1
+            if _uses_row_labels(ws, ws.title, lc, [k for k, _ in run], hr + 1, last):
+                continue
             found.append(Region(ws, hr, lc, run, tcol, total_label, hr + 1, last))
             used_until = last
     return found

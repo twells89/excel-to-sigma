@@ -254,11 +254,11 @@ def _from_cli():
     return Session(base, token, "sigma-cli", None, "cli", profile)
 
 
-def _provider_session(expected_base=None):
+def _provider_session(expected_base=None, auth_mode=None):
     if expected_base and not os.environ.get("SIGMA_BASE_URL"):
         os.environ["SIGMA_BASE_URL"] = expected_base
     try:
-        result = _gt.mint_token()
+        result = _gt.mint_token(auth_mode) if auth_mode else _gt.mint_token()
     except _gt.TokenProviderError as exc:
         raise SigmaAuthError(
             f"{exc}. Sign in with `eval \"$(bash scripts/browser-login.sh)\"`, run "
@@ -280,7 +280,10 @@ def _refresh(session):
     if session.source == "cli":
         session.token = _cli_token(session.profile)
         return session
-    fresh = _provider_session(expected_base=session.base_url)
+    if session.source != "provider":
+        raise SigmaAuthError(f"{session.source} tokens cannot be refreshed safely; replace the token "
+                             "through the same source and retry")
+    fresh = _provider_session(expected_base=session.base_url, auth_mode=session.method)
     session.token, session.method = fresh.token, fresh.method
     session.minted_at = fresh.minted_at
     return session

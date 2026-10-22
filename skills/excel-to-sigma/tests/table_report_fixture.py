@@ -235,24 +235,26 @@ FLOWS = {  # (item, week index) -> (in, out)
 }
 
 
-def build_stock(path, running=True, sparse=False):
+def build_stock(path, running=True, sparse=False, periods=None):
     """Keyed grid: item x week, running balance (or a plain pick), MIN and a text flag.
 
     ``sparse`` omits one (item, week) row from the flows table (the grid cell is then 0 in Excel).
     """
+    periods = periods or WEEKS
     book = _Book()
     items = book.sheet("Items")
     book.table(items, "tblItem", ["Item", "Opening"], [[k, v] for k, v in ITEMS.items()])
     flows = book.sheet("Flows")
     book.table(flows, "tblFlow", ["Item", "Week", "In", "Out"],
-               [[item, WEEKS[w], FLOWS[(item, w)][0], FLOWS[(item, w)][1]] for item in ITEMS for w in range(3)
+               [[item, periods[w], FLOWS[(item, w)][0], FLOWS[(item, w)][1]] for item in ITEMS for w in range(3)
                 if not (sparse and (item, w) == ("B", 1))])
     bal = book.sheet("Balance")
     bal["A1"] = "Projected balance"
     bal.cell(3, 1, "Item")
-    for c, week in enumerate(WEEKS, 2):
+    for c, week in enumerate(periods, 2):
         bal.cell(3, c, week)
-        bal.cell(3, c).number_format = DATE_FORMAT
+        if isinstance(week, date):
+            bal.cell(3, c).number_format = DATE_FORMAT
     bal.cell(3, 5, "Low")
     bal.cell(3, 6, "Short?")
     for r, item in enumerate(ITEMS, 4):
@@ -263,7 +265,14 @@ def build_stock(path, running=True, sparse=False):
             sums = (f"SUMIFS(tblFlow[Out],tblFlow[Item],$A{r},tblFlow[Week],{col}$3)",
                     f"SUMIFS(tblFlow[In],tblFlow[Item],$A{r},tblFlow[Week],{col}$3)")
             inflow, outflow = (0, 0) if sparse and (item, w) == ("B", 1) else FLOWS[(item, w)]
-            if running:
+            if running == "carry":
+                if w == 0:
+                    formula = f"={sums[1]}"
+                    value = inflow
+                else:
+                    formula = f"={get_column_letter(1 + w)}{r}"
+                    value = prev
+            elif running:
                 if w == 0:
                     formula = f"=INDEX(tblItem[Opening],MATCH($A{r},tblItem[Item],0))-{sums[0]}+{sums[1]}"
                     value = ITEMS[item] - outflow + inflow

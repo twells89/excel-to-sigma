@@ -403,6 +403,14 @@ class TestDraftBoundaries(Workdir):
 
 # --------------------------------------------------------------------------- keyed grids
 class TestKeyedGrid(Workdir):
+    def test_integer_period_headers_fall_through_to_a_summary_grid(self):
+        _, plan, _ = self.drafted(fx.build_stock, "years", running=False,
+                                  periods=[2024, 2025, 2026])
+        self.assertNotIn("ledger", [f["kind"] for f in plan["frames"]])
+        summary = next(f for f in plan["frames"] if f["kind"] == "summary")
+        rows = {r["Item"]: r for r in trm.compute(plan).frame_rows(summary["id"])}
+        self.assertEqual([rows["A"][str(year)] for year in (2024, 2025, 2026)], [0, 40, 0])
+
     def test_running_balance_becomes_opening_plus_cumulative_sum(self):
         _, plan, info = self.drafted(fx.build_stock, "stock")
         keyed = next(f for f in plan["frames"] if f["kind"] == "keyed")
@@ -444,6 +452,17 @@ class TestKeyedGrid(Workdir):
         self.assertEqual([c["name"] for c in keyed["columns"]], ["Projected balance"])
         self.assertEqual(keyed["columns"][0]["expr"], ["c", "In"])
         self.assertNotIn("RUNNING_BALANCE_PARTITION_REVIEW", info["reviewIssues"])
+
+    def test_a_bare_carry_forward_reuses_the_opening_value(self):
+        _, plan, info = self.drafted(fx.build_stock, "carry", running="carry")
+        keyed = next(f for f in plan["frames"] if f["kind"] == "keyed")
+        self.assertEqual([c["name"] for c in keyed["columns"]], ["Projected balance"])
+        self.assertEqual(keyed["columns"][0]["expr"],
+                         ["cumsum", ["f", "IF", ["op", "=", ["period"], ["d", "2026-03-02"]],
+                                     ["c", "In"], ["n", 0]], "Item", "Week"])
+        self.assertNotIn("RUNNING_BALANCE_PARTITION_REVIEW", info["reviewIssues"])
+        rows = trm.compute(plan).frame_rows(keyed["id"])
+        self.assertEqual([r["Projected balance"] for r in rows if r["Item"] == "A"], [0, 0, 0])
 
     def test_a_sparse_grid_without_a_spine_is_refused(self):
         path = self.dir / "sparse.xlsx"
