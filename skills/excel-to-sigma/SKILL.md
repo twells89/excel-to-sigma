@@ -155,13 +155,25 @@ the UI. **Don't build a read-only model and call it a migration.**
 ## Prerequisites
 
 ### Sigma access
+Sign in with OAuth first; client credentials are only the unattended fallback. Run
+these from the skill directory. Every Sigma-calling script resolves auth through
+`scripts/lib/sigma_auth.py`:
+
 ```bash
-# neutral cred file written by the sigma-migration setup (see refs/input-tables.md)
-bash -c 'source ~/.sigma-migration/env; TOKEN=$(curl -s -X POST "$SIGMA_BASE_URL/v2/auth/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=$SIGMA_CLIENT_ID&client_secret=$SIGMA_CLIENT_SECRET" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)[\"access_token\"])"); <cmd>'
+export SIGMA_BASE_URL='https://<your-sigma-api-host>'   # e.g. https://aws-api.sigmacomputing.com
+eval "$(bash scripts/browser-login.sh)"                  # browser OAuth (PKCE); refresh token stays in the OS keychain
+# or, with the Sigma CLI:  sigma auth login -p <name>   then pass --sigma-profile <name> (or SIGMA_CLI_PROFILE=<name>)
+python scripts/build-forecast-model.py plan.json --post --sigma-profile <name>   # example
+python scripts/get_token.py --workdir <dir>              # shell-neutral auth.json handoff (0600)
 ```
+Resolution order: `SIGMA_API_TOKEN` (+ `SIGMA_BASE_URL`) in the environment, then
+`<SIGMA_WORKDIR>/auth.json` / `./auth.json`, then the Sigma CLI profile
+(`--sigma-profile` / `SIGMA_CLI_PROFILE`), then the provider (`get_token.py`: keychain
+browser session, then `SIGMA_CLIENT_ID`/`SIGMA_CLIENT_SECRET` from the environment or
+`~/.sigma-migration/env`). Tokens last ~1h: they refresh after 50 minutes when the mint
+time is known and once on a 401. Details: `scripts/AUTH_RUNTIME.md`,
+`refs/browser-oauth-login.md`.
+
 The **data-entry half requires a write-enabled connection** (input tables write
 back to a `SIGDS_` schema). Confirm via `GET /v2/connections` → `writeAccess: true`.
 Verified write connection on tj-wells-1989: `cb2f5180-…` (Snowflake ymb68310).
