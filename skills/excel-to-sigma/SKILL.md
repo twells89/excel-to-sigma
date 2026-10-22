@@ -17,26 +17,61 @@ description: >-
 > model reading `FROM` that view → section rollups — was proven with **exact
 > parity** on a representative 540-row forecast model. The read/output half (DM +
 > workbook from a landed seed) was validated earlier (2026-06-03). The discovery
-> + formula-translation layer is designed and spiked, not yet a one-shot
-> converter. Complex-workbook support means **inventory + explicit routing +
-> parity**, not a promise that arbitrary Excel programs convert automatically.
+> + formula-translation layer is designed and spiked, not yet a general one-shot
+> converter; the cell-drawn actuals + driver-growth forecast archetype is the
+> exception (router, plan drafter, builder with source-bound local parity; shapes
+> outside it fail loudly). Complex-workbook support means **inventory + explicit
+> routing + parity**, not a promise that arbitrary Excel programs convert automatically.
 
-**Read ALL of the following before replying or taking any action:**
-- `refs/coverage-contract.md` — the fail-loud contract and hard completion gates for complex workbooks.
-- `refs/code-rep-capabilities.md` — current workbook `contents` API, Actions, Python, stored procedures, validations, and automation.
-- `refs/input-tables.md` — the validated input-table workflow + the API-vs-UI split. **This is the crown jewel of the skill: the source-swap goes through a warehouse view, NOT a direct DM source binding.**
-- `refs/excel-translation.md` — the translation surface, the formal-Table-only MVP rule, and what "formula translation" actually means here (grain selection, not business logic).
-- `refs/sigma-build-gotchas.md` — the hard-won Sigma spec rules (SQL element formula prefix, DM POST envelope, current workbook `contents` lifecycle, element-name/ID reassignment, publish gate).
-- `refs/macro-handling.md` — `.xlsm` VBA: extract (olevba) → classify by intent → route → **STOP/flag gate**. Read whenever the file is macro-enabled.
-- `refs/model-taxonomy.md` — **cell-level model classification** (actual / driver-grown / manual / dependency link / derived) + the architecture **decision tree** + intent questions. Read for any "report drawn in cells" / planning model (no formal Table).
-- `refs/forecast-recipes.md` — the proven Sigma spec patterns (closed-form growth, `Coalesce` override, `union` combine, Actual/Forecast pivot grouping, hidden plumbing page, layout/input-table gotchas).
-- `refs/forecast-scenario.md` — read for Forecast `SaveScenario_Click` completion: its reviewed 14/8 audit-schema receipt, versioned nullable-name policy, retained capture CLI, disabled Mark/Clear proposal, and strict production gate.
-- `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
-- `refs/presentation-migration.md` — source-bound native charts, validation, conditional formatting, semantic formats, three-view layout, ordinary business inputs, and repeat-safe full-contents integration.
-- `refs/source-blank-validation.md` — version 2 raw XML and declared blank-rule classification, with source route enforcement kept separate from native runtime proof.
-- `refs/workbook-expression-context.md` — source-bound shared formula AST, local verification, explicit bindings, and unresolved dynamic calculation limits.
-- `refs/acceptance-and-promotion.md` — source-bound secondary workflow repairs, mandatory five-fixture actual evidence, persisted outcomes, original-URL promotion and row/document/SDK rollback.
-- The `sigma-workbooks` companion skill, if installed, plus the Sigma OpenAPI — canonical workbook spec. Find it through the agent's skill loader; use `refs/sigma-build-gotchas.md` when it is unavailable.
+**Start here — do not read every ref.** Run the router first; it picks the archetype
+and names the refs, decisions and commands for this workbook:
+
+```bash
+python scripts/migrate.py plan <file.xlsx|.xlsm> --out-dir <workdir>
+```
+
+It runs the audit, discovery and (for macro files) macro classification, writes
+`migration-audit.json`, `discovery.json` and `review.template.json` to `<workdir>`,
+and prints JSON: `auditStatus`, `archetype`, `readRefs`, `beforePost`, `askUser`,
+`nextCommands`, `userHandoffs`, `routeReason`. Exit code 2 means `BLOCKED`. Read the refs
+it lists, ask the user the `askUser` questions, then run the `nextCommands` in order.
+`forecast` is named only when the plan drafter accepts the workbook's shape; a
+SUMIFS/driver workbook it rejects routes to `cell-model` (source inventory, then a
+source-specific Sigma MCP build) with the drafter's reason in `routeReason`.
+
+| When | Read |
+|---|---|
+| Always | `refs/sigma-build-gotchas.md` — SQL element formula prefix, DM POST envelope, `contents` lifecycle, id reassignment, publish gate |
+| Before `--post` or declaring completion | `refs/coverage-contract.md` — the fail-loud contract and hard completion gates |
+| Formal Table to input table (the data-entry path) | `refs/input-tables.md` (the source-swap goes through a warehouse view, not a direct DM binding), `refs/excel-translation.md` |
+| Cell-drawn planning / forecast model (no formal Table) | `refs/model-taxonomy.md`, `refs/forecast-recipes.md` |
+| Broker / FactSet research model, or a fleet off one template | `refs/research-recipes.md`, `refs/research-template-coa.md` |
+| `.xlsm` / macros | `refs/macro-handling.md` |
+| Charts, validation, conditional formatting, formats to rebuild | `refs/presentation-migration.md`; `refs/generic-source-presentation.md` for the generic presentation inventory |
+| Live Sigma API capability questions (Actions, Python, procedures) | `refs/code-rep-capabilities.md` |
+| Source cell/formula inventory or formula-level native calculations | `refs/source-workbook-model.md`, `refs/workbook-expression-context.md`, `refs/source-inputs-and-reshape.md`, `refs/native-calculations.md` |
+
+**Maintainer-only — skip for a customer migration.** These document fixture
+acceptance machinery and reviewed canary packets, not the migration path:
+`refs/acceptance-and-promotion.md`, `refs/forecast-scenario.md`,
+`refs/forecast-snapshot.md`, `refs/custom-ports.md`, `refs/source-blank-validation.md`,
+`refs/regional-grouped-canary.md`. Read one only when the user names that
+workflow or you are changing it.
+
+**Draft vs production.** Builds without `--post` are *draft mode*: local specs and
+a local parity check, with audit review issues reported as pending
+(`DRAFT MODE: review pending for ...`) instead of blocking. `--post` is
+*production*: it keeps the full source-bound `--review-dispositions` contract
+(Phase 0). `BLOCKED` stops both. Never fabricate `verified: true` to get past a
+draft; draft mode exists so you do not need to.
+
+**UI steps.** When the work reaches a step only the user can do in the Sigma UI
+(CSV paste, Publish, Create warehouse view), collect every pending UI action into
+one checklist, give it to the user, and stop. Do not interleave them.
+
+The `sigma-workbooks` companion skill, if installed, plus the Sigma OpenAPI, is the
+canonical workbook spec; find it through the agent's skill loader, and use
+`refs/sigma-build-gotchas.md` when it is unavailable.
 
 ---
 
@@ -147,10 +182,13 @@ python scripts/audit-xlsx.py <file.xlsx|file.xlsm> --out migration-audit.json
 python scripts/audit-openapi.py --out sigma-code-rep-audit.json
 ```
 
-`AUTO` can proceed. `REVIEW_REQUIRED` must have every issue routed and verified;
-`BLOCKED` cannot proceed until its blocker is removed. `--allow-review` is only
-for inventory/CI smoke, never for declaring a migration complete. Then run
-`scripts/xlsx-discover.py` for the model/grain-specific report.
+`AUTO` can proceed. `REVIEW_REQUIRED` is reported, not fatal: `audit-xlsx.py` exits 0
+for it (pass `--strict` to exit 1 in a production gate) and exits 2 for `BLOCKED`.
+Local/draft builds proceed with the review issues pending; every issue must be
+routed, implemented, and verified before `--post` or declaring the migration
+complete. `BLOCKED` cannot proceed until its blocker is removed. Then run
+`scripts/xlsx-discover.py` for the model/grain-specific report (`migrate.py plan`
+runs both).
 
 For a source-bound cell, table, and formula-dependency inventory, run
 `python scripts/source-workbook.py SOURCE.xlsx --out source-model.json` and read
@@ -161,8 +199,12 @@ production-write gates.
 The whole-workbook Excel migration entrypoints—standalone canonical inference,
 batch conversion, the direct research-workbook builder, and the source-bound
 forecast/research plan builders—re-run this audit against the source bytes.
-For `REVIEW_REQUIRED`, pass `--review-dispositions review.json`; the only accepted
-format is source-bound and issue-specific:
+Production (`--post`, and batch conversion) requires, for `REVIEW_REQUIRED`,
+`--review-dispositions review.json`; the only accepted format is source-bound and
+issue-specific (`migrate.py plan` writes a `review.template.json` to fill in).
+Local forecast/research plan builds without `--post`, and `infer-canonical-formulas.py` /
+`build-research-workbook.py` with the opt-in `--draft` flag, run in draft mode and
+only report the pending codes:
 
 ```json
 {
@@ -223,6 +265,19 @@ source cell in the plan and recompute it. Do not replace it with a flat constant
 or a cached formula result. A flat forecast is a separate, explicit policy that
 needs source evidence; the syntax `=prior` alone does not prove one.
 
+**Forecast path:** `migrate.py plan` -> `draft-forecast-plan.py` -> dry-run
+`build-forecast-model.py` -> `build-forecast-model.py --post`. The drafter derives the
+plan from the workbook, fails loudly on any shape it does not recognise (sheet, month
+row, sections, a mixed or unparsable forecast row, missing GL columns), and recomputes
+every line-month and GL month against Excel's cached values before writing it. It
+raises `FLAT_CARRY_POLICY` for `=prior` lines; the dry run reports it as pending and
+`--post` needs a source-bound disposition. The builder's local parity check compares
+the plan to `parityTargets` and exits 1 on any mismatch. Workbook line charts whose
+series are Total Revenue / Gross Profit / EBITDA / Net Income by month or quarter are
+recorded as `sourceCharts` (every point checked against cached values) and the builder
+emits a matching Sigma line chart; the drafter lists any other chart as not mapped, to
+rebuild by hand before dispositioning `CHARTS_PRESENT`.
+
 Present the detected map and confirm edit intent, source freshness, and formula
 dependencies before selecting a build. The live-actuals/driver-growth union in
 `refs/forecast-recipes.md` applies only when those source roles and grain are
@@ -241,14 +296,15 @@ ranges) routes to the **research archetype**, NOT the FP&A forecast path:
 
 ```bash
 python scripts/infer-canonical-formulas.py <file.xlsx> --sheet="FY results" \
-       --first-row=7 --last-row=<end> --out plan.json \
-       [--review-dispositions review.json]
+       --first-row=7 --last-row=<end> --out plan.json --draft
+python scripts/build-research-model.py plan.json --conn <writeConn> --folder <id>   # dry run
 python scripts/build-research-model.py plan.json --conn <writeConn> --folder <id> \
-       [--review-dispositions review.json] [--post]
+       --review-dispositions review.json --post
 ```
 
-The standalone inference CLI runs the source gate before parsing formulas; use the same
-source-bound review file for inference and build. `infer-canonical-formulas.py` then extracts
+The standalone inference CLI runs the source gate before parsing formulas; `--draft`
+reports pending review issues instead of failing (it is strict by default). Use the
+same source-bound review file for production inference and build. `infer-canonical-formulas.py` then extracts
 the hard-coded grid + one canonical formula per derived line, records the absolute source
 path and SHA256, breaks plug-cycles, and identifies
 formula cells that need a cached-value fallback. Cached fallbacks can preserve displayed

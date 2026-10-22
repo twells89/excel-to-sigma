@@ -17,10 +17,13 @@ def main(argv=None):
     parser.add_argument("workbook")
     parser.add_argument("--out", help="write the complete JSON routing manifest")
     parser.add_argument(
-        "--allow-review",
+        "--strict",
         action="store_true",
-        help="return zero for REVIEW_REQUIRED (BLOCKED still fails)",
+        help="exit 1 for REVIEW_REQUIRED (production gate); default exits 0 so review "
+             "issues are reported, not fatal",
     )
+    # Kept for CI and older docs; REVIEW_REQUIRED already exits 0 unless --strict.
+    parser.add_argument("--allow-review", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     report = audit_workbook(args.workbook)
@@ -37,7 +40,7 @@ def main(argv=None):
     )
     if report["status"] == "BLOCKED":
         return 2
-    if report["status"] == "REVIEW_REQUIRED" and not args.allow_review:
+    if report["status"] == "REVIEW_REQUIRED" and args.strict:
         return 1
     return 0
 
