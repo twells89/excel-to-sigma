@@ -168,7 +168,8 @@ def build_pnl(path, *, lines=None, mutate=None, cached_overrides=None, gl_sheet=
         pnl.cell(row, 1, label)
         for month_index in range(len(MONTHS)):
             col = get_column_letter(2 + month_index)
-            formula = "=" + "".join(f"{s}{col}{r}" for s, r in zip(signs, expr_rows)).lstrip("+")
+            formula = "=" + "".join(f"{s}{col}{r}" for s, r in zip(signs, expr_rows)
+                                    if r is not None).lstrip("+")
             put(pnl, f"{col}{row}", formula, series[month_index])
         put(pnl, f"{get_column_letter(fy_col)}{row}", f"=SUM(B{row}:{get_column_letter(fy_col - 1)}{row})", sum(series))
         row_here = row
@@ -196,3 +197,214 @@ def build_pnl(path, *, lines=None, mutate=None, cached_overrides=None, gl_sheet=
     wb.save(path)
     _inject_cached_values(path, cache, wb.sheetnames)
     return {"targets": expected, "values": values, "gl_last": gl_last, "driver_row": driver_row}
+
+
+# ---------------------------------------------------------------------------
+# Quarterly budget workbook: discovered sections, quarter labels, year-over-year,
+# percent-of-total, alternative growth syntax, an external-link cell, a zero actual
+# line, ratio rows and an FY column that covers only some periods.
+# ---------------------------------------------------------------------------
+QUARTERS = ["Q1 FY25", "Q2 FY25", "Q3 FY25", "Q4 FY25", "Q1 FY26 Bud", "Q2 FY26 Bud"]
+Q_ACTUAL = 4
+Q_FY_FIRST = 2   # the FY column sums the last four periods (index 2..5)
+
+# (section, [(label, kind, parameter, four actual amounts)])
+#   kinds: yoy(rate) | growth_alt(rate) | pct(rate, of section) | flat | manual(list of 2)
+#          | external(list of 2) | zero(list of 2 forecast values via literal)
+QUARTERLY_SECTIONS = [
+    ("Net Sales", [
+        ("In-Store", "yoy", 0.04, [1000.0, 1100.0, 1200.0, 1300.0]),
+        ("Online", "growth_alt", 0.10, [400.0, 420.0, 450.0, 480.0]),
+    ]),
+    ("COGS", [
+        ("Merchandise", "pct", (0.6, "Net Sales"), [900.0, 950.0, 1000.0, 1050.0]),
+        ("Shrink", "pct", (0.02, "Net Sales"), [30.0, 31.0, 33.0, 35.0]),
+    ]),
+    ("SG&A", [
+        ("Payroll", "growth_alt", 0.02, [200.0, 204.0, 208.0, 212.0]),
+        ("Marketing", "manual", [90.0, 95.0], [80.0, 85.0, 88.0, 92.0]),
+        ("Allocation", "external", [61.0, 64.0], [0.0, 0.0, 0.0, 0.0]),
+    ]),
+    ("Other Income/Expense", [
+        ("Interest", "manual", [-5.0, -5.0], [-8.0, -8.0, -7.0, -6.0]),
+        ("Depreciation", "flat", None, [45.0, 45.0, 45.0, 45.0]),
+    ]),
+]
+QUARTERLY_DERIVED = [
+    ("Gross Margin", "{Net Sales}-{COGS}"),
+    ("Gross Margin %", "IF({Net Sales}=0,0,{Gross Margin}/{Net Sales})"),
+    ("Operating Profit", "{Gross Margin}-{SG&A}"),
+    ("Pre-tax Income", "{Operating Profit}-{Other Income/Expense}"),
+]
+
+
+def build_quarterly(path, *, sections=None, derived=None, mutate=None, cached_overrides=None,
+                    labels=None):
+    """Write the quarterly fixture; returns ``{"targets": {...}, "values": {...}}``.
+
+    ``targets`` are the FY-column values by row label (what the drafter should emit).
+    """
+    path = Path(path)
+    sections = sections or QUARTERLY_SECTIONS
+    derived = derived if derived is not None else QUARTERLY_DERIVED
+    labels = labels or QUARTERS
+    n = len(labels)
+    wb = Workbook()
+    rpt = wb.active
+    rpt.title = "Budget"
+    gl = wb.create_sheet("GL Detail")
+    drivers = wb.create_sheet("Drivers")
+    cache = {}
+
+    def put(ws, coord, formula, value):
+        ws[coord] = formula
+        cache[(ws.title, coord)] = float(value)
+
+    cols = [get_column_letter(2 + i) for i in range(n)]
+    fy = get_column_letter(2 + n)
+
+    # drivers: one rate per growth / yoy / pct line
+    drivers["A1"] = "Budget drivers"
+    drivers["A3"], drivers["B3"], drivers["C3"] = "Driver", "Value", "Notes"
+    driver_row = {}
+    for _, members in sections:
+        for label, kind, param, _ in members:
+            if kind in ("yoy", "growth_alt", "pct"):
+                row = 4 + len(driver_row)
+                driver_row[label] = row
+                drivers.cell(row, 1, f"{label} driver")
+                drivers.cell(row, 2, param[0] if kind == "pct" else param)
+
+    # GL
+    gl["A1"], gl["B1"], gl["C1"], gl["D1"] = "Period", "Store", "Account", "Amount"
+    gl_row = 2
+    actual = {}
+    for _, members in sections:
+        for label, kind, param, amounts in members:
+            for index, amount in enumerate(amounts):
+                if amount == 0:
+                    continue
+                half = round(amount / 2, 2)
+                for part, value in enumerate((half, amount - half)):
+                    gl.cell(gl_row, 1, labels[index])
+                    gl.cell(gl_row, 2, f"Store {part}")
+                    gl.cell(gl_row, 3, label)
+                    gl.cell(gl_row, 4, value)
+                    gl_row += 1
+            actual[label] = list(amounts)
+
+    rpt["A1"] = "Quarterly budget"
+    for i, text in enumerate(labels):
+        rpt.cell(4, 2 + i, text)
+    rpt.cell(4, 2 + n, "FY26 Total")
+    rpt.cell(4, 3 + n, "YoY %")           # an unmodelled trailing column
+    values, totals, rows = {}, {}, {}
+    row = 6
+    for name, members in sections:
+        rpt.cell(row, 1, name)
+        row += 1
+        first = row
+        for label, kind, param, amounts in members:
+            rpt.cell(row, 1, label)
+            rows[label] = row
+            series = list(amounts)
+            for i in range(Q_ACTUAL):
+                coord = f"{cols[i]}{row}"
+                if amounts[i] == 0 and kind == "external":
+                    put(rpt, coord, "=0", 0)
+                else:
+                    put(rpt, coord,
+                        f"=SUMIFS('GL Detail'!$D:$D,'GL Detail'!$C:$C,$A{row},'GL Detail'!$A:$A,{cols[i]}$4)",
+                        amounts[i])
+            values[label] = series
+            row += 1
+        last = row - 1
+        rpt.cell(row, 1, f"Total {name}")
+        totals[name] = row
+        rows[f"Total {name}"] = row
+        row += 2
+    # forecast cells need the section totals of the same column (pct), so go column by column
+    drv = lambda label: f"Drivers!$B${driver_row[label]}"
+    for i in range(Q_ACTUAL, n):
+        col, prev = cols[i], cols[i - 1]
+        for _, members in sections:
+            for label, kind, param, amounts in members:
+                r = rows[label]
+                j = i - Q_ACTUAL
+                if kind == "yoy":
+                    base = values[label][i - 4]
+                    value = base * (1 + param)
+                    put(rpt, f"{col}{r}", f"={cols[i - 4]}{r}*(1+{drv(label)})", value)
+                elif kind == "growth_alt":
+                    value = values[label][-1] * (1 + param)
+                    put(rpt, f"{col}{r}", f"={prev}{r}+{prev}{r}*{drv(label)}", value)
+                elif kind == "flat":
+                    value = values[label][-1]
+                    put(rpt, f"{col}{r}", f"={prev}{r}", value)
+                elif kind == "manual":
+                    value = param[j]
+                    rpt[f"{col}{r}"] = value
+                elif kind == "external":
+                    value = param[j]
+                    put(rpt, f"{col}{r}", f"='[Alloc.xlsx]Alloc'!${'CD'[j]}$4", value)
+                else:
+                    continue  # pct lines are filled in below, once the totals exist
+                values[label].append(value)
+        # percent-of-total lines read the total of the base section in the same column
+        for _, members in sections:
+            for label, kind, param, amounts in members:
+                if kind == "pct":
+                    base_total = sum(values[m[0]][i] for s, ms in sections if s == param[1] for m in ms
+                                     if m[1] != "pct")
+                    value = base_total * param[0]
+                    put(rpt, f"{col}{rows[label]}", f"={col}{totals[param[1]]}*{drv(label)}", value)
+                    values[label].append(value)
+    # totals + derived rows, per period
+    sec_values = {}
+    for name, members in sections:
+        r = totals[name]
+        first, last = rows[members[0][0]], rows[members[-1][0]]
+        sec_values[name] = [sum(values[m[0]][i] for m in members) for i in range(n)]
+        for i in range(n):
+            put(rpt, f"{cols[i]}{r}", f"=SUM({cols[i]}{first}:{cols[i]}{last})", sec_values[name][i])
+    row = max(totals.values()) + 2
+    derived_values = {}
+    import re as _re
+    for label, template in derived:
+        rpt.cell(row, 1, label)
+        rows[label] = row
+        series = []
+        for i in range(n):
+            def ref(found, i=i):
+                key = found.group(1)
+                return f"{cols[i]}{totals[key] if key in totals else rows[key]}"
+
+            def val(found, i=i):
+                key = found.group(1)
+                return repr(sec_values[key][i] if key in sec_values else derived_values[key][i])
+            formula = "=" + _re.sub(r"\{([^}]+)\}", ref, template)
+            python = _re.sub(r"(?<![<>])=", "==", _re.sub(r"\{([^}]+)\}", val, template)).replace("IF(", "_if(")
+            result = eval(python, {"_if": lambda c, a, b: a if c else b})
+            series.append(float(result))
+            put(rpt, f"{cols[i]}{row}", formula, series[-1])
+        derived_values[label] = series
+        row += 1
+    # FY column over the last four periods, per line / total / derived row
+    fy_cols = f"{cols[Q_FY_FIRST]}{{r}}:{cols[-1]}{{r}}"
+    targets = {}
+    for label, r in rows.items():
+        series = (values.get(label) or derived_values.get(label)
+                  or (sec_values[label[6:]] if label.startswith("Total ") else None))
+        if label.endswith("%"):
+            continue
+        put(rpt, f"{fy}{r}", f"=SUM({fy_cols.format(r=r)})", sum(series[Q_FY_FIRST:]))
+        if label in derived_values or label.startswith("Total "):
+            targets[label] = sum(series[Q_FY_FIRST:])
+    if mutate:
+        mutate(rpt, gl, drivers)
+    for key, value in (cached_overrides or {}).items():
+        cache[key] = float(value)
+    wb.save(path)
+    _inject_cached_values(path, cache, wb.sheetnames)
+    return {"targets": targets, "values": values, "sections": sec_values, "derived": derived_values,
+            "rows": rows}

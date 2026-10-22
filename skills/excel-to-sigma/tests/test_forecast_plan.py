@@ -170,12 +170,6 @@ class TestReviewIssues(Base):
 
 
 class TestFailLoud(Base):
-    def test_unknown_section_lists_what_was_found(self):
-        def rename(pnl, gl, drivers):
-            pnl.cell(find_cell(pnl, "Below the Line"), 1, "Capex")
-        self.assert_fails(r"unsupported section 'Capex'.*Sections found: Revenue, Cost of Revenue, "
-                          r"Operating Expenses, Capex", mutate=rename)
-
     def test_cached_forecast_value_mismatch_names_the_cell(self):
         self.assert_fails(r"(?s)does not reproduce.*P&L!G5 \('Subscription', Jun-26\)",
                           cached_overrides={("P&L", "G5"): 9999.0})
@@ -209,16 +203,23 @@ class TestFailLoud(Base):
         kind, detail = _forecast_cell_kind(ws, 5, 7, "= D7 * (1 + 'Driver Assumptions'!$B$4)")
         self.assertEqual((kind, detail), ("growth", ("Driver Assumptions", "B", 4)))
 
-    def test_growth_from_a_non_adjacent_cell_fails(self):
-        def skip(pnl, gl, drivers):
-            for col in "DEF":
-                pnl[f"{col}5"] = f"=C5*(1+Drivers!$B$4)"
-        self.assert_fails(r"unrecognised forecast cell", mutate=skip)
+    def test_growth_reading_another_row_fails(self):
+        def wander(pnl, gl, drivers):
+            pnl["E5"] = "=E6*(1+Drivers!$B$4)"
+        self.assert_fails(r"P&L!E5 \('Subscription'\): unrecognised forecast cell", mutate=wander)
 
     def test_missing_gl_column_fails_naming_it(self):
         def rename(pnl, gl, drivers):
-            gl["E4"] = "Notes"
-        self.assert_fails(r"no header row maps all of.*missing vendor", mutate=rename)
+            gl["F4"] = "Value"
+        self.assert_fails(r"no header row maps all of period, line item, amount.*missing amount",
+                          mutate=rename)
+
+    def test_vendor_department_and_date_columns_are_optional(self):
+        def drop(pnl, gl, drivers):
+            gl["A4"], gl["D4"], gl["E4"] = "Posted", "Notes", "Memo"
+        plan, _, _ = self.draft(mutate=drop)
+        self.assertEqual((plan["actuals"][0]["date"], plan["actuals"][0]["dept"],
+                          plan["actuals"][0]["vendor"]), (None, "", ""))
 
     def test_gl_line_not_on_the_pnl_fails(self):
         def stray(pnl, gl, drivers):
@@ -315,7 +316,7 @@ class TestSourceCharts(Base):
     def test_chart_with_a_non_metric_series_is_left_for_review(self):
         plan, info, _ = self.draft(mutate=add_metric_chart(["Total Revenue", "Subscription"]))
         self.assertEqual(plan["sourceCharts"], [])
-        self.assertIn("not Total Revenue/Gross Profit/EBITDA/Net Income", info["unmappedCharts"][0])
+        self.assertIn("not a section total or amount row", info["unmappedCharts"][0])
 
     def test_chart_with_mid_span_months_is_left_for_review(self):
         plan, info, _ = self.draft(
@@ -336,9 +337,16 @@ class TestSourceCharts(Base):
         self.assertEqual(len(info["unmappedCharts"]), 1)
 
     def test_chart_values_that_disagree_with_the_plan_fail(self):
-        # Total rows are not line rows, so only the chart check reads this cache.
-        fixture.build_pnl(self.path, mutate=add_metric_chart(["Total Revenue"]),
-                          cached_overrides={("P&L", f"B{self._total_row()}"): 999999})
+        # The series label names Total Revenue but its values come from helper cells the
+        # plan does not verify as a row, so only the chart check can catch the disagreement.
+        def helper_values(pnl, gl, drivers):
+            for index in range(len(fixture.MONTHS)):
+                pnl.cell(2, 2 + index, 999999)
+            add_metric_chart(["Total Revenue"])(pnl, gl, drivers)
+            chart = pnl._charts[-1]
+            from openpyxl.chart.data_source import NumDataSource, NumRef
+            chart.series[0].val = NumDataSource(numRef=NumRef(f="'P&L'!$B$2:$G$2"))
+        fixture.build_pnl(self.path, mutate=helper_values)
         with self.assertRaisesRegex(PlanDraftError, r"chart .*'Revenue'"):
             draft_plan(self.path, intent="what-if", connection="conn", folder="fold")
 

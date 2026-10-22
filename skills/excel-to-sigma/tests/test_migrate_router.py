@@ -78,17 +78,32 @@ class TestRouter(unittest.TestCase):
         self.assertFalse((self.out / "review.template.json").exists())
 
     def test_sumifs_workbook_the_drafter_rejects_routes_to_cell_model(self):
-        # SUMIFS actuals but an unsupported section: the route must not name the drafter.
+        # SUMIFS actuals but a forecast formula the drafter cannot read: the route must not
+        # name the drafter.
         path = self.dir / "pnl.xlsx"
-        fixture.build_pnl(path, mutate=lambda pnl, gl, drivers: pnl.cell(4, 1, "Other Income"))
+
+        def odd_forecast(pnl, gl, drivers):
+            pnl["E5"] = "=D5*1.05"
+        fixture.build_pnl(path, mutate=odd_forecast)
         code, result = self.plan(path)
         self.assertEqual(code, 0)
         self.assertEqual(result["archetype"], "cell-model")
         self.assertIn("forecast drafter rejects the shape", result["routeReason"])
-        self.assertIn("unsupported section 'Other Income'", result["routeReason"])
+        self.assertIn("unrecognised forecast cell '=D5*1.05'", result["routeReason"])
         self.assertFalse(any("draft-forecast-plan.py" in c for c in result["nextCommands"]))
         self.assertIn("source-workbook.py", result["nextCommands"][0])
         self.assertIn("refs/source-workbook-model.md", result["readRefs"])
+
+    def test_quarterly_budget_with_discovered_sections_routes_to_the_drafter(self):
+        # 03 Retail Quarterly Budget: Net Sales / COGS / SG&A / Other sections, quarter
+        # headers, year-over-year and percent-of-sales forecasts, an external-link cell.
+        source = (Path(__file__).resolve().parent / "fixtures" / "broader-eight"
+                  / "03 Retail Quarterly Budget.xlsx")
+        code, result = self.plan(source)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "forecast")
+        self.assertIn("forecast drafter accepts this workbook: 10 lines", result["routeReason"])
+        self.assertIn("draft-forecast-plan.py", result["nextCommands"][0])
 
     def test_accepted_forecast_reports_the_drafter_shape(self):
         path = self.dir / "pnl.xlsx"
