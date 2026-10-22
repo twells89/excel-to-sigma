@@ -588,8 +588,10 @@ def evaluate(expression, resolver: Callable[[CellReference], object], *,
                 numbers = [value for value in _flatten(args) if _is_number(value)]
                 if not numbers: raise ExcelCalcError("#DIV/0!")
                 return sum(numbers) / len(numbers)
-            if node.name == "AND": return all(bool(value) for value in _flatten(args))
-            if node.name == "OR": return any(bool(value) for value in _flatten(args))
+            if node.name in ("AND", "OR"):
+                logical = [value for value in _flatten(args) if value is not None]
+                if not logical: raise ExcelCalcError("#VALUE!")
+                return (all if node.name == "AND" else any)(bool(value) for value in logical)
             if node.name == "MOD":
                 if args[1] == 0: raise ExcelCalcError("#DIV/0!")
                 return _numeric(args[0]) % _numeric(args[1])

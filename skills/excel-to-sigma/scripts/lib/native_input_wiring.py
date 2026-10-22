@@ -214,7 +214,8 @@ def business_native_wiring(architecture, workflow, extracted, legacy_fragments):
             if column['name'] == 'Weighted ACV':
                 column['formula'] = '[Probability] * [ACV]'
             elif column['name'] == 'Cycle Days':
-                column['formula'] = 'DateDiff("day", [Created Date], [Close Date])'
+                # Excel =C-B retains time fractions; DateDiff returns integer units.
+                column['formula'] = 'DateDiff("millisecond", [Created Date], [Close Date]) * 0.000000011574074074074074'
         result['elements'].append({
             'id': 'salesPipeline', 'name': 'Pipeline', 'kind': 'table',
             'source': {'kind': 'table', 'elementId': 'salesWithSettings'},

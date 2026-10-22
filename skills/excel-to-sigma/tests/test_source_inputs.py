@@ -513,6 +513,17 @@ class TestSourceInputs(SourceFixture):
         self.assertEqual(seed["orphans"], [])
         self.assertEqual(len(seed["unchanged"]), 2)
 
+    def test_queried_date_only_nonkey_matches_midnight_readback(self):
+        from datetime import datetime
+        plan = self.build()
+        rows = plan["sharedInputArchitecture"]["inputs"]["sales-entry"]["rows"]
+        current = [{**row, "When": datetime.fromisoformat(row["When"]),
+                    "Row ID": f"physical-{index}"}
+                   for index, row in enumerate(rows)]
+        seed = plan_source_seed(plan, "sales-entry", current, row_id_column="Row ID")
+        self.assertEqual(seed["conflicts"], [])
+        self.assertEqual(len(seed["unchanged"]), 2)
+
     def timestamp_key_plan(self, first="2026-01-01T08:45:12", second="2026-02-01T08:45:12"):
         from openpyxl import load_workbook
         wb = load_workbook(self.source)
