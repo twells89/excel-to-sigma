@@ -142,8 +142,8 @@ class TestRouter(unittest.TestCase):
 
     def test_the_broader_eight_table_workbooks_route_to_table_report(self):
         fixtures = ROOT / "tests" / "fixtures" / "broader-eight"
-        for name, tables in (("04 Sales Pipeline Forecast.xlsx", 3), ("07 Headcount and Opex Plan.xlsx", 2),
-                             ("08 Inventory Replenishment Plan.xlsm", 3)):
+        for name, tables in (("04 Sales Pipeline Forecast.xlsx", 3), ("06 13-Week Cash Flow.xlsx", 4),
+                             ("07 Headcount and Opex Plan.xlsx", 2), ("08 Inventory Replenishment Plan.xlsm", 3)):
             code, result = self.plan(fixtures / name)
             self.assertEqual(result["archetype"], "table-report", name)
             self.assertIn(f"{tables} table(s)", result["routeReason"])
@@ -151,6 +151,18 @@ class TestRouter(unittest.TestCase):
             self.assertIn("forecast drafter rejects the shape", result["routeReason"])
         _, inventory = self.plan(fixtures / "08 Inventory Replenishment Plan.xlsm")
         self.assertEqual([m["status"] for m in inventory["macros"]], ["AUTO"])  # macro-classify no longer crashes
+
+    def test_the_13_week_cash_flow_routes_to_table_report_instead_of_cell_model(self):
+        code, result = self.plan(ROOT / "tests" / "fixtures" / "broader-eight" / "06 13-Week Cash Flow.xlsx")
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "table-report")
+        self.assertIn("table-report drafter accepts this workbook: 4 table(s), 3 frames, 166 source cells verified",
+                      result["routeReason"])
+        self.assertIn("forecast drafter rejects the shape", result["routeReason"])   # kept as context only
+        self.assertIn("draft-table-report.py", result["nextCommands"][0])
+        self.assertFalse(any("source-workbook.py" in c for c in result["nextCommands"]))
+        self.assertIn("Set the selected scenario and other parameters in the Parameters input table",
+                      " ".join(result["userHandoffs"]))
 
     def test_a_forecast_workbook_is_still_routed_to_the_forecast_drafter(self):
         code, result = self.plan(ROOT / "tests" / "fixtures" / "broader-eight" / "02 SaaS Driver Forecast FY26.xlsx")

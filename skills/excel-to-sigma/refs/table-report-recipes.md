@@ -1,7 +1,7 @@
 # Table-report recipes (formal Tables + formula grids)
 
 For workbooks whose outputs are formulas over **formal Excel Tables** - an inventory
-projection, a sales pipeline by owner, a headcount plan - and that are neither a
+projection, a sales pipeline by owner, a headcount plan, a 13-week cash flow - and that are neither a
 `forecast` P&L nor a plain data-entry table. `scripts/migrate.py plan` names this route
 only when `draft-table-report.py` accepts the workbook, i.e. when it can reproduce **every
 formula cell** from the table data. Pair with `refs/sigma-build-gotchas.md` and
@@ -30,6 +30,40 @@ build-table-report.py plan.json --post --review-dispositions review.json
 | **keyed** grid: labels x date headers, cells `SUMIFS(tbl[V], tbl[RowKey], $A4, tbl[PeriodKey], B$3)` | the table itself is the long frame (one row per label x period) |
 | running balance `prev -/+ SUMIFS terms`, opening term in the first column | `Opening + CumulativeSum([Net Change])` partitioned by the row key (the element is grouped by the key), ordered by the period |
 | `MIN/MAX/SUM(B4:M4)` over the period columns | group-level `Min/Max/Sum` of the measure; one-key summaries over a keyed frame become that grouping's calculations |
+| **period ledger**: line items down, period ordinals `1..N` across a header row (`Week \| 1 \| 2 ... \| 13-Wk Total`), see the section below | ONE table with a row per period (the spine) and a calculated column per Excel row, in the sheet's row order; a one-row grouped total table |
+
+## Period ledgers (13-week cash flow)
+
+`find_ledgers` (`lib/table_report_ledger.py`) runs before the grid finders: a header row of >= 3 consecutive
+integers after a text label, an optional text total header after them, and the rows below it (two blank rows
+end the ledger). Section headings (a label alone on a row) are display only. Each row is one of:
+
+| Excel row | Plan column (IR) | Sigma |
+|---|---|---|
+| typed numbers (rent, debt service) | a column of the editable spine table `<Sheet> Periods` | `Coalesce([<Sheet> Periods/Rent], 0)` |
+| `SUMIFS(tbl[V], tbl[Period], B$4 [, tbl[C], "lit"])` | `lk` into a hidden grouped **helper** frame (`tbl by Period`, `V` summed, `0` default) | `Coalesce(Lookup([tbl by Period/V], [Week], [tbl by Period/Period]), 0)` |
+| `... * INDIRECT("Coll_"&Scenario)` | `lk` into the scenario table built from the named-range family `Coll_*` keyed by the selected-scenario text parameter | `Lookup([<Rate> by Scenario/<Rate>], Lookup([Parameters/Text Value], "Scenario", [Parameters/Parameter]), [<Rate> by Scenario/Scenario])` |
+| seed, then `=prev*(1+rate)` | closed form `seed*(1+rate)^(period-first)` | `seed * Power((1 + rate), ([Week] - 1))` |
+| date seed, then `=prev+7` | `ADDDAYS(seed, 7*(period-first))` from a **date** parameter | `DateAdd("day", (7 * ([Week] - 1)), Lookup([Parameters/Date Value], ...))` |
+| `IF(MOD(B$4,2)=0, amount, 0)` (cadence) | generic `IF`/`MOD` over the period | `If((Mod([Week], 2) = 0), amount, 0)` |
+| `=B10+B11`, `=SUM(B15:B18)`, `=B23-MinCash` | same-period column arithmetic; a named single cell is a parameter | `([Payroll] + [Rent] + ...)` |
+| `Beginning = prev Ending` (first = `OpeningCash`) with `Ending = Beginning + Net` | `Ending = Opening + CumulativeSum(Net)`, `Beginning = Ending - Net` | ungrouped table sorted by the period: `Opening + CumulativeSum([Net Cash Flow])` |
+| `MIN($B$23:B23)` (running window from the first period) | `cummin` | `CumulativeMin([Ending Cash])` |
+| total column `SUM(B10:N10)` | verified per row; a one-row grouped table emits the totals | `Sum([13WCF/Total Receipts])` grouped by the constant `"13-Wk Total"` |
+| `="Scenario: "&Scenario` above the header | verified text caption, not emitted (`CAPTION_FORMULA_VERIFIED_ONLY`) | - |
+
+Text and date parameters live in the `Parameters` table's `Text Value` / `Date Value` columns (added only
+when a plan has such a parameter). Workbook controls are filter controls, not formula parameters: change
+the scenario by editing the `Scenario` row of the Parameters input table. The plan's `scenarioResults`
+recomputes the headline targets (totals, the last ending balance, the lowest balance) under every scenario
+of the family; Excel cached only the selected one, so the others are informational, not parity targets.
+A table with no unique text column (a bill list that repeats vendors) needs no key to be aggregated; it is
+flagged `KEYLESS_TABLE_ROWS` because seeding its input table is positional.
+
+Recognised only inside a ledger: named single cells (`OpeningCash`), `INDIRECT("prefix"&<named cell>)`,
+`MOD`, text/date parameters. Everywhere else they still fail loudly. Within a ledger a formula may read the
+same period only (a fixed-column reference, another period, or a relative cell outside the ledger fails
+with its cell); `prev` is supported only as the three recursions above.
 
 ## Verification oracle (never skipped)
 
@@ -46,9 +80,11 @@ before any spec is written or posted.
 
 ## Shapes that fail loudly (not a fallback)
 
-- `VLOOKUP`/`OFFSET`/`INDIRECT`/named ranges, `ROUNDUP`/`INT`/`MOD`/text functions, `&` text building,
+- `VLOOKUP`/`OFFSET`/`INDIRECT`/named ranges, `ROUNDUP`/`INT`/text functions, `&` text building,
   non-numeric (e.g. date) parameter cells, `DATE` with cell arguments,
-  `EOMONTH(x, k)` with `k != 0`, approximate matches, wildcard criteria.
+  `EOMONTH(x, k)` with `k != 0`, approximate matches, wildcard criteria. (A period ledger accepts the
+  `INDIRECT("prefix"&<named cell>)` scenario idiom, named single cells, `MOD` and text/date parameters;
+  see above.)
 - A summary row label that has no rows in the data (a grouped table would drop the row).
 - Aggregates not filtered by the row label; two grouping keys in one grid; mixed sources.
 - A keyed grid that is not one-to-one with the table's (label, period) rows (sparse grids need a
@@ -68,10 +104,16 @@ guessed column types flagged as `TABLE_COLUMN_TYPES_GUESSED`.
 
 `Lookup`, `Coalesce`, `If`, `IsNull`, `And`/`Or`/`Not`, `Sum`/`Count`/`Avg`/`Min`/`Max` and
 `SumIf`/`CountIf`/`AvgIf`/`MinIf`/`MaxIf`, `CumulativeSum`, `Ceiling`, `Least`/`Greatest`, `Abs`,
-`Round`, `Date("YYYY-MM-DD")`, `DateAdd`, `DateTrunc`, `DatePart`. Least certain (no live proof in
+`Round`, `Date("YYYY-MM-DD")`, `DateAdd`, `DateTrunc`, `DatePart`; ledgers add `Mod`, `Power`,
+`CumulativeMin` and `Concat` (captions are not emitted). Least certain (no live proof in
 this repo): `CumulativeSum` partitioning by a grouping inside one element, a pivot sourced from a
 grouped table, an input-table element as the source of a wrapper `table`, a cross join through a
-constant `Join Key` column, `AvgIf`/`MaxIf`, and `Least`/`Greatest`. The plan raises review issues for
+constant `Join Key` column, `AvgIf`/`MaxIf`, and `Least`/`Greatest`. Ledger-only and unproven:
+`Lookup` into a hidden grouped table's calculation (the SUMIFS helpers) and a `Lookup` whose key is
+another `Lookup` (the scenario factor), `CumulativeSum`/`CumulativeMin` over an ungrouped table ordered by
+its sort, `Power`/`Mod`/`CumulativeMin` themselves, a grouped table keyed by a constant text-literal
+column (the one-row total), columns that reference columns defined later in the same element, and the
+`Text Value` / `Date Value` typed columns of the Parameters input table. The plan raises review issues for
 the running balance (`RUNNING_BALANCE_PARTITION_REVIEW`) and the data-driven rows
 (`GROUPED_ROWS_FROM_DATA`, `EXTRA_GROUP_KEYS`).
 

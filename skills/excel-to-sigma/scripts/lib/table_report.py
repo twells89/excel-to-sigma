@@ -300,9 +300,14 @@ class Registry:
         self.synthetic = OrderedDict()   # table name -> plan table dict
         self.added_columns = []          # (table, column) calculated columns the drafter synthesised
 
-    def param(self, sheet, address, where):
+    def param(self, sheet, address, where, allow=("number",)):
+        """Name of the parameter for a literal cell. ``allow`` widens the kinds a context accepts
+        (the period-ledger recogniser takes text and date parameters; every other grid numbers only)."""
         key = (sheet, address)
         if key in self.params:
+            if self.params[key].get("kind", "number") not in allow:
+                raise PlanDraftError(f"{where}: parameter {sheet}!{address} is "
+                                     f"{self.params[key].get('kind')}, not a number")
             return self.params[key]["name"]
         if sheet not in self.wf.sheetnames:
             raise PlanDraftError(f"{where}: sheet {sheet!r} not found")
@@ -315,7 +320,14 @@ class Registry:
         value = ws.cell(row, col).value
         if _is_formula(value):
             raise PlanDraftError(f"{where}: {sheet}!{address} is a formula cell, not a literal parameter")
-        if not _is_number(value):
+        kind = "number"
+        if _is_number(value):
+            pass
+        elif "date" in allow and isinstance(value, (datetime, date)):
+            kind, value = "date", _date(value, f"{sheet}!{address}").isoformat()
+        elif "text" in allow and isinstance(value, str) and value.strip():
+            kind = "text"
+        else:
             raise PlanDraftError(f"{where}: parameter {sheet}!{address} is {value!r}; only numeric literal "
                                  "parameters are supported")
         label = next((_text(ws.cell(row, c).value) for c in range(col - 1, 0, -1)
@@ -325,6 +337,8 @@ class Registry:
             name = f"{name} ({sheet}!{address})"
         self.param_names[name] = key
         self.params[key] = {"name": name, "value": value, "cell": f"{sheet}!{address}"}
+        if kind != "number":
+            self.params[key]["kind"] = kind
         return name
 
 
@@ -340,6 +354,9 @@ class Ctx:
 
     def func(self, low, node):
         return None
+
+    def named(self, low, name):
+        raise low.fail(f"named range {name!r} is not supported")
 
     def range_(self, low, node):
         raise low.fail("a cell range outside SUM/MIN/MAX/aggregate arguments is not supported")
@@ -373,7 +390,7 @@ class Lowerer:
             return ["op", node.operator, self.lower(node.left), self.lower(node.right)]
         if isinstance(node, Reference):
             if node.value.name:
-                raise self.fail(f"named range {node.value.name!r} is not supported")
+                return self.ctx.named(self, node.value.name)
             return self.ctx.ref(self, node.value)
         if isinstance(node, StructuredReference):
             return self.ctx.struct(self, node)
@@ -410,6 +427,8 @@ class Lowerer:
             return ["f", "SUM"] + [self.lower(a) for a in args]
         if name == "ABS" and n == 1:
             return ["f", "ABS", self.lower(args[0])]
+        if name == "MOD" and n == 2:
+            return ["f", "MOD", self.lower(args[0]), self.lower(args[1])]
         if name == "ROUND" and n == 2:
             return ["f", "ROUND", self.lower(args[0]), self.lower(args[1])]
         if name == "CEILING" and n == 2:
@@ -957,6 +976,7 @@ class Drafter:
         self.frames, self.checks, self.targets = [], [], []
         self.expansions = {}          # sheet -> grid info (for aggregates over expansion frames)
         self.issues = []
+        self.ledger_scenarios = []    # period ledgers' headline targets, for the scenario recompute
 
     # ---- checks
     def add_checks(self, frame, column, kind, cells):
@@ -1019,6 +1039,7 @@ class Drafter:
     def run(self):
         self.finalize_literal_types()
         self.table_columns()
+        self.draft_ledgers()
         blocks = find_blocks(self.wf, self.reg.covered, self.tabs)
         stray = _formula_cells_outside(self.wf, self.reg.covered, blocks)
         if stray:
@@ -1041,6 +1062,15 @@ class Drafter:
         if not self.frames:
             raise NoTableReportShape("no formula-driven grid over table data was found "
                                      "(a table-report needs at least one summary, expansion or keyed grid)")
+
+    def draft_ledgers(self):
+        """Period ledgers (cash-flow style: line items down, period ordinals across) come first: their
+        cells are then covered, so the grid finders below do not mistake them for summaries."""
+        try:
+            from . import table_report_ledger as ledger
+        except ImportError:  # direct import when scripts/lib itself is on sys.path
+            import table_report_ledger as ledger
+        ledger.draft_ledgers(self)
 
     @staticmethod
     def is_ordinal(block):
@@ -1723,13 +1753,14 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
                                     in enumerate(zip(column.cells, column.cached))])
 
     issues = list(drafter.issues)
-    if any(f["kind"] == "summary" for f in drafter.frames):
+    if any(f["kind"] == "summary" and not f.get("helper") for f in drafter.frames):
         issues.append({
             "code": "GROUPED_ROWS_FROM_DATA", "severity": "review", "route": "grouped-rows-from-data-review",
             "message": "Excel's summary row labels are typed cells; in Sigma each summary is a grouped table "
                        "whose rows come from the data, so new keys appear and missing ones vanish. Every "
                        "Excel row label was verified to exist in the data.",
-            "evidence": [f["title"] for f in drafter.frames if f["kind"] == "summary"]})
+            "evidence": [f["title"] for f in drafter.frames
+                         if f["kind"] == "summary" and not f.get("helper")]})
     unmapped = list_charts(wf, drafter.checks)
 
     plan = {
@@ -1762,6 +1793,13 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
         more = f"\n  ... and {len(problems) - 10} more" if len(problems) > 10 else ""
         raise PlanDraftError("drafted plan does not reproduce the workbook's cached values "
                              f"({len(problems)} mismatch(es) of {checked} cells):\n  {shown}{more}")
+    try:
+        from . import table_report_ledger as ledger
+    except ImportError:
+        import table_report_ledger as ledger
+    scenarios = ledger.scenario_results(plan, drafter)
+    if scenarios:
+        plan["scenarioResults"] = scenarios
     # completeness: every formula cell in the workbook must be one of the verified cells
     verified = {cell[0] for group in plan["checks"] for cell in group["cells"]}
     unverified = []
