@@ -21,7 +21,8 @@ _PROC = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^\r\n]*\))",
     re.I | re.M,
 )
-_END_PROC = re.compile(r"^[ \t]*End[ \t]+(?:Sub|Function)[ \t]*$", re.I | re.M)
+# `\r?` so CRLF modules (olevba keeps the VBA container's line endings) still end a procedure.
+_END_PROC = re.compile(r"^[ \t]*End[ \t]+(?:Sub|Function)[ \t]*\r?$", re.I | re.M)
 _MODULE_NAME = re.compile(r'^Attribute[ \t]+VB_Name[ \t]*=[ \t]*"([^"]+)"', re.I | re.M)
 _CALL = re.compile(r"\bCall[ \t]+([A-Za-z_][A-Za-z0-9_]*)\b", re.I)
 _STATIC_RANGE = re.compile(
@@ -191,6 +192,8 @@ def _statement_inventory(executable, procedure_names=()):
             if not statement or _PROC.match(statement) or re.fullmatch(r'End\s+(Sub|Function)',statement,re.I):
                 continue
             if re.match(r'^(Dim|Const|Option)\b',statement,re.I):continue
+            # VBE export metadata (e.g. `Attribute Macro1.VB_ProcData.VB_Invoke_Func = ...`), not code.
+            if re.match(r'^Attribute\s+[\w.]*VB_\w+\s*=',statement,re.I):continue
             early_exit=re.fullmatch(r'If\s+(.+?)\s+Then\s+Exit\s+Sub',statement,re.I)
             # Calls in expressions have ordinary function syntax. A property or
             # module-qualified call is not inferred to be an unqualified helper.

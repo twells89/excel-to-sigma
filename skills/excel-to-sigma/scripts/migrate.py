@@ -23,6 +23,8 @@ sys.path.insert(0, str(HERE / "lib"))
 
 from forecast_plan import PlanDraftError, draft_plan  # noqa: E402
 from migration_gate import source_sha256  # noqa: E402
+from table_report import NoTableReportShape, PlanDraftError as TableReportDraftError  # noqa: E402
+from table_report import draft_table_report  # noqa: E402
 from xlsx_audit import audit_workbook  # noqa: E402
 
 MACRO_SUFFIXES = {".xlsm", ".xlsb", ".xls"}
@@ -85,6 +87,28 @@ ROUTES = {
         ],
         "handoffs": ["Paste seed.csv into the input table", "Publish", "Create warehouse view on the input table"],
     },
+    # Formal Tables + formula grids (SUMIFS/COUNTIFS summaries, ordinal roster x period grids,
+    # running balances) that draft-table-report.py reproduces and verifies cell by cell.
+    "table-report": {
+        "refs": ["refs/sigma-build-gotchas.md", "refs/model-taxonomy.md", "refs/input-tables.md",
+                 "refs/table-report-recipes.md"],
+        "decisions": ["intent: read-only | editable | what-if (which tables people edit)",
+                      "write-enabled connectionId", "target folderId"],
+        "next": [
+            "python scripts/draft-table-report.py <file> --intent <intent> --connection <conn> "
+            "--folder <folder> --out <workdir>/plan.json   # fails loudly on unknown shapes; verifies "
+            "every formula cell against Excel's cached values",
+            "python scripts/build-table-report.py <workdir>/plan.json --out-dir <workdir>/build   "
+            "# dry run: draft mode + local parity + seed CSVs",
+            "python scripts/build-table-report.py <workdir>/plan.json --post "
+            "--review-dispositions <workdir>/review.json   # production: strict dispositions",
+        ],
+        "handoffs": ["Seed the empty input tables from seed_*.csv through Sigma MCP Code Mode "
+                     "(InputTable.upsert_rows; query first - it does not enforce keys)",
+                     "Query a few summary cells and the running balance against the plan's parity targets "
+                     "(CumulativeSum partition and grouped-table behaviour are live-validated only then)",
+                     "Rebuild the source charts (CHARTS_PRESENT)", "Publish the workbook"],
+    },
     # SUMIFS / driver signals, but not the shape the forecast drafter and builder support.
     "cell-model": {
         "refs": ["refs/sigma-build-gotchas.md", "refs/model-taxonomy.md", "refs/source-workbook-model.md",
@@ -138,6 +162,7 @@ def plan(args):
         (workdir / "discovery.json").write_text(json.dumps(discovery, indent=2) + "\n", encoding="utf-8")
         kind = archetype(discovery)
     route_reason = None
+    forecast_rejection = None
     if kind == "forecast":
         # Same shape checks the drafter applies, so the route never names a command that
         # fails on this workbook. Placeholder connection/folder: nothing is written.
@@ -147,7 +172,26 @@ def plan(args):
                             f"{shape['kinds']} on {shape['reportSheet']!r}")
         except PlanDraftError as error:
             kind = "cell-model"
-            route_reason = f"SUMIFS/driver signals, but the forecast drafter rejects the shape: {error}"
+            forecast_rejection = f"SUMIFS/driver signals, but the forecast drafter rejects the shape: {error}"
+            route_reason = forecast_rejection
+    if kind in ("cell-model", "input-table") and discovery.get("tables"):
+        # Formal Tables with formula-driven summaries: named only when the table-report drafter
+        # accepts the workbook and reproduces every cached cell.
+        try:
+            _, shape = draft_table_report(source, intent="what-if", connection="<connection>",
+                                          folder="<folder>")
+            kind = "table-report"
+            route_reason = (f"table-report drafter accepts this workbook: {len(shape['tables'])} table(s), "
+                            f"{len(shape['frames'])} frames, {shape['verifiedCells']} source cells verified"
+                            + (f" (forecast drafter: {forecast_rejection})" if forecast_rejection else ""))
+        except NoTableReportShape:
+            pass  # not a near miss: keep the input-table / cell-model reasoning as is
+        except TableReportDraftError as error:
+            note = f"table-report drafter rejects the shape: {error}"
+            route_reason = f"{route_reason}; {note}" if route_reason else note
+        except Exception as error:  # a drafter defect must never break routing; say so instead
+            note = f"table-report drafter could not run ({type(error).__name__}: {error})"
+            route_reason = f"{route_reason}; {note}" if route_reason else note
     route = ROUTES[kind]
     refs = list(route["refs"])
 
@@ -198,7 +242,10 @@ def plan(args):
             "and checked, before --post.",
             "BLOCKED stops everything." if blocked else "Not blocked.",
         ] + (["The drafter may add plan review issues (e.g. FLAT_CARRY_POLICY); add their codes to "
-              "review.json too before --post."] if kind == "forecast" else []),
+              "review.json too before --post."] if kind == "forecast" else []
+             ) + (["The drafter adds plan review issues (e.g. GROUPED_ROWS_FROM_DATA, "
+                   "RUNNING_BALANCE_PARTITION_REVIEW); add their codes to review.json too before --post."]
+                  if kind == "table-report" else []),
     }
     print(json.dumps(result, indent=2))
     return 2 if blocked else 0

@@ -1,0 +1,1261 @@
+"""Table-report model: expression IR, Python evaluator, verification, Sigma spec builders.
+
+A *table-report* plan describes a workbook whose outputs are formulas over formal
+Excel Tables (inventory projection, sales pipeline, headcount plan). The drafter
+(``table_report.py``) lowers every recognised formula to the small IR below; this
+module evaluates the IR in Python (the local parity oracle) and renders the same IR
+as Sigma formulas, so what is verified offline is exactly what is emitted.
+
+Plan (JSON, ``planVersion`` 1)
+------------------------------
+``params``  [{name, value, cell}]               scalar cells the formulas read (editable)
+``tables``  [{name, sheet, ref, editable, columns[{name,type,format?,expr?}], rows}]
+            ``expr`` marks a calculated column; ``rows`` hold the literal columns only
+``frames``  expansion | keyed | summary (see the builders below)
+``checks``  every recognised source cell with Excel's cached value
+``parityTargets``  the headline summary values the builder re-checks
+
+IR (nested lists)
+-----------------
+literals   ["n", 1.5] ["s", "x"] ["b", true] ["d", "2026-07-01"] ["null"]
+row/frame  ["c", col] this row / this summary column   ["key"] the grouping key
+           ["period"] the period key   ["prev"] previous period's value
+           ["p", name] a parameter
+ops        ["op", sym, a, b]  ["neg", a]  ["f", NAME, *args]
+lookup     ["lk", table, keyExpr, keyCol, valueCol, defaultExpr|null]
+aggregate  ["agg", sum|count|avg|min|max, valueCol|null, filterExpr|null]  (summary only)
+running    ["cumsum", expr, partitionCol, orderCol]                        (keyed only)
+"""
+from __future__ import annotations
+
+import csv
+import json
+import math
+import re
+from collections import OrderedDict
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+PLAN_VERSION = 1
+ARCHETYPE = "table-report"
+PARAM_TABLE = "Parameters"
+COLUMN_TYPES = ("number", "text", "datetime", "boolean")
+FUNCTIONS = {"IF", "AND", "OR", "NOT", "MIN", "MAX", "ABS", "ROUND", "CEILING", "EOMONTH0",
+             "MONTH", "YEAR", "IFERROR", "SUM"}
+COMPARE = {"=", "<>", "<", ">", "<=", ">="}
+ARITH = {"+", "-", "*", "/", "^"}
+AGGS = {"sum", "count", "avg", "min", "max"}
+# Sigma functions the emitted formulas depend on (listed for dry-run validation).
+SIGMA_FUNCTIONS = ("Lookup", "Coalesce", "SumIf", "CountIf", "AvgIf", "MinIf", "MaxIf", "Sum", "Count",
+                   "Avg", "Min", "Max", "CumulativeSum", "Ceiling", "DateAdd", "DateTrunc", "DatePart",
+                   "Date", "IsNull", "If", "Least", "Greatest", "Abs", "Round", "Not")
+
+
+class PlanError(ValueError):
+    """The plan (or an IR node in it) is malformed or unsupported."""
+
+
+class EvalError(Exception):
+    """A spreadsheet-style evaluation error (``#DIV/0!``, ``#N/A``...)."""
+
+    def __init__(self, code, detail=""):
+        super().__init__(f"{code} {detail}".strip())
+        self.code = code
+
+
+# ----------------------------------------------------------------- values
+def parse_date(value):
+    """ISO string / date / datetime -> date (time-of-day is refused, never dropped)."""
+    if value is None or isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        if value.time() != datetime.min.time():
+            raise PlanError(f"time-of-day is not supported in {value.isoformat()}")
+        return value.date()
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10]) if len(value) == 10 else datetime.fromisoformat(value).date()
+        except ValueError as error:
+            raise PlanError(f"not an ISO date: {value!r}") from error
+    raise PlanError(f"not a date: {value!r}")
+
+
+def iso(value):
+    return value.isoformat() if isinstance(value, date) else value
+
+
+def _num(x):
+    if x is None:
+        return 0
+    if isinstance(x, bool):
+        return 1 if x else 0
+    if isinstance(x, (int, float)):
+        return x
+    raise EvalError("#VALUE!", repr(x))
+
+
+def _blank_for(other):
+    if isinstance(other, str):
+        return ""
+    if isinstance(other, bool):
+        return False
+    if isinstance(other, date):
+        return date.min
+    return 0
+
+
+def _compare(sym, a, b):
+    if a is None:
+        a = _blank_for(b)
+    if b is None:
+        b = _blank_for(a)
+    text_a, text_b = isinstance(a, str), isinstance(b, str)
+    if text_a != text_b:  # Excel orders text above numbers; they are never equal
+        if sym == "=":
+            return False
+        if sym == "<>":
+            return True
+        a_rank, b_rank = (1 if text_a else 0), (1 if text_b else 0)
+        return {"<": a_rank < b_rank, ">": a_rank > b_rank, "<=": a_rank <= b_rank,
+                ">=": a_rank >= b_rank}[sym]
+    if isinstance(a, date) != isinstance(b, date):
+        raise EvalError("#VALUE!", f"cannot compare {a!r} with {b!r}")
+    return {"=": a == b, "<>": a != b, "<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[sym]
+
+
+def _truthy(x):
+    if x is None:
+        return False
+    if isinstance(x, str):
+        raise EvalError("#VALUE!", repr(x))
+    return bool(x)
+
+
+def eomonth0(day):
+    if not isinstance(day, date):
+        raise EvalError("#VALUE!", repr(day))
+    first_next = date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+    return first_next - timedelta(days=1)
+
+
+# ----------------------------------------------------------------- IR utils
+def walk(node):
+    """Yield every IR node (pre-order)."""
+    if isinstance(node, list) and node and isinstance(node[0], str):
+        yield node
+        for child in node[1:]:
+            if isinstance(child, list):
+                if child and isinstance(child[0], str):
+                    yield from walk(child)
+                else:
+                    for item in child:
+                        yield from walk(item)
+
+
+def validate_ir(node, where="expression"):
+    if node is None:
+        return
+    if not (isinstance(node, list) and node and isinstance(node[0], str)):
+        raise PlanError(f"{where}: IR node must be a non-empty list, got {node!r}")
+    tag = node[0]
+    arity = {"n": 1, "s": 1, "b": 1, "d": 1, "null": 0, "c": 1, "key": 0, "period": 0, "prev": 0,
+             "p": 1, "op": 3, "neg": 1, "lk": 5, "agg": 3, "cumsum": 3}
+    if tag == "f":
+        if len(node) < 3 or node[1] not in FUNCTIONS:
+            raise PlanError(f"{where}: unsupported function node {node!r}")
+        kids = node[2:]
+    elif tag in arity:
+        if len(node) - 1 != arity[tag]:
+            raise PlanError(f"{where}: {tag} node needs {arity[tag]} operand(s): {node!r}")
+        kids = []
+        if tag == "op":
+            kids = node[2:]
+        elif tag == "neg":
+            kids = node[1:]
+        elif tag == "lk":
+            kids = [node[2], node[5]]
+        elif tag == "agg":
+            kids = [node[3]]
+        elif tag == "cumsum":
+            kids = [node[1]]
+    else:
+        raise PlanError(f"{where}: unknown IR node {tag!r}")
+    if tag == "op" and node[1] not in ARITH | COMPARE:
+        raise PlanError(f"{where}: unsupported operator {node[1]!r}")
+    if tag == "agg" and node[1] not in AGGS:
+        raise PlanError(f"{where}: unsupported aggregate {node[1]!r}")
+    for kid in kids:
+        validate_ir(kid, where)
+
+
+class Env:
+    __slots__ = ("row", "cols", "key", "period", "prev", "group", "cum", "idx")
+
+    def __init__(self, row=None, cols=None, key=None, period=None, prev=None, group=None,
+                 cum=None, idx=None):
+        self.row, self.cols, self.key, self.period = row, cols, key, period
+        self.prev, self.group, self.cum, self.idx = prev, group, cum, idx
+
+
+class Model:
+    """Evaluates a plan's tables and frames (lazily, memoised)."""
+
+    def __init__(self, plan):
+        self.plan = plan
+        self.tables = {t["name"]: t for t in plan.get("tables", [])}
+        self.frames = {f["id"]: f for f in plan.get("frames", [])}
+        self.params = {p["name"]: p["value"] for p in plan.get("params", [])}
+        self._table_rows, self._frame_rows, self._lookup_index = {}, {}, {}
+        self._partial = {}
+        self._busy = set()
+
+    # ---- tables
+    def table_rows(self, name):
+        if name in self._table_rows:
+            return self._table_rows[name]
+        if name not in self.tables:
+            raise PlanError(f"unknown table {name!r}")
+        if ("table", name) in self._busy:
+            raise PlanError(f"circular calculated columns involving table {name!r}")
+        self._busy.add(("table", name))
+        try:
+            table = self.tables[name]
+            literal = [c for c in table["columns"] if "expr" not in c]
+            rows = []
+            for values in table.get("rows", []):
+                if len(values) != len(literal):
+                    raise PlanError(f"table {name!r}: row has {len(values)} values for {len(literal)} columns")
+                row = {}
+                for column, value in zip(literal, values):
+                    row[column["name"]] = parse_date(value) if column["type"] == "datetime" else value
+                rows.append(row)
+            self._partial[name] = rows   # lookups into this table may read its literal columns meanwhile
+            for column in table["columns"]:
+                if "expr" in column:
+                    for number, row in enumerate(rows):
+                        try:
+                            row[column["name"]] = self.ev(column["expr"], Env(row=row, idx=number))
+                        except EvalError as error:
+                            raise EvalError(error.code, f"table {name!r} column {column['name']!r} "
+                                            f"row {number + 1}: {error}") from error
+            self._table_rows[name] = rows
+            return rows
+        finally:
+            self._partial.pop(name, None)
+            self._busy.discard(("table", name))
+
+    # ---- evaluation
+    def lookup(self, table, key, key_col, value_col, default):
+        index = self._lookup_index.get((table, key_col))
+        if index is None:
+            index = {}
+            rows = self._table_rows.get(table) or self._partial.get(table) or self.table_rows(table)
+            for row in rows:
+                if key_col not in row:
+                    raise EvalError("#REF!", f"{table}[{key_col}] is not computed yet (circular lookup)")
+                index.setdefault(row[key_col], row)
+            self._lookup_index[(table, key_col)] = index
+        row = index.get(key) if key is not None else None
+        if row is None:
+            if default is None:
+                raise EvalError("#N/A", f"{table}[{key_col}] has no {key!r}")
+            return default
+        return row[value_col]
+
+    def ev(self, node, env):
+        tag = node[0]
+        if tag == "n" or tag == "s" or tag == "b":
+            return node[1]
+        if tag == "d":
+            return date.fromisoformat(node[1])
+        if tag == "null":
+            return None
+        if tag == "c":
+            name = node[1]
+            if env.row is not None and name in env.row:
+                return env.row[name]
+            if env.cols is not None and name in env.cols:
+                return env.cols[name]
+            raise EvalError("#NAME?", f"column {name!r}")
+        if tag == "key":
+            return env.key
+        if tag == "period":
+            return env.period
+        if tag == "prev":
+            return env.prev
+        if tag == "p":
+            if node[1] not in self.params:
+                raise EvalError("#NAME?", f"parameter {node[1]!r}")
+            return self.params[node[1]]
+        if tag == "neg":
+            return -_num(self.ev(node[1], env))
+        if tag == "op":
+            return self._op(node, env)
+        if tag == "f":
+            return self._fn(node, env)
+        if tag == "lk":
+            default = None if node[5] is None else self.ev(node[5], env)
+            return self.lookup(node[1], self.ev(node[2], env), node[3], node[4], default)
+        if tag == "agg":
+            return self._agg(node, env)
+        if tag == "cumsum":
+            if env.cum is None or id(node) not in env.cum:
+                raise EvalError("#VALUE!", "cumsum outside a keyed frame column")
+            return env.cum[id(node)][env.idx]
+        raise PlanError(f"unknown IR node {tag!r}")
+
+    def _op(self, node, env):
+        sym = node[1]
+        a, b = self.ev(node[2], env), self.ev(node[3], env)
+        if sym in COMPARE:
+            return _compare(sym, a, b)
+        a, b = _num(a), _num(b)
+        if sym == "+":
+            return a + b
+        if sym == "-":
+            return a - b
+        if sym == "*":
+            return a * b
+        if sym == "/":
+            if b == 0:
+                raise EvalError("#DIV/0!")
+            return a / b
+        try:
+            return a ** b
+        except (OverflowError, ZeroDivisionError) as error:
+            raise EvalError("#NUM!") from error
+
+    def _fn(self, node, env):
+        name, args = node[1], node[2:]
+        if name == "IF":
+            if len(args) != 3:
+                raise PlanError("IF needs three arguments")
+            return self.ev(args[1] if _truthy(self.ev(args[0], env)) else args[2], env)
+        if name == "IFERROR":
+            try:
+                return self.ev(args[0], env)
+            except EvalError:
+                return self.ev(args[1], env)
+        values = [self.ev(a, env) for a in args]
+        if name == "AND":
+            return all(_truthy(v) for v in values)
+        if name == "OR":
+            return any(_truthy(v) for v in values)
+        if name == "NOT":
+            return not _truthy(values[0])
+        if name == "SUM":
+            return sum(_num(v) for v in values)
+        if name in ("MIN", "MAX"):
+            numbers = [_num(v) for v in values]
+            return min(numbers) if name == "MIN" else max(numbers)
+        if name == "ABS":
+            return abs(_num(values[0]))
+        if name == "ROUND":
+            digits = int(_num(values[1]))
+            factor = 10 ** digits
+            scaled = abs(_num(values[0])) * factor
+            return math.copysign(math.floor(scaled + 0.5) / factor, _num(values[0]))
+        if name == "CEILING":
+            number, multiple = _num(values[0]), _num(values[1])
+            if multiple == 0:
+                return 0
+            return math.ceil(number / multiple) * multiple
+        if name == "EOMONTH0":
+            return eomonth0(values[0])
+        if name == "MONTH":
+            if not isinstance(values[0], date):
+                raise EvalError("#VALUE!", repr(values[0]))
+            return values[0].month
+        if name == "YEAR":
+            if not isinstance(values[0], date):
+                raise EvalError("#VALUE!", repr(values[0]))
+            return values[0].year
+        raise PlanError(f"unsupported function {name}")
+
+    def _agg(self, node, env):
+        _, fn, column, flt = node
+        if env.group is None:
+            raise EvalError("#VALUE!", "aggregate outside a summary frame")
+        picked = []
+        for row in env.group:
+            if flt is not None and not _truthy(self.ev(flt, Env(row=row))):
+                continue
+            picked.append(row)
+        if fn == "count" and column is None:
+            return len(picked)
+        values = [row[column] for row in picked]
+        numbers = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if fn == "count":
+            return len(numbers)
+        if fn == "sum":
+            return sum(numbers)
+        if fn == "avg":
+            if not numbers:
+                raise EvalError("#DIV/0!")
+            return sum(numbers) / len(numbers)
+        if not numbers:
+            return 0
+        return min(numbers) if fn == "min" else max(numbers)
+
+    # ---- frames
+    def frame_rows(self, frame_id):
+        if frame_id in self._frame_rows:
+            return self._frame_rows[frame_id]
+        frame = self.frames.get(frame_id)
+        if frame is None:
+            raise PlanError(f"unknown frame {frame_id!r}")
+        if ("frame", frame_id) in self._busy:
+            raise PlanError(f"circular frames involving {frame_id!r}")
+        self._busy.add(("frame", frame_id))
+        try:
+            kind = frame["kind"]
+            builder = {"expansion": self._expansion, "keyed": self._keyed, "summary": self._summary}.get(kind)
+            if builder is None:
+                raise PlanError(f"frame {frame_id!r}: unknown kind {kind!r}")
+            rows = builder(frame)
+            self._frame_rows[frame_id] = rows
+            return rows
+        finally:
+            self._busy.discard(("frame", frame_id))
+
+    def source_rows(self, source):
+        if source["kind"] == "table":
+            return self.table_rows(source["name"])
+        return self.frame_rows(source["name"])
+
+    def _eval_columns(self, frame, rows, env_for):
+        """Evaluate the frame's columns across ``rows`` (column-major so running sums see all rows)."""
+        for column in frame["columns"]:
+            expr = column["expr"]
+            cum = {}
+            for node in walk(expr):
+                if node[0] == "cumsum":
+                    series = {}
+                    for number, row in enumerate(rows):
+                        env = env_for(row, number)
+                        env.cum, env.idx = cum, number
+                        series.setdefault(row[node[2]], []).append(
+                            (row[node[3]], number, _num(self.ev(node[1], env))))
+                    values = [None] * len(rows)
+                    for entries in series.values():
+                        running = 0
+                        for _, number, delta in sorted(entries, key=lambda item: (item[0], item[1])):
+                            running += delta
+                            values[number] = running
+                    cum[id(node)] = values
+            for number, row in enumerate(rows):
+                env = env_for(row, number)
+                env.cum, env.idx = cum, number
+                try:
+                    row[column["name"]] = self.ev(expr, env)
+                except EvalError as error:
+                    raise EvalError(error.code, f"frame {frame['title']!r} column {column['name']!r} "
+                                    f"row {number + 1}: {error}") from error
+
+    def _expansion(self, frame):
+        axis = frame["axis"]
+        axis_values = [parse_date(v) if axis["type"] == "datetime" else v for v in axis["values"]]
+        rows = []
+        for base_index, base in enumerate(self.table_rows(frame["base"])):
+            for value in axis_values:
+                row = dict(base)
+                row[axis["name"]] = value
+                row["__base"] = base_index
+                rows.append(row)
+        self._eval_columns(frame, rows, lambda row, number: Env(row=row, period=row[axis["name"]]))
+        return rows
+
+    def _keyed(self, frame):
+        rows = [dict(r, __base=i) for i, r in enumerate(self.table_rows(frame["table"]))]
+        by_key = {}
+        for number, row in enumerate(rows):
+            by_key.setdefault(row[frame["rowKey"]], []).append(number)
+        prev_of = {}
+        for numbers in by_key.values():
+            ordered = sorted(numbers, key=lambda n: (rows[n][frame["periodKey"]], n))
+            for earlier, later in zip(ordered, ordered[1:]):
+                prev_of[later] = earlier
+        frame_name = frame["measure"]
+
+        def env_for(row, number):
+            earlier = prev_of.get(number)
+            return Env(row=row, key=row[frame["rowKey"]], period=row[frame["periodKey"]],
+                       prev=rows[earlier].get(frame_name) if earlier is not None else None)
+        self._eval_columns(frame, rows, env_for)
+        return rows
+
+    def _summary(self, frame):
+        source_rows = self.source_rows(frame["source"])
+        by = frame["by"]
+        groups = OrderedDict()
+        for row in source_rows:
+            groups.setdefault(row[by], []).append(row)
+        ordered = [k for k in frame["labels"] if k in groups] + sorted(
+            (k for k in groups if k not in frame["labels"]), key=lambda k: (str(type(k)), str(k)))
+        rows = []
+        for key in ordered:
+            cols = {by: key}
+            for column in frame["columns"]:
+                try:
+                    cols[column["name"]] = self.ev(column["expr"], Env(cols=cols, key=key,
+                                                                       group=groups[key]))
+                except EvalError as error:
+                    raise EvalError(error.code, f"frame {frame['title']!r} {key!r} column "
+                                    f"{column['name']!r}: {error}") from error
+            rows.append(cols)
+        return rows
+
+    # ---- addressing (checks)
+    def cell(self, frame, column, kind, sel):
+        """Value of one addressed check cell; raises KeyError when the row does not exist."""
+        if kind == "table":
+            return self.table_rows(frame)[sel[0]][column]
+        if kind == "summary-total":
+            return sum(_num(row[column]) for row in self.frame_rows(frame))
+        if kind == "summary":
+            for row in self.frame_rows(frame):
+                if row[self.frames[frame]["by"]] == sel[0]:
+                    return row[column]
+            raise KeyError(f"summary row {sel[0]!r} does not exist (a grouped table would not show it)")
+        rows = self.frame_rows(frame)
+        spec = self.frames[frame]
+        if kind == "keyed":
+            return rows[sel[0]][column]
+        if kind in ("expansion", "rowtotal"):
+            axis = spec["axis"]
+            mine = [r for r in rows if r["__base"] == sel[0]]
+            if kind == "rowtotal":
+                return sum(_num(r[column]) for r in mine)
+            wanted = parse_date(sel[1]) if axis["type"] == "datetime" else sel[1]
+            for row in mine:
+                if row[axis["name"]] == wanted:
+                    return row[column]
+            raise KeyError(f"expansion row {sel!r} does not exist")
+        raise PlanError(f"unknown check kind {kind!r}")
+
+
+def compute(plan):
+    """Return a ready ``Model`` after evaluating every table and frame (raises on any error)."""
+    model = Model(plan)
+    for name in model.tables:
+        model.table_rows(name)
+    for frame_id in model.frames:
+        model.frame_rows(frame_id)
+    return model
+
+
+def values_match(got, want, tolerance):
+    """Numbers within ``tolerance`` (absolute); text/bool/date exact; blank == empty string."""
+    if isinstance(want, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", want) and isinstance(got, date):
+        return got.isoformat() == want
+    if got is None:
+        got = ""
+    if want is None:
+        want = ""
+    if isinstance(got, bool) or isinstance(want, bool):
+        return got == want
+    if isinstance(got, (int, float)) and isinstance(want, (int, float)):
+        return abs(got - want) <= tolerance
+    if isinstance(got, date) and isinstance(want, str):
+        return got.isoformat() == want
+    return got == want
+
+
+def check_cells(plan, model, tolerance=0.01):
+    """Compare every recorded source cell with the plan's recomputation.
+
+    Returns ``(checked, problems)``; ``problems`` names sheet!cell, the expected cached
+    value and the plan's value.
+    """
+    checked, problems = 0, []
+    for group in plan.get("checks", []):
+        for address, sel, want in group["cells"]:
+            checked += 1
+            try:
+                got = model.cell(group["frame"], group["column"], group["kind"], sel)
+            except (KeyError, IndexError) as error:
+                problems.append(f"{address} ({group['frame']}.{group['column']}): {error}")
+                continue
+            if not values_match(got, want, tolerance):
+                shown = iso(got)
+                hint = ""
+                if want in (None, "") and got not in (None, ""):
+                    hint = " (the workbook has no cached value here; open it in Excel, recalculate and save)"
+                problems.append(f"{address} ({group['frame']}.{group['column']}): plan {shown!r} "
+                                f"vs workbook {want!r}{hint}")
+    return checked, problems
+
+
+def parity_lines(plan, model, tolerance=0.01):
+    """``(ok, lines)``: headline parity of the plan's summary targets.
+
+    One line per summary frame (cells matched / total), one per numeric column (plan total vs
+    source total), and a FAIL line for every target that differs.
+    """
+    targets = plan.get("parityTargets") or []
+    if not targets:
+        return True, ["LOCAL PARITY: not checked - plan has no parityTargets"]
+    ok, lines, frames = True, [], OrderedDict()
+    for target in targets:
+        group = frames.setdefault(target["frame"], {"label": target["label"].split(" / ")[0], "total": 0,
+                                                    "passed": 0, "columns": OrderedDict()})
+        group["total"] += 1
+        try:
+            got = model.cell(target["frame"], target["column"], target.get("kind", "summary"), target["sel"])
+        except (KeyError, IndexError) as error:
+            ok = False
+            lines.append(f"PARITY FAIL {target['label']}: {error}")
+            continue
+        passed = values_match(got, target["value"], tolerance)
+        group["passed"] += passed
+        if not passed:
+            ok = False
+            lines.append(f"PARITY FAIL {target['label']}: plan={iso(got)!r} source={target['value']!r}")
+        frame = (model.frames.get(target["frame"]) or {})
+        fmt = next((c.get("format") for c in frame.get("columns", []) if c["name"] == target["column"]), None)
+        if isinstance(got, (int, float)) and not isinstance(got, bool) and fmt != "percent" \
+                and isinstance(target["value"], (int, float)):
+            column = group["columns"].setdefault(target["column"], [0.0, 0.0])
+            column[0] += got
+            column[1] += target["value"]
+    heads = []
+    for group in frames.values():
+        state = "PASS" if group["passed"] == group["total"] else "FAIL"
+        heads.append(f"PARITY {state} {group['label']}: {group['passed']}/{group['total']} summary cells")
+    lines = heads + lines
+    for frame_id, group in frames.items():
+        for column, (got, want) in group["columns"].items():
+            state = "PASS" if abs(got - want) <= tolerance * max(1, group["total"]) else "FAIL"
+            if state == "FAIL":
+                ok = False
+            lines.append(f"PARITY {state} {group['label']} / {column} total: plan={got:,.2f} "
+                         f"source={want:,.2f} diff={got - want:,.4f}")
+    return ok, lines
+
+
+def validate_plan(plan):
+    """Structural validation of a (possibly hand-edited) plan; raises ``PlanError``."""
+    if plan.get("archetype") != ARCHETYPE:
+        raise PlanError(f"not a table-report plan (archetype {plan.get('archetype')!r})")
+    if plan.get("planVersion") != PLAN_VERSION:
+        raise PlanError(f"unsupported planVersion {plan.get('planVersion')!r}")
+    names = [t["name"] for t in plan.get("tables", [])]
+    if len(set(names)) != len(names):
+        raise PlanError("duplicate table names")
+    if PARAM_TABLE in names:
+        raise PlanError(f"{PARAM_TABLE!r} is reserved for plan.params")
+    titles = names + [f["title"] for f in plan.get("frames", [])] + [PARAM_TABLE]
+    if len(set(titles)) != len(titles):
+        raise PlanError("table and frame titles must be unique")
+    for table in plan.get("tables", []):
+        cols = [c["name"] for c in table["columns"]]
+        if len(set(cols)) != len(cols):
+            raise PlanError(f"table {table['name']!r}: duplicate column names")
+        for column in table["columns"]:
+            if column.get("type") not in COLUMN_TYPES:
+                raise PlanError(f"table {table['name']!r} column {column['name']!r}: bad type")
+            if re.search(r"[\[\]/]", column["name"]):
+                raise PlanError(f"table {table['name']!r}: column name {column['name']!r} contains [ ] or /")
+            if "expr" in column:
+                validate_ir(column["expr"], f"{table['name']}.{column['name']}")
+    for frame in plan.get("frames", []):
+        if frame["kind"] not in ("expansion", "keyed", "summary"):
+            raise PlanError(f"frame {frame.get('id')!r}: unknown kind")
+        for column in frame["columns"]:
+            validate_ir(column["expr"], f"{frame['title']}.{column['name']}")
+    return True
+
+
+# ===================================================================== Sigma
+SIGMA_STRING = json.dumps
+
+
+def slug(text, sep="_"):
+    return re.sub(r"[^a-z0-9]+", sep, str(text).lower()).strip(sep) or "x"
+
+
+def alias(name):
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(name)).strip("_").upper() or "COL"
+
+
+def q(text):
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def sigma_number(value):
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value == int(value) and abs(value) < 1e15:
+        return str(int(value))
+    return repr(value)
+
+
+class Emitter:
+    """Renders IR as a Sigma formula. ``col``/``key``/``period``/``prev`` are element-specific."""
+
+    def __init__(self, col, key=None, period=None, prev=None, coltype=None, count_ref=None,
+                 agg_source=None, agg_col=None):
+        self.col, self.key_ref, self.period_ref, self.prev_ref = col, key, period, prev
+        self.coltype, self.count_ref = coltype, count_ref
+        self.agg_source = agg_source  # Emitter used inside aggregate filters (source columns)
+        self.agg_col = agg_col        # name -> source column ref for aggregate values
+
+    def type_of(self, node):
+        tag = node[0]
+        if tag == "s":
+            return "text"
+        if tag in ("n",):
+            return "number"
+        if tag == "d":
+            return "datetime"
+        if tag == "c" and self.coltype:
+            return self.coltype(node[1])
+        if tag == "lk":
+            return "text" if node[5] is not None and node[5][0] == "s" else None
+        return None
+
+    def emit(self, node):
+        tag = node[0]
+        if tag == "n":
+            return sigma_number(node[1])
+        if tag == "s":
+            return SIGMA_STRING(node[1])
+        if tag == "b":
+            return "True" if node[1] else "False"
+        if tag == "d":
+            return f'Date("{node[1]}")'
+        if tag == "null":
+            return "Null()"
+        if tag == "c":
+            return self.col(node[1])
+        if tag == "key":
+            if self.key_ref is None:
+                raise PlanError("key reference outside a keyed/summary frame")
+            return self.key_ref
+        if tag == "period":
+            if self.period_ref is None:
+                raise PlanError("period reference outside a keyed frame")
+            return self.period_ref
+        if tag == "prev":
+            raise PlanError("a previous-period reference must be rewritten into a running sum")
+        if tag == "p":
+            return (f'Lookup([{PARAM_TABLE}/Value], {SIGMA_STRING(node[1])}, [{PARAM_TABLE}/Parameter])')
+        if tag == "neg":
+            return f"(-{self.emit(node[1])})"
+        if tag == "op":
+            return self._op(node)
+        if tag == "f":
+            return self._fn(node)
+        if tag == "lk":
+            _, table, key, key_col, value_col, default = node
+            lookup = f"Lookup([{table}/{value_col}], {self.emit(key)}, [{table}/{key_col}])"
+            return lookup if default is None else f"Coalesce({lookup}, {self.emit(default)})"
+        if tag == "agg":
+            return self._agg(node)
+        if tag == "cumsum":
+            return f"CumulativeSum({self.emit(node[1])})"
+        raise PlanError(f"cannot emit IR node {tag!r}")
+
+    def _op(self, node):
+        sym, a, b = node[1], node[2], node[3]
+        if sym in ("=", "<>"):
+            for left, right in ((a, b), (b, a)):
+                if right == ["s", ""]:
+                    kind = self.type_of(left)
+                    left_text = self.emit(left)
+                    if kind == "text":
+                        test = f"(IsNull({left_text}) or {left_text} = \"\")"
+                    else:
+                        test = f"IsNull({left_text})"
+                    return test if sym == "=" else f"Not({test})"
+        symbol = {"<>": "!="}.get(sym, sym)
+        return f"({self.emit(a)} {symbol} {self.emit(b)})"
+
+    def _fn(self, node):
+        name, args = node[1], node[2:]
+        out = [self.emit(a) for a in args]
+        if name == "IF":
+            return f"If({out[0]}, {out[1]}, {out[2]})"
+        if name == "AND":
+            return "(" + " and ".join(out) + ")"
+        if name == "OR":
+            return "(" + " or ".join(out) + ")"
+        if name == "NOT":
+            return f"Not({out[0]})"
+        if name == "SUM":
+            return "(" + " + ".join(out) + ")"
+        if name == "MIN":
+            return f"Least({', '.join(out)})"
+        if name == "MAX":
+            return f"Greatest({', '.join(out)})"
+        if name == "ABS":
+            return f"Abs({out[0]})"
+        if name == "ROUND":
+            return f"Round({out[0]}, {out[1]})"
+        if name == "CEILING":
+            return f"(Ceiling({out[0]} / {out[1]}) * {out[1]})"
+        if name == "EOMONTH0":
+            return f'DateAdd("day", -1, DateAdd("month", 1, DateTrunc("month", {out[0]})))'
+        if name == "MONTH":
+            return f'DatePart("month", {out[0]})'
+        if name == "YEAR":
+            return f'DatePart("year", {out[0]})'
+        if name == "IFERROR":
+            first = args[0]
+            if first[0] == "op" and first[1] == "/":
+                den = self.emit(first[3])
+                return f"If(IsNull({den}) or {den} = 0, {out[1]}, {out[0]})"
+            return f"Coalesce({out[0]}, {out[1]})"
+        raise PlanError(f"cannot emit function {name}")
+
+    def _agg(self, node):
+        _, fn, column, flt = node
+        source = self.agg_source
+        if source is None:
+            raise PlanError("aggregate outside a summary frame")
+        value = self.agg_col(column) if column is not None else None
+        cond = source.emit(flt) if flt is not None else None
+        # Excel's SUMIFS/COUNTIFS/MINIFS/MAXIFS give 0 for an empty match, Sigma's conditional
+        # aggregates give NULL (which then poisons any arithmetic), so they are wrapped in
+        # Coalesce(.., 0). AVERAGEIFS stays unwrapped: an empty match is #DIV/0! in Excel.
+        if fn == "count":
+            return f"Coalesce(CountIf({cond}), 0)" if cond else f"Coalesce(Count({self.count_ref}), 0)"
+        name = {"sum": "Sum", "avg": "Avg", "min": "Min", "max": "Max"}[fn]
+        text = f"{name}If({value}, {cond})" if cond else f"{name}({value})"
+        return text if fn == "avg" else f"Coalesce({text}, 0)"
+
+
+# ---- tables as the builders see them (plan tables + the parameter table)
+def param_table(plan):
+    """Pseudo-table holding ``plan.params`` (name, value, source cell)."""
+    if not plan.get("params"):
+        return None
+    return {"name": PARAM_TABLE, "sheet": "", "editable": bool(plan.get("parametersEditable", True)),
+            "columns": [{"name": "Parameter", "type": "text"}, {"name": "Value", "type": "number"},
+                        {"name": "Cell", "type": "text"}],
+            "rows": [[p["name"], p["value"], p.get("cell", "")] for p in plan["params"]]}
+
+
+def all_tables(plan):
+    extra = param_table(plan)
+    return list(plan["tables"]) + ([extra] if extra else [])
+
+
+def is_editable(table):
+    """Editable tables (and empty ones, which VALUES cannot hold) become input tables."""
+    return bool(table.get("editable")) or not table.get("rows")
+
+
+def literal_columns(table):
+    return [c for c in table["columns"] if "expr" not in c]
+
+
+# ---- DM (read-only data tables as VALUES custom SQL)
+def sql_literal(value, kind):
+    if value is None:
+        return "NULL::" + {"number": "number", "text": "varchar", "datetime": "date",
+                           "boolean": "boolean"}[kind]
+    if kind == "text":
+        return q(value)
+    if kind == "datetime":
+        return f"{q(iso(value) if isinstance(value, date) else value)}::date"
+    if kind == "boolean":
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise PlanError(f"not a finite number: {value!r}")
+    return sigma_number(value)
+
+
+def values_sql(rows, columns):
+    """``select * from (values ...) as t(ALIASES)``; ``columns`` = [(alias, type)]."""
+    if not rows:
+        raise PlanError("a VALUES table needs at least one row (use an input table for empty tables)")
+    body = ",\n".join("(" + ",".join(sql_literal(v, c[1]) for v, c in zip(row, columns)) + ")"
+                      for row in rows)
+    return f"select * from (values\n{body}\n) as t({', '.join(c[0] for c in columns)})"
+
+
+def dm_tables(plan):
+    """Read-only tables (and every frame axis spine) hosted in the data model."""
+    out = []
+    for table in all_tables(plan):
+        if not is_editable(table):
+            out.append({"key": f"t:{table['name']}", "label": table["name"], "table": table})
+    for frame in plan["frames"]:
+        if frame["kind"] == "expansion":
+            axis = frame["axis"]
+            fake = {"name": f"{frame['title']} Axis",
+                    "columns": [{"name": axis["name"], "type": axis["type"]}],
+                    "rows": [[v] for v in axis["values"]]}
+            out.append({"key": f"axis:{frame['id']}", "label": fake["name"], "table": fake})
+    return out
+
+
+def dm_signature(table):
+    return tuple(c["name"] for c in literal_columns(table))
+
+
+def build_dm_spec(plan):
+    """Data-model spec, or ``None`` when every table is editable (nothing read-only to host)."""
+    items = dm_tables(plan)
+    if not items:
+        return None
+    sigs = {}
+    for item in items:
+        sig = dm_signature(item["table"])
+        if sig in sigs:
+            raise PlanError(f"{item['label']!r} and {sigs[sig]!r} have identical column sets; the live "
+                            "data-model readback could not tell them apart - rename a column")
+        sigs[sig] = item["label"]
+    conn = plan["connectionId"]
+    elements = []
+    for number, item in enumerate(items, 1):
+        table = item["table"]
+        cols = literal_columns(table)
+        used, aliases = set(), []
+        for column in cols:
+            base = alias(column["name"])
+            candidate, bump = base, 2
+            while candidate in used:
+                candidate, bump = f"{base}_{bump}", bump + 1
+            used.add(candidate)
+            aliases.append(candidate)
+        statement = values_sql(
+            [[parse_date(v) if c["type"] == "datetime" else v for v, c in zip(row, cols)]
+             for row in table["rows"]], [(a, c["type"]) for a, c in zip(aliases, cols)])
+        elements.append({"id": f"dm{number}", "kind": "table",
+                         "source": {"kind": "sql", "connectionId": conn, "statement": statement},
+                         "columns": [{"id": f"d{number}c{i}", "name": c["name"],
+                                      "formula": f"[Custom SQL/{a}]"}
+                                     for i, (c, a) in enumerate(zip(cols, aliases), 1)]})
+    return {"name": plan["name"] + " - Model", "schemaVersion": 1, "folderId": plan["folderId"],
+            "pages": [{"id": "model", "name": "Model", "elements": elements}]}
+
+
+def map_dm_elements(plan, spec):
+    """Map ``dm_tables`` keys -> live element ids by column-name signature (ids are reassigned)."""
+    by_sig = {}
+    for element in spec["pages"][0]["elements"]:
+        by_sig[tuple(c["name"] for c in element["columns"])] = element["id"]
+    out = {}
+    for item in dm_tables(plan):
+        sig = dm_signature(item["table"])
+        if sig not in by_sig:
+            raise PlanError(f"data model readback has no element with columns {list(sig)}")
+        out[item["key"]] = by_sig[sig]
+    return out
+
+
+def local_dm_elements(plan):
+    """Element ids as authored (dry run: no readback)."""
+    return {item["key"]: f"dm{number}" for number, item in enumerate(dm_tables(plan), 1)}
+
+
+# ---- seeds
+def seed_csvs(plan, out_dir):
+    """One paste-ready CSV per editable table (literal columns only); returns the paths."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for table in all_tables(plan):
+        if not is_editable(table):
+            continue
+        path = out_dir / f"seed_{slug(table['name'])}.csv"
+        cols = literal_columns(table)
+        with open(path, "w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow([c["name"] for c in cols])
+            for row in table.get("rows", []):
+                writer.writerow(["" if v is None else v for v in row])
+        written.append(path)
+    return written
+
+
+# ---- workbook
+def number_format(plan, kind):
+    if kind == "percent":
+        return {"kind": "number", "formatString": plan.get("pctFormat", ".1%")}
+    if kind == "currency":
+        return {"kind": "number", "formatString": plan.get("currencyFormat", "$,.0f")}
+    return None
+
+
+def _with_format(plan, column, definition):
+    fmt = number_format(plan, column.get("format"))
+    if fmt:
+        definition["format"] = fmt
+    return definition
+
+
+def _date_format(values):
+    parsed = [parse_date(v) for v in values if v is not None]
+    monthly = bool(parsed) and all(d.day == 1 for d in parsed)
+    return {"kind": "datetime", "formatString": "%b-%y" if monthly else "%m/%d/%y"}
+
+
+class _Names:
+    """Unique element ids."""
+
+    def __init__(self):
+        self.used = set()
+
+    def get(self, prefix, name=""):
+        base = f"{prefix}_{slug(name)}" if name else prefix
+        candidate, bump = base, 2
+        while candidate in self.used:
+            candidate, bump = f"{base}_{bump}", bump + 1
+        self.used.add(candidate)
+        return candidate
+
+
+CARD = {"backgroundColor": "#FFFFFF", "borderColor": {"kind": "theme", "ref": "colors-border"},
+        "borderWidth": 1, "borderRadius": "round"}
+
+
+def referenced_columns(frame, available):
+    """Source columns a frame's expressions read, attrs first, in stable order."""
+    needed = list(frame.get("attrs", []))
+    for column in frame["columns"]:
+        for node in walk(column["expr"]):
+            if node[0] == "c" and node[1] in available and node[1] not in needed:
+                needed.append(node[1])
+            if node[0] == "cumsum":
+                for name in (node[2], node[3]):
+                    if name not in needed:
+                        needed.append(name)
+    return needed
+
+
+def _calc_columns(plan, frame, fid, own, emitter):
+    out = []
+    for number, column in enumerate(frame["columns"], 1):
+        if column["name"] in own:
+            raise PlanError(f"frame {frame['title']!r}: calculated column {column['name']!r} collides "
+                            "with another column; rename it in the plan")
+        own.add(column["name"])
+        out.append(_with_format(plan, column, {"id": f"{fid}_k{number}", "name": column["name"],
+                                               "formula": emitter.emit(column["expr"])}))
+    return out
+
+
+def _summary_columns(plan, frame, fid, src_types, src_label):
+    """Group-level calculation columns of a summary frame (``src_label`` None = inside the source)."""
+    by = frame["by"]
+    ref = (lambda n: f"[{n}]") if src_label is None else (lambda n: f"[{src_label}/{n}]")
+    src_em = Emitter(col=ref, key=ref(by), coltype=lambda n: src_types.get(n))
+    own_types = {c["name"]: c["type"] for c in frame["columns"]}
+    own_types[by] = src_types.get(by, "text")
+    em = Emitter(col=lambda n: f"[{n}]", key=f"[{by}]", coltype=lambda n: own_types.get(n),
+                 count_ref=ref(by), agg_source=src_em, agg_col=ref)
+    return _calc_columns(plan, frame, fid, {by}, em)
+
+
+def _frame_types(plan, frame, types):
+    own = {c["name"]: c["type"] for c in frame["columns"]}
+    if frame["kind"] == "keyed":
+        return dict(types[frame["table"]], **own)
+    if frame["kind"] == "expansion":
+        return dict(types[frame["base"]], **{frame["axis"]["name"]: frame["axis"]["type"]}, **own)
+    return own
+
+
+def build_parts(plan, dm_id, dm_elements):
+    """Return ``{"inputs", "hidden", "visible"}`` element lists for the workbook pages.
+
+    ``dm_elements`` maps ``dm_tables`` keys to data-model element ids ({} without a DM).
+    """
+    validate_plan(plan)
+    conn = plan["connectionId"]
+    ids = _Names()
+    tables = all_tables(plan)
+    types = {t["name"]: {c["name"]: c["type"] for c in t["columns"]} for t in tables}
+    inputs, hidden, visible = [], [], []
+    wrapper = {}
+    expansion_bases = {f["base"] for f in plan["frames"] if f["kind"] == "expansion"}
+
+    def dm_source(key):
+        return {"kind": "data-model", "dataModelId": dm_id, "elementId": dm_elements[key]}
+
+    for table in tables:
+        name, element_id = table["name"], ids.get("w", table["name"])
+        cols = literal_columns(table)
+        if is_editable(table):
+            input_id, input_name = ids.get("in", name), f"{name} Input"
+            inputs.append({
+                "id": input_id, "kind": "input-table", "name": input_name, "inputMode": "edit",
+                "source": {"kind": "empty", "connectionId": conn},
+                "columns": [{"id": "ID"}] + [
+                    _with_format(plan, c, {"id": alias(c["name"]), "name": c["name"],
+                                           "type": {"boolean": "checkbox"}.get(c["type"], c["type"])})
+                    for c in cols],
+                "order": [alias(c["name"]) for c in cols]})
+            source, prefix = {"kind": "table", "elementId": input_id}, input_name
+        else:
+            source, prefix = dm_source(f"t:{name}"), "Custom SQL"
+        columns = [_with_format(plan, c, {"id": f"{element_id}_c{i}", "name": c["name"],
+                                          "formula": f"[{prefix}/{c['name']}]"})
+                   for i, c in enumerate(cols, 1)]
+        em = Emitter(col=lambda n: f"[{n}]", coltype=lambda n, t=types[name]: t.get(n))
+        for number, column in enumerate((c for c in table["columns"] if "expr" in c), 1):
+            columns.append(_with_format(plan, column, {"id": f"{element_id}_k{number}", "name": column["name"],
+                                                       "formula": em.emit(column["expr"])}))
+        if name in expansion_bases:
+            columns.append({"id": f"{element_id}_jk", "name": "Join Key", "formula": "1"})
+        hidden.append({"id": element_id, "kind": "table", "name": name, "source": source, "columns": columns})
+        wrapper[name] = element_id
+
+    # keyed frames absorb the one-key summaries over them (running sums partition by the group)
+    merged = {}
+    for frame in plan["frames"]:
+        if frame["kind"] == "summary" and frame["source"]["kind"] == "frame":
+            parent = next((f for f in plan["frames"] if f["id"] == frame["source"]["name"]), None)
+            if parent and parent["kind"] == "keyed" and parent["rowKey"] == frame["by"]:
+                merged.setdefault(parent["id"], []).append(frame)
+    absorbed = {s["id"] for group in merged.values() for s in group}
+    element_of = {}
+
+    for frame in plan["frames"]:
+        kind, fid = frame["kind"], ids.get("f", frame["id"])
+        if frame["id"] in absorbed:
+            continue
+        frame_types = _frame_types(plan, frame, types)
+        if kind == "expansion":
+            axis, base = frame["axis"], frame["base"]
+            aid = ids.get("w", f"{frame['title']} axis")
+            hidden.append({"id": aid, "kind": "table", "name": f"{frame['title']} Axis",
+                           "source": dm_source(f"axis:{frame['id']}"),
+                           "columns": [{"id": f"{aid}_c1", "name": axis["name"],
+                                        "formula": f"[Custom SQL/{axis['name']}]"},
+                                       {"id": f"{aid}_jk", "name": "Join Key", "formula": "1"}]})
+            source = {"kind": "join", "name": "XJ",
+                      "primarySource": {"kind": "table", "elementId": wrapper[base]},
+                      "joins": [{"name": "Axis", "joinType": "inner",
+                                 "left": {"kind": "table", "elementId": wrapper[base]},
+                                 "right": {"kind": "table", "elementId": aid},
+                                 "columns": [{"left": "[Join Key]", "right": "[Join Key]"}]}]}
+            needed = referenced_columns(frame, set(types[base]) | {axis["name"]})
+            columns = []
+            for number, name in enumerate(needed):
+                if name == axis["name"]:
+                    columns.append({"id": f"{fid}_a", "name": name, "formula": f"[Axis/{name}]",
+                                    "format": _date_format(axis["values"])})
+                else:
+                    columns.append({"id": f"{fid}_b{number}", "name": name, "formula": f"[XJ/{name}]"})
+            em = Emitter(col=lambda n: f"[{n}]", period=f"[{axis['name']}]",
+                         coltype=lambda n: frame_types.get(n))
+            columns += _calc_columns(plan, frame, fid, {c["name"] for c in columns}, em)
+            hidden.append({"id": fid, "kind": "table", "name": frame["title"], "source": source,
+                           "columns": columns})
+            element_of[frame["id"]] = fid
+            visible.append(_pivot(plan, frame, fid, ids, frame.get("attrs", []), axis["name"], axis["values"]))
+        elif kind == "keyed":
+            table = frame["table"]
+            needed = referenced_columns(frame, set(types[table]))
+            for name in (frame["periodKey"], frame["rowKey"]):
+                if name not in needed:
+                    needed.insert(0, name)
+            columns = [{"id": f"{fid}_b{i}", "name": n, "formula": f"[{table}/{n}]"}
+                       for i, n in enumerate(needed)]
+            em = Emitter(col=lambda n: f"[{n}]", key=f"[{frame['rowKey']}]",
+                         period=f"[{frame['periodKey']}]", coltype=lambda n: frame_types.get(n))
+            own = {c["name"] for c in columns}
+            columns += _calc_columns(plan, frame, fid, own, em)
+            by_id = next(c["id"] for c in columns if c["name"] == frame["rowKey"])
+            period_id = next(c["id"] for c in columns if c["name"] == frame["periodKey"])
+            calc_ids = []
+            for summary in merged.get(frame["id"], []):
+                extra = _summary_columns(plan, summary, f"{fid}_s", frame_types, None)
+                for column in extra:
+                    if column["name"] in own:
+                        raise PlanError(f"frame {summary['title']!r}: column {column['name']!r} collides "
+                                        f"with a column of {frame['title']!r}")
+                    own.add(column["name"])
+                columns += extra
+                calc_ids += [c["id"] for c in extra]
+                element_of[summary["id"]] = fid
+            element = {"id": fid, "kind": "table", "name": frame["title"],
+                       "source": {"kind": "table", "elementId": wrapper[table]}, "columns": columns,
+                       "sort": [{"columnId": period_id, "direction": "ascending"}],
+                       "groupings": [{"id": f"{fid}_by_key", "groupBy": [by_id], "calculations": calc_ids}]}
+            (visible if calc_ids else hidden).append(element)
+            element_of[frame["id"]] = fid
+            visible.append(_pivot(plan, frame, fid, ids, [frame["rowKey"]], frame["periodKey"], frame["periods"]))
+        else:
+            source = frame["source"]
+            if source["kind"] == "table":
+                src_id, src_label, src_types = wrapper[source["name"]], source["name"], types[source["name"]]
+            else:
+                parent = next(f for f in plan["frames"] if f["id"] == source["name"])
+                src_id, src_label = element_of[parent["id"]], parent["title"]
+                src_types = _frame_types(plan, parent, types)
+            key_col = {"id": f"{fid}_key", "name": frame["by"], "formula": f"[{src_label}/{frame['by']}]"}
+            calcs = _summary_columns(plan, frame, fid, src_types, src_label)
+            visible.append({"id": fid, "kind": "table", "name": frame["title"],
+                            "source": {"kind": "table", "elementId": src_id}, "columns": [key_col] + calcs,
+                            "groupings": [{"id": f"{fid}_by", "groupBy": [key_col["id"]],
+                                           "calculations": [c["id"] for c in calcs]}]})
+            element_of[frame["id"]] = fid
+    return {"inputs": inputs, "hidden": hidden, "visible": visible}
+
+
+def _pivot(plan, frame, fid, ids, rows, axis_col, axis_values):
+    """Matrix view: rows x period, Sum(measure), with row totals."""
+    pid, title = ids.get("pv", frame["title"]), frame["title"]
+    columns, row_by = [], []
+    for number, name in enumerate(rows):
+        cid = f"{pid}_r{number}"
+        columns.append({"id": cid, "name": name, "formula": f"[{title}/{name}]"})
+        row_by.append({"columnId": cid, "sort": {"direction": "ascending"}})
+    axis_id, value_id, measure = f"{pid}_x", f"{pid}_v", frame["measure"]
+    columns.append({"id": axis_id, "name": axis_col, "formula": f"[{title}/{axis_col}]",
+                    "format": _date_format(axis_values)})
+    source_column = next((c for c in frame["columns"] if c["name"] == measure), {})
+    columns.append(_with_format(plan, source_column, {"id": value_id, "name": measure,
+                                                      "formula": f"Sum([{title}/{measure}])"}))
+    return {"id": pid, "kind": "pivot-table", "name": f"{title} (by period)",
+            "source": {"kind": "table", "elementId": fid}, "columns": columns, "values": [value_id],
+            "rowsBy": row_by, "columnsBy": [{"columnId": axis_id, "sort": {"direction": "ascending"}}],
+            "axisTotals": [{"axisId": "grand-row-total", "visibility": "hidden"}], "style": dict(CARD)}
+
+
+def layout_xml(pages):
+    """Dense grid layout: [(page id, [(element id, col_start, col_end, row_start, row_end)])]."""
+    blocks = []
+    for page_id, placements in pages:
+        lines = [f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" '
+                 f'id="{page_id}">']
+        for element_id, c0, c1, r0, r1 in placements:
+            lines.append(f'  <Element elementId="{element_id}" gridColumn="{c0} / {c1}" '
+                         f'gridRow="{r0} / {r1}"/>')
+        lines.append("</Page>")
+        blocks.append("\n".join(lines))
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)
+
+
+def build_wb_spec(plan, dm_id, dm_elements):
+    """Nested workbook draft (``workbook_wire.wire_workbook`` flattens it): Report, Inputs, hidden Model."""
+    parts = build_parts(plan, dm_id, dm_elements)
+    header = {"id": "trHeader", "kind": "text",
+              "body": f"# {plan['name']}\nRebuilt from formal tables; every summary value was verified "
+                      "against the source workbook before this build.",
+              "style": {"backgroundColor": "#F8FAFC", "color": "#0F172A", "borderRadius": "round"}}
+    pages = [{"id": "report", "name": "Report", "elements": [header] + parts["visible"]},
+             {"id": "inputs", "name": "Inputs", "elements": parts["inputs"]},
+             {"id": "model", "name": "Model (sources)", "visibility": "hidden", "elements": parts["hidden"]}]
+    report, cursor = [("trHeader", 1, 25, 1, 4)], 4
+    for element in parts["visible"]:
+        height = 20 if element["kind"] in ("pivot-table", "table") else 14
+        report.append((element["id"], 1, 25, cursor, cursor + height))
+        cursor += height
+    inputs, cursor = [], 1
+    for element in parts["inputs"]:
+        inputs.append((element["id"], 1, 25, cursor, cursor + 14))
+        cursor += 14
+    model, cursor = [], 1
+    for element in parts["hidden"]:
+        model.append((element["id"], 1, 25, cursor, cursor + 12))
+        cursor += 12
+    return {"name": plan["name"], "schemaVersion": 1, "kind": "workbook", "folderId": plan["folderId"],
+            "pages": pages, "layout": layout_xml([("report", report), ("inputs", inputs), ("model", model)])}

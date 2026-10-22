@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -74,6 +77,22 @@ class TestMacroClassify(unittest.TestCase):
         _name, _kind, body = next(macro.split_procedures(code))
         cls, status, *_ = macro.classify("Example", body)
         self.assertEqual((cls, status), ("RECALC", "AUTO"))
+
+    def test_json_mode_handles_the_recorded_macro_in_the_inventory_fixture(self):
+        # Regression: `macro-classify.py --json` crashed on 08 Inventory Replenishment
+        # Plan.xlsm with `MacroBehaviorError: unterminated procedure: Macro1`.
+        fixture = ROOT / "tests" / "fixtures" / "broader-eight" / "08 Inventory Replenishment Plan.xlsm"
+        try:
+            import oletools  # noqa: F401
+        except ImportError:
+            self.skipTest("oletools is not installed")
+        result = subprocess.run([sys.executable, str(PATH), "--json", str(fixture)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = json.loads(result.stdout)
+        self.assertEqual([r["name"] for r in records], ["Macro1"])
+        self.assertEqual((records[0]["class"], records[0]["status"]), ("NAVIGATION", "AUTO"))
+        self.assertEqual(records[0]["analysis"]["procedure"]["calls"], [])
 
 
 if __name__ == "__main__":
