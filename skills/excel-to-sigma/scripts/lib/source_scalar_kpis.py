@@ -95,7 +95,9 @@ def _validate_contract(contract):
 
 def _layout(contents):
     try:
-        return ET.fromstring('<Root>' + contents['layout'] + '</Root>')
+        # Public layout may contain several Page roots after an XML declaration.
+        layout = re.sub(r'\A<\?xml\s[^?]*\?>', '', contents['layout'], count=1)
+        return ET.fromstring('<Root>' + layout + '</Root>')
     except (KeyError, ET.ParseError) as error:
         raise ValueError('complete current layout required') from error
 
@@ -222,6 +224,9 @@ def _program(owners, target, page_ids, plan_hash):
              '# Re-query and replan after interruption; native append only.',
              '# ADMISSION FENCE: the authorized external controller must admit the run and inverse first.',
              "raise RuntimeError('external run receipt and guarded native inverse admission required')",
+             'from sigma.page import Page',
+             'from sigma.inputTable import InputTable, InputTableIDColumn',
+             'from sigma.column import FormulaColumn',
              "host = sigma.workbook.get_page('sales-overview')",
              "if not isinstance(host, Page): raise RuntimeError('expected overview page')",
              'observed_ids = []', 'for existing in host.list_elements():',
@@ -337,6 +342,12 @@ def _without_added(contents, added):
         for child in list(parent):
             if child.tag == 'Element' and child.get('elementId') in added:
                 parent.remove(child)
+    # Indentation changes carry no layout meaning; retain all authored text.
+    for node in root.iter():
+        if node.text is not None and not node.text.strip(' \t\r\n'):
+            node.text = None
+        if node.tail is not None and not node.tail.strip(' \t\r\n'):
+            node.tail = None
     result['layout'] = ''.join(ET.tostring(child, encoding='unicode') for child in root)
     return result
 

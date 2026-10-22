@@ -166,6 +166,45 @@ class TestSeedPlanner(unittest.TestCase):
                 self.assertEqual(rerun["updates"], [])
                 self.assertEqual(len(rerun["unchanged"]), 1)
 
+    def test_midnight_wire_readback_reconciles_source_dates_and_datetimes(self):
+        types = {"Key": "text", "Due": "datetime"}
+        for value in ("2026-06-30", dt.date(2026, 6, 30), dt.datetime(2026, 6, 30)):
+            with self.subTest(source=value):
+                source = [{"Key": "A", "Due": value}]
+                initial = plan_seed(source, [], ["Key"], "Row ID", column_types=types)
+                current = [{"Key": "A", "Due": "2026-06-30T00:00:00.000Z",
+                            "Row ID": "server-42"}]
+                confirmed = plan_seed(source, current, ["Key"], "Row ID",
+                                      prior_seed=initial, column_types=types)
+                self.assertEqual(confirmed["conflicts"], [])
+                self.assertEqual(confirmed["updates"], [])
+                self.assertEqual(len(confirmed["unchanged"]), 1)
+                for baseline in (initial, confirmed):
+                    refreshed = plan_seed(
+                        [{"Key": "A", "Due": "2026-07-31"}], current,
+                        ["Key"], "Row ID", prior_seed=baseline, column_types=types)
+                    self.assertEqual(refreshed["conflicts"], [])
+                    self.assertEqual(len(refreshed["updates"]), 1)
+                    self.assertEqual(refreshed["updates"][0]["changes"],
+                                     {"Due": "2026-07-31"})
+
+    def test_datetime_wire_readback_preserves_time_and_offset_edits(self):
+        types = {"Key": "text", "Due": "datetime"}
+        for value in ("2026-06-30", dt.date(2026, 6, 30), dt.datetime(2026, 6, 30)):
+            source = [{"Key": "A", "Due": value}]
+            initial = plan_seed(source, [], ["Key"], "Row ID", column_types=types)
+            for edited in ("2026-06-30T00:00:00.001Z", "2026-06-30T01:00:00.000Z",
+                           "2026-07-01T00:00:00.000Z", "2026-06-30T00:00:00-04:00",
+                           "2026-06-30T00:00:00+04:00"):
+                with self.subTest(source=value, edited=edited):
+                    refreshed = plan_seed(
+                        [{"Key": "A", "Due": "2026-07-31"}],
+                        [{"Key": "A", "Due": edited, "Row ID": "server-42"}],
+                        ["Key"], "Row ID", prior_seed=initial, column_types=types)
+                    self.assertEqual(refreshed["updates"], [])
+                    self.assertEqual(len(refreshed["conflicts"]), 1)
+                    self.assertEqual(refreshed["conflicts"][0]["current"]["Due"], edited)
+
     def test_datetime_wire_string_normalizes_only_for_approved_datetime_column(self):
         source = [{"Key": "A", "Value": "2026-06-30"}]
         current = [{"Key": "A", "Value": "2026-06-30T12:00:00.000Z", "Row ID": "r1"}]

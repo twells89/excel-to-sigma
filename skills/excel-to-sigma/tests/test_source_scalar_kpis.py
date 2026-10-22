@@ -4,6 +4,7 @@ import ast
 import re
 import json
 import subprocess
+import symtable
 import sys
 import tempfile
 import unittest
@@ -162,6 +163,51 @@ class TestSourceScalarKPIs(unittest.TestCase):
         self.snapshot['input']['nativeIdFormula'] = '1'
         with self.assertRaises(ValueError): self.plan()
 
+    def test_declared_xml_layout_plans_and_binds_without_mutating_snapshot(self):
+        self.snapshot['contents']['layout'] = ('<?xml version="1.0" encoding="utf-8"?>\n'
+                                               + self.snapshot['contents']['layout'])
+        original = copy.deepcopy(self.snapshot)
+        plan = self.plan()
+        after, assigned = self.readback(plan)
+        after['contents']['layout'] = after['contents']['layout'].replace('><', '>\n  <')
+        observed = copy.deepcopy(after)
+        ownership = scalars.bind_native_scalar_owners(plan, after, assigned)
+        self.assertEqual(set(ownership['targets']), {'Overview!B6'})
+        self.assertEqual(plan['before'], original)
+        self.assertEqual(self.snapshot, original)
+        self.assertEqual(after, observed)
+
+    def test_pretty_printed_layout_append_binds_without_mutating_snapshot(self):
+        plan = self.plan()
+        after, assigned = self.readback(plan)
+        after['contents']['layout'] = after['contents']['layout'].replace(
+            '><', '>\n  <')
+        original, observed = copy.deepcopy(plan['before']), copy.deepcopy(after)
+        ownership = scalars.bind_native_scalar_owners(plan, after, assigned)
+        self.assertEqual(set(ownership['targets']), {'Overview!B6'})
+        self.assertEqual(plan['before'], original)
+        self.assertEqual(after, observed)
+
+    def test_layout_conservation_rejects_structure_attributes_order_and_text_edits(self):
+        self.snapshot['contents']['layout'] = self.snapshot['contents']['layout'].replace(
+            '</Page><Page', '<Group id="retained"/></Page><Page')
+        plan = self.plan()
+        after, assigned = self.readback(plan)
+        layout = after['contents']['layout']
+        mutations = [
+            layout.replace('id="retained"', 'id="changed"'),
+            layout.replace('<Group id="retained"/>', '<Container><Group id="retained"/></Container>'),
+            layout.replace('<Group id="retained"/>', '<Group id="retained"/>authored text'),
+            layout.replace('<Page id="sales-overview">', '<Page id="sales-overview">authored text'),
+            ''.join(reversed(re.findall(r'<Page\b.*?</Page>', layout))),
+        ]
+        for changed in mutations:
+            with self.subTest(layout=changed):
+                edited = copy.deepcopy(after)
+                edited['contents']['layout'] = changed
+                with self.assertRaises(ValueError):
+                    scalars.bind_native_scalar_owners(plan, edited, assigned)
+
     def test_partial_assigned_readback_allows_only_the_missing_append(self):
         plan = self.plan()
         after, assigned = self.readback(plan)
@@ -258,6 +304,16 @@ class TestSourceScalarKPIs(unittest.TestCase):
         self.assertEqual(evaluate_scalar(formula_b6, rows), 0)
         self.assertEqual(evaluate_scalar(formula_b7, rows), 0)
 
+    def test_program_imports_every_sdk_class_used_by_runtime_guards(self):
+        for projection in (None, '[New Input Table/ID]'):
+            with self.subTest(projection=projection):
+                if projection:
+                    self.snapshot['input']['nativeIdFormula'] = projection
+                program = self.plan()['program']
+                symbols = symtable.symtable(program, 'native-scalars.py', 'exec')
+                for name in ('Page', 'InputTable', 'FormulaColumn', 'InputTableIDColumn'):
+                    self.assertTrue(symbols.lookup(name).is_imported(), name)
+
     def test_inventory_guard_stops_direct_program_replay_before_mutation(self):
         class Page:
             def list_elements(self): return [self]
@@ -268,6 +324,8 @@ class TestSourceScalarKPIs(unittest.TestCase):
             workbook = Workbook()
         tree = ast.parse(self.plan()['program'])
         self.assertIsInstance(tree.body.pop(0), ast.Raise)
+        # This inventory-only harness supplies Page below; SDK imports are checked separately.
+        tree.body = [node for node in tree.body if not isinstance(node, ast.ImportFrom)]
         with self.assertRaisesRegex(RuntimeError, 'inventory changed'):
             exec(compile(tree, 'admitted-native.py', 'exec'), {'sigma': Sigma(), 'Page': Page})
 

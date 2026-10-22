@@ -256,9 +256,7 @@ def _parse_datetime(value, date_only=False):
             parsed = dt.date.fromisoformat(value)
             return dt.datetime(parsed.year, parsed.month, parsed.day, 12)
         parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is not None:
-            parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
-        return parsed
+        return _parse_datetime(parsed, date_only=date_only)
     return value
 
 
