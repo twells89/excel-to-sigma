@@ -208,6 +208,23 @@ class ValidationTests(unittest.TestCase):
         self.fails("at least one editable", editable=[])
         self.fails("more than 2000", rows=[{"key": {"Line Item": str(i)}, "values": {"Override Rate": 1}} for i in range(2001)])
 
+    def test_non_object_table_and_data_page_are_validation_errors(self):
+        for bad in ([1], "Linked", 7, [{"name": "x"}], True):
+            self.fails("table must be an object", table=bad)
+            self.fails("dataPage must be an object", dataPage=bad)
+
+    def test_cli_reports_non_object_table_without_traceback(self):
+        for field in ("table", "dataPage"):
+            with tempfile.TemporaryDirectory() as tmp:
+                bad = Path(tmp) / "bad.json"
+                bad.write_text(json.dumps(spec(**{field: ["not", "an", "object"]})), encoding="utf-8")
+                done = subprocess.run([sys.executable, str(SCRIPTS / "linked-input-program.py"), "emit",
+                                       "--spec", str(bad), "--out-dir", str(Path(tmp) / "o")],
+                                      capture_output=True, text=True)
+                self.assertEqual(done.returncode, 1, done.stderr)
+                self.assertIn(field + " must be an object", done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+
     def test_cli_reports_validation_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             bad = Path(tmp) / "bad.json"
@@ -261,6 +278,14 @@ class ReadbackTests(unittest.TestCase):
         program = emit(s)["programs"]["call3"]
         self.assertEqual(lint_program(program), [])
         compile(program, "call3", "exec")
+
+    def test_backslashes_are_escaped_in_readback_literals(self):
+        key = "C:\\dir\\a\\'"          # C:\dir\a\'  (a trailing backslash-quote)
+        s = spec(rows=[{"key": {"Line Item": key}, "values": {"Override Rate": 1}}])
+        q = {item["name"]: item["sql"] for item in readback_queries(normalize_spec(s))["queries"]}
+        # backslashes and the quote are both doubled, so a dialect that treats a backslash as an
+        # escape cannot end the literal early
+        self.assertIn("'C:\\\\dir\\\\a\\\\'''", q["seeded_rows"])
 
     def test_multi_key_distinct_uses_concat(self):
         s = spec(key=["Region", "Line Item"], rows=[])

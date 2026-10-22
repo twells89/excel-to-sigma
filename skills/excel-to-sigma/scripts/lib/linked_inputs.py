@@ -169,6 +169,8 @@ def normalize_spec(spec):
     existing = "id" in out["workbook"]
 
     data_page = spec.get("dataPage") or {}
+    if not isinstance(data_page, dict):
+        raise LinkedInputError("dataPage must be an object like {name}")
     out["dataPage"] = {"name": _name(data_page.get("name", "Data"), "dataPage.name")}
     page = spec.get("page")
     if not isinstance(page, dict) or bool(page.get("id")) == bool(page.get("name")):
@@ -291,6 +293,8 @@ def normalize_spec(spec):
         out["formulas"].append({"name": fname, "formula": tree})
 
     table = spec.get("table") or {}
+    if not isinstance(table, dict):
+        raise LinkedInputError("table must be an object like {name, editMode, frame, baselineName}")
     mode = table.get("editMode", "draft")
     if mode not in EDIT_MODES:
         raise LinkedInputError("table.editMode must be one of " + ", ".join(EDIT_MODES))
@@ -539,7 +543,12 @@ def _q(name):
 
 def _sql_lit(value):
     if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
+        # Double backslashes as well as quotes: warehouse dialects that treat a backslash as an
+        # escape inside a single-quoted literal (Snowflake, BigQuery, Databricks) would otherwise
+        # let a key such as ``a\'`` end the literal early. Doubling is the portable choice for
+        # these read-only readback queries; on a dialect without backslash escapes a key that
+        # contains a backslash simply matches no row, which the seeded-row count then reports.
+        return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
     return repr(value)
 
 

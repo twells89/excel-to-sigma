@@ -284,7 +284,10 @@ def parity(P):
         if meta.get("totalLabel"):
             rows.append((meta.get("totalRow", 0), meta["totalLabel"], ev.section_total(meta["name"], idx)))
     for d in P.get("derivedRows", []):
-        rows.append((d.get("sourceRow", 0), d["label"], ev.aggregate(d["label"], idx)))
+        try:
+            rows.append((d.get("sourceRow", 0), d["label"], ev.aggregate(d["label"], idx)))
+        except calc.ExprError:
+            continue  # e.g. a ratio over a zero FY total: no value, so a target on it fails loudly
     out = {}
     for _, label, value in sorted(rows, key=lambda r: r[0]):
         out.setdefault(calc.TARGET_LABELS.get(label.lower(), label), value)
@@ -294,7 +297,8 @@ def parity(P):
 def check_parity(P, computed, tolerance):
     """Compare computed totals to plan['parityTargets']; print one line per metric.
 
-    Returns True when every present target matches within ``tolerance`` (absolute).
+    Returns True when every present target matches: within ``tolerance`` (absolute) when one
+    is given, else within float noise (``calc.close``).
     Plans without targets are reported as unchecked and do not fail.
     """
     targets = P.get("parityTargets") or {}
@@ -310,10 +314,10 @@ def check_parity(P, computed, tolerance):
             print(f"PARITY FAIL {metric}: plan has no row to recompute it; source={want:,.2f}")
             continue
         got = computed[metric]
-        passed = abs(got - want) <= tolerance
+        passed = calc.close(got, want, tolerance)
         ok = ok and passed
         print(f"PARITY {'PASS' if passed else 'FAIL'} {metric}: plan={got:,.2f} source={want:,.2f} "
-              f"diff={got - want:,.4f}")
+              f"diff={got - want:,.6f}")
     return ok
 
 # ---------- seed CSVs ----------
@@ -365,7 +369,8 @@ def amount_rows(P, sections):
     Income; a discovered-section plan with none gets one signed bottom line.
     """
     if P.get("derivedRows"):
-        rows = [{"label": d["label"], "coefficients": d["coefficients"]}
+        rows = [{"label": d["label"], "coefficients": d["coefficients"],
+                 **({"lineCoefficients": d["lineCoefficients"]} if d.get("lineCoefficients") else {})}
                 for d in P["derivedRows"] if d.get("kind") == "amount"]
         if rows:
             return rows
@@ -374,6 +379,71 @@ def amount_rows(P, sections):
         return [{"label": label, "coefficients": {n: CLASSIC_SIGNS[n] for n in names[:count]}}
                 for label, count in (("Gross Profit", 2), ("EBITDA", 3), ("Net Income", 4))]
     return [{"label": "Net Result", "coefficients": {s["name"]: s["sign"] for s in sections}}]
+
+
+def kpi_rows(P, rows):
+    """``(middle, bottom)`` indexes into ``rows`` for the two profit KPI cards and the trend.
+
+    Chosen by role, not by position in the sheet: the bottom line is the amount row that
+    depends on the most sections (every section when the P&L has a true bottom line; a row
+    labelled Net Income wins a tie), the latest such row on a further tie. The middle card
+    is the row the bottom line reads that depends on the most sections (EBITDA for a classic
+    P&L, Operating Profit for a retail budget), else the best remaining row. An extra
+    amount row such as ``Contribution = Subscription - COGS`` touches few sections, so it
+    never takes the bottom-line card.
+    """
+    line_section = {ln["line"]: ln["section"] for ln in P.get("lines", [])}
+    exprs = {d["label"]: d["expr"] for d in P.get("derivedRows", []) if "expr" in d}
+    cover = [len(set(r["coefficients"]) | {line_section[l] for l in r.get("lineCoefficients", {})
+                                           if l in line_section}) for r in rows]
+    best = [i for i, c in enumerate(cover) if c == max(cover)]
+    named = [i for i in best if rows[i]["label"].strip().lower() == "net income"]
+    bottom = (named or best)[-1]
+    others = [i for i in range(len(rows)) if i != bottom]
+    if not others:
+        return None, bottom
+    read, todo = set(), [rows[bottom]["label"]]
+    while todo:
+        label = todo.pop()
+        for ref in calc.derived_references(exprs[label]) if label in exprs else ():
+            if ref not in read:
+                read.add(ref)
+                todo.append(ref)
+    middle = max(others, key=lambda i: (rows[i]["label"] in read, cover[i], i))
+    return middle, bottom
+
+
+def section_sum(table, sec_cols, fy_nums, name, fy=False):
+    """Sum of one section's amount column over ``pnlCombined`` (the FY periods only with ``fy``)."""
+    col = f"[{table}/{sec_cols[name][1]}]"
+    if fy and fy_nums:
+        return f"SumIf({col}, [{table}/Month Num] >= {fy_nums[0]} and [{table}/Month Num] <= {fy_nums[-1]})"
+    return f"Sum({col})"
+
+
+def amount_formula(row, table, sec_cols, fy_nums, fy=False):
+    """Sigma formula for an amount row over ``pnlCombined``: section totals and single lines.
+
+    ``row`` is ``{coefficients: {section: weight}, lineCoefficients: {line: weight}}``. A
+    section term sums that section's amount column; a line term sums the Amount column for
+    that Line Item only (``SumIf``), so a row such as ``Subscription - COGS`` is not widened
+    to the whole revenue section. With ``fy`` the sums cover only the FY column's periods.
+    """
+    window = ""
+    if fy and fy_nums:
+        window = f" and [{table}/Month Num] >= {fy_nums[0]} and [{table}/Month Num] <= {fy_nums[-1]}"
+    terms = [(section_sum(table, sec_cols, fy_nums, name, fy), weight)
+             for name, weight in row["coefficients"].items()]
+    for label in row.get("lineCoefficients", {}):
+        if '"' in label or "\\" in label:
+            raise PlanError(f"line {label!r} contains a quote or backslash the Sigma formulas cannot carry")
+    terms += [(f'SumIf([{table}/Amount], [{table}/Line Item] = "{label}"{window})', weight)
+              for label, weight in row.get("lineCoefficients", {}).items()]
+    out = ""
+    for i, (term, weight) in enumerate(terms):
+        term = term if abs(weight) == 1 else f"{abs(weight):g} * {term}"
+        out += (("-" if weight < 0 else "") + term) if i == 0 else (" - " if weight < 0 else " + ") + term
+    return out
 
 
 def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
@@ -492,20 +562,13 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         raise PlanError("fyPeriods must be a contiguous run of periods")
     fy_prefix = re.sub(r"\s+total$", "", P.get("fyLabel") or "FY", flags=re.I) if fy_nums else ""
     def sec_sum(name, fy=False):
-        col = f"[{C}/{sec_cols[name][1]}]"
-        if fy and fy_nums:
-            return f"SumIf({col}, [{C}/Month Num] >= {fy_nums[0]} and [{C}/Month Num] <= {fy_nums[-1]})"
-        return f"Sum({col})"
+        return section_sum(C, sec_cols, fy_nums, name, fy)
     def kpi_title(name):
         if not fy_nums:
             return name
         return f"{fy_prefix} {name}"
-    def signed(coefficients, fy=False):
-        out = ""
-        for i, (name, weight) in enumerate(coefficients.items()):
-            term = sec_sum(name, fy) if abs(weight) == 1 else f"{abs(weight):g} * {sec_sum(name, fy)}"
-            out += (("-" if weight < 0 else "") + term) if i == 0 else (" - " if weight < 0 else " + ") + term
-        return out
+    def signed(row, fy=False):
+        return amount_formula(row, C, sec_cols, fy_nums, fy)
     rows = amount_rows(P, sections)
     first_positive = next((sec["name"] for sec in sections if sec["sign"] > 0), sections[0]["name"])
     REV = sec_sum(first_positive)
@@ -515,20 +578,21 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
     def kpi(eid,name,f,fmt): return {"id":eid,"kind":"kpi-chart","name":name,"source":{"kind":"table","elementId":"pnlCombined"},"columns":[{"id":"v","formula":f,"format":fmt}],"value":{"columnId":"v"},"style":dict(card_style)}
     # KPI cards: first positive section, the next-to-last and last amount rows, and the
     # first amount row as a share of that section (Gross Margin %).
+    middle, bottom = kpi_rows(P, rows)
     slots = [("kpiRev", kpi_title(rev_label), REV_FY, cur)]
-    if len(rows) >= 2:
-        slots.append(("kpiEbitda", kpi_title(rows[-2]["label"]), signed(rows[-2]["coefficients"], True), cur))
-    slots.append(("kpiNI", kpi_title(rows[-1]["label"]), signed(rows[-1]["coefficients"], True), cur))
+    if middle is not None:
+        slots.append(("kpiEbitda", kpi_title(rows[middle]["label"]), signed(rows[middle], True), cur))
+    slots.append(("kpiNI", kpi_title(rows[bottom]["label"]), signed(rows[bottom], True), cur))
     if len(rows) >= 2:
         first = rows[0]
         ratio_name = "Gross Margin %" if first["label"].lower() == "gross profit" else f"{first['label']} %"
-        slots.append(("kpiGM", kpi_title(ratio_name), f"({signed(first['coefficients'], True)}) / {REV_FY}", PCT(P)))
+        slots.append(("kpiGM", kpi_title(ratio_name), f"({signed(first, True)}) / {REV_FY}", PCT(P)))
     kpis = [kpi(*slot) for slot in slots]
     kpis[0]["style"]["borderColor"] = "#2563EB"
     header={"id":"pnlHeader","kind":"text","body":f"# {P['name']}\n{grain_adj} actuals and forecast performance",
         "style":{"backgroundColor":"#F8FAFC","color":"#0F172A","borderRadius":"round"}}
-    tail = rows[-2:] if len(rows) >= 2 else rows[-1:]
-    trend_series = [(first_positive, REV)] + [(r["label"], signed(r["coefficients"])) for r in tail]
+    tail = [rows[i] for i in sorted({middle, bottom} - {None})]
+    trend_series = [(first_positive, REV)] + [(r["label"], signed(r)) for r in tail]
     trend_names = [name for name, _ in trend_series]
     trend_label = ", ".join(trend_names[:-1]) + " & " + trend_names[-1] if len(trend_names) > 1 else trend_names[0]
     series_cols = [{"id":"t_" + re.sub(r"\W+", "_", name.lower()).strip("_"),"name":name,"formula":f,"format":cur}
@@ -575,7 +639,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         if label:
             metric_formula[calc.TARGET_LABELS.get(label.lower(), label)] = sec_sum(sec["name"])
     for row in rows:
-        metric_formula[calc.TARGET_LABELS.get(row["label"].lower(), row["label"])] = signed(row["coefficients"])
+        metric_formula[calc.TARGET_LABELS.get(row["label"].lower(), row["label"])] = signed(row)
     if not P.get("sections"):
         metric_formula["Revenue"] = REV
     source_charts = []
@@ -634,8 +698,9 @@ def parse_args(argv=None):
     parser.add_argument("--post", action="store_true", help="create the data model and workbook")
     parser.add_argument("--out-dir", default="/tmp/fcst-build",
                         help="where specs and seed CSVs are written (default: /tmp/fcst-build)")
-    parser.add_argument("--parity-tolerance", type=float, default=0.01,
-                        help="absolute tolerance for plan.parityTargets (default: 0.01)")
+    parser.add_argument("--parity-tolerance", type=float, default=None,
+                        help="absolute tolerance for plan.parityTargets (default: float noise only, "
+                             "max(1e-6, 1e-9 * |source value|))")
     return parser.parse_args(argv)
 
 
@@ -674,6 +739,11 @@ def main(argv=None):
     if not check_parity(P, par, args.parity_tolerance):
         print("LOCAL PARITY FAILED — no specs written; fix the plan (or the source) before building.",
               file=sys.stderr)
+        return 1
+    try:   # a plan the workbook cannot express fails before anything is written or posted
+        build_wb_spec(P,"<dm-id>",{"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"})
+    except PlanError as error:
+        print(f"PLAN ERROR: {error}", file=sys.stderr)
         return 1
     os.makedirs(outdir, exist_ok=True)
     rate_csv,man_csv=seed_csvs(P,outdir)

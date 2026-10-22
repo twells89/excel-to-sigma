@@ -278,7 +278,8 @@ flat, manual or an external link (kept as manual values with an `EXTERNAL_LINK_V
 review issue); rates may come from several driver cells. It fails loudly on anything
 else, and recomputes every line, total and derived row per period against Excel's
 cached values before writing the plan. It raises `FLAT_CARRY_POLICY` for `=prior`
-lines; the dry run reports it as pending and `--post` needs a source-bound
+lines and `DRIVER_FORMULA_FROZEN` for a driver cell that holds a formula (the plan keeps
+only its cached rate); the dry run reports it as pending and `--post` needs a source-bound
 disposition. The builder's local parity check compares the plan to `parityTargets`
 (every derived row's FY or total value) and exits 1 on any mismatch; when the FY
 column covers only some periods, the KPI cards cover exactly those periods. Workbook

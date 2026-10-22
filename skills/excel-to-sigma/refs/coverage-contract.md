@@ -55,7 +55,7 @@ fails the gate. `BLOCKED` is never overrideable. Inferred plans also require
 Research plans add `CACHED_FORMULA_FALLBACK` when any formula cell is frozen to
 an Excel cached value, and `INFERENCE_REVIEW_REQUIRED` when inferred lines remain
 unresolved; forecast plans from `draft-forecast-plan.py` add `FLAT_CARRY_POLICY` for
-`=prior` forecast lines. These need explicit dispositions and must not be described as
+`=prior` forecast lines and `DRIVER_FORMULA_FROZEN` for formula-valued driver cells. These need explicit dispositions and must not be described as
 full live-formula migration. Builds without `--post` run in draft mode and only report
 these codes as pending (`DRAFT MODE: review pending for ...`).
 
