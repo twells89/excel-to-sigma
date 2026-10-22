@@ -409,7 +409,7 @@ def cash_expected(scenario="Base", weeks=5):
     return out
 
 
-def build_cash(path, scenario="Base", sections=True, selected=None, stray=False):
+def build_cash(path, scenario="Base", sections=True, selected=None, stray=False, float_weeks=False):
     """A 5-week cash ledger: SUMIFS rows x a scenario factor (INDIRECT over named cells), a growth recursion,
     a MOD cadence, typed rent, a date row from a date parameter, a carried running balance, a running MIN,
     SUM totals and a caption. ``Payments`` reads a keyless table (``Acme`` twice).
@@ -443,7 +443,7 @@ def build_cash(path, scenario="Base", sections=True, selected=None, stray=False)
     book.put(cash, "A1", '="Case: "&Scenario', f"Case: {scenario}")
     cash["A3"] = "Wk"
     for i in range(weeks):
-        cash.cell(3, 2 + i, i + 1)
+        cash.cell(3, 2 + i, float(i + 1) if float_weeks else i + 1)  # some writers store 1.0
     cash.cell(3, 2 + weeks, "Total")
     letters = [get_column_letter(2 + i) for i in range(weeks)]
     rows, r = {}, 4

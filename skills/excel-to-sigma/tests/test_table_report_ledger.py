@@ -5,6 +5,7 @@ the loud failures, and the 06 13-Week Cash Flow fixture end to end."""
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import tempfile
 import unittest
@@ -85,6 +86,12 @@ class TestLedgerRecognisers(Workdir):
         self.assertEqual((frame["title"], frame["axis"], frame["spine"]), ("Cash", "Wk", "Cash Periods"))
         self.assertEqual(frame["order"][:4], ["Wk", "Week Ending", "Beginning Cash", "Collections"])
         self.assertEqual(frame["totals"][:3], ["Collections", "New Sales", "Total Receipts"])
+
+    def test_whole_number_float_week_headers_draft_the_same_ledger(self):
+        # Some .xlsx writers store week 1 as 1.0; the ledger and its period keys must not change.
+        _, plan, info, _ = self.cash("float-weeks", float_weeks=True)
+        self.assertEqual((info["verifiedCells"], info["formulaCells"]), (69, 69))
+        self.assertEqual(json.dumps(ledger(plan), sort_keys=True), json.dumps(ledger(self.plan), sort_keys=True))
 
     def test_every_period_of_every_row_matches_an_independent_recomputation(self):
         expected = self.book["expected"]

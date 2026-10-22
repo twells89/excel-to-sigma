@@ -101,7 +101,7 @@ def find_ledgers(reg):
                 continue
             run, c = [], lc + 1
             while _is_int(cell(hr, c)) and (not run or cell(hr, c) == run[-1][1] + 1):
-                run.append((c, cell(hr, c)))
+                run.append((c, int(cell(hr, c))))  # 1.0 from some writers is week 1
                 c += 1
             if len(run) < 3:
                 continue
