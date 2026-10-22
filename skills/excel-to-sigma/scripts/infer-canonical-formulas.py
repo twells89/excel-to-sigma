@@ -1096,6 +1096,9 @@ def _parser():
     parser.add_argument("--first-row", type=int)
     parser.add_argument("--last-row", type=int)
     parser.add_argument("--review-dispositions")
+    parser.add_argument("--draft", action="store_true",
+                        help="local drafting: report pending review issues instead of failing "
+                             "(production builds still need --review-dispositions)")
     parser.add_argument("--quiet", action="store_true")
     return parser
 
@@ -1103,10 +1106,13 @@ def _parser():
 def main(argv=None):
     args = _parser().parse_args(argv)
     try:
-        gate_source(args.workbook, args.review_dispositions)
+        gate_report = gate_source(args.workbook, args.review_dispositions, draft=args.draft)
     except MigrationGateError as error:
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
         return error.exit_code
+    if gate_report.get("pendingReview"):
+        print("DRAFT MODE: review pending for " + ", ".join(gate_report["pendingReview"])
+              + " — fine for a local build; resolve before --post.")
     plan = infer(args.workbook, sheet=args.sheet,
                  first_row=args.first_row, last_row=args.last_row)
     if not args.quiet:

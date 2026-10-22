@@ -74,7 +74,10 @@ Excel formal Table → Sigma input table → (publish) → SIGDS_ writeback
   deterministic sales, expense, and headcount fixtures.
 - ✅ Current Sigma `contents` API, dry-run validation, Actions, Python, stored
   procedures, input validation, and automation are OpenAPI-audited in CI.
-- 🚧 Discovery + Excel-formula translation: spiked, not yet a one-shot converter.
+- ✅ Cell-drawn actuals + driver-growth forecast models: `migrate.py plan` → `draft-forecast-plan.py`
+  → `build-forecast-model.py` drafts, verifies against the workbook's cached values, and checks local
+  parity; unrecognised shapes fail loudly.
+- 🚧 Discovery + Excel-formula translation for other archetypes: spiked, not yet a one-shot converter.
 
 See `skills/excel-to-sigma/SKILL.md` for the full workflow and `QUICKSTART.md` for
 a runnable walkthrough on the bundled sample fixture.
@@ -97,7 +100,9 @@ skills/excel-to-sigma/
     make-sample-forecast.py         generate a synthetic .xlsx fixture (no customer data)
     make-chart-examples.py          generate sales/expense/headcount chart fixtures
     xlsx-discover.py                Phase 0 — inventory tables/visuals/formulas
+    migrate.py                      router: audit + discover + archetype, prints the next steps as JSON
     audit-xlsx.py                   fail-loud workbook capability/routing manifest
+    draft-forecast-plan.py          draft + verify a forecast model plan from a cell-drawn P&L
     audit-openapi.py                current Sigma code-rep drift gate
     xlsx-to-input-csv.py            Phase 1 — extract a Table to a paste-ready CSV
     build-input-table-wb.py         Phase 3 — POST the input-table workbook (API)

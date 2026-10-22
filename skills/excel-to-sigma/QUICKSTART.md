@@ -26,7 +26,9 @@ charts that map directly to Sigma visualizations.
 ## 2. Audit, then discover
 ```bash
 .venv/bin/python audit-xlsx.py "Sample Forecast.xlsx" --out /tmp/forecast-audit.json
-# REVIEW_REQUIRED is expected for charts/formatting: route every issue before build.
+# REVIEW_REQUIRED (exit 0) is expected for charts/formatting: route every issue before --post.
+# (--strict exits 1 for it, for a production gate; `migrate.py plan <file>` runs audit + discovery
+#  and prints the archetype, refs to read, and next commands.)
 .venv/bin/python audit-openapi.py --out /tmp/sigma-code-rep-audit.json
 .venv/bin/python xlsx-discover.py "Sample Forecast.xlsx"
 ```
@@ -98,20 +100,30 @@ DEPENDENCY_LINK / DERIVED). Preserve direct cell references as live
 dependencies, including cash roll-forwards; `=prior` is not evidence for a
 constant `flat` forecast. After confirming intent and that the source has the
 expected actuals, drivers, sections, and periods (see `refs/model-taxonomy.md`),
-drive this archetype build from a **model-plan JSON**:
+route -> draft the **model-plan JSON** -> dry run -> post:
 
 ```bash
-# dry run: local parity + emits dm_spec.json / wb_spec.json / seed CSVs to /tmp/fcst-build
-.venv/bin/python build-forecast-model.py source-bound-plan.json --source "Original Model.xlsx"
-# build live (DM + workbook with union[actuals,forecast], KPIs, Actual|Forecast pivot, trend, editable rate+manual tables)
-.venv/bin/python build-forecast-model.py source-bound-plan.json --source "Original Model.xlsx" --post
+# 1. route: audit + discovery + archetype + next commands (JSON)
+.venv/bin/python migrate.py plan "Original Model.xlsx" --out-dir work
+# 2. draft the plan from the workbook (fails loudly on shapes it cannot map; verifies every
+#    line-month and GL month against Excel's cached values before writing)
+.venv/bin/python draft-forecast-plan.py "Original Model.xlsx" --intent what-if \
+    --connection <writeConn> --folder <folderId> --out work/plan.json
+# 3. dry run (draft mode): local parity vs the workbook's totals + dm_spec.json / wb_spec.json / seed CSVs
+.venv/bin/python build-forecast-model.py work/plan.json --out-dir work/build
+# 4. build live (DM + workbook with union[actuals,forecast], KPIs, Actual|Forecast pivot, trend,
+#    editable rate+manual tables); production keeps the strict dispositions contract
+.venv/bin/python build-forecast-model.py work/plan.json --post --review-dispositions work/review.json
 ```
 
-The plan must contain the source workbook's `sourceSha256`; `sourcePath` may be
-saved in the plan instead of passing `--source`. Legacy plans without a source
-hash must be regenerated because their parity claims cannot be tied to the
-workbook being migrated. If the source audit requires review, also pass
-`--review-dispositions review.json` using the format in `refs/coverage-contract.md`.
+The plan records the source workbook's `sourceSha256`; `sourcePath` is saved in the
+plan, or pass `--source`. Plans without a source hash must be regenerated because their
+parity claims cannot be tied to the workbook being migrated. Step 3 reports pending
+review issues (`DRAFT MODE: ...`, including the drafter's `FLAT_CARRY_POLICY` for
+`=prior` lines) without blocking; step 4 needs every code dispositioned in
+`review.json` (format in `refs/coverage-contract.md`; `migrate.py` writes
+`review.template.json`). The local parity check compares the plan to the workbook's
+FY totals (`--parity-tolerance`, default 0.01) and exits 1 on any mismatch.
 Source binding alone does not make this builder general. If discovery finds
 unknown sheets, tables, sections, periods, or dependency behavior, use
 source-specific MCP construction or explicit review. Do not map the workbook

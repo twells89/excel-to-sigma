@@ -396,6 +396,7 @@ def main(argv=None):
             source_arg=args.source,
             dispositions_path=args.review_dispositions,
             plan_path=args.plan,
+            draft=not args.post,
         )
     except MigrationGateError as error:
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
@@ -404,6 +405,9 @@ def main(argv=None):
         f"MIGRATION GATE: {gate_report['status']} "
         f"source={source_path.name} sha256={gate_report['sourceSha256']}"
     )
+    if gate_report.get("pendingReview"):
+        print("DRAFT MODE: review pending for " + ", ".join(gate_report["pendingReview"])
+              + " — fine for a local build; resolve before --post.")
     conn = args.conn; folder = args.folder
     if conn:
         plan.setdefault("targetScope", {})["connectionId"] = conn

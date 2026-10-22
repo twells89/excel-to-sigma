@@ -106,11 +106,19 @@ def plan_review_issues(plan):
             "message": f"{needs_review} inferred line item(s) still require formula review.",
             "evidence": [f"needs_review={needs_review}"],
         })
+    # Issues a plan drafter raised from source shape (e.g. FLAT_CARRY_POLICY).
+    issues.extend(dict(issue) for issue in plan.get("draftReviewIssues") or [])
     return issues
 
 
-def gate_source(source, dispositions_path=None, additional_issues=()):
-    """Audit ``source`` and require source-bound dispositions for every review issue."""
+def gate_source(source, dispositions_path=None, additional_issues=(), draft=False):
+    """Audit ``source`` and require source-bound dispositions for every review issue.
+
+    ``draft=True`` is for local/dry-run builds: unresolved review issues are
+    returned as ``reviewStatus: "DRAFT_PENDING"`` with ``pendingReview`` codes
+    instead of raising. A supplied but invalid dispositions file still raises,
+    and blockers always raise.
+    """
     source_path = Path(source).expanduser()
     if not source_path.is_file():
         raise MigrationGateError(f"source workbook not found: {source_path}")
@@ -162,6 +170,10 @@ def gate_source(source, dispositions_path=None, additional_issues=()):
             unresolved_codes=required_codes,
             exit_code=1,
         ) from error
+    if unresolved and draft:
+        report["reviewStatus"] = "DRAFT_PENDING"
+        report["pendingReview"] = unresolved
+        return report
     if unresolved:
         report["reviewStatus"] = "UNRESOLVED"
         raise MigrationGateError(
@@ -175,7 +187,7 @@ def gate_source(source, dispositions_path=None, additional_issues=()):
     return report
 
 
-def gate_plan_source(plan, *, source_arg=None, dispositions_path=None, plan_path=None):
+def gate_plan_source(plan, *, source_arg=None, dispositions_path=None, plan_path=None, draft=False):
     """Resolve and gate the exact workbook used to create an inference/build plan."""
     expected_digest = plan.get("sourceSha256")
     if not isinstance(expected_digest, str) or not SHA256_RE.fullmatch(expected_digest.lower()):
@@ -205,6 +217,7 @@ def gate_plan_source(plan, *, source_arg=None, dispositions_path=None, plan_path
         source_path,
         dispositions_path=dispositions_path,
         additional_issues=plan_review_issues(plan),
+        draft=draft,
     )
     return source_path, report
 

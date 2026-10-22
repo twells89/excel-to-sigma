@@ -18,14 +18,21 @@ python scripts/macro-classify.py --json model.xlsm > macro-audit.json
 python scripts/audit-openapi.py --out sigma-code-rep-audit.json
 ```
 
-`audit-xlsx.py` exits `0` only for `AUTO`, `1` for `REVIEW_REQUIRED`, and `2`
-for `BLOCKED`. `--allow-review` is for inventory/CI smoke only; it must not be
-used to declare a customer migration complete.
+`audit-xlsx.py` exits `0` for `AUTO` and for `REVIEW_REQUIRED` (the issues are
+reported, not fatal, so local work is never blocked by a review gate), and `2` for
+`BLOCKED`. `--strict` exits `1` for `REVIEW_REQUIRED`; use it in a production gate.
+(`--allow-review` is a hidden no-op alias kept for older CI.) A zero exit is not a
+disposition: no customer migration is complete while a review issue lacks a verified
+disposition.
+
+`scripts/migrate.py plan <file> --out-dir <workdir>` runs this audit with discovery
+and writes `review.template.json`, a source-bound skeleton for the file below.
 
 The whole-workbook migration paths (`infer-canonical-formulas.py`,
 `batch-convert.py`, `build-research-workbook.py`, and the source-bound forecast
-and research plan builders) enforce the audit again. `REVIEW_REQUIRED` can
-proceed only with `--review-dispositions <file.json>` containing:
+and research plan builders) enforce the audit again. For production (`--post`, and
+`batch-convert.py`), `REVIEW_REQUIRED` can proceed only with
+`--review-dispositions <file.json>` containing:
 
 ```json
 {
@@ -47,8 +54,10 @@ fails the gate. `BLOCKED` is never overrideable. Inferred plans also require
 `sourcePath` (or CLI `--source`) and `sourceSha256`; the bytes must still match.
 Research plans add `CACHED_FORMULA_FALLBACK` when any formula cell is frozen to
 an Excel cached value, and `INFERENCE_REVIEW_REQUIRED` when inferred lines remain
-unresolved. These need explicit dispositions and must not be described as full
-live-formula migration.
+unresolved; forecast plans from `draft-forecast-plan.py` add `FLAT_CARRY_POLICY` for
+`=prior` forecast lines. These need explicit dispositions and must not be described as
+full live-formula migration. Builds without `--post` run in draft mode and only report
+these codes as pending (`DRAFT MODE: review pending for ...`).
 
 ## Coverage
 

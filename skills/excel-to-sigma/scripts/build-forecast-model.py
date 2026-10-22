@@ -8,9 +8,12 @@ JSON (drafted from xlsx-discover.py's model map + the intent answers) and emits:
     monthly summary, trend, GL detail, assumptions; editable rate+manual input tables
     when intent is editable/what-if)
   - paste-ready seed CSVs for the editable tables
-  - a LOCAL parity check (asserts the plan reproduces the spreadsheet totals)
+  - a LOCAL parity check (when the plan carries `parityTargets`, fails the run if the
+    plan's recomputed Revenue / Gross Profit / EBITDA / Net Income differ from them)
 
-Default = dry-run (writes specs to /tmp, runs parity, no API). `--post` builds live.
+Default = dry-run (writes specs to --out-dir, default /tmp/fcst-build; runs parity, no API;
+pending review issues are reported as DRAFT MODE and do not block). `--post` builds live and
+keeps the strict source-bound `--review-dispositions` contract.
 
 Intent (plan.intent):
   read-only          → forecast baked from default rates (no input tables)
@@ -141,14 +144,31 @@ def map_dm_elements(spec):
     return out
 
 # ---------- parity (local) ----------
+SECTIONS = ("Revenue", "Cost of Revenue", "Operating Expenses", "Below the Line")
+PARITY_METRICS = ("Revenue", "Gross Profit", "EBITDA", "Net Income")
+
+
+class PlanError(ValueError):
+    """The model plan has a shape this builder does not support."""
+
+
+def _section_sum_key(section, where):
+    if section not in SECTIONS:
+        raise PlanError(
+            f"unsupported section {section!r} in {where}; this builder supports only "
+            + ", ".join(SECTIONS) + " (unknown sections need explicit review, not coercion)")
+    return section
+
+
 def parity(P):
     rev = cogs = opex = below = 0.0
-    secsum = {"Revenue": 0.0, "Cost of Revenue": 0.0, "Operating Expenses": 0.0, "Below the Line": 0.0}
+    secsum = {s: 0.0 for s in SECTIONS}
     # actuals
-    for r in P["actuals"]:
-        secsum[r["section"]] += r["amt"]
+    for i, r in enumerate(P["actuals"]):
+        secsum[_section_sum_key(r["section"], f"actuals[{i}] ({r.get('line')!r})")] += r["amt"]
     # forecast
     for ln in P["lines"]:
+        _section_sum_key(ln["section"], f"line {ln['line']!r}")
         base = ln.get("juneBase", 0)
         for i, m in enumerate(P["forecastMonths"]):
             n = m["num"] - P["actualMonths"][-1]["num"]
@@ -156,6 +176,27 @@ def parity(P):
             secsum[ln["section"]] += v
     rev, cogs, opex, below = secsum["Revenue"], secsum["Cost of Revenue"], secsum["Operating Expenses"], secsum["Below the Line"]
     return {"Revenue": rev, "Gross Profit": rev - cogs, "EBITDA": rev - cogs - opex, "Net Income": rev - cogs - opex - below}
+
+
+def check_parity(P, computed, tolerance):
+    """Compare computed totals to plan['parityTargets']; print one line per metric.
+
+    Returns True when every present target matches within ``tolerance`` (absolute).
+    Plans without targets are reported as unchecked and do not fail.
+    """
+    targets = P.get("parityTargets") or {}
+    present = [m for m in PARITY_METRICS if targets.get(m) is not None]
+    if not present:
+        print("LOCAL PARITY: not checked — plan has no parityTargets")
+        return True
+    ok = True
+    for metric in present:
+        want, got = float(targets[metric]), computed[metric]
+        passed = abs(got - want) <= tolerance
+        ok = ok and passed
+        print(f"PARITY {'PASS' if passed else 'FAIL'} {metric}: plan={got:,.2f} source={want:,.2f} "
+              f"diff={got - want:,.4f}")
+    return ok
 
 # ---------- seed CSVs ----------
 def seed_csvs(P, outdir):
@@ -296,6 +337,10 @@ def parse_args(argv=None):
     parser.add_argument("--source", help="source XLSX used to produce the plan")
     parser.add_argument("--review-dispositions", help="source-bound review dispositions JSON")
     parser.add_argument("--post", action="store_true", help="create the data model and workbook")
+    parser.add_argument("--out-dir", default="/tmp/fcst-build",
+                        help="where specs and seed CSVs are written (default: /tmp/fcst-build)")
+    parser.add_argument("--parity-tolerance", type=float, default=0.01,
+                        help="absolute tolerance for plan.parityTargets (default: 0.01)")
     return parser.parse_args(argv)
 
 
@@ -309,6 +354,7 @@ def main(argv=None):
             source_arg=args.source,
             dispositions_path=args.review_dispositions,
             plan_path=args.plan,
+            draft=not args.post,
         )
     except MigrationGateError as error:
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
@@ -317,11 +363,23 @@ def main(argv=None):
         f"MIGRATION GATE: {gate_report['status']} "
         f"source={source_path.name} sha256={gate_report['sourceSha256']}"
     )
+    if gate_report.get("pendingReview"):
+        print("DRAFT MODE: review pending for " + ", ".join(gate_report["pendingReview"])
+              + " — fine for a local build; resolve before --post.")
     do_post = args.post
-    outdir="/tmp/fcst-build"; os.makedirs(outdir,exist_ok=True)
-    # parity
-    par=parity(P)
+    outdir = args.out_dir
+    # parity — a mismatch stops the run before any spec is written or posted
+    try:
+        par=parity(P)
+    except PlanError as error:
+        print(f"PLAN ERROR: {error}", file=sys.stderr)
+        return 1
     print("LOCAL PARITY (from plan):", "  ".join(f"{k}={v:,.2f}" for k,v in par.items()))
+    if not check_parity(P, par, args.parity_tolerance):
+        print("LOCAL PARITY FAILED — no specs written; fix the plan (or the source) before building.",
+              file=sys.stderr)
+        return 1
+    os.makedirs(outdir, exist_ok=True)
     rate_csv,man_csv=seed_csvs(P,outdir)
     print(f"seed CSVs: {rate_csv}, {man_csv}")
     dm_spec=build_dm_spec(P)

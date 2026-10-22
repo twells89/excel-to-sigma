@@ -174,12 +174,18 @@ def _parser():
     parser.add_argument("--raw-label", default="Raw data")
     parser.add_argument("--post", action="store_true")
     parser.add_argument("--review-dispositions")
+    parser.add_argument("--draft", action="store_true",
+                        help="local dry-run: report pending review issues instead of failing "
+                             "(not valid with --post)")
     return parser
 
 
 def main(argv=None):
     global CONN, RAW_LABEL
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.draft and args.post:
+        parser.error("--draft is for local dry-runs only; --post needs --review-dispositions")
     path = args.workbook
     CONN = args.conn
     folder = args.folder
@@ -187,7 +193,7 @@ def main(argv=None):
     name = args.name or (os.path.splitext(os.path.basename(path))[0][:50] + " (auto)")
     do_post = args.post
     try:
-        gate_source(path, args.review_dispositions)
+        gate_source(path, args.review_dispositions, draft=args.draft)
     except MigrationGateError as error:
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
         return error.exit_code
@@ -232,10 +238,13 @@ def main(argv=None):
                 derived_issues.append(issue)
                 seen_issue_codes.add(issue["code"])
     try:
-        gate_source(path, args.review_dispositions, derived_issues)
+        gate_report = gate_source(path, args.review_dispositions, derived_issues, draft=args.draft)
     except MigrationGateError as error:
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
         return error.exit_code
+    if gate_report.get("pendingReview"):
+        print("DRAFT MODE: review pending for " + ", ".join(gate_report["pendingReview"])
+              + " — fine for a local build; resolve before --post.")
 
     dm_spec = {"name": name + " — Model", "schemaVersion": 1, "folderId": folder,
                "pages": [{"id": "m", "name": "Model", "elements": dm_data}]}
