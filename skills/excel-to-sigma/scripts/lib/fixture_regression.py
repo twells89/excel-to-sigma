@@ -32,13 +32,19 @@ def _day(value):
     return dt.datetime.fromisoformat(value.replace('Z','+00:00')).date()
 
 
+def _timestamp(value):
+    if isinstance(value,dt.datetime):return value
+    if isinstance(value,dt.date):return dt.datetime.combine(value,dt.time())
+    return dt.datetime.fromisoformat(value.replace('Z','+00:00'))
+
+
 def sales(source,edits=None):
     oracle=FixtureOracle(source,edits)
     try:
         asof=oracle.literal('Assumptions','F2');rows=[]
         for i in range(2,50):
             r=oracle.primary('Pipeline',i);r['Weighted ACV']=r['Probability']*r['ACV']
-            r['Cycle Days']=(_day(r['Expected Close'])-_day(r['Created Date'])).days
+            r['Cycle Days']=(_timestamp(r['Expected Close'])-_timestamp(r['Created Date'])).total_seconds()/86400
             r['Timing Status']='Closed' if r['Stage'] in ('Closed Won','Closed Lost') else 'Slipped' if _day(r['Expected Close'])<_day(asof) else 'Open'
             rows.append(r)
         targets=[]

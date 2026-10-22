@@ -452,6 +452,85 @@ class TestApprovedWiring(unittest.TestCase):
                             self.assertEqual(computed['Weighted ACV'], source['Probability']*source['ACV'])
                             self.assertEqual(computed['Cycle Days'], (source['Expected Close']-source['Created Date']).days)
 
+    def test_native_sales_cycle_days_preserves_fractional_elapsed_days(self):
+        import datetime as dt
+        from native_graph_oracle import project
+        with tempfile.TemporaryDirectory() as directory:
+            logical, manifest = self.prepare('sales', Path(directory))
+            spec = logical['sharedInputArchitecture']['inputs']['salesBusinessInput']
+            elements = emit_workbook_wiring(manifest, receipt(manifest))['wiring']['elements']
+            base = next(e for e in elements if e['id'] == 'salesInputBase')
+            # Hand-checked Excel =C-B results. Day boundaries or whole-day
+            # truncation both lose the editable source timestamps' fractions.
+            cases = [
+                ('2026-01-01T08:00:00', '2026-01-02T20:00:00', 1.5),
+                ('2026-01-01T23:00:00', '2026-01-02T05:00:00', 0.25),
+                ('2026-01-02T05:00:00', '2026-01-01T23:00:00', -0.25),
+                ('2026-01-01T08:00:00', '2026-01-01T08:00:00.001',
+                 1.1574074074074074e-8),
+                ('2026-01-01T08:00:00.001', '2026-01-01T08:00:00',
+                 -1.1574074074074074e-8),
+                ('2026-01-01T08:00:00', '2026-01-01T08:00:00', 0),
+                ('2026-01-01T00:00:00', '2026-01-03T00:00:00', 2),
+                (None, '2026-01-03T00:00:00', None),
+                ('2026-01-01T00:00:00', None, None),
+            ]
+            for created, close, expected in cases:
+                with self.subTest(created=created, close=close):
+                    source = dict(spec['rows'][0], **{
+                        'Created Date': dt.datetime.fromisoformat(created) if created else None,
+                        'Expected Close': dt.datetime.fromisoformat(close) if close else None,
+                    })
+                    computed = project(base['columns'], {
+                        spec['name']+'/'+key: value for key, value in source.items()},
+                        truncate_integer_division=True)
+                    if expected is None:
+                        self.assertIsNone(computed['Cycle Days'])
+                    else:
+                        self.assertAlmostEqual(computed['Cycle Days'], expected, delta=1e-14)
+
+    def test_sdk_sales_cycle_days_preserves_fractional_elapsed_days(self):
+        import ast
+        import datetime as dt
+        import math
+        from types import SimpleNamespace
+        from native_graph_oracle import scalar
+        extracted = presentation.extract_presentation(FIXTURES/'fixture-sales-pipeline.xlsx')
+        spec = presentation.extract_business_input(extracted)
+        program = presentation.emit_business_input_program(
+            spec, presentation.fixture_bindings(extracted)['businessInput'])['program']
+        call = next(node for node in ast.walk(ast.parse(program))
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'add_formula_column'
+                    and node.args[0].value == 'Cycle Days')
+        # Execute the emitted expression against a bounded local formula API;
+        # unsupported SDK primitives fail instead of silently accepting them.
+        formula = SimpleNamespace(
+            date_diff=lambda unit, a, b: scalar(f'DateDiff({unit!r}, [a], [b])', {'a': a, 'b': b}),
+            const_num=lambda value: value,
+            multiply=lambda a, b: None if a is None or b is None else a*b,
+            divide=lambda a, b: None if a is None or b is None else (
+                math.trunc(a/b) if isinstance(a, int) and isinstance(b, int) else a/b))
+        expression = compile(ast.Expression(call.args[1]), '<emitted Cycle Days>', 'eval')
+        for created, close, expected in [
+            ('2026-01-01T08:00:00', '2026-01-02T20:00:00', 1.5),
+            ('2026-01-02T05:00:00', '2026-01-01T23:00:00', -0.25),
+            ('2026-01-01T08:00:00', '2026-01-01T08:00:00.001', 1.1574074074074074e-8),
+            ('2026-01-01T08:00:00.001', '2026-01-01T08:00:00', -1.1574074074074074e-8),
+            (None, '2026-01-02T20:00:00', None),
+            ('2026-01-01T08:00:00', None, None),
+        ]:
+            with self.subTest(created=created, close=close):
+                source = {'Created Date': dt.datetime.fromisoformat(created) if created else None,
+                          'Expected Close': dt.datetime.fromisoformat(close) if close else None}
+                columns = {f'c{index}': source.get(column['name'])
+                           for index, column in enumerate(spec['columns'])}
+                actual = eval(expression, {'__builtins__': {}, 'sigma': SimpleNamespace(formula=formula)}, columns)
+                if expected is None:
+                    self.assertIsNone(actual)
+                else:
+                    self.assertAlmostEqual(actual, expected, delta=1e-14)
+
     def test_public_prepare_rejects_a_foreign_source_review_payload(self):
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
