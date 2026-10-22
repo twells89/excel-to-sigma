@@ -162,7 +162,7 @@ class TestCalculatedColumns(Workdir):
         self.assertEqual(formulas["Flag"],
                          'If((([Qty] > 1) and (DatePart("month", [Ship Date]) >= 2)), "Y", "N")')
         self.assertEqual(formulas["Cap"], "(Least([Qty], 3) + Greatest([Price], 50))")
-        self.assertEqual(formulas["Boxes"], "(Ceiling([Qty] / 5) * 5)")
+        self.assertEqual(formulas["Boxes"], "If(5 = 0, 0, (Ceiling([Qty] / 5) * 5))")
         self.assertIn("pages", workbook)
 
     def test_same_row_a1_references_in_a_calculated_column_read_the_tables_own_columns(self):

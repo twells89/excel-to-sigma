@@ -506,6 +506,12 @@ class TestEvaluator(unittest.TestCase):
         self.assertIsNone(self.ev("Least([A], 1)", A=None))
         self.assertEqual(self.ev("(-[A])", A=3), -3)
 
+    def test_ceiling_to_a_zero_multiple_is_zero_like_excel(self):
+        # The emitter guards CEILING(x, m) as If(m = 0, 0, Ceiling(x / m) * m).
+        guarded = "If([M] = 0, 0, (Ceiling([Q] / [M]) * [M]))"
+        self.assertEqual(self.ev(guarded, Q=7, M=0), 0)
+        self.assertEqual(self.ev(guarded, Q=7, M=5), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

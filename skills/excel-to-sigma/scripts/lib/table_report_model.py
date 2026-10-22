@@ -1039,8 +1039,9 @@ class Emitter:
         if name == "ROUND":
             return f"Round({self.num(args[0])}, {self.num(args[1])})"
         if name == "CEILING":
+            # Excel CEILING(x, 0) is 0; guard the division instead of emitting x / 0.
             a, b = self.num(args[0]), self.num(args[1])
-            return f"(Ceiling({a} / {b}) * {b})"
+            return f"If({b} = 0, 0, (Ceiling({a} / {b}) * {b}))"
         out = [self.emit(a) for a in args]
         if name == "AND":
             return "(" + " and ".join(out) + ")"
