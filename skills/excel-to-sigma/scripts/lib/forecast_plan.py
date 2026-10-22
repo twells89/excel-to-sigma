@@ -344,6 +344,10 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
             f"drafted plan does not reproduce the workbook's cached values "
             f"({len(problems)} mismatch(es)):\n  {shown}{more}")
 
+    # A header alone does not prove a full-year total: every line row's cached FY
+    # value must equal the sum of its month cells, else targets come from the months.
+    if fy_col and not _fy_is_month_sum(vs, line_rows, month_cols, fy_col, tolerance):
+        fy_col = None
     targets = parity_targets(vs, derived_rows, month_cols, fy_col)
 
     issues = []
@@ -501,6 +505,16 @@ def verify(ws, vs, lines, actuals, actual_months, forecast_months, act_cols, fc_
             compare(f"{ws.title}!{get_column_letter(col)}{row}", ln["line"], month["month"],
                     got, vs.cell(row, col).value)
     return problems
+
+
+def _fy_is_month_sum(vs, line_rows, month_cols, fy_col, tolerance):
+    for row, _, _ in line_rows:
+        cells = [vs.cell(row, col).value for col in month_cols]
+        total = vs.cell(row, fy_col).value
+        if not (_is_number(total) and all(_is_number(c) for c in cells)
+                and abs(sum(cells) - total) <= tolerance):
+            return False
+    return True
 
 
 def parity_targets(vs, derived_rows, month_cols, fy_col):

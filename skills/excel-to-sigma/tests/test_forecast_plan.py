@@ -106,6 +106,16 @@ class TestClassification(Base):
                 self.assertAlmostEqual(
                     plan["parityTargets"]["Revenue"], built["targets"]["Revenue"], places=6)
 
+    def test_fy_header_whose_values_are_not_the_month_sum_is_ignored(self):
+        # e.g. a "FY26" column that holds budget figures rather than the year's total
+        probe = self.dir / "probe.xlsx"
+        fixture.build_pnl(probe)
+        from openpyxl import load_workbook
+        row = find_cell(load_workbook(probe)["P&L"], "Subscription")
+        plan, info, built = self.draft(cached_overrides={("P&L", f"H{row}"): 1.0})
+        self.assertIsNone(info["fyColumn"])
+        self.assertAlmostEqual(plan["parityTargets"]["Revenue"], built["targets"]["Revenue"], places=6)
+
     def test_source_binding_and_identity_fields(self):
         plan, _, _ = self.draft()
         from migration_gate import source_sha256
