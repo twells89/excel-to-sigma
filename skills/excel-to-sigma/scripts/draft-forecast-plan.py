@@ -33,8 +33,9 @@ def parse_args(argv=None):
     parser.add_argument("--sheet", help="report sheet (default: most SUMIFS/driver-growth cells)")
     parser.add_argument("--currency-format", default="$,.0f")
     parser.add_argument("--pct-format", default=".1%")
-    parser.add_argument("--tolerance", type=float, default=0.01,
-                        help="absolute tolerance when re-deriving cached values (default: 0.01)")
+    parser.add_argument("--tolerance", type=float, default=None,
+                        help="absolute tolerance when re-deriving cached values (default: float noise "
+                             "only, max(1e-6, 1e-9 * |cached value|))")
     parser.add_argument("--out", required=True, help="plan JSON to write")
     return parser.parse_args(argv)
 

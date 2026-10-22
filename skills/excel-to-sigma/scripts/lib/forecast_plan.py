@@ -76,6 +76,14 @@ class PlanDraftError(RuntimeError):
     """The workbook does not have a shape this drafter supports."""
 
 
+_WHERE = {"cell": None}
+
+
+def _at(where):
+    """Remember the cell being read, so an unexpected failure can name it."""
+    _WHERE["cell"] = where
+
+
 # ---------------------------------------------------------------- helpers
 def _is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -319,6 +327,7 @@ def _classify_row(ws, row, text, period_cols):
     """``"line"`` (actuals + forecast) or ``"derived"`` (same-column total / margin / profit)."""
     first = ws.cell(row, period_cols[0]).value
     where = _ref(ws, period_cols[0], row)
+    _at(f"{where} ({text!r})")
     neither = (f"{where} ({text!r}): row is neither a SUMIFS actuals line nor a recognised "
                "same-column total/derived row")
     if _is_number(first):
@@ -405,6 +414,7 @@ def _derive_rows(ws, vs, period_cols, line_rows, sections, derived_candidates):
         for col in period_cols:
             cell = ws.cell(row, col).value
             formula = _formula(cell)
+            _at(f"{_ref(ws, col, row)} ({text!r})")
             if not formula:
                 raise PlanDraftError(
                     f"{_ref(ws, col, row)} ({text!r}): derived row has {cell!r} where a formula "
@@ -450,21 +460,46 @@ def _derive_rows(ws, vs, period_cols, line_rows, sections, derived_candidates):
                                  f"{ws.cell(row, period_cols[0]).value!r}: {error}") from None
         derived.append({"label": text, "sourceRow": row, "expr": expr})
     exprs = {d["label"]: d["expr"] for d in derived}
-    line_section = {text: sec for _, text, sec in line_rows}
+    section_lines = {sec: [text for _, text, owner in line_rows if owner == sec] for sec in sections}
+    row_of = {text: row for row, text, _ in line_rows}
+    clean = lambda v: int(v) if float(v).is_integer() else v
     for d in derived:
-        coefficients = calc.linear_over_sections(d["expr"], line_section, exprs)
-        d["kind"] = "amount" if coefficients else "ratio"
+        terms = calc.linear_terms(d["expr"], exprs)
+        section_coeffs, line_coeffs = calc.fold_terms(terms, section_lines) if terms else ({}, {})
+        d["kind"] = "amount" if (section_coeffs or line_coeffs) else "ratio"
         d["formula"] = calc.render_expr(d["expr"])
-        if coefficients:
-            d["coefficients"] = {k: (int(v) if float(v).is_integer() else v)
-                                 for k, v in sorted(coefficients.items(), key=lambda kv: sections.index(kv[0]))}
+        if d["kind"] == "amount":
+            d["coefficients"] = {k: clean(v) for k, v in section_coeffs.items()}
+            if line_coeffs:
+                # Individual lines (``=Subscription - COGS``) enter the KPIs, the trend and the
+                # charts as line-level terms, never widened to their whole section.
+                for label in line_coeffs:
+                    if re.search(r'["\\]', label):
+                        raise PlanDraftError(
+                            f"{_ref(ws, period_cols[0], d['sourceRow'])} ({d['label']!r}): reads line "
+                            f"{label!r} (row {row_of[label]}), whose name contains a quote or backslash "
+                            "the Sigma formulas cannot carry")
+                d["lineCoefficients"] = {k: clean(v) for k, v in line_coeffs.items()}
     return totals, derived
 
 
 def _infer_signs(sections, derived):
-    """Sign role per section: ``(signs, sources)``; raise naming the section when undecidable."""
+    """Sign role per section: ``(signs, sources)``; raise naming the section when undecidable.
+
+    Only the bottom-line rows vote (amount rows no other amount row reads), with their
+    coefficients expanded through the rows they read: in ``Total Costs = COGS + Opex`` and
+    ``Profit = Revenue - Total Costs`` the sections enter ``Profit`` as -1, and the helper
+    row's own +1 is not a second opinion. A section that only enters rows through an
+    individual line has no section-level vote and falls back to its name (flagged).
+    """
+    amount = [d for d in derived if d.get("kind") == "amount"]
+    read_by_others = set()
+    for d in amount:
+        read_by_others |= calc.derived_references(d["expr"])
     seen = {name: [] for name in sections}
-    for d in derived:
+    for d in amount:
+        if d["label"] in read_by_others:
+            continue
         for name, coefficient in (d.get("coefficients") or {}).items():
             if abs(abs(coefficient) - 1) > 1e-9:
                 raise PlanDraftError(
@@ -496,8 +531,30 @@ def _infer_signs(sections, derived):
 
 # ---------------------------------------------------------------- drafting
 def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
-               currency_format="$,.0f", pct_format=".1%", tolerance=0.01):
-    """Return ``(plan, summary)`` for ``source``; raise ``PlanDraftError`` on any unknown shape."""
+               currency_format="$,.0f", pct_format=".1%", tolerance=None):
+    """Return ``(plan, summary)`` for ``source``; raise ``PlanDraftError`` on any unknown shape.
+
+    ``tolerance`` is an absolute bound on cached-value comparisons; by default only float
+    noise is allowed (see ``forecast_calc.close``). Any failure that is not already a
+    ``PlanDraftError`` (an unexpected cell value, a defect in this module) is reported as
+    one naming the last cell read, so a caller that routes on ``PlanDraftError`` never
+    crashes on a workbook.
+    """
+    _at(None)
+    try:
+        return _draft_plan(source, intent=intent, connection=connection, folder=folder, name=name,
+                           sheet=sheet, currency_format=currency_format, pct_format=pct_format,
+                           tolerance=tolerance)
+    except PlanDraftError:
+        raise
+    except Exception as error:  # noqa: BLE001 - the router must never crash on a workbook
+        where = _WHERE["cell"] or str(source)
+        raise PlanDraftError(
+            f"{where}: unexpected {type(error).__name__}: {error}; the drafter cannot read this shape") from error
+
+
+def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_format, pct_format,
+                tolerance):
     if intent not in INTENTS:
         raise PlanDraftError(f"intent must be one of {', '.join(INTENTS)}")
     src = Path(source).expanduser().resolve()
@@ -576,7 +633,8 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
                     f"{_ref(ws, col, row)} ({text!r}): row is neither a SUMIFS actuals line nor a "
                     f"recognised same-column total/derived row (actual-{unit[:-1]} cell {cell!r} is "
                     "not a SUMIFS formula or a zero)")
-            if _is_number(vs.cell(row, col).value) and abs(vs.cell(row, col).value) > tolerance:
+            if _is_number(vs.cell(row, col).value) and abs(vs.cell(row, col).value) > (
+                    1e-6 if tolerance is None else tolerance):
                 raise PlanDraftError(f"{_ref(ws, col, row)} ({text!r}): zero literal has cached value "
                                      f"{vs.cell(row, col).value!r}")
 
@@ -591,9 +649,19 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
     lines = []
     driver_ranges = []
     flat_lines, external_evidence = [], []
+    frozen_drivers = {}   # "Sheet!B4" -> (formula, cached rate, [lines that read it])
+
+    def note_driver(dsheet, dcol, drow, rate, user=None):
+        """Remember a driver cell that holds a formula: the plan keeps only its cached rate."""
+        cell = wf[dsheet][f"{dcol}{drow}"].value
+        if _formula(cell):
+            entry = frozen_drivers.setdefault(f"{dsheet}!{dcol}{drow}", (cell, rate, []))
+            if user and user not in entry[2]:
+                entry[2].append(user)
     for line_order, (row, text, sec) in enumerate(line_rows, 1):
         kinds = []
         for col in fc_cols:
+            _at(f"{_ref(ws, col, row)} ({text!r})")
             kind, detail = _forecast_cell_kind(ws, col, row, ws.cell(row, col).value)
             if kind is None:
                 raise PlanDraftError(
@@ -622,6 +690,7 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
             if not _is_number(rate):
                 raise PlanDraftError(
                     f"{dsheet}!{dcol}{drow}: driver for {text!r} is not a numeric rate ({rate!r})")
+            note_driver(dsheet, dcol, drow, float(rate), text)
             if (dsheet, dcol) not in driver_ranges:
                 driver_ranges.append((dsheet, dcol))
             drv_name = next((_text(c.value) for c in wv[dsheet][drow] if _text(c.value)), None)
@@ -676,6 +745,7 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
             rate = dws.cell(drow, rate_col).value
             drv_name = next((_text(c.value) for c in dws[drow][:rate_col - 1] if _text(c.value)), None)
             if drv_name and _is_number(rate):
+                note_driver(dsheet, dcol, drow, float(rate))
                 basis = next((_text(c.value) for c in dws[drow][rate_col:] if _text(c.value)), "")
                 assumptions.append([drv_name, float(rate), basis])
 
@@ -696,11 +766,18 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
         section_meta.append(meta)
     core = {"periods": periods, "sections": section_meta, "lines": lines, "actuals": actuals,
             "derivedRows": derived}
+    _at(f"{ws.title}: re-deriving the drafted plan")
     try:
         ev = calc.Evaluation(core)
+    except calc.RowEvalError as error:
+        owner = next((d for d in derived if d["label"] == error.label), None)
+        where = (_ref(ws, period_cols[error.index], owner["sourceRow"])
+                 if owner is not None and error.index is not None else ws.title)
+        raise PlanDraftError(f"{where} ({error.label!r}): drafted plan cannot be evaluated: {error}; "
+                             "a derived row that divides by a total must guard it with IFERROR or "
+                             "IF(...=0,...)") from None
     except (calc.ExprError, ZeroDivisionError) as error:
-        raise PlanDraftError(f"drafted plan cannot be evaluated: {error}; a derived row that divides "
-                             "by a total must guard it with IFERROR or IF(...=0,...)") from None
+        raise PlanDraftError(f"{ws.title!r}: drafted plan cannot be evaluated: {error}") from None
     problems = verify(ws, vs, ev, lines, totals, derived, period_cols, tolerance)
     if problems:
         shown = "\n  ".join(problems[:10])
@@ -751,6 +828,19 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
                         "(external link). The plan carries the cached value Excel last stored as a "
                         "manual input; the link itself is not rebuilt, so confirm the numbers are current."),
             "evidence": external_evidence,
+        })
+    if frozen_drivers:
+        issues.append({
+            "code": "DRIVER_FORMULA_FROZEN",
+            "severity": "review",
+            "route": "forecast-driver-formula-review",
+            "message": (f"{len(frozen_drivers)} driver cell(s) hold a formula, not a typed rate. The plan "
+                        "carries the rate Excel last cached for each as an editable input; the formula "
+                        "is not rebuilt, so a change to its inputs in the source will not flow through. "
+                        "Confirm the cached rates are current, or rebuild the formula."),
+            "evidence": [f"{cell}: {formula} (cached {rate:g}"
+                         + (f"; read by {', '.join(users)}" if users else "") + ")"
+                         for cell, (formula, rate, users) in frozen_drivers.items()],
         })
     name_signed = [s for s in sections if sign_sources[s] == "name"]
     if name_signed:
@@ -884,6 +974,7 @@ def read_actuals(gl, lines, actual_periods, grain="month"):
         if all(v is None for v in values.values()):
             continue
         where = f"{gl.title}!row {row}"
+        _at(where)
         label = _text(values["line"])
         if label not in by_line:
             raise PlanDraftError(f"{where}: line item {values['line']!r} is not a P&L line")
@@ -930,8 +1021,10 @@ def verify(ws, vs, ev, lines, totals, derived, period_cols, tolerance):
     def compare(coord, label, period, got, want):
         if not _is_number(want):
             problems.append(f"{coord} ({label!r}, {period}): sheet has no numeric cached value ({want!r})")
-        elif abs(got - want) > tolerance:
-            problems.append(f"{coord} ({label!r}, {period}): plan {got:,.2f} vs sheet {want:,.2f}")
+        elif not calc.close(got, want, tolerance):
+            digits = 2 if f"{got:,.2f}" != f"{want:,.2f}" else 9  # show a sub-cent difference
+            problems.append(f"{coord} ({label!r}, {period}): plan {got:,.{digits}f} "
+                            f"vs sheet {want:,.{digits}f}")
 
     for ln in lines:
         row = ln["sourceRow"]
@@ -946,8 +1039,10 @@ def verify(ws, vs, ev, lines, totals, derived, period_cols, tolerance):
         row = d["sourceRow"]
         for i, col in enumerate(period_cols):
             cached = vs.cell(row, col).value
+            if isinstance(cached, bool):
+                cached = float(cached)  # Excel stores IF(cond, x) = FALSE as a boolean: 0
             got = ev.derived[d["label"]][i]
-            if not _is_number(cached) and d["kind"] == "ratio":
+            if isinstance(cached, str) and d["kind"] == "ratio":
                 continue  # an IFERROR text result is not a number to compare
             compare(f"{ws.title}!{get_column_letter(col)}{row}", d["label"], ev.labels[i], got, cached)
     return problems
@@ -970,7 +1065,7 @@ def _fy_coverage(ws, vs, line_rows, period_cols, fy_col, tolerance):
         cells = [vs.cell(row, col).value for col in cols]
         total = vs.cell(row, fy_col).value
         if not (_is_number(total) and all(_is_number(c) for c in cells)
-                and abs(sum(cells) - total) <= tolerance):
+                and calc.close(sum(cells), total, tolerance)):
             return None
         if covered is None:
             covered = cols
@@ -996,8 +1091,8 @@ def parity_targets(ws, vs, ev, totals, derived, period_cols, fy_col, fy_idx, sec
     targets, skipped = {}, []
     for row, label, d in rows:
         metric = TARGET_LABELS.get(label.lower())
-        if classic and not metric:
-            continue
+        if classic and not metric and not (d is not None and d["kind"] == "amount"):
+            continue  # classic plans keep the four canonical keys plus any extra amount row
         key = metric or label
         if key in targets:
             continue
@@ -1005,13 +1100,17 @@ def parity_targets(ws, vs, ev, totals, derived, period_cols, fy_col, fy_idx, sec
         if fy_col:
             value = vs.cell(row, fy_col).value
             if ratio:
-                got = ev.aggregate(label, fy_idx)
-                if not (_is_number(value) and abs(got - value) <= tolerance):
+                try:
+                    got = ev.aggregate(label, fy_idx)
+                except calc.ExprError as error:
+                    skipped.append(f"{label}: cannot be evaluated over the FY totals ({error})")
+                    continue
+                if not (_is_number(value) and calc.close(got, value, tolerance)):
                     skipped.append(f"{label}: FY cell {value!r} is not the formula over FY totals")
                     continue
             elif d is not None:
                 got = sum(ev.derived[label][i] for i in fy_idx)
-                if _is_number(value) and abs(got - value) > tolerance:
+                if _is_number(value) and not calc.close(got, value, tolerance):
                     raise PlanDraftError(
                         f"{_ref(ws, fy_col, row)} ({label!r}): FY cell {value:,.2f} vs plan "
                         f"{got:,.2f} over the periods it covers")
@@ -1139,7 +1238,7 @@ def source_charts(wf, wv, ev, tolerance):
             for name, series, vals in metrics:
                 for (key, members), want in zip(buckets, vals):
                     got = sum(series[i] for i in members)
-                    if not _is_number(want) or abs(got - want) > tolerance:
+                    if not _is_number(want) or not calc.close(got, want, tolerance):
                         raise PlanDraftError(
                             f"chart {where}: series {name!r} at {key} is {want!r} in the workbook "
                             f"but {got:,.2f} from the plan")

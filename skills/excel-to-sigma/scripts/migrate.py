@@ -177,6 +177,11 @@ def plan(args):
             kind = "cell-model"
             forecast_rejection = f"SUMIFS/driver signals, but the forecast drafter rejects the shape: {error}"
             route_reason = forecast_rejection
+        except Exception as error:  # a drafter defect must never break routing; say so instead
+            kind = "cell-model"
+            forecast_rejection = (f"SUMIFS/driver signals, but the forecast drafter could not run "
+                                  f"({type(error).__name__}: {error})")
+            route_reason = forecast_rejection
     if kind in ("cell-model", "input-table") and discovery.get("tables"):
         # Formal Tables with formula-driven summaries: named only when the table-report drafter
         # accepts the workbook and reproduces every cached cell.

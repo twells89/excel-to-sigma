@@ -25,6 +25,15 @@ class ExprError(ValueError):
     """A row formula is outside the supported grammar, or cannot be evaluated."""
 
 
+class RowEvalError(ExprError):
+    """A derived row cannot be evaluated in one period; names the row and the period."""
+
+    def __init__(self, label, index, period, cause):
+        self.label, self.index, self.period = label, index, period
+        super().__init__(f"derived row {label!r} in {period}: "
+                         f"{cause if isinstance(cause, ExprError) else type(cause).__name__ + ': ' + str(cause)}")
+
+
 # ---------------------------------------------------------------- tokenising / parsing
 _TOKEN = re.compile(r"""\s*(?:
       (?P<num>\d+(?:\.\d+)?)
@@ -35,6 +44,17 @@ _TOKEN = re.compile(r"""\s*(?:
 )""", re.X)
 _REF = re.compile(r"^(?:(?:'((?:[^']|'')+)'|([A-Za-z0-9_.]+))!)?\$?([A-Z]{1,3})\$?(\d+)$")
 SUPPORTED_CALLS = {"SUM", "IF", "IFERROR", "MAX", "MIN", "ABS"}
+# (fewest, most) arguments Excel accepts; None means no upper bound.
+ARITY = {"SUM": (1, None), "MAX": (1, None), "MIN": (1, None), "ABS": (1, 1),
+         "IF": (2, 3), "IFERROR": (2, 2)}
+
+
+def check_arity(name, count):
+    """Raise ``ExprError`` when ``name`` is called with an argument count Excel rejects."""
+    low, high = ARITY[name]
+    if count < low or (high is not None and count > high):
+        wanted = f"{low}" if low == high else (f"at least {low}" if high is None else f"{low} or {high}")
+        raise ExprError(f"{name} takes {wanted} argument(s), got {count}")
 
 
 def _tokens(text):
@@ -131,6 +151,7 @@ class _Parser:
                     self.take()
                     args.append(self.comparison())
             self.take(")")
+            check_arity(name, len(args))
             return ("call", name, args)
         if self.peek() == ("op", "("):
             self.take()
@@ -243,15 +264,23 @@ def eval_expr(expr, env):
         return {"=": a == b, "<>": a != b, "<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[expr[1]]
     if kind == "call":
         name, args = expr[1], expr[2]
+        if name not in ARITY:
+            raise ExprError(f"unsupported function {name}")
+        check_arity(name, len(args))
         if name == "IFERROR":
             try:
                 return eval_expr(args[0], env)
-            except (ZeroDivisionError, ExprError):
+            except (ZeroDivisionError, TypeError, ExprError):
                 return eval_expr(args[1], env)
         if name == "IF":
-            return eval_expr(args[1] if eval_expr(args[0], env) else args[2], env)
+            if eval_expr(args[0], env):
+                return eval_expr(args[1], env)
+            # Excel: IF(cond, x) with a false condition is FALSE (0 in arithmetic).
+            return eval_expr(args[2], env) if len(args) == 3 else False
         values = [eval_expr(a, env) for a in args]
-        return {"SUM": sum, "MAX": max, "MIN": min}.get(name, lambda v: abs(v[0]))(values)
+        if name == "ABS":
+            return abs(values[0])
+        return {"SUM": sum, "MAX": max, "MIN": min}[name](values)
     raise ExprError(f"unsupported node {kind}")
 
 
@@ -286,30 +315,29 @@ def render_expr(expr, names=None):
     raise ExprError(f"unsupported node {kind}")
 
 
-def linear_over_sections(expr, line_section, derived_exprs, _stack=()):
-    """Express ``expr`` as ``{section: coefficient}`` or return ``None`` when it is not linear.
+def linear_terms(expr, derived_exprs, _stack=()):
+    """Express ``expr`` as ``{("sec", name) | ("line", label): coefficient}``; ``None`` if not linear.
 
-    A pure amount row (totals, gross profit, net income) is linear with no constant
-    term; a ratio or an ``IF`` is not.
+    A pure amount row (totals, gross profit, net income, a line-to-line difference) is
+    linear with no constant term; a ratio or an ``IF`` is not. Section totals and
+    individual lines stay separate terms (a line is not a section), derived rows are
+    expanded, and a term that cancels to zero is dropped.
     """
     kind = expr[0]
-    if kind == "sec":
-        return {expr[1]: 1.0}
-    if kind == "line":
-        return {line_section[expr[1]]: 1.0}
+    if kind in ("sec", "line"):
+        return {(kind, expr[1]): 1.0}
     if kind == "drv":
         if expr[1] in _stack or expr[1] not in derived_exprs:
             return None
-        return linear_over_sections(derived_exprs[expr[1]], line_section, derived_exprs,
-                                    _stack + (expr[1],))
+        return linear_terms(derived_exprs[expr[1]], derived_exprs, _stack + (expr[1],))
     if kind == "neg":
-        inner = linear_over_sections(expr[1], line_section, derived_exprs, _stack)
+        inner = linear_terms(expr[1], derived_exprs, _stack)
         return None if inner is None else {k: -v for k, v in inner.items()}
     if kind == "bin":
         op = expr[1]
         if op in ("+", "-"):
-            a = linear_over_sections(expr[2], line_section, derived_exprs, _stack)
-            b = linear_over_sections(expr[3], line_section, derived_exprs, _stack)
+            a = linear_terms(expr[2], derived_exprs, _stack)
+            b = linear_terms(expr[3], derived_exprs, _stack)
             if a is None or b is None:
                 return None
             out = dict(a)
@@ -323,18 +351,92 @@ def linear_over_sections(expr, line_section, derived_exprs, _stack=()):
             number, other = 1.0 / expr[3][1], expr[2]
         else:
             return None
-        inner = linear_over_sections(other, line_section, derived_exprs, _stack)
-        return None if inner is None else {k: v * number for k, v in inner.items()}
+        inner = linear_terms(other, derived_exprs, _stack)
+        return None if inner is None else {k: v * number for k, v in inner.items() if v * number != 0}
     if kind == "call" and expr[1] == "SUM":
         out = {}
         for arg in expr[2]:
-            part = linear_over_sections(arg, line_section, derived_exprs, _stack)
+            part = linear_terms(arg, derived_exprs, _stack)
             if part is None:
                 return None
             for key, value in part.items():
                 out[key] = out.get(key, 0.0) + value
         return {k: v for k, v in out.items() if v != 0}
     return None
+
+
+def fold_terms(terms, section_lines):
+    """Split linear ``terms`` into ``(section coefficients, line coefficients)``.
+
+    ``section_lines`` maps each section to its line labels. A section total is the sum of
+    its lines, so lines that enter with one common weight fold back into a single section
+    coefficient (``=EBITDA-B19-B20`` over both lines of Below the Line is one ``-1``).
+    Lines that enter with different weights stay line-level, and are never collapsed into
+    their section: ``=Subscription - COGS`` is one revenue line, not all of revenue.
+    Coefficients are ``{name: weight}`` in the order of ``section_lines``.
+    """
+    sections, lines = {}, {}
+    for section, labels in section_lines.items():
+        whole = terms.get(("sec", section), 0.0)
+        parts = [terms.get(("line", label), 0.0) for label in labels]
+        if parts and all(abs(p - parts[0]) <= 1e-12 for p in parts):
+            weight = whole + parts[0]
+            if weight != 0:
+                sections[section] = weight
+            continue
+        if whole != 0:
+            sections[section] = whole
+        for label, part in zip(labels, parts):
+            if part != 0:
+                lines[label] = part
+    return sections, lines
+
+
+def linear_over_sections(expr, line_section, derived_exprs, _stack=()):
+    """``{section: coefficient}`` when ``expr`` is linear over whole sections, else ``None``.
+
+    Kept for callers that only handle section-level rows; an expression that needs an
+    individual line (one that does not enter with its section's other lines) is ``None``,
+    never silently widened to the whole section.
+    """
+    terms = linear_terms(expr, derived_exprs, _stack)
+    if terms is None:
+        return None
+    section_lines = {}
+    for label, section in line_section.items():
+        section_lines.setdefault(section, []).append(label)
+    for kind, name in terms:
+        if kind == "sec":
+            section_lines.setdefault(name, [])
+    sections, lines = fold_terms(terms, section_lines)
+    return None if lines else sections
+
+
+def derived_references(expr):
+    """Labels of the derived rows ``expr`` reads (direct references only)."""
+    kind = expr[0]
+    if kind == "drv":
+        return {expr[1]}
+    if kind in ("bin", "cmp"):
+        return derived_references(expr[2]) | derived_references(expr[3])
+    if kind == "neg":
+        return derived_references(expr[1])
+    if kind == "call":
+        return set().union(*(derived_references(a) for a in expr[2])) if expr[2] else set()
+    return set()
+
+
+def close(got, want, tolerance=None):
+    """Whether a recomputed value equals a workbook value.
+
+    Both sides come from the same arithmetic (the oracle recomputes what Excel computed),
+    so only float noise and Excel's 15-significant-digit storage may differ. Default:
+    ``abs(got - want) <= max(1e-6, 1e-9 * abs(want))``. An explicit ``tolerance`` is an
+    absolute bound the caller chose (``--tolerance`` / ``--parity-tolerance``).
+    """
+    if tolerance is not None:
+        return abs(got - want) <= tolerance
+    return abs(got - want) <= max(1e-6, 1e-9 * abs(want))
 
 
 # ---------------------------------------------------------------- plan periods
@@ -456,10 +558,20 @@ class Evaluation:
                 return memo[label]
         return Env()
 
+    def _value(self, label, idxs, period):
+        """One derived-row value: a number (``FALSE`` reads as 0), or ``RowEvalError``."""
+        try:
+            value = eval_expr(self.derived_exprs[label], self._env(idxs, {}))
+        except RowEvalError:
+            raise
+        except Exception as error:  # noqa: BLE001 - any evaluation failure is named, not leaked
+            raise RowEvalError(label, idxs[0] if idxs else None, period, error) from None
+        return float(value) if isinstance(value, bool) else value
+
     def _row(self, label, idxs, per_period):
         if per_period:
-            return [eval_expr(self.derived_exprs[label], self._env([i], {})) for i in idxs]
-        return eval_expr(self.derived_exprs[label], self._env(list(idxs), {}))
+            return [self._value(label, [i], self.labels[i]) for i in idxs]
+        return self._value(label, list(idxs), "the summed periods")
 
     def aggregate(self, label, idxs):
         """A derived row evaluated over the periods ``idxs`` summed (the FY column)."""

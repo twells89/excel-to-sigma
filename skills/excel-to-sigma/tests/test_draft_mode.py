@@ -224,7 +224,12 @@ class TestForecastParity(Fixtures):
 
     def test_tolerance_is_configurable(self):
         targets = {**GOOD_TARGETS, "Revenue": 210.005}
-        code, _, _, _ = self.build(plan_kwargs={"targets": targets})
+        # the default admits only float noise, so a half-cent difference fails ...
+        code, stdout, _, _ = self.build(plan_kwargs={"targets": targets})
+        self.assertEqual(code, 1)
+        self.assertIn("PARITY FAIL Revenue:", stdout)
+        # ... unless the caller chooses a looser absolute bound
+        code, _, _, _ = self.build(plan_kwargs={"targets": targets}, extra=["--parity-tolerance", "0.01"])
         self.assertEqual(code, 0)
         code, stdout, _, _ = self.build(plan_kwargs={"targets": targets}, extra=["--parity-tolerance", "0.001"])
         self.assertEqual(code, 1)
