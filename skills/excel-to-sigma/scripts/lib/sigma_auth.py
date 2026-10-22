@@ -37,6 +37,11 @@ CLI_TIMEOUT_SECONDS = 60
 HTTP_TIMEOUT_SECONDS = 300
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _BASE_URL_LINE_RE = re.compile(r"^\s*Base URL:\s*(\S+)\s*$", re.MULTILINE)
+# OAuth profiles report the bare API host instead of a Base URL line (sigma 1.2.3).
+_API_HOST_LINE_RE = re.compile(r"^\s*API host:\s*([A-Za-z0-9.-]+)\s*$", re.MULTILINE)
+# The CLI lets these override a profile's own sign-in; strip them so the profile's
+# OAuth session is what `auth token` / `auth status` use.
+_CLI_ENV_OVERRIDES = ("SIGMA_CLIENT_ID", "SIGMA_CLIENT_SECRET", "SIGMA_API_TOKEN", "SIGMA_BASE_URL")
 
 
 class SigmaAuthError(RuntimeError):
@@ -142,8 +147,9 @@ def _run_cli(args):
             "SIGMA_CLI_PROFILE and use `eval \"$(bash scripts/browser-login.sh)\"` or "
             "SIGMA_CLIENT_ID/SIGMA_CLIENT_SECRET instead")
     try:
+        env = {k: v for k, v in os.environ.items() if k not in _CLI_ENV_OVERRIDES}
         return subprocess.run([binary, *args], capture_output=True, text=True,
-                              timeout=CLI_TIMEOUT_SECONDS, check=False)
+                              timeout=CLI_TIMEOUT_SECONDS, check=False, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SigmaAuthError(f"could not run `{CLI_BINARY} {' '.join(args[:2])}`: "
                              f"{type(exc).__name__}") from exc
@@ -163,8 +169,15 @@ def _cli_base_url(profile):
     done = _run_cli(["auth", "status", "-p", profile])
     if done.returncode != 0:
         return None
-    match = _BASE_URL_LINE_RE.search(done.stdout or "")
-    return _norm_base(match.group(1), f"Sigma CLI profile '{profile}' base URL") if match else None
+    # sigma 1.2.3 writes the status report to stderr, not stdout; read both.
+    text = (done.stdout or "") + "\n" + (done.stderr or "")
+    match = _BASE_URL_LINE_RE.search(text)
+    if match:
+        return _norm_base(match.group(1), f"Sigma CLI profile '{profile}' base URL")
+    host = _API_HOST_LINE_RE.search(text)
+    if host:
+        return _norm_base("https://" + host.group(1), f"Sigma CLI profile '{profile}' API host")
+    return None
 
 
 # ------------------------------------------------------------------ sources

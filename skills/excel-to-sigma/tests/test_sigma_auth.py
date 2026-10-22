@@ -54,7 +54,10 @@ def provider_result(token=PROVIDER_TOKEN, base=BASE, minted=None, method="browse
 class FakeCli:
     """Stand-in for subprocess.run + shutil.which for the `sigma` binary."""
 
-    def __init__(self, tokens=(CLI_TOKEN,), base=BASE, token_rc=0, status_rc=0, status_text=None):
+    def __init__(self, tokens=(CLI_TOKEN,), base=BASE, token_rc=0, status_rc=0, status_text=None,
+                 status_on_stdout=False):
+        # Real sigma 1.2.3 prints `auth status` to stderr; status_on_stdout covers other versions.
+        self.status_on_stdout = status_on_stdout
         self.tokens = list(tokens)
         self.token_calls = 0
         self.calls = []
@@ -73,7 +76,9 @@ class FakeCli:
                                          stdout=(token + "\n") if self.token_rc == 0 else "",
                                          stderr="")
         if argv[1:3] == ["auth", "status"]:
-            return types.SimpleNamespace(returncode=self.status_rc, stdout=self.status_text, stderr="")
+            if self.status_on_stdout:
+                return types.SimpleNamespace(returncode=self.status_rc, stdout=self.status_text, stderr="")
+            return types.SimpleNamespace(returncode=self.status_rc, stdout="", stderr=self.status_text)
         raise AssertionError(argv)
 
 
@@ -198,6 +203,42 @@ class ResolutionOrderTests(AuthTestCase):
         self.assertEqual(cli.calls, [["/usr/bin/sigma", "auth", "token", "-p", "work"],
                                      ["/usr/bin/sigma", "auth", "status", "-p", "work"]])
         self.mint_mock.assert_not_called()
+
+    def test_cli_status_printed_on_stdout_is_also_read(self):
+        # sigma 1.2.3 prints `auth status` to stderr (the FakeCli default); accept stdout too.
+        self.use_cli(FakeCli(status_on_stdout=True))
+        os.environ["SIGMA_CLI_PROFILE"] = "work"
+        self.assertEqual(sigma_auth.get_session()[0], BASE)
+
+    def test_oauth_profile_status_reports_api_host(self):
+        # OAuth profiles (sigma 1.2.3) print "API host: <host>" instead of "Base URL:".
+        host = BASE.split("://", 1)[1].rstrip("/")
+        self.use_cli(FakeCli(status_text=(
+            "Profile:   work\nAuth type: oauth\nOrg URL:   https://app.example/work\n"
+            f"API host:  {host}\nAuth:      OK (token acquired)\n")))
+        os.environ["SIGMA_CLI_PROFILE"] = "work"
+        self.assertEqual(sigma_auth.get_session()[0], BASE.rstrip("/"))
+
+    def test_cli_runs_without_sigma_credential_env_overrides(self):
+        # The CLI lets SIGMA_CLIENT_ID/SECRET override a profile; they must not reach it.
+        seen = []
+        cli = FakeCli()
+        original = cli.run
+
+        def run(argv, **kwargs):
+            seen.append(kwargs.get("env") or {})
+            return original(argv, **kwargs)
+
+        cli.run = run
+        self.use_cli(cli)
+        os.environ.update({"SIGMA_CLI_PROFILE": "work", "SIGMA_CLIENT_ID": "cid", "SIGMA_CLIENT_SECRET": "sec"})
+        sigma_auth.get_session()
+        self.assertTrue(seen)
+        for env in seen:
+            self.assertNotIn("SIGMA_CLIENT_ID", env)
+            self.assertNotIn("SIGMA_CLIENT_SECRET", env)
+            self.assertNotIn("SIGMA_API_TOKEN", env)
+            self.assertEqual(env.get("SIGMA_CLI_PROFILE"), "work")
 
     def test_provider_is_the_last_resort(self):
         self.mint_mock.side_effect = None
