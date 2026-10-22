@@ -193,13 +193,13 @@ def plan_seed(source_rows, current_rows, key_columns, row_id_column, prior_seed=
         if confirmed is None and isinstance(legacy, dict):
             confirmed = legacy
         if isinstance(pending, dict) and all(
-                name in comparable and _same(comparable[name], value)
+                name in comparable and _same(comparable[name], value, types.get(name))
                 for name, value in pending.items()):
             confirmed = pending
         safe, conflicting = {}, []
         for name in changed_columns:
             if (isinstance(confirmed, dict) and name in confirmed
-                    and _same(comparable.get(name), confirmed[name])):
+                    and _same(comparable.get(name), confirmed[name], types.get(name))):
                 safe[name] = wanted[name]
             else:
                 conflicting.append(name)
@@ -432,24 +432,55 @@ def build_artifact_records(manifest, architecture, target_bindings):
     return artifacts
 
 
-def _approved_feature(manifest, receipt, feature, *, require_assigned=False):
-    if receipt.get("status") != "APPROVED_STAGING":
-        raise InputSyncError("input artifact requires an APPROVED_STAGING receipt")
+def validate_artifact_receipt(manifest, receipt, *, allow_input_only=False):
+    """Validate current source/plan integrity before trusting receipt claims.
+
+    Matching two persisted hashes is insufficient: the manifest may have been
+    edited since those hashes were approved. This gate also runs for consumers
+    with no feature loop (wiring and acceptance matrices).
+    """
+    try:
+        from .migration_manifest import validate_manifest, execution_scope
+    except ImportError:
+        from migration_manifest import validate_manifest, execution_scope
+    try:
+        validate_manifest(manifest, allow_input_only=allow_input_only)
+    except ValueError as error:
+        raise InputSyncError("approved manifest is stale or invalid: " + str(error)) from error
+    if not isinstance(receipt, dict):
+        raise InputSyncError("input artifact requires an approved staging receipt")
+    input_only = execution_scope(manifest) == "input-tables-only"
+    if input_only:
+        if (receipt.get("status") != "APPROVED_INPUT_STAGING"
+                or receipt.get("scope") != "input-tables-only"):
+            raise InputSyncError("input-tables-only artifacts require an APPROVED_INPUT_STAGING receipt")
+    else:
+        if receipt.get("scope") is not None or receipt.get("status") == "APPROVED_INPUT_STAGING":
+            raise InputSyncError("input-tables-only or scoped receipt cannot authorize a full artifact")
+        if receipt.get("status") != "APPROVED_STAGING":
+            raise InputSyncError("input artifact requires an APPROVED_STAGING receipt")
     if (receipt.get("sourceHash") != manifest.get("sourceHash")
             or receipt.get("planHash") != manifest.get("planHash")):
         raise InputSyncError("approved staging receipt is stale")
     architecture = _manifest_architecture(manifest)
-    if feature not in architecture["inputs"]:
-        raise InputSyncError(f"feature is not approved: {feature}")
     bindings = receipt.get("targetBindings") or {}
     expected = build_artifact_records(manifest, architecture, bindings)
     if receipt.get("artifacts") != expected:
         raise InputSyncError("approved artifact binding does not match manifest architecture")
-    binding = bindings[feature]
     target = manifest.get("target")
-    if target and (target.get("documentId") != binding.get("documentId")
-                   or target.get("version") != binding.get("version")):
+    if target and any(target.get("documentId") != binding.get("documentId")
+                      or target.get("version") != binding.get("version")
+                      for binding in bindings.values()):
         raise InputSyncError("approved target document/version is stale")
+    return architecture, bindings, expected
+
+
+def _approved_feature(manifest, receipt, feature, *, require_assigned=False, allow_input_only=False):
+    architecture, bindings, expected = validate_artifact_receipt(
+        manifest, receipt, allow_input_only=allow_input_only)
+    if feature not in architecture["inputs"]:
+        raise InputSyncError(f"feature is not approved: {feature}")
+    binding = bindings[feature]
     if require_assigned:
         for field in ("elementId", "columnIds"):
             if not binding.get(field):
@@ -668,7 +699,7 @@ def plan_extension_seed(source_rows, current_rows, key_columns, row_id_column, *
 
 def emit_workbook_wiring(manifest, staging_receipt):
     """Return approved REST-native join fragments bound to the artifact receipt."""
-    architecture = _manifest_architecture(manifest)
+    architecture, _bindings, _artifacts = validate_artifact_receipt(manifest, staging_receipt)
     for feature in architecture["inputs"]:
         _approved_feature(manifest, staging_receipt, feature)
     return {
@@ -689,7 +720,8 @@ def _row_expression(row, variables, types):
 
 def emit_construction_program(manifest, staging_receipt, feature):
     """Emit construction only from an immutable manifest and approved artifact receipt."""
-    input_spec, binding, artifact = _approved_feature(manifest, staging_receipt, feature)
+    input_spec, binding, artifact = _approved_feature(
+        manifest, staging_receipt, feature, allow_input_only=True)
     spec = _construction_spec(input_spec, binding)
     seed_rows = input_spec.get("rows") or []
     _validate_spec(spec)
@@ -745,7 +777,7 @@ def emit_write_programs(seed_plan, manifest, staging_receipt, feature,
     if not 1 <= max_batch_rows <= MAX_BATCH_ROWS:
         raise InputSyncError("max_batch_rows must be between 1 and 2000")
     input_spec, target, artifact = _approved_feature(
-        manifest, staging_receipt, feature, require_assigned=True)
+        manifest, staging_receipt, feature, require_assigned=True, allow_input_only=True)
     seed_plan = normalize_seed_plan(seed_plan)
     if seed_plan["sourceHash"] != artifact["seedHash"]:
         raise InputSyncError("reconciliation source rows differ from approved seed rows")
@@ -1067,6 +1099,9 @@ def build_operational_input_elements(architecture, target_bindings=None):
         source = resolved_source("expenseSource")
         if not source.get("elementId") or not source.get("name"):
             raise InputSyncError("approved expense source wiring is required")
+        # Excel arithmetic reads a cleared numeric input as zero; the raw input stays null.
+        card_for_arithmetic = "Coalesce([ExpenseJoin/Card Amount], 0)"
+        ledger_for_arithmetic = "Coalesce([ExpenseJoin/Ledger Amount], 0)"
         elements.extend([
             {"id": "expensePolicy", "kind": "input-table", "name": spec["name"],
              "inputMode": "edit", "source": {"kind": "empty", "connectionId": connection},
@@ -1099,12 +1134,12 @@ def build_operational_input_elements(architecture, target_bindings=None):
                  {"id": "expense_policy_status", "name": "PolicyMatchStatus",
                   "formula": 'If(IsNull([Policy/Category]), "ERROR: missing policy", "Matched")'},
                  {"id": "expense_recon", "name": "Recon Variance",
-                  "formula": "[ExpenseJoin/Card Amount] - [ExpenseJoin/Ledger Amount]"},
+                  "formula": f"{card_for_arithmetic} - {ledger_for_arithmetic}"},
                  {"id": "expense_excess", "name": "PolicyExcess",
                   "formula": "If(IsNull([Policy/Category]), Null, Greatest([ExpenseJoin/Amount] - [Policy/Per-item Limit], 0))"},
                  {"id": "expense_exception", "name": "Exception",
                   "formula": ('If(IsNull([Policy/Category]), Null, '
-                              'If(Abs(Round([ExpenseJoin/Card Amount] * 100, 0) - Round([ExpenseJoin/Ledger Amount] * 100, 0)) > 1, "RECON", '
+                              f'If(Abs(Round({card_for_arithmetic} * 100, 0) - Round({ledger_for_arithmetic} * 100, 0)) > 1, "RECON", '
                               'If([PolicyExcess] > 0, "OVER LIMIT", '
                               'If([ExpenseJoin/Receipt Status] = "Missing", "MISSING RECEIPT", '
                               'If([ExpenseJoin/Approval Status] <> "Approved", "PENDING", "CLEAR")))))')}]},

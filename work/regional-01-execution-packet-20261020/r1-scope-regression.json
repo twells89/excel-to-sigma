@@ -1,0 +1,53 @@
+{
+  "status": "PASS",
+  "counterexample": "Sheet!A1=1; Sheet!A2 =A1+1; executionScope input-tables-only; live status and claimed target/verification",
+  "fullEntrypointsTested": [
+    "migration_manifest.validate_staging_approval",
+    "migration_gate.gate_staging_manifest",
+    "input_orchestration.gate_input_staging",
+    "migration_manifest.validate_completion",
+    "migration_gate.gate_completion_manifest",
+    "input_orchestration.gate_input_completion",
+    "native_calculations.prepare_native_calculation_update",
+    "native_exact_plan.prepare_exact_native_scaffold",
+    "native_exact_plan.prepare_exact_native_update",
+    "native_calculations._observed_bindings",
+    "input_sync.emit_workbook_wiring",
+    "input_sync.emit_construction_program (forged full receipt)",
+    "acceptance.validate_matrix",
+    "acceptance.validate_production_matrix",
+    "acceptance.build_workflow_reports",
+    "acceptance.run_integration",
+    "promotion.prepare_promotion",
+    "promotion.finalize_mutation",
+    "acceptance.build_acceptance_matrix"
+  ],
+  "regressionTestsPassed": 9,
+  "inputOnlyCanonicalFormulaStatus": "unresolved",
+  "positiveControls": [
+    "genuine pending literal creation/seeding",
+    "readonly actual-row binding CLI",
+    "legacy no-scope full staging/completion with unit claimed evidence"
+  ],
+  "extraNegativeCases": [
+    "live/verification/cached input-only formula statuses",
+    "logical/actual target and runtime/execution claims",
+    "unknown/null scope enum",
+    "input-only approval/receipt relabeling",
+    "input-only Audit defaults remain pending",
+    "public stage CLI default and inputs-only modes"
+  ],
+  "focusedChecks": {
+    "native": 93,
+    "acceptance": 25,
+    "promotion": 6,
+    "formulaProvenance": 25,
+    "sourceStaging": 9,
+    "inputSync": 23,
+    "packaging": 3
+  },
+  "compile": "PASS",
+  "diffCheck": "PASS",
+  "runtimeStatus": "OFFLINE_ONLY_NO_LIVE_CLAIM",
+  "groupedRegionalBuild": "NOT_STARTED_309_TABLE_FALLBACK_BLOCKED"
+}

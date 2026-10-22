@@ -71,6 +71,51 @@ class WorkflowRepairsTests(unittest.TestCase):
         p=self.module();self.assertFalse(p.reconciliation_required(Decimal('100.01'),Decimal('100.00')))
         self.assertTrue(p.reconciliation_required(Decimal('100.02'),Decimal('100.00')))
 
+    def test_expense_blank_numeric_operands_match_source_arithmetic_without_coercing_bad_values(self):
+        from input_sync import build_operational_input_elements,evaluate_expense_exception
+        from formula_graph import FormulaGraph,CellIdentity
+        from native_graph_oracle import project
+        from presentation import extract_presentation,build_business_input_architecture
+        source=load_workbook(self.fixture('expense'),read_only=True,data_only=False)
+        self.assertEqual(source['Expense Register']['M2'].value,'=J2-K2')
+        self.assertIn('ABS(M2)',source['Expense Register']['O2'].value)
+        source_graph=FormulaGraph.from_workbook(source)
+        cell=lambda address:CellIdentity('Expense Register',address)
+        for blanks,want_variance,want_exception in [
+                (('J2',),-1375,'RECON'),(('K2',),1387.5,'RECON'),
+                (('J2','K2'),0,'OVER LIMIT')]:
+            evaluated=source_graph.evaluate({cell(address):None for address in blanks})
+            self.assertEqual(evaluated[cell('M2')],want_variance)
+            self.assertEqual(evaluated[cell('O2')],want_exception)
+        source.close()
+        arch=build_business_input_architecture(extract_presentation(self.fixture('expense')),
+                                               connection_id='conn',folder_id='folder')
+        columns=next(e['columns'] for e in build_operational_input_elements(arch)['elements']
+                     if e['id']=='expensesWithPolicy')
+        base={'Policy/Category':'Airfare','Policy/Per-item Limit':1200,
+              'Policy/Receipt Threshold':25,'ExpenseJoin/Amount':1375,
+              'ExpenseJoin/Receipt Status':'Missing','ExpenseJoin/Approval Status':'Rejected'}
+        for card,ledger,want_variance,want_exception in [
+                (1387.5,1375,12.5,'RECON'),(None,1375,-1375,'RECON'),
+                (0,1375,-1375,'RECON'),(1387.5,None,1387.5,'RECON'),
+                (None,None,0,'OVER LIMIT')]:
+            joined={**base,'ExpenseJoin/Card Amount':card,'ExpenseJoin/Ledger Amount':ledger}
+            with self.subTest(card=card,ledger=ledger):
+                actual=project(columns,joined)
+                self.assertEqual(actual['Card Amount'],card)
+                self.assertEqual(actual['Ledger Amount'],ledger)
+                self.assertEqual(actual['Recon Variance'],want_variance)
+                self.assertEqual(actual['Exception'],want_exception)
+                self.assertEqual(evaluate_expense_exception({'Amount':1375,'Card Amount':card,
+                    'Ledger Amount':ledger,'Receipt Status':'Missing','Approval Status':'Rejected'},
+                    1200)['exception'],want_exception)
+        for bad in ('1375','#VALUE!'):
+            with self.subTest(bad=bad),self.assertRaises((TypeError,ValueError)):
+                project(columns,{**base,'ExpenseJoin/Card Amount':bad,'ExpenseJoin/Ledger Amount':1375})
+        for bad in ('1375','#VALUE!',True):
+            with self.assertRaisesRegex(ValueError,'currency must be finite numeric'):
+                self.module().reconciliation_required(bad,1375)
+
 class AuditAndPresentationRepairTests(unittest.TestCase):
     module=WorkflowRepairsTests.module
     fixture=WorkflowRepairsTests.fixture

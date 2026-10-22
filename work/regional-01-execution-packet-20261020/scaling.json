@@ -1,0 +1,1502 @@
+{
+  "formulaCount": 3651,
+  "statusCounts": {
+    "ready-to-bind": 3515,
+    "reviewed-replacement-input": 2,
+    "unresolved": 134
+  },
+  "sources": {
+    "01 Regional Sales Forecast.xlsx": {
+      "sourceSha256": "4b46bfa6190d1ef12ea35713e3932aa77f19fb964730b4b3bbb0851294219e2c",
+      "nativePlanHash": "8e40633a5db2746534420d5cdfa2c2595b9d06d470e1e7e3fb1dd13105074074",
+      "inputPlanHash": "2d4c67f089930ac4e97eea6a70c08a8d04e03db4014d4d399d205f0f90d7ad60",
+      "formulaCount": 214,
+      "statusCounts": {
+        "ready-to-bind": 214
+      },
+      "inputRecordProfiles": {
+        "regions": {
+          "rows": 4,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Region"
+          ]
+        },
+        "sales-forecast": {
+          "rows": 144,
+          "editableColumns": 5,
+          "naturalKeys": [
+            "Region",
+            "Product Line",
+            "Month"
+          ]
+        },
+        "summary-months": {
+          "rows": 12,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Month"
+          ]
+        },
+        "summary-products": {
+          "rows": 3,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Product Line"
+          ]
+        },
+        "summary-regions": {
+          "rows": 4,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Region"
+          ]
+        }
+      },
+      "tableCount": 309,
+      "columnCount": 13749,
+      "helperCount": 1676,
+      "maxDependencyDepth": 28,
+      "maxFormulaLength": 2406,
+      "categories": {
+        "scalar-helper": {
+          "tables": 45,
+          "columns": 1721,
+          "formulaCharacters": 1212481,
+          "widthHistogram": {
+            "64": 17,
+            "58": 1,
+            "11": 2,
+            "35": 2,
+            "46": 1,
+            "30": 1,
+            "19": 1,
+            "9": 3,
+            "13": 1,
+            "25": 2,
+            "29": 2,
+            "21": 6,
+            "17": 4,
+            "41": 1,
+            "5": 1
+          }
+        },
+        "criteria-row-helper": {
+          "tables": 192,
+          "columns": 10668,
+          "formulaCharacters": 1635936,
+          "widthHistogram": {
+            "64": 140,
+            "23": 36,
+            "55": 16
+          }
+        },
+        "formal-row-template": {
+          "tables": 2,
+          "columns": 12,
+          "formulaCharacters": 3445,
+          "widthHistogram": {
+            "6": 2
+          }
+        },
+        "range-aggregate": {
+          "tables": 52,
+          "columns": 260,
+          "formulaCharacters": 23938,
+          "widthHistogram": {
+            "5": 52
+          }
+        },
+        "public-output": {
+          "tables": 18,
+          "columns": 1088,
+          "formulaCharacters": 29348,
+          "widthHistogram": {
+            "61": 17,
+            "51": 1
+          }
+        }
+      },
+      "astNodes": {
+        "binary": 180,
+        "range": 473,
+        "text": 33,
+        "function": 117,
+        "reference": 100,
+        "number": 120,
+        "boolean": 4
+      },
+      "functionNodes": {
+        "SUMIFS": 52,
+        "DATE": 32,
+        "EDATE": 16,
+        "SUM": 9,
+        "VLOOKUP": 4,
+        "IFERROR": 4
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "02 SaaS Driver Forecast FY26.xlsx": {
+      "sourceSha256": "5350bfea1e3d5155f6e47ebc9fe363c90701cc5b674873ce7345c2662aec6f48",
+      "nativePlanHash": "5f9ffa28b50fc66426a74ca69cdde722788c229f773492ab9925255dc53e75b6",
+      "inputPlanHash": "b32d40483a009c9facdbbf0ddf5349bf03a1b7b83fec324db6d974f1f90d88a5",
+      "formulaCount": 222,
+      "statusCounts": {
+        "ready-to-bind": 222
+      },
+      "inputRecordProfiles": {
+        "actuals": {
+          "rows": 156,
+          "editableColumns": 6,
+          "naturalKeys": [
+            "Date",
+            "Line Item",
+            "Department",
+            "Vendor"
+          ]
+        },
+        "data-headers": {
+          "rows": 1,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Month"
+          ]
+        },
+        "drivers": {
+          "rows": 6,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Driver"
+          ]
+        },
+        "manual-forecast-lines": {
+          "rows": 2,
+          "editableColumns": 7,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "pnl-line-labels": {
+          "rows": 8,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "pnl-period-labels": {
+          "rows": 6,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Period"
+          ]
+        }
+      },
+      "tableCount": 218,
+      "columnCount": 5967,
+      "helperCount": 439,
+      "maxDependencyDepth": 18,
+      "maxFormulaLength": 2455,
+      "categories": {
+        "scalar-helper": {
+          "tables": 19,
+          "columns": 458,
+          "formulaCharacters": 249315,
+          "widthHistogram": {
+            "15": 1,
+            "7": 2,
+            "64": 1,
+            "4": 1,
+            "52": 1,
+            "43": 1,
+            "50": 1,
+            "41": 1,
+            "31": 2,
+            "34": 1,
+            "29": 1,
+            "22": 1,
+            "11": 1,
+            "6": 1,
+            "5": 1,
+            "3": 2
+          }
+        },
+        "criteria-row-helper": {
+          "tables": 120,
+          "columns": 4080,
+          "formulaCharacters": 1148832,
+          "widthHistogram": {
+            "64": 60,
+            "4": 60
+          }
+        },
+        "range-aggregate": {
+          "tables": 60,
+          "columns": 300,
+          "formulaCharacters": 7368,
+          "widthHistogram": {
+            "5": 60
+          }
+        },
+        "public-output": {
+          "tables": 19,
+          "columns": 1129,
+          "formulaCharacters": 22032,
+          "widthHistogram": {
+            "61": 18,
+            "31": 1
+          }
+        }
+      },
+      "astNodes": {
+        "function": 135,
+        "range": 242,
+        "reference": 321,
+        "binary": 137,
+        "number": 62,
+        "group": 36
+      },
+      "functionNodes": {
+        "SUMIFS": 60,
+        "SUM": 62,
+        "IF": 13
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "03 Retail Quarterly Budget.xlsx": {
+      "sourceSha256": "67bbe3e08ce38cd1677849ae00ae816f722b3e8129d4a809d2617b811c85de4c",
+      "nativePlanHash": "f938dc23380c8d331b8389171c4ee000ac3c024e9a00e97f1e0bebd121f67f20",
+      "inputPlanHash": "11602b197b6ba9c5b3950c6b2b8f7d28403c9645f0e7765599c166f5a7ec1cfc",
+      "formulaCount": 132,
+      "statusCounts": {
+        "ready-to-bind": 130,
+        "reviewed-replacement-input": 2
+      },
+      "inputRecordProfiles": {
+        "budget-accounts": {
+          "rows": 8,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Account"
+          ]
+        },
+        "budget-historical-periods": {
+          "rows": 4,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Period"
+          ]
+        },
+        "corporate-allocations": {
+          "rows": 2,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Period"
+          ]
+        },
+        "drivers": {
+          "rows": 5,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Driver"
+          ]
+        },
+        "gl-detail": {
+          "rows": 124,
+          "editableColumns": 5,
+          "naturalKeys": [
+            "Period",
+            "Store",
+            "Account"
+          ]
+        },
+        "gl-headers": {
+          "rows": 1,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Period"
+          ]
+        },
+        "manual-interest-income": {
+          "rows": 1,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Account"
+          ]
+        },
+        "manual-marketing": {
+          "rows": 1,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Account"
+          ]
+        }
+      },
+      "tableCount": 134,
+      "columnCount": 3656,
+      "helperCount": 352,
+      "maxDependencyDepth": 15,
+      "maxFormulaLength": 1994,
+      "categories": {
+        "scalar-helper": {
+          "tables": 15,
+          "columns": 367,
+          "formulaCharacters": 126710,
+          "widthHistogram": {
+            "16": 1,
+            "10": 2,
+            "8": 1,
+            "44": 1,
+            "47": 1,
+            "36": 1,
+            "38": 1,
+            "50": 1,
+            "30": 1,
+            "21": 1,
+            "27": 1,
+            "18": 1,
+            "7": 1,
+            "5": 1
+          }
+        },
+        "criteria-row-helper": {
+          "tables": 72,
+          "columns": 2448,
+          "formulaCharacters": 702308,
+          "widthHistogram": {
+            "64": 36,
+            "4": 36
+          }
+        },
+        "range-aggregate": {
+          "tables": 36,
+          "columns": 180,
+          "formulaCharacters": 4536,
+          "widthHistogram": {
+            "5": 36
+          }
+        },
+        "public-output": {
+          "tables": 11,
+          "columns": 661,
+          "formulaCharacters": 14213,
+          "widthHistogram": {
+            "61": 10,
+            "51": 1
+          }
+        }
+      },
+      "astNodes": {
+        "function": 94,
+        "range": 149,
+        "reference": 202,
+        "binary": 102,
+        "number": 25,
+        "group": 38,
+        "text": 17
+      },
+      "functionNodes": {
+        "SUMIFS": 36,
+        "SUM": 41,
+        "IFERROR": 17
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "04 Sales Pipeline Forecast.xlsx": {
+      "sourceSha256": "ba82c7482ae23ba7271215d2193728734dc155519ffbf4c6efdac9f223c5bb7e",
+      "nativePlanHash": "88b4b13638f5e20be352168207739803854891ef7ff2233a20b64941cd82646b",
+      "inputPlanHash": "ad4e017663371eb7d87f51b8b1250afbdc25e48317651500d214fd396e2314af",
+      "formulaCount": 228,
+      "statusCounts": {
+        "ready-to-bind": 228
+      },
+      "inputRecordProfiles": {
+        "forecast-stages": {
+          "rows": 6,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Stage"
+          ]
+        },
+        "owner-targets": {
+          "rows": 4,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Owner"
+          ]
+        },
+        "pipeline": {
+          "rows": 60,
+          "editableColumns": 6,
+          "naturalKeys": [
+            "Opp ID"
+          ]
+        },
+        "stages": {
+          "rows": 6,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Stage"
+          ]
+        }
+      },
+      "tableCount": 206,
+      "columnCount": 7967,
+      "helperCount": 2931,
+      "maxDependencyDepth": 25,
+      "maxFormulaLength": 2520,
+      "categories": {
+        "scalar-helper": {
+          "tables": 61,
+          "columns": 2992,
+          "formulaCharacters": 2424345,
+          "widthHistogram": {
+            "64": 40,
+            "48": 1,
+            "63": 1,
+            "7": 4,
+            "58": 2,
+            "17": 1,
+            "3": 1,
+            "4": 1,
+            "10": 1,
+            "35": 1,
+            "13": 2,
+            "49": 1,
+            "9": 2,
+            "5": 3
+          }
+        },
+        "criteria-row-helper": {
+          "tables": 76,
+          "columns": 3536,
+          "formulaCharacters": 597070,
+          "widthHistogram": {
+            "34": 36,
+            "64": 32,
+            "33": 8
+          }
+        },
+        "range-aggregate": {
+          "tables": 44,
+          "columns": 214,
+          "formulaCharacters": 14660,
+          "widthHistogram": {
+            "4": 6,
+            "5": 38
+          }
+        },
+        "formal-row-template": {
+          "tables": 6,
+          "columns": 66,
+          "formulaCharacters": 45046,
+          "widthHistogram": {
+            "21": 2,
+            "6": 4
+          }
+        },
+        "public-output": {
+          "tables": 19,
+          "columns": 1159,
+          "formulaCharacters": 30443,
+          "widthHistogram": {
+            "61": 19
+          }
+        }
+      },
+      "astNodes": {
+        "function": 244,
+        "range": 622,
+        "reference": 52,
+        "binary": 116,
+        "text": 116,
+        "number": 232
+      },
+      "functionNodes": {
+        "COUNTIFS": 6,
+        "SUMIFS": 38,
+        "DATE": 48,
+        "EOMONTH": 24,
+        "SUM": 4,
+        "IFERROR": 4,
+        "XLOOKUP": 120
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "05 Statistical Demand Forecast.xlsx": {
+      "sourceSha256": "02f90f32fa077ee1fac7e2d7a8cdc48b61bf09f6fc69b27a855886ed9cd9d310",
+      "nativePlanHash": "bffd184ef001c3f48c920957be135916c7a1190528807bdabbaf7c17ee7e985e",
+      "inputPlanHash": "a972090a1ae2dcdf4bff93f2da4d08950e83960a46b53dd072b1249017876363",
+      "formulaCount": 109,
+      "statusCounts": {
+        "unresolved": 109
+      },
+      "inputRecordProfiles": {
+        "forecast-months": {
+          "rows": 12,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Month"
+          ]
+        },
+        "forecast-parameters": {
+          "rows": 1,
+          "editableColumns": 5,
+          "naturalKeys": [
+            "Title"
+          ]
+        },
+        "history-long": {
+          "rows": 108,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Month",
+            "SKU"
+          ]
+        },
+        "history-month-header": {
+          "rows": 1,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Header"
+          ]
+        }
+      },
+      "tableCount": 0,
+      "columnCount": 0,
+      "helperCount": 0,
+      "maxDependencyDepth": 0,
+      "maxFormulaLength": 0,
+      "categories": {},
+      "astNodes": {
+        "function": 146,
+        "reference": 138,
+        "range": 186,
+        "number": 105,
+        "binary": 15,
+        "unary": 13
+      },
+      "functionNodes": {
+        "FORECAST.ETS": 36,
+        "SUM": 3,
+        "STDEV.S": 3,
+        "NORM.S.INV": 3,
+        "SQRT": 3,
+        "FORECAST.LINEAR": 36,
+        "AVERAGE": 12,
+        "OFFSET": 12,
+        "INDEX": 12,
+        "COUNTA": 12,
+        "MATCH": 12,
+        "_XLWS.SORT": 1,
+        "SEQUENCE": 1
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "06 13-Week Cash Flow.xlsx": {
+      "sourceSha256": "9d7b8d8f9d7bdba0a4a423712a10ac86186391dc43efaf24c8747d869c09a7fc",
+      "nativePlanHash": "17cf55e1b654c10b2c62277ba0e3b9137e9e024d2527e985a20ef7642638b043",
+      "inputPlanHash": "7d6c6cdaafc7ffa088d2b2204166435adca73ba4fdc99c77778c77da6f9ed58a",
+      "formulaCount": 166,
+      "statusCounts": {
+        "ready-to-bind": 166
+      },
+      "inputRecordProfiles": {
+        "cash-settings": {
+          "rows": 1,
+          "editableColumns": 8,
+          "naturalKeys": [
+            "Title"
+          ]
+        },
+        "collection-scenarios": {
+          "rows": 3,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Scenario"
+          ]
+        },
+        "manual-cash": {
+          "rows": 13,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Week"
+          ]
+        },
+        "payables": {
+          "rows": 30,
+          "editableColumns": 5,
+          "naturalKeys": [
+            "Source Record ID"
+          ]
+        },
+        "receivables": {
+          "rows": 40,
+          "editableColumns": 5,
+          "naturalKeys": [
+            "Invoice"
+          ]
+        }
+      },
+      "tableCount": 98,
+      "columnCount": 2464,
+      "helperCount": 564,
+      "maxDependencyDepth": 27,
+      "maxFormulaLength": 3408,
+      "categories": {
+        "scalar-helper": {
+          "tables": 28,
+          "columns": 592,
+          "formulaCharacters": 418444,
+          "widthHistogram": {
+            "37": 1,
+            "34": 1,
+            "60": 1,
+            "64": 1,
+            "9": 2,
+            "53": 1,
+            "31": 1,
+            "17": 5,
+            "21": 2,
+            "19": 1,
+            "18": 3,
+            "15": 2,
+            "16": 1,
+            "14": 1,
+            "12": 1,
+            "11": 1,
+            "6": 1,
+            "4": 1,
+            "2": 1
+          }
+        },
+        "criteria-row-helper": {
+          "tables": 28,
+          "columns": 888,
+          "formulaCharacters": 217799,
+          "widthHistogram": {
+            "34": 26,
+            "2": 2
+          }
+        },
+        "range-aggregate": {
+          "tables": 28,
+          "columns": 140,
+          "formulaCharacters": 3390,
+          "widthHistogram": {
+            "5": 28
+          }
+        },
+        "public-output": {
+          "tables": 14,
+          "columns": 844,
+          "formulaCharacters": 22471,
+          "widthHistogram": {
+            "61": 13,
+            "51": 1
+          }
+        }
+      },
+      "astNodes": {
+        "binary": 128,
+        "text": 14,
+        "reference": 260,
+        "function": 87,
+        "range": 87,
+        "indirect": 13,
+        "number": 63,
+        "group": 12
+      },
+      "functionNodes": {
+        "SUMIFS": 26,
+        "IF": 13,
+        "MOD": 13,
+        "SUM": 22,
+        "MIN": 13
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "07 Headcount and Opex Plan.xlsx": {
+      "sourceSha256": "392c3e8585975597445fed0776e03a432582374efc09149fce4c5d3acee1d366",
+      "nativePlanHash": "ab61e5cbf4881125d9a892a4d8f3ee4165506cf939f9516fc59885345b21d95c",
+      "inputPlanHash": "4f1c70a1ed4551aee415458f277f95b4822eef0721d88937f48726c462f7f2d7",
+      "formulaCount": 625,
+      "statusCounts": {
+        "ready-to-bind": 600,
+        "unresolved": 25
+      },
+      "inputRecordProfiles": {
+        "cost-assumptions": {
+          "rows": 1,
+          "editableColumns": 4,
+          "naturalKeys": [
+            "Title"
+          ]
+        },
+        "headcount-budget": {
+          "rows": 60,
+          "editableColumns": 3,
+          "naturalKeys": [
+            "Department",
+            "Month"
+          ]
+        },
+        "monthly-cost-period-axis": {
+          "rows": 1,
+          "editableColumns": 14,
+          "naturalKeys": [
+            "Label"
+          ]
+        },
+        "monthly-cost-row-axis": {
+          "rows": 40,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Source Row"
+          ]
+        },
+        "roster": {
+          "rows": 40,
+          "editableColumns": 8,
+          "naturalKeys": [
+            "Emp ID"
+          ]
+        },
+        "variance-departments": {
+          "rows": 5,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Department"
+          ]
+        }
+      },
+      "tableCount": 481,
+      "columnCount": 29726,
+      "helperCount": 26245,
+      "maxDependencyDepth": 53,
+      "maxFormulaLength": 2619,
+      "categories": {
+        "scalar-helper": {
+          "tables": 431,
+          "columns": 26676,
+          "formulaCharacters": 23249506,
+          "widthHistogram": {
+            "64": 378,
+            "18": 5,
+            "26": 1,
+            "38": 1,
+            "36": 1,
+            "24": 2,
+            "48": 1,
+            "12": 4,
+            "63": 29,
+            "23": 1,
+            "39": 1,
+            "41": 2,
+            "33": 1,
+            "56": 1,
+            "17": 1,
+            "16": 1,
+            "57": 1
+          }
+        },
+        "public-output": {
+          "tables": 50,
+          "columns": 3050,
+          "formulaCharacters": 91216,
+          "widthHistogram": {
+            "61": 50
+          }
+        }
+      },
+      "astNodes": {
+        "function": 4950,
+        "range": 2070,
+        "reference": 4915,
+        "binary": 4330,
+        "number": 2895,
+        "text": 485,
+        "group": 480
+      },
+      "functionNodes": {
+        "INDEX": 2005,
+        "IF": 960,
+        "AND": 480,
+        "EOMONTH": 480,
+        "OR": 480,
+        "MONTH": 480,
+        "SUM": 45,
+        "SUMIFS": 5,
+        "MATCH": 5,
+        "IFERROR": 5,
+        "COUNTIFS": 5
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "08 Inventory Replenishment Plan.xlsm": {
+      "sourceSha256": "461bee7b71f30822ea4d263ef529723d89dc9f11e7365e6434cefe89619c2f7e",
+      "nativePlanHash": "9ac8e76e9b128cd8505d736373fac53b94dea39ddc1003704ff1f2eaf19e28a5",
+      "inputPlanHash": "fa12ec592b81be8e12fe9385a000b453953b3e2abe55419e07f3805c151b04dc",
+      "formulaCount": 90,
+      "statusCounts": {
+        "ready-to-bind": 90
+      },
+      "inputRecordProfiles": {
+        "demand": {
+          "rows": 72,
+          "editableColumns": 4,
+          "naturalKeys": [
+            "SKU",
+            "Week Start"
+          ]
+        },
+        "projection-skus": {
+          "rows": 6,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "SKU"
+          ]
+        },
+        "projection-weeks": {
+          "rows": 12,
+          "editableColumns": 1,
+          "naturalKeys": [
+            "Week Start"
+          ]
+        },
+        "sku": {
+          "rows": 6,
+          "editableColumns": 7,
+          "naturalKeys": [
+            "SKU"
+          ]
+        },
+        "snapshots": {
+          "rows": 0,
+          "editableColumns": 5,
+          "naturalKeys": [
+            "SKU"
+          ]
+        }
+      },
+      "tableCount": 515,
+      "columnCount": 13154,
+      "helperCount": 2109,
+      "maxDependencyDepth": 66,
+      "maxFormulaLength": 3310,
+      "categories": {
+        "scalar-helper": {
+          "tables": 75,
+          "columns": 2184,
+          "formulaCharacters": 1394513,
+          "widthHistogram": {
+            "16": 1,
+            "61": 3,
+            "19": 22,
+            "64": 9,
+            "37": 11,
+            "34": 1,
+            "25": 4,
+            "7": 4,
+            "55": 1,
+            "43": 4,
+            "13": 15
+          }
+        },
+        "criteria-row-helper": {
+          "tables": 288,
+          "columns": 9792,
+          "formulaCharacters": 2905344,
+          "widthHistogram": {
+            "64": 144,
+            "4": 144
+          }
+        },
+        "range-aggregate": {
+          "tables": 144,
+          "columns": 720,
+          "formulaCharacters": 19656,
+          "widthHistogram": {
+            "5": 144
+          }
+        },
+        "public-output": {
+          "tables": 8,
+          "columns": 458,
+          "formulaCharacters": 12414,
+          "widthHistogram": {
+            "61": 7,
+            "31": 1
+          }
+        }
+      },
+      "astNodes": {
+        "binary": 162,
+        "function": 216,
+        "range": 486,
+        "reference": 396,
+        "number": 30,
+        "text": 18
+      },
+      "functionNodes": {
+        "INDEX": 24,
+        "MATCH": 24,
+        "SUMIFS": 144,
+        "MIN": 6,
+        "IF": 12,
+        "CEILING": 6
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "broaderEight"
+    },
+    "fixture-expense-approval.xlsx": {
+      "sourceSha256": "72d83ce43a5c4a320d5416ea87e186954407abeed6afde804a2c79c529be2751",
+      "nativePlanHash": "002192038bbd55c38aee1245feb386725abc114542d6b4e33edd104c531abae8",
+      "inputPlanHash": "5c982c3d01a86074013592ae8db4b40b0c61d5433797d74d761f89116be5f3da",
+      "formulaCount": 632,
+      "statusCounts": {
+        "ready-to-bind": 632
+      },
+      "inputRecordProfiles": {
+        "expense-policy": {
+          "rows": 6,
+          "editableColumns": 4,
+          "naturalKeys": [
+            "Category"
+          ]
+        },
+        "expense-register": {
+          "rows": 48,
+          "editableColumns": 11,
+          "naturalKeys": [
+            "Expense ID"
+          ]
+        }
+      },
+      "tableCount": 103,
+      "columnCount": 5268,
+      "helperCount": 1995,
+      "maxDependencyDepth": 24,
+      "maxFormulaLength": 3451,
+      "categories": {
+        "scalar-helper": {
+          "tables": 48,
+          "columns": 2043,
+          "formulaCharacters": 919779,
+          "widthHistogram": {
+            "64": 24,
+            "60": 1,
+            "21": 2,
+            "63": 1,
+            "5": 1,
+            "20": 1,
+            "36": 5,
+            "54": 1,
+            "51": 1,
+            "3": 10,
+            "2": 1
+          }
+        },
+        "public-output": {
+          "tables": 53,
+          "columns": 3213,
+          "formulaCharacters": 126774,
+          "widthHistogram": {
+            "61": 52,
+            "41": 1
+          }
+        },
+        "formal-row-template": {
+          "tables": 2,
+          "columns": 12,
+          "formulaCharacters": 3595,
+          "widthHistogram": {
+            "6": 2
+          }
+        }
+      },
+      "astNodes": {
+        "function": 488,
+        "reference": 1152,
+        "range": 1,
+        "number": 148,
+        "binary": 480,
+        "text": 768
+      },
+      "functionNodes": {
+        "SUM": 7,
+        "COUNT": 1,
+        "MAX": 48,
+        "IF": 384,
+        "ABS": 48
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "originalFive"
+    },
+    "fixture-forecast-model.xlsx": {
+      "sourceSha256": "40aca738a4d40cc94a5d5a181015e1bf974310f820aa7dfcf5b01a9ad7b6025e",
+      "nativePlanHash": "f65f46d7183ffc9a697edeedc106f3ba530b2f7886e74133bc3ce51bc15ce9de",
+      "inputPlanHash": "94c82b37f96aeaca450b8eb663327891b4585b895a64940f0b7bab2a17df0044",
+      "formulaCount": 278,
+      "statusCounts": {
+        "ready-to-bind": 278
+      },
+      "inputRecordProfiles": {
+        "actuals-detail": {
+          "rows": 162,
+          "editableColumns": 9,
+          "naturalKeys": [
+            "Date",
+            "Line Item",
+            "Department",
+            "Counterparty"
+          ]
+        },
+        "forecast-inputs": {
+          "rows": 12,
+          "editableColumns": 9,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        }
+      },
+      "tableCount": 43,
+      "columnCount": 1865,
+      "helperCount": 432,
+      "maxDependencyDepth": 18,
+      "maxFormulaLength": 2487,
+      "categories": {
+        "scalar-helper": {
+          "tables": 19,
+          "columns": 451,
+          "formulaCharacters": 353992,
+          "widthHistogram": {
+            "64": 1,
+            "27": 1,
+            "50": 1,
+            "30": 3,
+            "23": 3,
+            "25": 2,
+            "26": 1,
+            "18": 1,
+            "21": 1,
+            "16": 1,
+            "8": 1,
+            "5": 1,
+            "4": 1,
+            "3": 1
+          }
+        },
+        "public-output": {
+          "tables": 24,
+          "columns": 1414,
+          "formulaCharacters": 32464,
+          "widthHistogram": {
+            "61": 23,
+            "11": 1
+          }
+        }
+      },
+      "astNodes": {
+        "reference": 519,
+        "binary": 109,
+        "function": 138,
+        "group": 36,
+        "number": 36,
+        "range": 18
+      },
+      "functionNodes": {
+        "SUM": 138
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "originalFive"
+    },
+    "fixture-inventory-reorder.xlsx": {
+      "sourceSha256": "017b9d7a844b6bc66e4d529115bed34dabaa6c01ee17c712b26ac3635f706d40",
+      "nativePlanHash": "bd39b997848d0f504d1c97662d4b56c0cab99ce25e963e74a5676f69c49f8a53",
+      "inputPlanHash": "eb47f368eaa5bb8bbb2fdd18a2974eed6cf8b3ce52070d10fb8c0872fe44bf7e",
+      "formulaCount": 442,
+      "statusCounts": {
+        "ready-to-bind": 442
+      },
+      "inputRecordProfiles": {
+        "inventory": {
+          "rows": 36,
+          "editableColumns": 10,
+          "naturalKeys": [
+            "SKU"
+          ]
+        }
+      },
+      "tableCount": 107,
+      "columnCount": 4257,
+      "helperCount": 1865,
+      "maxDependencyDepth": 39,
+      "maxFormulaLength": 3310,
+      "categories": {
+        "scalar-helper": {
+          "tables": 60,
+          "columns": 1925,
+          "formulaCharacters": 1390234,
+          "widthHistogram": {
+            "64": 21,
+            "20": 2,
+            "55": 2,
+            "32": 1,
+            "60": 1,
+            "19": 1,
+            "56": 2,
+            "24": 1,
+            "52": 1,
+            "21": 1,
+            "13": 2,
+            "9": 1,
+            "5": 5,
+            "4": 5,
+            "3": 3,
+            "2": 11
+          }
+        },
+        "public-output": {
+          "tables": 37,
+          "columns": 2247,
+          "formulaCharacters": 73821,
+          "widthHistogram": {
+            "61": 36,
+            "51": 1
+          }
+        },
+        "formal-row-template": {
+          "tables": 10,
+          "columns": 85,
+          "formulaCharacters": 36462,
+          "widthHistogram": {
+            "6": 6,
+            "10": 2,
+            "18": 1,
+            "11": 1
+          }
+        }
+      },
+      "astNodes": {
+        "function": 118,
+        "reference": 972,
+        "binary": 432,
+        "number": 108,
+        "text": 72
+      },
+      "functionNodes": {
+        "SUM": 10,
+        "ROUNDUP": 36,
+        "MAX": 36,
+        "IF": 36
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "originalFive"
+    },
+    "fixture-research-model.xlsx": {
+      "sourceSha256": "b31fe6f11463fe2575501d2cfbd35a1c3f7242daf2e06ae31891f13e6d9ad680",
+      "nativePlanHash": "3fa2536df36b20cb9a741fe53f1d0e4d6ca13d867895f927d94c649f29e5d66e",
+      "inputPlanHash": "66c68aa4cbda4a49bdc9bd7440252d754a4bddf73e6236cc5279ef62aee08117",
+      "formulaCount": 343,
+      "statusCounts": {
+        "ready-to-bind": 343
+      },
+      "inputRecordProfiles": {
+        "audit-tolerances": {
+          "rows": 4,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Check"
+          ]
+        },
+        "model-inputs": {
+          "rows": 6,
+          "editableColumns": 4,
+          "naturalKeys": [
+            "Metric"
+          ]
+        },
+        "research-history-11": {
+          "rows": 1,
+          "editableColumns": 7,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-13": {
+          "rows": 1,
+          "editableColumns": 7,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-16": {
+          "rows": 1,
+          "editableColumns": 7,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-20": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-25": {
+          "rows": 1,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-28": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-36": {
+          "rows": 1,
+          "editableColumns": 7,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-38": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-43": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-53": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-54": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-61": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-62": {
+          "rows": 1,
+          "editableColumns": 13,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "research-history-8": {
+          "rows": 1,
+          "editableColumns": 7,
+          "naturalKeys": [
+            "Line Item"
+          ]
+        },
+        "segment-detail": {
+          "rows": 36,
+          "editableColumns": 4,
+          "naturalKeys": [
+            "Year",
+            "Segment"
+          ]
+        }
+      },
+      "tableCount": 105,
+      "columnCount": 5280,
+      "helperCount": 3460,
+      "maxDependencyDepth": 30,
+      "maxFormulaLength": 2318,
+      "categories": {
+        "scalar-helper": {
+          "tables": 76,
+          "columns": 3536,
+          "formulaCharacters": 2818633,
+          "widthHistogram": {
+            "64": 46,
+            "49": 1,
+            "30": 1,
+            "22": 1,
+            "29": 1,
+            "17": 2,
+            "61": 2,
+            "63": 1,
+            "58": 1,
+            "2": 7,
+            "6": 2,
+            "9": 1,
+            "7": 2,
+            "16": 1,
+            "5": 2,
+            "4": 3,
+            "50": 1,
+            "48": 1
+          }
+        },
+        "public-output": {
+          "tables": 29,
+          "columns": 1744,
+          "formulaCharacters": 48161,
+          "widthHistogram": {
+            "61": 28,
+            "36": 1
+          }
+        }
+      },
+      "astNodes": {
+        "binary": 306,
+        "function": 38,
+        "range": 21,
+        "number": 43,
+        "reference": 599,
+        "group": 12,
+        "text": 8,
+        "unary": 12,
+        "percent": 6
+      },
+      "functionNodes": {
+        "SUMIFS": 3,
+        "SUM": 15,
+        "IF": 4,
+        "MAX": 4,
+        "ABS": 12
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "originalFive"
+    },
+    "fixture-sales-pipeline.xlsx": {
+      "sourceSha256": "f4bbc3136428b57bae235b254a42951906fbe58ef422c75819070443253f15d5",
+      "nativePlanHash": "5054f5be8b5d5192facc78fd50f2a0713d2c3e62d3f59885b92d8027739c3849",
+      "inputPlanHash": "fcbaeabe6ef5cdcb8dcbaafeb4f84005c4dfbd3755ff265edf1154f4341610af",
+      "formulaCount": 170,
+      "statusCounts": {
+        "ready-to-bind": 170
+      },
+      "inputRecordProfiles": {
+        "as-of-setting": {
+          "rows": 1,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Setting"
+          ]
+        },
+        "pipeline": {
+          "rows": 48,
+          "editableColumns": 11,
+          "naturalKeys": [
+            "Opportunity ID"
+          ]
+        },
+        "rep-targets": {
+          "rows": 4,
+          "editableColumns": 2,
+          "naturalKeys": [
+            "Rep"
+          ]
+        }
+      },
+      "tableCount": 66,
+      "columnCount": 2340,
+      "helperCount": 1388,
+      "maxDependencyDepth": 27,
+      "maxFormulaLength": 3406,
+      "categories": {
+        "scalar-helper": {
+          "tables": 45,
+          "columns": 1433,
+          "formulaCharacters": 1190479,
+          "widthHistogram": {
+            "64": 18,
+            "13": 2,
+            "47": 1,
+            "51": 1,
+            "25": 1,
+            "11": 1,
+            "24": 1,
+            "26": 1,
+            "8": 1,
+            "7": 2,
+            "3": 14,
+            "5": 1,
+            "2": 1
+          }
+        },
+        "public-output": {
+          "tables": 15,
+          "columns": 865,
+          "formulaCharacters": 20141,
+          "widthHistogram": {
+            "61": 14,
+            "11": 1
+          }
+        },
+        "formal-row-template": {
+          "tables": 6,
+          "columns": 42,
+          "formulaCharacters": 13847,
+          "widthHistogram": {
+            "6": 5,
+            "12": 1
+          }
+        }
+      },
+      "astNodes": {
+        "function": 166,
+        "reference": 632,
+        "binary": 244,
+        "text": 288
+      },
+      "functionNodes": {
+        "SUM": 22,
+        "IF": 144
+      },
+      "runtimeStatus": "UNVERIFIED_CANDIDATE",
+      "constructionIdentities": "TEST_ONLY, never assigned target IDs or staging receipts",
+      "sourceGroup": "originalFive"
+    }
+  },
+  "denominators": {
+    "originalFive": 1865,
+    "broaderEight": 1786
+  }
+}

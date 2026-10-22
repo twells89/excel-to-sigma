@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from openpyxl import load_workbook
+from openpyxl.formatting.rule import CellIsRule
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,6 +175,88 @@ class TestPresentationExtraction(unittest.TestCase):
 
 
 class TestPresentationEmission(unittest.TestCase):
+    def test_source_table_rules_reach_both_views_without_cross_sheet_propagation(self):
+        expected = {
+            "fixture-sales-pipeline.xlsx": {
+                "Pipeline": ["sales-input", "sales-main-view", "sales-detail-view"],
+            },
+            "fixture-inventory-reorder.xlsx": {
+                "Inventory": ["inventory-input", "inventory-main-view", "inventory-detail-view"],
+                "Purchase Plan": ["inventory-main-view"],
+            },
+            "fixture-expense-approval.xlsx": {
+                "Expense Register": ["expense-input", "expense-main-view", "expense-detail-view"],
+                "Reconciliation": ["expense-main-view"],
+            },
+        }
+        for filename, by_sheet in expected.items():
+            plan = presentation.extract_presentation(FIXTURES / filename)
+            bindings = presentation.fixture_bindings(plan)
+            for rule in plan["conditionalFormats"]:
+                if rule["status"] != "supported":
+                    continue
+                with self.subTest(filename=filename, source=rule["sheet"], rule=rule["id"]):
+                    self.assertEqual(
+                        [target["elementId"] for target in bindings["conditionalTargets"][rule["id"]]],
+                        by_sheet[rule["sheet"]],
+                    )
+            artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
+            source_sheet = next(iter(by_sheet))
+            source_rules = [rule for rule in plan["conditionalFormats"]
+                            if rule["sheet"] == source_sheet and rule["status"] == "supported"]
+            for view in (f"{plan['workflow']}-main-view", f"{plan['workflow']}-detail-view"):
+                emitted = artifact["elementPatches"][view]["conditionalFormats"]
+                for rule in source_rules:
+                    self.assertIn(rule["emission"]["style"], [item["style"] for item in emitted])
+            if plan["workflow"] == "expense":
+                self.assertEqual(
+                    [rule["value"] for rule in artifact["elementPatches"]["expense-detail-view"]["conditionalFormats"]],
+                    ["CLEAR", "OVER", "RECON"],
+                )
+
+    def test_partial_or_unrelated_business_rule_does_not_spread_to_views(self):
+        plan = presentation.extract_presentation(FIXTURES / "fixture-inventory-reorder.xlsx")
+        source_rule = next(rule for rule in plan["conditionalFormats"]
+                           if rule["sheet"] == "Inventory" and rule["status"] == "supported")
+        partial = copy.deepcopy(source_rule)
+        partial["id"] = "partial-status"
+        partial["range"] = "O2:O18"
+        unrelated = copy.deepcopy(source_rule)
+        unrelated["id"] = "unrelated-supplier"
+        unrelated["sheet"] = "Suppliers"
+        unrelated["range"] = "A2:A5"
+        unrelated["field"] = "Supplier"
+        unrelated["fields"] = ["Supplier"]
+        plan["conditionalFormats"].extend([partial, unrelated])
+        targets = presentation.fixture_bindings(plan)["conditionalTargets"]
+        self.assertEqual([target["elementId"] for target in targets["partial-status"]],
+                         ["inventory-input"])
+        self.assertEqual([target["elementId"] for target in targets["unrelated-supplier"]],
+                         ["suppliers"])
+
+    def test_multi_area_source_rule_keeps_base_target_without_widening(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "fixture-inventory-multi-area.xlsx"
+            workbook = load_workbook(FIXTURES / "fixture-inventory-reorder.xlsx")
+            workbook["Inventory"].conditional_formatting.add(
+                "O2:O18 O20:O37",
+                CellIsRule(operator="equal", formula=['"REORDER"']),
+            )
+            workbook.save(source)
+            workbook.close()
+            plan = presentation.extract_presentation(source)
+            rule = next(rule for rule in plan["conditionalFormats"]
+                        if rule["range"] == "O2:O18 O20:O37")
+            targets = presentation.fixture_bindings(plan)["conditionalTargets"][rule["id"]]
+            self.assertEqual([(target["elementId"], target["columnId"]) for target in targets],
+                             [("inventory-input", "status")])
+            # A full first area does not authorize projection when another
+            # area targets a different source field.
+            rule["range"] = "O2:O37 A2:A37"
+            targets = presentation.fixture_bindings(plan)["conditionalTargets"][rule["id"]]
+            self.assertEqual([(target["elementId"], target["columnId"]) for target in targets],
+                             [("inventory-input", "status")])
+
     def test_cli_contents_uses_integer_document_version_after_staging_gate(self):
         source = FIXTURES / "fixture-research-model.xlsx"
         plan = presentation.extract_presentation(source)
@@ -185,10 +269,9 @@ class TestPresentationEmission(unittest.TestCase):
                       for index, column in enumerate(columns)}
         target_binding = {"documentId": "doc", "version": 7, "pageId": "inputs",
                           "elementId": "input-live", "columnIds": column_ids}
-        manifest = {"sourceHash": plan["source"]["sha256"], "planHash": "a" * 64,
-                    "target": {"documentId": "doc", "version": 7},
-                    "planProjection": {**copy.deepcopy(runtime_plan),
-                                       "sharedInputArchitecture": architecture}}
+        manifest = build_manifest(plan["source"]["path"],
+                                  {**copy.deepcopy(runtime_plan), "sharedInputArchitecture": architecture})
+        manifest["target"] = {"documentId": "doc", "version": 7}
         _source, evidence = gate_plan_staging_source(
             {**copy.deepcopy(runtime_plan), "sourcePath": plan["source"]["path"],
              "sourceSha256": plan["source"]["sha256"]},
@@ -415,10 +498,9 @@ class TestPresentationEmission(unittest.TestCase):
                       for index, column in enumerate(architecture["inputs"][feature]["columns"])}
         target_binding = {"documentId": "doc", "version": 7, "pageId": "inputs",
                           "elementId": "input-live", "columnIds": column_ids}
-        manifest = {"sourceHash": plan["source"]["sha256"], "planHash": "a" * 64,
-                    "target": {"documentId": "doc", "version": 7},
-                    "planProjection": {**copy.deepcopy(runtime_plan),
-                                       "sharedInputArchitecture": architecture}}
+        manifest = build_manifest(plan["source"]["path"],
+                                  {**copy.deepcopy(runtime_plan), "sharedInputArchitecture": architecture})
+        manifest["target"] = {"documentId": "doc", "version": 7}
         _source, evidence = gate_plan_staging_source(
             {**copy.deepcopy(runtime_plan), "sourcePath": plan["source"]["path"],
              "sourceSha256": plan["source"]["sha256"]},

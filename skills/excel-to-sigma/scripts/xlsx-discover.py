@@ -97,10 +97,10 @@ def analyze_table(headers, body_rows, nrows, referenced_by_others):
         for row in body_rows:
             cell = row[index]
             value = cell.value
-            if value is None or value == "":
-                blanks.append(cell.coordinate)
-            elif isinstance(value, str) and value.startswith("="):
+            if cell.data_type == "f":
                 formulas.append(cell.coordinate)
+            elif value is None or value == "":
+                blanks.append(cell.coordinate)
             else:
                 literals.append(cell.coordinate)
                 numeric += isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -185,26 +185,26 @@ def classify_report_cells(wb):
         for row in ws.iter_rows():
             for c in row:
                 v = c.value
-                if isinstance(v, str) and v.startswith("="):
+                if c.data_type == "f":
                     rows_with_formula.add(c.row)
                 elif isinstance(v, (int, float)) and c.column > 1:
                     numeric_cells.append(c)
         for row in ws.iter_rows():
             for c in row:
                 v = c.value
-                if not (isinstance(v, str) and v.startswith("=")):
+                if c.data_type != "f":
                     continue
-                if SUMIFS_RE.search(v):
+                if isinstance(v, str) and SUMIFS_RE.search(v):
                     counts["ACTUAL"] += 1
                     for m in SHEET_REF_RE.finditer(v):
                         source_sheets[m.group(1) or m.group(2)] += 1
-                elif GROWTH_RE.match(v):
+                elif isinstance(v, str) and GROWTH_RE.match(v):
                     counts["DRIVER_GROWTH"] += 1
                     for m in SHEET_REF_RE.finditer(v):
                         driver_sheets[m.group(1) or m.group(2)] += 1
                 elif direct_reference(v, ws.title):
                     counts["DEPENDENCY_LINK"] += 1
-                elif ARITH_RE.search(v):
+                elif isinstance(v, str) and ARITH_RE.search(v):
                     counts["DERIVED"] += 1
                 else:
                     counts["OTHER_FORMULA"] += 1
@@ -227,7 +227,7 @@ def dependency_links(wb):
         sheet_links = []
         for row in ws.iter_rows():
             for cell in row:
-                ref = direct_reference(cell.value, ws.title)
+                ref = direct_reference(cell.value, ws.title) if cell.data_type == "f" else None
                 if ref:
                     sheet_links.append({"cell": cell.coordinate,
                                         "sourceSheet": ref.sheet,
@@ -245,8 +245,10 @@ def main(path, json_output=False):
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for c in row:
-                if isinstance(c.value, str) and c.value.startswith("="):
-                    all_formulas.append((ws.title, c.value))
+                if c.data_type == "f":
+                    text = c.value if isinstance(c.value, str) else getattr(c.value, "text", None)
+                    if isinstance(text, str):
+                        all_formulas.append((ws.title, text))
 
     # ---- formal Tables + routing ----
     tables = []
@@ -321,9 +323,10 @@ def main(path, json_output=False):
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for c in row:
-                if isinstance(c.value, str) and c.value.startswith("="):
+                if c.data_type == "f":
                     formula_cells += 1
-                    for m in FUNC_RE.findall(c.value):
+                    text = c.value if isinstance(c.value, str) else getattr(c.value, "text", None)
+                    for m in FUNC_RE.findall(text) if isinstance(text, str) else ():
                         func_counts[m] += 1
                         if m in VOLATILE:
                             report_sheets[ws.title] += 1

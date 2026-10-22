@@ -1,0 +1,758 @@
+{
+  "sourceSha256": "461bee7b71f30822ea4d263ef529723d89dc9f11e7365e6434cefe89619c2f7e",
+  "basSha256": "181ff80f68b9924844cea64d3c964f36a720bc2944e3566dbde2395946428ae0",
+  "demand": [
+    {
+      "Source Row": 2,
+      "SKU": "SKU-200",
+      "Week Start": "2026-10-26",
+      "Forecast Units": 209,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 3,
+      "SKU": "SKU-200",
+      "Week Start": "2026-11-02",
+      "Forecast Units": 106,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 4,
+      "SKU": "SKU-200",
+      "Week Start": "2026-11-09",
+      "Forecast Units": 64,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 5,
+      "SKU": "SKU-200",
+      "Week Start": "2026-11-16",
+      "Forecast Units": 56,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 6,
+      "SKU": "SKU-200",
+      "Week Start": "2026-11-23",
+      "Forecast Units": 138,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 7,
+      "SKU": "SKU-200",
+      "Week Start": "2026-11-30",
+      "Forecast Units": 198,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 8,
+      "SKU": "SKU-200",
+      "Week Start": "2026-12-07",
+      "Forecast Units": 136,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 9,
+      "SKU": "SKU-200",
+      "Week Start": "2026-12-14",
+      "Forecast Units": 67,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 10,
+      "SKU": "SKU-200",
+      "Week Start": "2026-12-21",
+      "Forecast Units": 209,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 11,
+      "SKU": "SKU-200",
+      "Week Start": "2026-12-28",
+      "Forecast Units": 54,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 12,
+      "SKU": "SKU-200",
+      "Week Start": "2027-01-04",
+      "Forecast Units": 126,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 13,
+      "SKU": "SKU-200",
+      "Week Start": "2027-01-11",
+      "Forecast Units": 100,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 14,
+      "SKU": "SKU-300",
+      "Week Start": "2026-10-26",
+      "Forecast Units": 216,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 15,
+      "SKU": "SKU-300",
+      "Week Start": "2026-11-02",
+      "Forecast Units": 62,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 16,
+      "SKU": "SKU-300",
+      "Week Start": "2026-11-09",
+      "Forecast Units": 167,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 17,
+      "SKU": "SKU-300",
+      "Week Start": "2026-11-16",
+      "Forecast Units": 206,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 18,
+      "SKU": "SKU-300",
+      "Week Start": "2026-11-23",
+      "Forecast Units": 172,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 19,
+      "SKU": "SKU-300",
+      "Week Start": "2026-11-30",
+      "Forecast Units": 93,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 20,
+      "SKU": "SKU-300",
+      "Week Start": "2026-12-07",
+      "Forecast Units": 188,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 21,
+      "SKU": "SKU-300",
+      "Week Start": "2026-12-14",
+      "Forecast Units": 76,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 22,
+      "SKU": "SKU-300",
+      "Week Start": "2026-12-21",
+      "Forecast Units": 195,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 23,
+      "SKU": "SKU-300",
+      "Week Start": "2026-12-28",
+      "Forecast Units": 56,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 24,
+      "SKU": "SKU-300",
+      "Week Start": "2027-01-04",
+      "Forecast Units": 178,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 25,
+      "SKU": "SKU-300",
+      "Week Start": "2027-01-11",
+      "Forecast Units": 49,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 26,
+      "SKU": "SKU-400",
+      "Week Start": "2026-10-26",
+      "Forecast Units": 165,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 27,
+      "SKU": "SKU-400",
+      "Week Start": "2026-11-02",
+      "Forecast Units": 219,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 28,
+      "SKU": "SKU-400",
+      "Week Start": "2026-11-09",
+      "Forecast Units": 89,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 29,
+      "SKU": "SKU-400",
+      "Week Start": "2026-11-16",
+      "Forecast Units": 77,
+      "Planned Receipts": 400
+    },
+    {
+      "Source Row": 30,
+      "SKU": "SKU-400",
+      "Week Start": "2026-11-23",
+      "Forecast Units": 188,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 31,
+      "SKU": "SKU-400",
+      "Week Start": "2026-11-30",
+      "Forecast Units": 156,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 32,
+      "SKU": "SKU-400",
+      "Week Start": "2026-12-07",
+      "Forecast Units": 189,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 33,
+      "SKU": "SKU-400",
+      "Week Start": "2026-12-14",
+      "Forecast Units": 153,
+      "Planned Receipts": 400
+    },
+    {
+      "Source Row": 34,
+      "SKU": "SKU-400",
+      "Week Start": "2026-12-21",
+      "Forecast Units": 113,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 35,
+      "SKU": "SKU-400",
+      "Week Start": "2026-12-28",
+      "Forecast Units": 182,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 36,
+      "SKU": "SKU-400",
+      "Week Start": "2027-01-04",
+      "Forecast Units": 131,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 37,
+      "SKU": "SKU-400",
+      "Week Start": "2027-01-11",
+      "Forecast Units": 149,
+      "Planned Receipts": 400
+    },
+    {
+      "Source Row": 38,
+      "SKU": "SKU-500",
+      "Week Start": "2026-10-26",
+      "Forecast Units": 74,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 39,
+      "SKU": "SKU-500",
+      "Week Start": "2026-11-02",
+      "Forecast Units": 80,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 40,
+      "SKU": "SKU-500",
+      "Week Start": "2026-11-09",
+      "Forecast Units": 193,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 41,
+      "SKU": "SKU-500",
+      "Week Start": "2026-11-16",
+      "Forecast Units": 64,
+      "Planned Receipts": 200
+    },
+    {
+      "Source Row": 42,
+      "SKU": "SKU-500",
+      "Week Start": "2026-11-23",
+      "Forecast Units": 176,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 43,
+      "SKU": "SKU-500",
+      "Week Start": "2026-11-30",
+      "Forecast Units": 216,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 44,
+      "SKU": "SKU-500",
+      "Week Start": "2026-12-07",
+      "Forecast Units": 120,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 45,
+      "SKU": "SKU-500",
+      "Week Start": "2026-12-14",
+      "Forecast Units": 219,
+      "Planned Receipts": 200
+    },
+    {
+      "Source Row": 46,
+      "SKU": "SKU-500",
+      "Week Start": "2026-12-21",
+      "Forecast Units": 131,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 47,
+      "SKU": "SKU-500",
+      "Week Start": "2026-12-28",
+      "Forecast Units": 204,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 48,
+      "SKU": "SKU-500",
+      "Week Start": "2027-01-04",
+      "Forecast Units": 166,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 49,
+      "SKU": "SKU-500",
+      "Week Start": "2027-01-11",
+      "Forecast Units": 168,
+      "Planned Receipts": 200
+    },
+    {
+      "Source Row": 50,
+      "SKU": "SKU-600",
+      "Week Start": "2026-10-26",
+      "Forecast Units": 199,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 51,
+      "SKU": "SKU-600",
+      "Week Start": "2026-11-02",
+      "Forecast Units": 90,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 52,
+      "SKU": "SKU-600",
+      "Week Start": "2026-11-09",
+      "Forecast Units": 119,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 53,
+      "SKU": "SKU-600",
+      "Week Start": "2026-11-16",
+      "Forecast Units": 78,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 54,
+      "SKU": "SKU-600",
+      "Week Start": "2026-11-23",
+      "Forecast Units": 131,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 55,
+      "SKU": "SKU-600",
+      "Week Start": "2026-11-30",
+      "Forecast Units": 175,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 56,
+      "SKU": "SKU-600",
+      "Week Start": "2026-12-07",
+      "Forecast Units": 112,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 57,
+      "SKU": "SKU-600",
+      "Week Start": "2026-12-14",
+      "Forecast Units": 170,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 58,
+      "SKU": "SKU-600",
+      "Week Start": "2026-12-21",
+      "Forecast Units": 208,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 59,
+      "SKU": "SKU-600",
+      "Week Start": "2026-12-28",
+      "Forecast Units": 58,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 60,
+      "SKU": "SKU-600",
+      "Week Start": "2027-01-04",
+      "Forecast Units": 169,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 61,
+      "SKU": "SKU-600",
+      "Week Start": "2027-01-11",
+      "Forecast Units": 219,
+      "Planned Receipts": 100
+    },
+    {
+      "Source Row": 62,
+      "SKU": "SKU-700",
+      "Week Start": "2026-10-26",
+      "Forecast Units": 179,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 63,
+      "SKU": "SKU-700",
+      "Week Start": "2026-11-02",
+      "Forecast Units": 96,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 64,
+      "SKU": "SKU-700",
+      "Week Start": "2026-11-09",
+      "Forecast Units": 128,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 65,
+      "SKU": "SKU-700",
+      "Week Start": "2026-11-16",
+      "Forecast Units": 102,
+      "Planned Receipts": 200
+    },
+    {
+      "Source Row": 66,
+      "SKU": "SKU-700",
+      "Week Start": "2026-11-23",
+      "Forecast Units": 43,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 67,
+      "SKU": "SKU-700",
+      "Week Start": "2026-11-30",
+      "Forecast Units": 115,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 68,
+      "SKU": "SKU-700",
+      "Week Start": "2026-12-07",
+      "Forecast Units": 127,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 69,
+      "SKU": "SKU-700",
+      "Week Start": "2026-12-14",
+      "Forecast Units": 96,
+      "Planned Receipts": 200
+    },
+    {
+      "Source Row": 70,
+      "SKU": "SKU-700",
+      "Week Start": "2026-12-21",
+      "Forecast Units": 108,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 71,
+      "SKU": "SKU-700",
+      "Week Start": "2026-12-28",
+      "Forecast Units": 48,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 72,
+      "SKU": "SKU-700",
+      "Week Start": "2027-01-04",
+      "Forecast Units": 148,
+      "Planned Receipts": 0
+    },
+    {
+      "Source Row": 73,
+      "SKU": "SKU-700",
+      "Week Start": "2027-01-11",
+      "Forecast Units": 105,
+      "Planned Receipts": 200
+    }
+  ],
+  "skus": [
+    {
+      "Source Row": 2,
+      "SKU": "SKU-200",
+      "Description": "Widget A",
+      "On Hand": 764,
+      "Lead Time Wks": 3,
+      "Safety Stock": 176,
+      "Order Multiple": 25,
+      "Unit Cost": 10.15
+    },
+    {
+      "Source Row": 3,
+      "SKU": "SKU-300",
+      "Description": "Widget B",
+      "On Hand": 389,
+      "Lead Time Wks": 1,
+      "Safety Stock": 115,
+      "Order Multiple": 25,
+      "Unit Cost": 33.02
+    },
+    {
+      "Source Row": 4,
+      "SKU": "SKU-400",
+      "Description": "Widget C",
+      "On Hand": 1337,
+      "Lead Time Wks": 2,
+      "Safety Stock": 182,
+      "Order Multiple": 100,
+      "Unit Cost": 4.12
+    },
+    {
+      "Source Row": 5,
+      "SKU": "SKU-500",
+      "Description": "Widget D",
+      "On Hand": 1298,
+      "Lead Time Wks": 4,
+      "Safety Stock": 179,
+      "Order Multiple": 50,
+      "Unit Cost": 24.21
+    },
+    {
+      "Source Row": 6,
+      "SKU": "SKU-600",
+      "Description": "Widget E",
+      "On Hand": 1124,
+      "Lead Time Wks": 1,
+      "Safety Stock": 204,
+      "Order Multiple": 25,
+      "Unit Cost": 31.08
+    },
+    {
+      "Source Row": 7,
+      "SKU": "SKU-700",
+      "Description": "Widget F",
+      "On Hand": 846,
+      "Lead Time Wks": 4,
+      "Safety Stock": 201,
+      "Order Multiple": 50,
+      "Unit Cost": 29.86
+    }
+  ],
+  "projection": [
+    {
+      "Source Row": 4,
+      "SKU": "SKU-200",
+      "Reorder?": "=IF(N4<INDEX(tblSKU[Safety Stock],MATCH($A4,tblSKU[SKU],0)),\"ORDER\",\"\")",
+      "Suggested Qty": "=IF(O4=\"ORDER\",CEILING(INDEX(tblSKU[Safety Stock],MATCH($A4,tblSKU[SKU],0))-N4,INDEX(tblSKU[Order Multiple],MATCH($A4,tblSKU[SKU],0))),0)"
+    },
+    {
+      "Source Row": 5,
+      "SKU": "SKU-300",
+      "Reorder?": "=IF(N5<INDEX(tblSKU[Safety Stock],MATCH($A5,tblSKU[SKU],0)),\"ORDER\",\"\")",
+      "Suggested Qty": "=IF(O5=\"ORDER\",CEILING(INDEX(tblSKU[Safety Stock],MATCH($A5,tblSKU[SKU],0))-N5,INDEX(tblSKU[Order Multiple],MATCH($A5,tblSKU[SKU],0))),0)"
+    },
+    {
+      "Source Row": 6,
+      "SKU": "SKU-400",
+      "Reorder?": "=IF(N6<INDEX(tblSKU[Safety Stock],MATCH($A6,tblSKU[SKU],0)),\"ORDER\",\"\")",
+      "Suggested Qty": "=IF(O6=\"ORDER\",CEILING(INDEX(tblSKU[Safety Stock],MATCH($A6,tblSKU[SKU],0))-N6,INDEX(tblSKU[Order Multiple],MATCH($A6,tblSKU[SKU],0))),0)"
+    },
+    {
+      "Source Row": 7,
+      "SKU": "SKU-500",
+      "Reorder?": "=IF(N7<INDEX(tblSKU[Safety Stock],MATCH($A7,tblSKU[SKU],0)),\"ORDER\",\"\")",
+      "Suggested Qty": "=IF(O7=\"ORDER\",CEILING(INDEX(tblSKU[Safety Stock],MATCH($A7,tblSKU[SKU],0))-N7,INDEX(tblSKU[Order Multiple],MATCH($A7,tblSKU[SKU],0))),0)"
+    },
+    {
+      "Source Row": 8,
+      "SKU": "SKU-600",
+      "Reorder?": "=IF(N8<INDEX(tblSKU[Safety Stock],MATCH($A8,tblSKU[SKU],0)),\"ORDER\",\"\")",
+      "Suggested Qty": "=IF(O8=\"ORDER\",CEILING(INDEX(tblSKU[Safety Stock],MATCH($A8,tblSKU[SKU],0))-N8,INDEX(tblSKU[Order Multiple],MATCH($A8,tblSKU[SKU],0))),0)"
+    },
+    {
+      "Source Row": 9,
+      "SKU": "SKU-700",
+      "Reorder?": "=IF(N9<INDEX(tblSKU[Safety Stock],MATCH($A9,tblSKU[SKU],0)),\"ORDER\",\"\")",
+      "Suggested Qty": "=IF(O9=\"ORDER\",CEILING(INDEX(tblSKU[Safety Stock],MATCH($A9,tblSKU[SKU],0))-N9,INDEX(tblSKU[Order Multiple],MATCH($A9,tblSKU[SKU],0))),0)"
+    }
+  ],
+  "oracleAdjustment100": [
+    418,
+    212,
+    128,
+    112,
+    276,
+    396,
+    272,
+    134,
+    418,
+    108,
+    252,
+    200,
+    432,
+    124,
+    334,
+    412,
+    344,
+    186,
+    376,
+    152,
+    390,
+    112,
+    356,
+    98,
+    330,
+    438,
+    178,
+    154,
+    376,
+    312,
+    378,
+    306,
+    226,
+    364,
+    262,
+    298,
+    148,
+    160,
+    386,
+    128,
+    352,
+    432,
+    240,
+    438,
+    262,
+    408,
+    332,
+    336,
+    398,
+    180,
+    238,
+    156,
+    262,
+    350,
+    224,
+    340,
+    416,
+    116,
+    338,
+    438,
+    358,
+    192,
+    256,
+    204,
+    86,
+    230,
+    254,
+    192,
+    216,
+    96,
+    296,
+    210
+  ],
+  "oracleSmoothing03": [
+    209,
+    178,
+    144,
+    118,
+    124,
+    146,
+    143,
+    120,
+    147,
+    119,
+    121,
+    115,
+    216,
+    170,
+    169,
+    180,
+    178,
+    152,
+    163,
+    137,
+    154,
+    125,
+    141,
+    113,
+    165,
+    181,
+    153,
+    130,
+    147,
+    150,
+    162,
+    159,
+    145,
+    156,
+    148,
+    148,
+    74,
+    76,
+    111,
+    97,
+    121,
+    150,
+    141,
+    164,
+    154,
+    169,
+    168,
+    168,
+    199,
+    166,
+    152,
+    130,
+    130,
+    144,
+    134,
+    145,
+    164,
+    132,
+    143,
+    166,
+    179,
+    154,
+    146,
+    133,
+    106,
+    109,
+    114,
+    109,
+    109,
+    91,
+    108,
+    107
+  ]
+}

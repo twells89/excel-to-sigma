@@ -1,0 +1,177 @@
+{
+  "inputPlanVersion": 1,
+  "sourceSha256": "0bb1ad1996aa40e0e6b5b10f1a03d21514f83d480563fea39e50cea9d8d51ac9",
+  "sourceName": "legacy-source-plan.xlsx",
+  "decisions": {
+    "sourceSha256": "0bb1ad1996aa40e0e6b5b10f1a03d21514f83d480563fea39e50cea9d8d51ac9",
+    "features": [
+      {
+        "featureId": "legacy-rates",
+        "sheet": "Input",
+        "table": "tblInput",
+        "role": "input",
+        "reviewed": true,
+        "keyColumns": [
+          "Item"
+        ],
+        "literalColumns": [
+          "Item",
+          "Rate"
+        ],
+        "columnTypes": {
+          "Item": "text",
+          "Rate": "number"
+        }
+      }
+    ]
+  },
+  "formulaObligations": [
+    {
+      "featureId": "legacy-rates",
+      "sourceCellId": "Input!C2",
+      "sourceRow": 2,
+      "sourceColumn": "Derived",
+      "expression": "=B2*2",
+      "dependencies": [
+        {
+          "targetId": "cell:[\"Input\",\"B2\"]",
+          "sheet": "Input",
+          "address": "B2",
+          "targetKind": "populated"
+        }
+      ],
+      "mappingStatus": "live-calculation-required"
+    },
+    {
+      "featureId": "legacy-rates",
+      "sourceCellId": "Input!C3",
+      "sourceRow": 3,
+      "sourceColumn": "Derived",
+      "expression": "=B3*2",
+      "dependencies": [
+        {
+          "targetId": "cell:[\"Input\",\"B3\"]",
+          "sheet": "Input",
+          "address": "B3",
+          "targetKind": "populated"
+        }
+      ],
+      "mappingStatus": "live-calculation-required"
+    }
+  ],
+  "sharedInputArchitecture": {
+    "workflows": [
+      "ordinary-source-inputs"
+    ],
+    "targetScope": {
+      "connectionId": "fixture-connection",
+      "folderId": "fixture-folder"
+    },
+    "mappedFeatures": [
+      "legacy-rates"
+    ],
+    "featureToInput": {
+      "legacy-rates": "legacy-rates"
+    },
+    "inputs": {
+      "legacy-rates": {
+        "kind": "input-table",
+        "name": "tblInput",
+        "keyColumns": [
+          "Item"
+        ],
+        "connectionId": "fixture-connection",
+        "editMode": "published-explore",
+        "sourceBinding": "Input!A1:C3",
+        "rows": [
+          {
+            "Item": "A",
+            "Rate": 0.1
+          },
+          {
+            "Item": "B",
+            "Rate": 0.2
+          }
+        ],
+        "columns": [
+          {
+            "name": "Item",
+            "type": "text",
+            "provenance": "source"
+          },
+          {
+            "name": "Rate",
+            "type": "number",
+            "provenance": "source"
+          }
+        ],
+        "sourceCells": {
+          "0": {
+            "Item": "Input!A2",
+            "Rate": "Input!B2"
+          },
+          "1": {
+            "Item": "Input!A3",
+            "Rate": "Input!B3"
+          }
+        },
+        "sourceRowNumbers": [
+          2,
+          3
+        ],
+        "sourceHeaders": [
+          "Item",
+          "Rate",
+          "Derived"
+        ],
+        "derivedColumns": [
+          "Derived"
+        ],
+        "derivedMappings": {
+          "Derived": {
+            "sourceFormulaCells": [
+              "Input!C2",
+              "Input!C3"
+            ],
+            "overrideInputFeature": null
+          }
+        },
+        "overrideCells": {},
+        "overrideInputFeatures": {}
+      }
+    },
+    "acceptanceChecks": [
+      "legacy-rates-edit-persist-restore"
+    ],
+    "nativeWiring": {
+      "elements": [
+        {
+          "id": "input_legacy_rates_ca3cc698",
+          "kind": "input-table",
+          "name": "tblInput",
+          "inputMode": "explore",
+          "source": {
+            "kind": "empty",
+            "connectionId": "fixture-connection"
+          },
+          "columns": [
+            {
+              "id": "c0",
+              "name": "Item",
+              "type": "text"
+            },
+            {
+              "id": "c1",
+              "name": "Rate",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "consumers": {},
+      "validations": {}
+    }
+  },
+  "status": "REVIEWED_PLAN_PENDING_STAGING",
+  "inputPlanHash": "954a1876a06b86a26640eaab0c30998069719043ea91f15865be0a0712eac110"
+}

@@ -796,32 +796,49 @@ def _add_cell_provenance(plan, workbook, cached_workbook, model_sheet, rows, axi
 
     unresolved_nodes = graph.unresolved_formula_nodes()
 
-    def render_cell(identity, year, stack=()):
+    def render_cell(identity, year, stack=(), arithmetic=False):
         if identity in unresolved_nodes or identity in stack:
             raise UnsupportedExpression(f"unresolved dependency {identity.id}")
         if identity in graph.literals:
             role = ("cross_sheet_driver" if identity.sheet == "Model Inputs"
                     else "source_literal")
-            return source_input(identity, year, role)
+            rendered = source_input(identity, year, role)
+            literal = graph.literals[identity]
+            if arithmetic and isinstance(literal, (int, float)) and not isinstance(literal, bool):
+                return f"Coalesce({rendered}, 0)"
+            return rendered
         formula = graph.formulas.get(identity)
         if formula is None:
             raise UnsupportedExpression(f"missing source reference {identity.id}")
         expression = parse_expression(formula, sheet=identity.sheet)
 
-        def render_reference(reference):
+        def reference_target(reference):
             if reference.name:
                 target = graph.names.get(reference.name)
                 if target is None:
                     raise UnsupportedExpression(f"unresolved defined name {reference.name}")
             else:
                 target = CellIdentity(reference.sheet, reference.address)
-            return f"({render_cell(target, year, stack + (identity,))})" if target in graph.formulas \
-                else render_cell(target, year, stack + (identity,))
+            return target
+
+        def render_reference(reference, arithmetic=False):
+            target = reference_target(reference)
+            rendered = render_cell(target, year, stack + (identity,), arithmetic)
+            return f"({rendered})" if target in graph.formulas else rendered
+
+        def render_arithmetic_reference(reference):
+            # Coerce typed source leaves, never derived formula errors. Each
+            # nested formula also computes its own numeric reference result.
+            return render_reference(reference, True)
 
         def render_range(value):
             return "(" + " + ".join(render_reference(reference)
                                       for reference in expand_range(value)) + ")"
-        return emit_expression_sigma(expression, render_reference, render_range)
+        return emit_expression_sigma(expression, render_reference, render_range,
+                                     arithmetic_reference_renderer=render_arithmetic_reference,
+                                     # Excel formula =A1 returns zero for a blank
+                                     # numeric A1; raw input projections stay NULL.
+                                     arithmetic_context=True)
 
     for row, row_data in rows.items():
         line = lines[row]

@@ -1,0 +1,22 @@
+{
+  "sourceFile": "01 Regional Sales Forecast.xlsx",
+  "sourceSha256": "4b46bfa6190d1ef12ea35713e3932aa77f19fb964730b4b3bbb0851294219e2c",
+  "copySha256": "4b46bfa6190d1ef12ea35713e3932aa77f19fb964730b4b3bbb0851294219e2c",
+  "sheet": "Summary",
+  "address": "B4",
+  "sourceFormula": "=SUMIFS(tblSalesForecast[Revenue],tblSalesForecast[Region],$A4,tblSalesForecast[Month],\">=\"&DATE(2026,1,1),tblSalesForecast[Month],\"<\"&EDATE(DATE(2026,1,1),3))",
+  "numberFormat": "#,##0;[Red](#,##0)",
+  "recordKind": "sourceFormula",
+  "excel": {
+    "sheet": "Summary",
+    "address": "B4",
+    "valueClass": "real",
+    "rawValue": "1.54498402E+6",
+    "serialClass": "real",
+    "serialValue": "1.54498402E+6",
+    "display": "1,544,984",
+    "formula2": "=SUMIFS(tblSalesForecast[Revenue],tblSalesForecast[Region],$A4,tblSalesForecast[Month],\">=\"&DATE(2026,1,1),tblSalesForecast[Month],\"<\"&EDATE(DATE(2026,1,1),3))"
+  },
+  "numericValue": "1544984.02",
+  "dateSerial": null
+}

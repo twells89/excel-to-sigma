@@ -37,6 +37,7 @@ from input_sync import (  # noqa: E402
     sigma_input_type,
 )
 from input_orchestration import gate_input_completion, gate_input_staging  # noqa: E402
+from migration_manifest import build_manifest  # noqa: E402
 
 
 def load_script(filename, module_name):
@@ -174,21 +175,75 @@ class TestSeedPlanner(unittest.TestCase):
         self.assertEqual(len(date_plan["conflicts"]), 0)
         self.assertEqual(len(text_plan["conflicts"]), 1)
 
+    def test_datetime_source_refresh_updates_pending_and_confirmed_baselines(self):
+        source = [{"Key": "A", "Due": "2026-06-30"}]
+        current = [{"Key": "A", "Due": dt.datetime(2026, 6, 30, 12),
+                    "Row ID": "server-42"}]
+        types = {"Key": "text", "Due": "datetime"}
+        initial = plan_seed(source, [], ["Key"], "Row ID", column_types=types)
+        confirmed = plan_seed(source, current, ["Key"], "Row ID",
+                              prior_seed=initial, column_types=types)
+
+        for baseline in (initial, confirmed):
+            with self.subTest(confirmed=baseline is confirmed):
+                refreshed = plan_seed(
+                    [{"Key": "A", "Due": "2026-07-31"}], current,
+                    ["Key"], "Row ID", prior_seed=baseline, column_types=types)
+
+                self.assertEqual(refreshed["conflicts"], [])
+                self.assertEqual(refreshed["inserts"], [])
+                self.assertEqual(len(refreshed["updates"]), 1)
+                self.assertEqual(refreshed["updates"][0]["rowId"], "server-42")
+                self.assertEqual(refreshed["updates"][0]["changes"],
+                                 {"Due": "2026-07-31"})
+                self.assertEqual(refreshed["seedRecords"][0]["confirmedMigrationValue"],
+                                 {"Key": "A", "Due": "2026-06-30"})
+                self.assertEqual(refreshed["seedRecords"][0]["pendingMigrationValue"],
+                                 {"Key": "A", "Due": "2026-07-31"})
+
+    def test_datetime_source_refresh_preserves_user_date_and_time_edits(self):
+        source = [{"Key": "A", "Due": "2026-06-30"}]
+        types = {"Key": "text", "Due": "datetime"}
+        initial = plan_seed(source, [], ["Key"], "Row ID", column_types=types)
+        confirmed = plan_seed(
+            source, [{"Key": "A", "Due": dt.datetime(2026, 6, 30, 12),
+                      "Row ID": "server-42"}],
+            ["Key"], "Row ID", prior_seed=initial, column_types=types)
+
+        for baseline in (initial, confirmed):
+            for edited in (dt.datetime(2026, 7, 1, 12), dt.datetime(2026, 6, 30, 13)):
+                with self.subTest(confirmed=baseline is confirmed, edited=edited):
+                    refreshed = plan_seed(
+                        [{"Key": "A", "Due": "2026-07-31"}],
+                        [{"Key": "A", "Due": edited, "Row ID": "server-42"}],
+                        ["Key"], "Row ID", prior_seed=baseline, column_types=types)
+
+                    self.assertEqual(refreshed["updates"], [])
+                    self.assertEqual(len(refreshed["conflicts"]), 1)
+                    self.assertEqual(refreshed["conflicts"][0]["columns"], ["Due"])
+                    self.assertEqual(refreshed["conflicts"][0]["current"]["Due"], edited)
+
 
 class TestMcpPrograms(unittest.TestCase):
+    def manifest_for(self, architecture):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        source = Path(folder.name) / "source.xlsx"
+        book = Workbook(); book.active["A1"] = 1; book.save(source); book.close()
+        return build_manifest(source, {"sharedInputArchitecture": architecture})
+
     def setUp(self):
         self.architecture = build_shared_input_architecture(
             shared_plan(), connection_id="conn-1", folder_id="folder-1",
             workflows=["sales"])
-        self.manifest = {"sourceHash": "a" * 64, "planHash": "b" * 64,
-                         "planProjection": {"sharedInputArchitecture": self.architecture}}
+        self.manifest = self.manifest_for(self.architecture)
         self.bindings = {
             name: {"documentId": "doc-1", "version": 7, "pageId": "page-1"}
             for name in self.architecture["inputs"]
         }
         self.receipt = {
-            "status": "APPROVED_STAGING", "sourceHash": "a" * 64,
-            "planHash": "b" * 64, "targetBindings": self.bindings,
+            "status": "APPROVED_STAGING", "sourceHash": self.manifest["sourceHash"],
+            "planHash": self.manifest["planHash"], "targetBindings": self.bindings,
             "artifacts": build_artifact_records(self.manifest, self.architecture, self.bindings),
         }
 
@@ -224,7 +279,7 @@ class TestMcpPrograms(unittest.TestCase):
                       {item["id"] for item in wiring["wiring"]["elements"]})
 
     def test_write_programs_use_actual_ids_chunk_at_2000_and_preserve_timestamp(self):
-        rows = [{"Key": str(index), "At": dt.datetime(2026, 6, 30, 8, 45, 12)}
+        rows = [{"Key": str(index), "At": "2026-06-30T08:45:12"}
                 for index in range(2001)]
         seed = plan_seed(rows, [], ["Key"], "Row ID")
         architecture = copy.deepcopy(self.architecture)
@@ -234,12 +289,12 @@ class TestMcpPrograms(unittest.TestCase):
             {"name": "Key", "type": "text", "provenance": "source"},
             {"name": "At", "type": "datetime", "provenance": "source"},
         ]
-        manifest = {**self.manifest,
-                    "planProjection": {"sharedInputArchitecture": architecture}}
+        manifest = self.manifest_for(architecture)
         binding = {"documentId": "doc-1", "version": 7, "pageId": "p",
                    "elementId": "e", "columnIds": {"Key": "c-key", "At": "c-at"}}
         bindings = {**self.bindings, "salesSettings": binding}
-        receipt = {**self.receipt, "targetBindings": bindings,
+        receipt = {**self.receipt, "sourceHash": manifest["sourceHash"], "planHash": manifest["planHash"],
+                   "targetBindings": bindings,
                    "artifacts": build_artifact_records(manifest, architecture, bindings)}
         programs = emit_write_programs(
             seed, manifest, receipt, "salesSettings",
@@ -282,13 +337,12 @@ class TestMcpPrograms(unittest.TestCase):
         ]
         spec["rows"] = [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30",
                          "New A": 10, "New B": 20}]
-        manifest = {"sourceHash": "a" * 64, "planHash": "b" * 64,
-                    "planProjection": {"sharedInputArchitecture": architecture}}
+        manifest = self.manifest_for(architecture)
         pre_binding = {"documentId": "doc", "version": 7, "pageId": "page",
                        "elementId": "table", "columnIds": {
                            "Setting": "c-setting", "AsOfDate": "c-date"}}
-        pre = {"status": "APPROVED_STAGING", "sourceHash": "a" * 64,
-               "planHash": "b" * 64, "targetBindings": {"salesSettings": pre_binding}}
+        pre = {"status": "APPROVED_STAGING", "sourceHash": manifest["sourceHash"],
+               "planHash": manifest["planHash"], "targetBindings": {"salesSettings": pre_binding}}
         pre["artifacts"] = build_artifact_records(
             manifest, architecture, pre["targetBindings"])
         extension = plan_input_extension(manifest, pre, "salesSettings", [
@@ -321,8 +375,8 @@ class TestMcpPrograms(unittest.TestCase):
                         "columnIds": {**pre_binding["columnIds"],
                                       "New A": "c-a", "New B": "c-b"}}
         post_manifest = {**manifest, "target": {"documentId": "doc", "version": 8}}
-        post = {"status": "APPROVED_STAGING", "sourceHash": "a" * 64,
-                "planHash": "b" * 64, "targetBindings": {"salesSettings": post_binding}}
+        post = {"status": "APPROVED_STAGING", "sourceHash": manifest["sourceHash"],
+                "planHash": manifest["planHash"], "targetBindings": {"salesSettings": post_binding}}
         post["artifacts"] = build_artifact_records(
             post_manifest, architecture, post["targetBindings"])
         prior = plan_seed(
@@ -635,15 +689,16 @@ class TestInputSyncCli(unittest.TestCase):
                 {"name": "Key", "type": "text", "provenance": "source"},
                 {"name": "Value", "type": "number", "provenance": "source"},
             ]
-            manifest = {"sourceHash": "a" * 64, "planHash": "b" * 64,
-                        "planProjection": {"sharedInputArchitecture": architecture}}
+            source = root / "source.xlsx"
+            book = Workbook(); book.active["A1"] = 1; book.save(source); book.close()
+            manifest = build_manifest(source, {"sharedInputArchitecture": architecture})
             bindings = {name: {"documentId": "doc", "version": 1, "pageId": "p",
                                "elementId": "e-" + name,
                                "columnIds": {c["name"]: "c-" + str(i)
                                              for i, c in enumerate(spec["columns"])}}
                         for name, spec in architecture["inputs"].items()}
-            receipt = {"status": "APPROVED_STAGING", "sourceHash": "a" * 64,
-                       "planHash": "b" * 64, "targetBindings": bindings,
+            receipt = {"status": "APPROVED_STAGING", "sourceHash": manifest["sourceHash"],
+                       "planHash": manifest["planHash"], "targetBindings": bindings,
                        "artifacts": build_artifact_records(manifest, architecture, bindings)}
             (root / "manifest.json").write_text(json.dumps(manifest))
             (root / "receipt.json").write_text(json.dumps(receipt))

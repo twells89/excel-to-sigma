@@ -1,0 +1,357 @@
+{
+  "workbookId": "e5e47b2f-a605-43f8-90fb-c48b43696d0c",
+  "workbookUrlId": "6ZNERuNXgx4mNk7p8YOgAA",
+  "createdBy": "d25zjgNIQ46yIz3sfAWLQibaRigy9",
+  "updatedBy": "d25zjgNIQ46yIz3sfAWLQibaRigy9",
+  "createdAt": "2026-10-20T23:20:29.142Z",
+  "updatedAt": "2026-10-21T00:55:12.502Z",
+  "name": "Migration 01 Regional B4 \u2014 isolated grouped qualification 20261020",
+  "url": "https://app.sigmacomputing.com/tj-wells-1989/workbook/6ZNERuNXgx4mNk7p8YOgAA",
+  "path": "Conversion testing",
+  "latestVersion": 8,
+  "ownerId": "d25zjgNIQ46yIz3sfAWLQibaRigy9",
+  "description": "Disposable source-bound input and grouped calculation qualification only. Full Regional migration remains incomplete; no original workbook references or promotion.",
+  "isArchived": false,
+  "contents": {
+    "schemaVersion": 1,
+    "elements": [
+      {
+        "id": "GCVsg9yMKO",
+        "kind": "input-table",
+        "source": {
+          "kind": "empty",
+          "connectionId": "cb2f5180-641f-47bd-8efa-da9d590d855a"
+        },
+        "inputMode": "explore",
+        "name": "Regional B4 Sales Inputs",
+        "columns": [
+          {
+            "id": "F4Q43ATMJ0",
+            "type": "text",
+            "name": "Region"
+          },
+          {
+            "id": "YL9LGAU0B9",
+            "type": "text",
+            "name": "Product Line"
+          },
+          {
+            "id": "XJHVFNUE7P",
+            "type": "datetime",
+            "name": "Month"
+          },
+          {
+            "id": "0MYDUPAMSX",
+            "type": "number",
+            "name": "Units"
+          },
+          {
+            "id": "S1AJYXV9K_",
+            "type": "number",
+            "name": "Avg Price"
+          },
+          {
+            "id": "BLQABLFMQB",
+            "type": "text",
+            "name": "Source Key"
+          },
+          {
+            "id": "4LU6BTNWAJ",
+            "type": "number",
+            "name": "Source Ordinal"
+          },
+          {
+            "id": "ID"
+          }
+        ]
+      },
+      {
+        "id": "CCnm2Z8VYG",
+        "kind": "input-table",
+        "source": {
+          "kind": "empty",
+          "connectionId": "cb2f5180-641f-47bd-8efa-da9d590d855a"
+        },
+        "inputMode": "explore",
+        "name": "Regional B4 Region Labels",
+        "columns": [
+          {
+            "id": "V9BZQGYA4V",
+            "type": "text",
+            "name": "Region"
+          },
+          {
+            "id": "NV0-M4RKEF",
+            "type": "text",
+            "name": "Source Key"
+          },
+          {
+            "id": "0KJ_OYYUJU",
+            "type": "number",
+            "name": "Source Ordinal"
+          },
+          {
+            "id": "ID"
+          }
+        ]
+      },
+      {
+        "id": "yDvaQ-qY-V",
+        "kind": "table",
+        "source": {
+          "elementId": "GCVsg9yMKO",
+          "kind": "table"
+        },
+        "columns": [
+          {
+            "id": "TylHjikIQI",
+            "formula": "Concat([Region Key], \"|\", Text([Year Key]), \"|\", Text([Quarter Key]))",
+            "name": "Group Key"
+          },
+          {
+            "id": "EaPQHGxkAi",
+            "formula": "Sum([Revenue Number])",
+            "name": "Revenue Sum"
+          },
+          {
+            "id": "1zF2g5Jr80",
+            "formula": "Min([First Error Ordinal (1)])",
+            "name": "First Error Ordinal"
+          },
+          {
+            "id": "Vd6Bg3oyl6",
+            "formula": "(If((If((If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\") != \"\"), If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\"), \"\") != \"\"), If((If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\") != \"\"), If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\"), \"\"), \"\") != \"\")",
+            "name": "h0"
+          },
+          {
+            "id": "XuOwScFLWm",
+            "formula": "If([h0], If((If((If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\") != \"\"), If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\"), \"\") != \"\"), If((If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\") != \"\"), If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\"), \"\"), \"\"), \"\")",
+            "name": "h1"
+          },
+          {
+            "id": "jriAmry8EE",
+            "formula": "If((If((If(((If(IsNull([Regional B4 Sales Inputs/Units]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\") != \"\"), If(((If(IsNull([Regional B4 Sales Inputs/Units]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\"), \"\") != \"\"), If((If(((If(IsNull([Regional B4 Sales Inputs/Units]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\") != \"\"), If(((If(IsNull([Regional B4 Sales Inputs/Units]), \"z\", \"n\") = \"t\") and Not (RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\"))), \"#VALUE!\", \"\"), \"\"), [h1])",
+            "name": "h2"
+          },
+          {
+            "id": "M9pwTAEdWl",
+            "formula": "(If((If(IsNull([Regional B4 Sales Inputs/Units]), \"z\", \"n\") = \"n\"), Coalesce([Regional B4 Sales Inputs/Units], 0), If((If(IsNull([Regional B4 Sales Inputs/Units]), \"z\", \"n\") = \"b\"), 0, If(((If(IsNull([Regional B4 Sales Inputs/Units]), \"z\", \"n\") = \"t\") and RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\")), Number(\"\"), 0))) * If((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"n\"), Coalesce([Regional B4 Sales Inputs/Avg Price], 0), If((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"b\"), 0, If(((If(IsNull([Regional B4 Sales Inputs/Avg Price]), \"z\", \"n\") = \"t\") and RegexpMatch(Trim(\"\"), \"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$\")), Number(\"\"), 0))))",
+            "name": "h3"
+          },
+          {
+            "id": "vEqhL3i4UX",
+            "formula": "[h2]",
+            "name": "h4"
+          },
+          {
+            "id": "0dHiHw2WlG",
+            "formula": "[h3]",
+            "name": "Revenue Number"
+          },
+          {
+            "id": "HwX2SB0Ouy",
+            "formula": "\"\"",
+            "name": "Revenue Text"
+          },
+          {
+            "id": "PtJHGzh8Sd",
+            "formula": "False",
+            "name": "Revenue Logical"
+          },
+          {
+            "id": "Q1UiLJoPTL",
+            "formula": "\"n\"",
+            "name": "Revenue Kind"
+          },
+          {
+            "id": "nHbvrC0_2W",
+            "formula": "[h4]",
+            "name": "Revenue Error"
+          },
+          {
+            "id": "6yeLeRp3jT",
+            "formula": "Lower([Regional B4 Sales Inputs/Region])",
+            "name": "Region Key"
+          },
+          {
+            "id": "pDYb0yHnN9",
+            "formula": "DatePart(\"year\", [Regional B4 Sales Inputs/Month])",
+            "name": "Year Key"
+          },
+          {
+            "id": "rKW7x3E6Rj",
+            "formula": "DatePart(\"quarter\", [Regional B4 Sales Inputs/Month])",
+            "name": "Quarter Key"
+          },
+          {
+            "id": "5e65cYZfGW",
+            "formula": "[Regional B4 Sales Inputs/Source Ordinal]",
+            "name": "Source Ordinal"
+          },
+          {
+            "id": "Ngd-WRqlVu",
+            "formula": "[Regional B4 Sales Inputs/Source Key]",
+            "name": "Source Key"
+          },
+          {
+            "id": "m4y3ztys7z",
+            "formula": "[Regional B4 Sales Inputs/ID]",
+            "name": "Source Row ID"
+          },
+          {
+            "id": "19bGkf4AMh",
+            "formula": "If([Revenue Error] != \"\", [Source Ordinal], Null)",
+            "name": "First Error Ordinal"
+          }
+        ],
+        "name": "Regional Sales Rows",
+        "groupings": [
+          {
+            "id": "lBswlT0AuZ",
+            "groupBy": [
+              "TylHjikIQI"
+            ],
+            "calculations": [
+              "EaPQHGxkAi",
+              "1zF2g5Jr80"
+            ]
+          }
+        ],
+        "order": [
+          "Vd6Bg3oyl6",
+          "XuOwScFLWm",
+          "jriAmry8EE",
+          "M9pwTAEdWl",
+          "vEqhL3i4UX",
+          "0dHiHw2WlG",
+          "HwX2SB0Ouy",
+          "PtJHGzh8Sd",
+          "Q1UiLJoPTL",
+          "nHbvrC0_2W",
+          "6yeLeRp3jT",
+          "pDYb0yHnN9",
+          "rKW7x3E6Rj",
+          "5e65cYZfGW",
+          "Ngd-WRqlVu",
+          "m4y3ztys7z",
+          "19bGkf4AMh"
+        ]
+      },
+      {
+        "id": "ZmE2J1tt_Z",
+        "kind": "table",
+        "source": {
+          "elementId": "yDvaQ-qY-V",
+          "kind": "table",
+          "groupingId": "lBswlT0AuZ"
+        },
+        "columns": [
+          {
+            "id": "XFx9OejojL",
+            "formula": "[Regional Sales Rows/Group Key]"
+          },
+          {
+            "id": "ThCTKsVs2J",
+            "formula": "[Regional Sales Rows/Revenue Sum]"
+          },
+          {
+            "id": "UVtagwDpPJ",
+            "formula": "[Regional Sales Rows/First Error Ordinal]"
+          }
+        ],
+        "name": "Regional Sales Region Quarter",
+        "order": [
+          "XFx9OejojL",
+          "ThCTKsVs2J",
+          "UVtagwDpPJ"
+        ]
+      },
+      {
+        "id": "Vm0VHJj1_3",
+        "kind": "table",
+        "source": {
+          "elementId": "CCnm2Z8VYG",
+          "kind": "table"
+        },
+        "columns": [
+          {
+            "id": "8A95sqc2e1",
+            "formula": "[Regional B4 Region Labels/Source Key]",
+            "name": "Source Key"
+          },
+          {
+            "id": "qGUdV7Lv2l",
+            "formula": "[Regional B4 Region Labels/ID]",
+            "name": "Source Row ID"
+          },
+          {
+            "id": "MyUpRHN9A_",
+            "formula": "Concat(Lower([Regional B4 Region Labels/Region]), \"|2026|1\")",
+            "name": "Group Key"
+          },
+          {
+            "id": "xRaO3um65w",
+            "formula": "Lookup([Regional Sales Region Quarter/Revenue Sum], [Group Key], [Regional Sales Region Quarter/Group Key])",
+            "name": "Matched Revenue"
+          },
+          {
+            "id": "48T95r8qim",
+            "formula": "Lookup([Regional Sales Region Quarter/First Error Ordinal], [Group Key], [Regional Sales Region Quarter/Group Key])",
+            "name": "Matched Error Ordinal"
+          },
+          {
+            "id": "X_zAzEQ8rO",
+            "formula": "Coalesce([Matched Revenue], 0)",
+            "name": "B4 Number"
+          },
+          {
+            "id": "A6vxcv-ACM",
+            "formula": "\"\"",
+            "name": "B4 Text"
+          },
+          {
+            "id": "fYcf_7kFNm",
+            "formula": "False",
+            "name": "B4 Logical"
+          },
+          {
+            "id": "PyrjQT9nWL",
+            "formula": "\"n\"",
+            "name": "B4 Kind"
+          },
+          {
+            "id": "Oni37OxBc1",
+            "formula": "If(IsNull([Matched Error Ordinal]), \"\", Lookup([Regional Sales Rows/Revenue Error], [Matched Error Ordinal], [Regional Sales Rows/Source Ordinal]))",
+            "name": "B4 Error"
+          }
+        ],
+        "name": "Regional Summary B4",
+        "order": [
+          "8A95sqc2e1",
+          "qGUdV7Lv2l",
+          "MyUpRHN9A_",
+          "xRaO3um65w",
+          "48T95r8qim",
+          "X_zAzEQ8rO",
+          "A6vxcv-ACM",
+          "fYcf_7kFNm",
+          "PyrjQT9nWL",
+          "Oni37OxBc1"
+        ]
+      }
+    ],
+    "pages": [
+      {
+        "id": "n2bXBc670j",
+        "name": "Page 1"
+      },
+      {
+        "id": "2Aac33LJfB",
+        "name": "Regional B4 inputs \u2014 qualification only"
+      }
+    ],
+    "kind": "workbook",
+    "layout": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"n2bXBc670j\"/>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"2Aac33LJfB\">\n  <Element elementId=\"GCVsg9yMKO\" gridColumn=\"1 / 25\" gridRow=\"1 / 13\"/>\n  <Element elementId=\"CCnm2Z8VYG\" gridColumn=\"1 / 25\" gridRow=\"15 / 27\"/>\n  <Element elementId=\"yDvaQ-qY-V\" gridColumn=\"1 / 25\" gridRow=\"35 / 47\"/>\n  <Element elementId=\"ZmE2J1tt_Z\" gridColumn=\"1 / 25\" gridRow=\"50 / 62\"/>\n  <Element elementId=\"Vm0VHJj1_3\" gridColumn=\"1 / 25\" gridRow=\"65 / 77\"/>\n</Page>\n"
+  },
+  "documentVersion": 8
+}

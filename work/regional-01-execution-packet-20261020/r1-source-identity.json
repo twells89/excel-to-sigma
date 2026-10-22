@@ -1,0 +1,95 @@
+{
+  "status": "PASS",
+  "scope": "R1 scope guard only; no compiler/scaling changes",
+  "formulaCount": 3651,
+  "denominators": {
+    "originalFive": 1865,
+    "broaderEight": 1786
+  },
+  "statusCounts": {
+    "ready-to-bind": 3515,
+    "reviewed-replacement-input": 2,
+    "unresolved": 134
+  },
+  "sourceCount": 13,
+  "sources": [
+    {
+      "sourceName": "01 Regional Sales Forecast.xlsx",
+      "sourceSha256": "4b46bfa6190d1ef12ea35713e3932aa77f19fb964730b4b3bbb0851294219e2c",
+      "nativePlanHash": "8e40633a5db2746534420d5cdfa2c2595b9d06d470e1e7e3fb1dd13105074074",
+      "formulaCount": 214
+    },
+    {
+      "sourceName": "02 SaaS Driver Forecast FY26.xlsx",
+      "sourceSha256": "5350bfea1e3d5155f6e47ebc9fe363c90701cc5b674873ce7345c2662aec6f48",
+      "nativePlanHash": "5f9ffa28b50fc66426a74ca69cdde722788c229f773492ab9925255dc53e75b6",
+      "formulaCount": 222
+    },
+    {
+      "sourceName": "03 Retail Quarterly Budget.xlsx",
+      "sourceSha256": "67bbe3e08ce38cd1677849ae00ae816f722b3e8129d4a809d2617b811c85de4c",
+      "nativePlanHash": "f938dc23380c8d331b8389171c4ee000ac3c024e9a00e97f1e0bebd121f67f20",
+      "formulaCount": 132
+    },
+    {
+      "sourceName": "04 Sales Pipeline Forecast.xlsx",
+      "sourceSha256": "ba82c7482ae23ba7271215d2193728734dc155519ffbf4c6efdac9f223c5bb7e",
+      "nativePlanHash": "88b4b13638f5e20be352168207739803854891ef7ff2233a20b64941cd82646b",
+      "formulaCount": 228
+    },
+    {
+      "sourceName": "05 Statistical Demand Forecast.xlsx",
+      "sourceSha256": "02f90f32fa077ee1fac7e2d7a8cdc48b61bf09f6fc69b27a855886ed9cd9d310",
+      "nativePlanHash": "bffd184ef001c3f48c920957be135916c7a1190528807bdabbaf7c17ee7e985e",
+      "formulaCount": 109
+    },
+    {
+      "sourceName": "06 13-Week Cash Flow.xlsx",
+      "sourceSha256": "9d7b8d8f9d7bdba0a4a423712a10ac86186391dc43efaf24c8747d869c09a7fc",
+      "nativePlanHash": "17cf55e1b654c10b2c62277ba0e3b9137e9e024d2527e985a20ef7642638b043",
+      "formulaCount": 166
+    },
+    {
+      "sourceName": "07 Headcount and Opex Plan.xlsx",
+      "sourceSha256": "392c3e8585975597445fed0776e03a432582374efc09149fce4c5d3acee1d366",
+      "nativePlanHash": "ab61e5cbf4881125d9a892a4d8f3ee4165506cf939f9516fc59885345b21d95c",
+      "formulaCount": 625
+    },
+    {
+      "sourceName": "08 Inventory Replenishment Plan.xlsm",
+      "sourceSha256": "461bee7b71f30822ea4d263ef529723d89dc9f11e7365e6434cefe89619c2f7e",
+      "nativePlanHash": "9ac8e76e9b128cd8505d736373fac53b94dea39ddc1003704ff1f2eaf19e28a5",
+      "formulaCount": 90
+    },
+    {
+      "sourceName": "fixture-expense-approval.xlsx",
+      "sourceSha256": "72d83ce43a5c4a320d5416ea87e186954407abeed6afde804a2c79c529be2751",
+      "nativePlanHash": "002192038bbd55c38aee1245feb386725abc114542d6b4e33edd104c531abae8",
+      "formulaCount": 632
+    },
+    {
+      "sourceName": "fixture-forecast-model.xlsx",
+      "sourceSha256": "40aca738a4d40cc94a5d5a181015e1bf974310f820aa7dfcf5b01a9ad7b6025e",
+      "nativePlanHash": "f65f46d7183ffc9a697edeedc106f3ba530b2f7886e74133bc3ce51bc15ce9de",
+      "formulaCount": 278
+    },
+    {
+      "sourceName": "fixture-inventory-reorder.xlsx",
+      "sourceSha256": "017b9d7a844b6bc66e4d529115bed34dabaa6c01ee17c712b26ac3635f706d40",
+      "nativePlanHash": "bd39b997848d0f504d1c97662d4b56c0cab99ce25e963e74a5676f69c49f8a53",
+      "formulaCount": 442
+    },
+    {
+      "sourceName": "fixture-research-model.xlsx",
+      "sourceSha256": "b31fe6f11463fe2575501d2cfbd35a1c3f7242daf2e06ae31891f13e6d9ad680",
+      "nativePlanHash": "3fa2536df36b20cb9a741fe53f1d0e4d6ca13d867895f927d94c649f29e5d66e",
+      "formulaCount": 343
+    },
+    {
+      "sourceName": "fixture-sales-pipeline.xlsx",
+      "sourceSha256": "f4bbc3136428b57bae235b254a42951906fbe58ef422c75819070443253f15d5",
+      "nativePlanHash": "5054f5be8b5d5192facc78fd50f2a0713d2c3e62d3f59885b92d8027739c3849",
+      "formulaCount": 170
+    }
+  ]
+}

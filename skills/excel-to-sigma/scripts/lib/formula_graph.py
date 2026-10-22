@@ -4,10 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 try:
-    from .excel_expression import (ExpressionError, Range, Reference, UnsupportedExpression,
+    from .excel_expression import (ExpressionError, Function, Group, Binary, Unary, Percent,
+                                   Number, Text, Range, Reference, UnsupportedExpression,
                                    evaluate, expand_range, parse_expression)
 except ImportError:  # standalone tests/scripts that place lib directly on sys.path
-    from excel_expression import (ExpressionError, Range, Reference, UnsupportedExpression,
+    from excel_expression import (ExpressionError, Function, Group, Binary, Unary, Percent,
+                                  Number, Text, Range, Reference, UnsupportedExpression,
                                   evaluate, expand_range, parse_expression)
 
 
@@ -19,6 +21,17 @@ class CellIdentity:
     @property
     def id(self):
         return f"{self.sheet}!{self.address}"
+
+
+def formula_source(value):
+    """Keep scalar formulas unchanged and serialize object anchors without executing them."""
+    if isinstance(value, str):
+        return value
+    attributes = vars(value)
+    if any(not isinstance(key, str) or item is not None and
+           not isinstance(item, (str, int, float, bool)) for key, item in attributes.items()):
+        raise ValueError(f"formula object {type(value).__name__} has unsupported source attributes")
+    return {"objectType": type(value).__name__, "attributes": dict(sorted(attributes.items()))}
 
 
 class FormulaGraph:
@@ -41,20 +54,24 @@ class FormulaGraph:
                     if cell.value is None:
                         continue
                     identity = CellIdentity(ws.title, cell.coordinate)
-                    if isinstance(cell.value, str) and cell.value.startswith("="):
-                        formulas[identity] = cell.value
+                    if cell.data_type == "f":
+                        formulas[identity] = formula_source(cell.value)
                     else:
                         literals[identity] = cell.value
         existing = set(formulas) | set(literals)
         names = _defined_names(workbook)
         dependencies, unresolved, unsupported, unresolved_names = {}, {}, {}, {}
         for identity, formula in formulas.items():
-            try:
-                expression = parse_expression(formula, sheet=identity.sheet)
-                refs = tuple(_expression_cells(expression))
-            except ExpressionError as error:
-                unsupported[identity] = str(error)
+            if not isinstance(formula, str):
+                unsupported[identity] = f"formula object {formula['objectType']} requires review"
                 refs = ()
+            else:
+                try:
+                    expression = parse_expression(formula, sheet=identity.sheet)
+                    refs = tuple(_expression_cells(expression))
+                except ExpressionError as error:
+                    unsupported[identity] = str(error)
+                    refs = ()
             deps = set()
             missing_names = set()
             for ref in refs:
@@ -141,11 +158,23 @@ class FormulaGraph:
                         ready.append(candidate); ready.sort()
         return tuple(result)
 
-    def evaluate(self):
-        """Evaluate every acyclic supported formula from workbook literal values."""
+    def evaluate(self, literal_overrides=None):
+        """Evaluate acyclic formulas, optionally substituting known source literals."""
         values = dict(self.literals)
+        for identity, value in (literal_overrides or {}).items():
+            original = self.literals.get(identity)
+            if not isinstance(original, (int, float)) or isinstance(original, bool):
+                raise ValueError(f"numeric source literal required: {identity.id}")
+            if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+                raise ValueError(f"numeric source literal override required: {identity.id}")
+            values[identity] = value
+        # Cleared source literals stay None. A formula returning a reference
+        # reads that blank as zero; its consumers therefore see a numeric result.
+        # Failed formulas stay absent and never become ignorable blank inputs.
         expressions = {}
         for identity, formula in self.formulas.items():
+            if not isinstance(formula, str):
+                continue
             try:
                 expressions[identity] = parse_expression(formula, sheet=identity.sheet)
             except ExpressionError:
@@ -155,15 +184,29 @@ class FormulaGraph:
             if expression is None:
                 continue
 
-            def resolve(reference):
+            def target_for(reference):
                 if reference.name:
                     target = self.names.get(reference.name)
                     if target is None:
                         raise UnsupportedExpression(f"unresolved defined name {reference.name}")
-                    return values.get(target)
-                return values.get(CellIdentity(reference.sheet, reference.address))
+                    return target
+                return CellIdentity(reference.sheet, reference.address)
+
+            def resolve(reference):
+                target = target_for(reference)
+                if target not in values:
+                    raise UnsupportedExpression(f"unresolved or failed reference {target.id}")
+                return values[target]
+
+            def arithmetic_value(reference, value):
+                target = target_for(reference)
+                original = self.literals.get(target)
+                return (0 if value is None and isinstance(original, (int, float))
+                        and not isinstance(original, bool) else value)
             try:
-                values[identity] = evaluate(expression, resolve)
+                values[identity] = evaluate(expression, resolve,
+                                            arithmetic_reference_resolver=arithmetic_value,
+                                            arithmetic_context=True)
             except (ArithmeticError, TypeError, ValueError):
                 continue
         return values
@@ -177,6 +220,10 @@ def _expression_cells(expression):
     if isinstance(expression, Range):
         yield from expand_range(expression)
         return
+    if isinstance(expression, (Number, Text)):
+        return
+    if not isinstance(expression, (Group, Unary, Percent, Binary, Function)):
+        raise UnsupportedExpression(f"legacy formula graph cannot bind {type(expression).__name__}")
     for name in ("expression", "operand", "left", "right"):
         child = getattr(expression, name, None)
         if child is not None:

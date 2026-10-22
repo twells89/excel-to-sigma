@@ -34,6 +34,7 @@ description: >-
 - `refs/research-recipes.md` — the **equity-research / broker house-template** archetype (line-items × YEARS, statement sections). The source-bound literal-input table + live formula + `transpose` + pivot recipe, canonical-formula inference, plug-cycle review, blank-as-zero, and runtime parity gate. **Read for FactSet-style broker financial models and any "many similar files off one template" fleet.**
 - `refs/presentation-migration.md` — source-bound native charts, validation, conditional formatting, semantic formats, three-view layout, ordinary business inputs, and repeat-safe full-contents integration.
 - `refs/source-blank-validation.md` — version 2 raw XML and declared blank-rule classification, with source route enforcement kept separate from native runtime proof.
+- `refs/workbook-expression-context.md` — source-bound shared formula AST, local verification, explicit bindings, and unresolved dynamic calculation limits.
 - `refs/acceptance-and-promotion.md` — source-bound secondary workflow repairs, mandatory five-fixture actual evidence, persisted outcomes, original-URL promotion and row/document/SDK rollback.
 - The `sigma-workbooks` companion skill, if installed, plus the Sigma OpenAPI — canonical workbook spec. Find it through the agent's skill loader; use `refs/sigma-build-gotchas.md` when it is unavailable.
 
@@ -150,6 +151,12 @@ python scripts/audit-openapi.py --out sigma-code-rep-audit.json
 `BLOCKED` cannot proceed until its blocker is removed. `--allow-review` is only
 for inventory/CI smoke, never for declaring a migration complete. Then run
 `scripts/xlsx-discover.py` for the model/grain-specific report.
+
+For a source-bound cell, table, and formula-dependency inventory, run
+`python scripts/source-workbook.py SOURCE.xlsx --out source-model.json` and read
+`refs/source-workbook-model.md`. This offline inventory preserves unresolved
+formulas explicitly; it does not approve a migration or change the audit and
+production-write gates.
 
 The whole-workbook Excel migration entrypoints—standalone canonical inference,
 batch conversion, the direct research-workbook builder, and the source-bound

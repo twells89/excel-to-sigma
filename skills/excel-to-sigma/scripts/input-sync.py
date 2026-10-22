@@ -17,7 +17,7 @@ _LIB = Path(__file__).resolve().parent / "lib"
 if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 
-from input_orchestration import gate_input_completion, gate_input_staging  # noqa: E402
+from input_orchestration import gate_input_completion, gate_input_staging, gate_input_only_staging  # noqa: E402
 from input_sync import (  # noqa: E402
     build_shared_input_architecture,
     emit_construction_program,
@@ -111,6 +111,8 @@ def parse_args(argv=None):
     stage.add_argument("--review-dispositions")
     stage.add_argument("--approval", required=True)
     stage.add_argument("--out", required=True)
+    stage.add_argument("--inputs-only", action="store_true", help="explicit literal input staging; does not approve formulas")
+    stage.add_argument("--input-plan", help="source-validated input plan required with --inputs-only")
 
     complete = commands.add_parser("complete", help="run completion gate from recorded runtime evidence")
     complete.add_argument("--manifest", required=True)
@@ -169,8 +171,15 @@ def main(argv=None):
         manifest = _load(args.manifest)
         if build_manifest(_source, plan)["planHash"] != manifest.get("planHash"):
             raise ValueError("staging plan does not match the approved manifest planHash")
-        receipt = gate_input_staging(
-            manifest, _load(args.approval), plan, source_gate)
+        if args.inputs_only:
+            if not args.input_plan:
+                raise ValueError("--inputs-only requires --input-plan")
+            receipt = gate_input_only_staging(manifest, _load(args.approval),
+                _load(args.input_plan), source_gate, source_path=_source)
+        else:
+            if args.input_plan:
+                raise ValueError("--input-plan requires explicit --inputs-only")
+            receipt = gate_input_staging(manifest, _load(args.approval), plan, source_gate)
         _write(args.out, receipt)
     elif args.command == "complete":
         receipt = gate_input_completion(

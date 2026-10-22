@@ -31,7 +31,7 @@ _RECORD_RUNTIME_FIELDS = {"evidence", "runtimeEvidence", "execution", "execution
                           "actualTarget", "runtime"}
 _LOGICAL_TARGET_FIELDS = {"logicalElementId", "logicalColumnId", "logicalLineId",
                           "logicalCheckId", "logicalSourceFeatureId", "year",
-                          "equivalentReference"}
+                          "equivalentReference", "logicalLaneColumnIds"}
 _AMBIGUOUS_TARGET_FIELDS = {"workbookId", "documentId", "elementId", "columnId", "lineId",
                             "checkId", "sourceFeatureId", "actualColumnId", "version"}
 
@@ -43,7 +43,7 @@ def _sha256(path):
 
 def _formula_projection(formulas):
     keys = ("id", "sheet", "address", "originalFormula", "dependencies",
-            "mappingStatus", "targetMapping", "unresolvedReason", "reviewedReplacement")
+            "mappingStatus", "targetMapping", "unresolvedReason", "reviewedReplacement", "nativeCandidate")
     return [{key: item.get(key) for key in keys if key in item}
             for item in sorted(formulas, key=lambda value: value.get("id", ""))]
 
@@ -82,6 +82,11 @@ def _validate_target_mapping(mapping, formula_id):
         return
     if not isinstance(mapping, dict):
         raise ManifestError(f"logical targetMapping must be an object for {formula_id}")
+    lanes = mapping.get("logicalLaneColumnIds")
+    if lanes is not None and (not isinstance(lanes, dict)
+            or set(lanes) != {"number", "text", "logical", "kind", "error"}
+            or any(not isinstance(value, str) or not value.strip() for value in lanes.values())):
+        raise ManifestError(f"logical native lane identities are incomplete for {formula_id}")
     misplaced = sorted(set(mapping) & _AMBIGUOUS_TARGET_FIELDS)
     unknown = sorted(set(mapping) - _LOGICAL_TARGET_FIELDS)
     if misplaced or unknown:
@@ -95,7 +100,8 @@ def _validate_target_mapping(mapping, formula_id):
 def _valid_reviewed_replacement(record, original_formula):
     replacement = record.get("reviewedReplacement")
     return (
-        record.get("mappingStatus") == "live"
+        isinstance(original_formula, str)
+        and record.get("mappingStatus") == "live"
         and isinstance(record.get("targetMapping"), dict)
         and isinstance(replacement, dict)
         and replacement.get("originalFormula") == original_formula
@@ -114,6 +120,60 @@ def _plan_hash(source_hash, projection, formulas):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _native_records(source_hash, plan, source_path=None):
+    """Opt-in reviewed compiler evidence; this is never runtime verification."""
+    native = (plan or {}).get("nativeCalculationPlan")
+    if native is None:
+        return {}
+    approval = (plan or {}).get("nativeReviewApproval") or {}
+    canonical = {key: value for key, value in native.items() if key != "nativePlanHash"}
+    digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    if (native.get("nativePlanVersion") != 2 or native.get("nativePlanHash") != digest
+            or native.get("sourceSha256") != source_hash
+            or approval.get("status") != "reviewed"
+            or not isinstance(approval.get("owner"), str) or not approval["owner"].strip()
+            or not isinstance(approval.get("reviewer"), str) or not approval["reviewer"].strip()
+            or approval.get("sourceSha256") != source_hash
+            or approval.get("nativePlanHash") != digest
+            or native.get("inputPlanHash") != (plan or {}).get("inputPlanHash")):
+        raise ManifestError("native bound-AST source/plan/review hash is stale")
+    if source_path is not None:
+        try:
+            from .workbook_expression import WorkbookContext
+            from .native_calculations import _ast
+        except ImportError:
+            from workbook_expression import WorkbookContext
+            from native_calculations import _ast
+        context = WorkbookContext.from_path(source_path)
+        expected_cells = {f"{sheet}!{address}" for sheet, address in context.formulas}
+        if set(native.get("formulas") or {}) != expected_cells:
+            raise ManifestError("native evidence does not cover the exact source formula denominator")
+    result = {}
+    for cell, record in native.get("formulas", {}).items():
+        if record.get("status") != "ready-to-bind":
+            continue
+        formula = record.get("originalFormula")
+        ast = record.get("ast")
+        ast_hash = hashlib.sha256(json.dumps(ast, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        if (record.get("runtimeStatus") != "UNVERIFIED_CANDIDATE"
+                or record.get("astHash") != ast_hash
+                or not isinstance(formula, str)
+                or record.get("formulaSha256") != hashlib.sha256(formula.encode()).hexdigest()):
+            raise ManifestError("native bound-AST formula evidence is stale")
+        if source_path is not None:
+            sheet, address = cell.rsplit("!", 1)
+            if context.formulas.get((sheet, address)) != formula:
+                raise ManifestError("native evidence original source formula changed")
+            try:
+                rebound = context.bind_formula(formula, sheet=sheet, address=address)
+                if _ast(rebound) != ast or not context._bound_evidence(rebound)[2]:
+                    raise ManifestError("native bound-AST differs from source binding")
+            except (ValueError, TypeError) as error:
+                raise ManifestError("native source AST cannot be rebound") from error
+        result[cell] = record
+    return result
+
+
 def build_manifest(source_path, plan=None) -> dict:
     source = Path(source_path).expanduser().resolve()
     if not source.is_file():
@@ -122,11 +182,12 @@ def build_manifest(source_path, plan=None) -> dict:
     workbook = load_workbook(source, data_only=False, read_only=False)
     cached = load_workbook(source, data_only=True, read_only=False)
     graph = FormulaGraph.from_workbook(workbook)
+    native_records = _native_records(source_hash, plan, source)
     cycle_members = {cell for component in graph.cycles() for cell in component}
     plan_cells = _plan_cell_index(plan or {})
     reviewed_roots = {
         identity for identity, formula in graph.formulas.items()
-        if identity in graph.unsupported_formulas
+        if identity.id in native_records or identity in graph.unsupported_formulas
         and _valid_reviewed_replacement(plan_cells.get(identity.id, {}), formula)
     }
     unresolved_nodes = (
@@ -144,14 +205,17 @@ def build_manifest(source_path, plan=None) -> dict:
         formula = graph.formulas[identity]
         record = plan_cells.get(identity.id, {})
         _validate_target_mapping(record.get("targetMapping"), identity.id)
-        mapping_status = record.get("mappingStatus") or ("verification" if identity.sheet == "Audit" else "unresolved")
-        try:
-            expression = parse_expression(formula, sheet=identity.sheet)
-            named_refs = [_reference_id(ref) for ref in extract_references(expression) if ref.name]
-            refs = sorted({cell.id for cell in graph.dependencies.get(identity, ())} | set(named_refs))
-            parse_error = None
-        except ExpressionError as error:
-            refs, parse_error = [], str(error)
+        mapping_status = record.get("mappingStatus") or ("verification" if identity.sheet == "Audit" and (plan or {}).get("executionScope") != "input-tables-only" else "unresolved")
+        if not isinstance(formula, str):
+            refs, parse_error = [], graph.unsupported_formulas[identity]
+        else:
+            try:
+                expression = parse_expression(formula, sheet=identity.sheet)
+                named_refs = [_reference_id(ref) for ref in extract_references(expression) if ref.name]
+                refs = sorted({cell.id for cell in graph.dependencies.get(identity, ())} | set(named_refs))
+                parse_error = None
+            except ExpressionError as error:
+                refs, parse_error = [], str(error)
         item = {
             "id": identity.id,
             "sheet": identity.sheet,
@@ -168,12 +232,25 @@ def build_manifest(source_path, plan=None) -> dict:
         cached_value = cached[identity.sheet][identity.address].value
         if record.get("mappingStatus") == "cached":
             item["cachedFallback"] = cached_value
-        if parse_error and not _valid_reviewed_replacement(record, formula):
+        native = native_records.get(identity.id)
+        if native is not None:
+            item["dependencies"] = list(native["dependencies"])
+            item["nativeCandidate"] = {"sourceSha256": source_hash,
+                "nativePlanHash": plan["nativeCalculationPlan"]["nativePlanHash"],
+                "formulaSha256": native["formulaSha256"], "astHash": native["astHash"],
+                "sourceResultClass": native["sourceResultClass"],
+                "runtimeStatus": "UNVERIFIED_CANDIDATE"}
+            # Audit cells retain their distinct verification obligation.
+            if identity.sheet == "Audit":
+                item["mappingStatus"] = "verification"
+        if parse_error and native is None and not _valid_reviewed_replacement(record, formula):
             item["mappingStatus"] = "unresolved"
             item["unresolvedReason"] = parse_error
         if parse_error and _valid_reviewed_replacement(record, formula):
             item["dependencies"] = list(record.get("dependencies") or [])
         elif parse_error:
+            pass
+        elif native is not None:
             pass
         elif identity in cycle_members:
             item["mappingStatus"] = "unresolved"
@@ -222,9 +299,57 @@ def _reference_id(ref):
     return f"{ref.sheet}!{ref.address}"
 
 
-def validate_manifest(manifest, source_path=None):
+def execution_scope(manifest):
+    """The new scope is an enum, never an ignored annotation.
+
+    Legacy/full plans omit executionScope. Only the explicit literal-input
+    first phase currently defines a scoped plan. Unknown/null scope values
+    fail closed rather than behaving as a full migration.
+    """
+    if not isinstance(manifest, dict):
+        raise ManifestError("execution scope requires a manifest object")
+    projection = manifest.get("planProjection") or {}
+    if not isinstance(projection, dict):
+        raise ManifestError("execution scope requires an object planProjection")
+    if "executionScope" not in projection:
+        return None
+    if projection["executionScope"] != "input-tables-only":
+        raise ManifestError("unsupported executionScope: expected input-tables-only or omitted full scope")
+    return "input-tables-only"
+
+
+def require_full_execution_scope(manifest):
+    approval = manifest.get("stagingApproval") or {}
+    if (execution_scope(manifest) == "input-tables-only"
+            or approval.get("scope") == "input-tables-only"
+            or approval.get("status") == "APPROVED_INPUT_STAGING"):
+        raise ManifestError("input-tables-only scope cannot authorize full staging, native formulas, completion or production")
+    return True
+
+
+def validate_input_only_formula_obligations(manifest):
+    if execution_scope(manifest) != "input-tables-only":
+        raise ManifestError("explicit input-tables-only scope is required")
+    records = manifest.get("formulaCells")
+    if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+        raise ManifestError("input-tables-only formula obligations must be an array of records")
+    for record in records:
+        if record.get("mappingStatus") != "unresolved":
+            raise ManifestError("input-tables-only formulas must remain unresolved: " + record.get("id", "unknown"))
+        if any(record.get(field) for field in (
+                "targetMapping", "targetBinding", "actualTarget", "verification", "evidence",
+                "runtimeEvidence", "runtime", "runtimeStatus", "execution", "executionState")):
+            raise ManifestError("input-tables-only formulas cannot carry target/runtime claims: " + record.get("id", "unknown"))
+    return True
+
+
+def validate_manifest(manifest, source_path=None, *, allow_input_only=False):
     if not isinstance(manifest, dict) or manifest.get("manifestVersion") != MANIFEST_VERSION:
         raise ManifestError("unsupported or malformed manifest version")
+    if allow_input_only and execution_scope(manifest) == "input-tables-only":
+        validate_input_only_formula_obligations(manifest)
+    else:
+        require_full_execution_scope(manifest)
     source_hash = manifest.get("sourceHash")
     plan_hash = manifest.get("planHash")
     if not _digest(source_hash) or not _digest(plan_hash):
@@ -259,11 +384,21 @@ def validate_manifest(manifest, source_path=None):
         raise ManifestError("source hash does not match manifest")
     workbook = load_workbook(source_path, data_only=False, read_only=False)
     graph = FormulaGraph.from_workbook(workbook)
+    native_records = _native_records(source_hash, manifest.get("planProjection") or {}, source_path)
     workbook.close()
     actual = {cell.id: formula for cell, formula in graph.formulas.items()}
+    _native_records(source_hash, manifest.get("planProjection") or {})
     recorded = {item["id"]: item.get("originalFormula") for item in formulas}
     if recorded != actual:
         raise ManifestError("manifest formula records are incomplete or stale")
+    object_formulas = {cell.id: graph.unsupported_formulas[cell]
+                       for cell, formula in graph.formulas.items()
+                       if not isinstance(formula, str)}
+    for item in formulas:
+        if item["id"] in object_formulas:
+            if (item.get("mappingStatus") != "unresolved"
+                    or item.get("unresolvedReason") != object_formulas[item["id"]]):
+                raise ManifestError(f"formula object requires unresolved review: {item['id']}")
     return True
 
 
@@ -271,6 +406,8 @@ def validate_staging_approval(manifest, approval):
     validate_manifest(manifest)
     if not isinstance(approval, dict):
         raise ManifestError("staging approval must be an object")
+    if approval.get("scope") == "input-tables-only" or approval.get("status") == "APPROVED_INPUT_STAGING":
+        raise ManifestError("input-tables-only approval cannot authorize full staging")
     if approval.get("sourceHash") != manifest["sourceHash"] or approval.get("planHash") != manifest["planHash"]:
         raise ManifestError("staging approval is stale")
     if not str(approval.get("owner") or "").strip():
