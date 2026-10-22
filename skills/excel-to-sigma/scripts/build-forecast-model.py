@@ -446,20 +446,29 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
     forecast_stages = [forecast]
     if has_pct:
-        forecastTotals = {"id":"forecastTotals","kind":"table","name":"Forecast Section Totals","source":{"kind":"table","elementId":stage1_id},
-            "columns":[{"id":"t_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},{"id":"t_sec","name":"Section","formula":f"[{stage1_name}/Section]"},
-                       {"id":"t_amt","name":"Section Amount","formula":f"Sum([{stage1_name}/Amount])","format":cur}],
-            "groupings":[{"id":"bySectionMonth","groupBy":["t_mn","t_sec"],"calculations":["t_amt"]}]}
-        final = {"id":"forecast","kind":"table","name":"Forecast",
-            "source":{"kind":"join","name":"PJ","primarySource":{"kind":"table","elementId":stage1_id},
-                "joins":[{"name":"Totals","joinType":"left-outer","left":{"kind":"table","elementId":stage1_id},"right":{"kind":"table","elementId":"forecastTotals"},
-                          "columns":[{"left":"[Month Num]","right":"[Month Num]"},{"left":"[Of Section]","right":"[Section]"}]}]},
-            "columns":[{"id":"g_sec","name":"Section","formula":"[PJ/Section]"},{"id":"g_so","name":"Section Order","formula":"[PJ/Section Order]"},
-                {"id":"g_line","name":"Line Item","formula":"[PJ/Line Item]"},{"id":"g_lo","name":"Line Order","formula":"[PJ/Line Order]"},
-                {"id":"g_m","name":"Month","formula":"[PJ/Month]"},{"id":"g_mn","name":"Month Num","formula":"[PJ/Month Num]"},{"id":"g_me","name":"Month End","formula":"[PJ/Month End]"},
-                {"id":"g_amt","name":"Amount","formula":'If([PJ/Kind] = "pct", [PJ/Eff Rate] * Coalesce([Totals/Section Amount], 0), [PJ/Amount])',"format":cur},
+        # Second pass without a join: a join to a grouped table also matches that table's
+        # detail rows (a section with N lines matches N+1 times and multiplies every share
+        # line). "Forecast Base Ref" is a plain copy of the base rows; each share line sums
+        # the base section's amounts for its own month with SumIf, one branch per
+        # (base section, forecast month) pair.
+        ref_name = "Forecast Base Ref"
+        forecastRef = {"id":"forecastRef","kind":"table","name":ref_name,"source":{"kind":"table","elementId":stage1_id},
+            "columns":[{"id":"r_sec","name":"Section","formula":f"[{stage1_name}/Section]"},
+                       {"id":"r_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},
+                       {"id":"r_amt","name":"Amount","formula":f"[{stage1_name}/Amount]","format":cur}]}
+        pairs = sorted({(ln["of"], v["num"]) for ln in P["lines"] if ln["kind"] == "pct_of_total"
+                        for v in calc.month_views(periods)[n_act:]}, key=lambda t: (t[1], t[0]))
+        branches = ", ".join(
+            f'[{stage1_name}/Of Section] = "{of}" and [{stage1_name}/Month Num] = {num}, '
+            f'SumIf([{ref_name}/Amount], [{ref_name}/Section] = "{of}" and [{ref_name}/Month Num] = {num})'
+            for of, num in pairs)
+        final = {"id":"forecast","kind":"table","name":"Forecast","source":{"kind":"table","elementId":stage1_id},
+            "columns":[{"id":"g_sec","name":"Section","formula":f"[{stage1_name}/Section]"},{"id":"g_so","name":"Section Order","formula":f"[{stage1_name}/Section Order]"},
+                {"id":"g_line","name":"Line Item","formula":f"[{stage1_name}/Line Item]"},{"id":"g_lo","name":"Line Order","formula":f"[{stage1_name}/Line Order]"},
+                {"id":"g_m","name":"Month","formula":f"[{stage1_name}/Month]"},{"id":"g_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},{"id":"g_me","name":"Month End","formula":f"[{stage1_name}/Month End]"},
+                {"id":"g_amt","name":"Amount","formula":f'If([{stage1_name}/Kind] = "pct", [{stage1_name}/Eff Rate] * If({branches}, 0), [{stage1_name}/Amount])',"format":cur},
                 {"id":"g_p","name":"Period","formula":'"Forecast"'}]}
-        forecast_stages = [forecast, forecastTotals, final]
+        forecast_stages = [forecast, forecastRef, final]
         forecast = final
     def m(nm): return {"outputColumnName": nm, "sourceColumns": [f"[{nm}]", f"[{nm}]"]}
     pnlCombined = {"id":"pnlCombined","kind":"table","name":C,
@@ -476,29 +485,44 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         actuals, spineWrap, forecast, pnlCombined = (
             approved_nodes[key] for key in ("actuals", "spineWrap", "forecast", "pnlCombined"))
         forecast_stages = [forecast]
-    def sec_sum(name): return f"Sum([{C}/{sec_cols[name][1]}])"
-    def signed(coefficients):
+    # When the workbook's FY total covers only some periods, KPI cards cover exactly those
+    # periods (a conditional sum on Month Num); trends and the pivot keep every period.
+    fy_nums = sorted(p["num"] for p in periods if p["label"] in (P.get("fyPeriods") or []))
+    if fy_nums and fy_nums != list(range(fy_nums[0], fy_nums[-1] + 1)):
+        raise PlanError("fyPeriods must be a contiguous run of periods")
+    fy_prefix = re.sub(r"\s+total$", "", P.get("fyLabel") or "FY", flags=re.I) if fy_nums else ""
+    def sec_sum(name, fy=False):
+        col = f"[{C}/{sec_cols[name][1]}]"
+        if fy and fy_nums:
+            return f"SumIf({col}, [{C}/Month Num] >= {fy_nums[0]} and [{C}/Month Num] <= {fy_nums[-1]})"
+        return f"Sum({col})"
+    def kpi_title(name):
+        if not fy_nums:
+            return name
+        return f"{fy_prefix} {name}"
+    def signed(coefficients, fy=False):
         out = ""
         for i, (name, weight) in enumerate(coefficients.items()):
-            term = sec_sum(name) if abs(weight) == 1 else f"{abs(weight):g} * {sec_sum(name)}"
+            term = sec_sum(name, fy) if abs(weight) == 1 else f"{abs(weight):g} * {sec_sum(name, fy)}"
             out += (("-" if weight < 0 else "") + term) if i == 0 else (" - " if weight < 0 else " + ") + term
         return out
     rows = amount_rows(P, sections)
     first_positive = next((sec["name"] for sec in sections if sec["sign"] > 0), sections[0]["name"])
     REV = sec_sum(first_positive)
+    REV_FY = sec_sum(first_positive, True)
     rev_label = "Total Revenue" if first_positive == "Revenue" else f"Total {first_positive}"
     card_style = {"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}
     def kpi(eid,name,f,fmt): return {"id":eid,"kind":"kpi-chart","name":name,"source":{"kind":"table","elementId":"pnlCombined"},"columns":[{"id":"v","formula":f,"format":fmt}],"value":{"columnId":"v"},"style":dict(card_style)}
     # KPI cards: first positive section, the next-to-last and last amount rows, and the
     # first amount row as a share of that section (Gross Margin %).
-    slots = [("kpiRev", rev_label, REV, cur)]
+    slots = [("kpiRev", kpi_title(rev_label), REV_FY, cur)]
     if len(rows) >= 2:
-        slots.append(("kpiEbitda", rows[-2]["label"], signed(rows[-2]["coefficients"]), cur))
-    slots.append(("kpiNI", rows[-1]["label"], signed(rows[-1]["coefficients"]), cur))
+        slots.append(("kpiEbitda", kpi_title(rows[-2]["label"]), signed(rows[-2]["coefficients"], True), cur))
+    slots.append(("kpiNI", kpi_title(rows[-1]["label"]), signed(rows[-1]["coefficients"], True), cur))
     if len(rows) >= 2:
         first = rows[0]
         ratio_name = "Gross Margin %" if first["label"].lower() == "gross profit" else f"{first['label']} %"
-        slots.append(("kpiGM", ratio_name, f"({signed(first['coefficients'])}) / {REV}", PCT(P)))
+        slots.append(("kpiGM", kpi_title(ratio_name), f"({signed(first['coefficients'], True)}) / {REV_FY}", PCT(P)))
     kpis = [kpi(*slot) for slot in slots]
     kpis[0]["style"]["borderColor"] = "#2563EB"
     header={"id":"pnlHeader","kind":"text","body":f"# {P['name']}\n{grain_adj} actuals and forecast performance",

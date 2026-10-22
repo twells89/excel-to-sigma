@@ -76,6 +76,111 @@ class Base(unittest.TestCase):
         return path
 
 
+def reach_counts(plan, spec, *, seeded):
+    """Row multiplicity per (line item, period) at ``pnlCombined`` for a generated workbook spec.
+
+    Walks element sources (data model, table, join, union) carrying only the key columns
+    (Line Item, Month, Month Num, Section, Of Section). A plain column reference copies a
+    value, any other formula yields None. Input tables are empty unless ``seeded``, in
+    which case they hold one rate row per rate line and one manual row per manual
+    line-period. Joins read the right side's rows, so a right side that is a grouped table
+    (whose detail rows join too) is rejected.
+    """
+    import re as _re
+    elements = {e["id"]: e for p in spec["pages"] for e in p["elements"]}
+    periods, n_act = calc.plan_periods(plan)
+    forecast = periods[n_act:]
+    dm = {
+        "glDetail": [{"Line Item": r["line"], "Month": r["month"],
+                      "Month Num": next(p["num"] for p in periods if p["label"] == r["month"]),
+                      "Section": r["section"]} for r in plan["actuals"]],
+        "spine": [{"Line Item": ln["line"], "Month": p["label"], "Month Num": p["num"],
+                   "Section": ln["section"], "Of Section": ln.get("of")}
+                  for ln in plan["lines"] for p in forecast],
+    }
+    inputs = {"rateInput": [], "manualInput": []}
+    if seeded:
+        inputs["rateInput"] = [{"Line Item": ln["line"]} for ln in plan["lines"]
+                               if ln["kind"] in ("growth", "yoy", "pct_of_total")]
+        inputs["manualInput"] = [{"Line Item": ln["line"], "Month Num": p["num"]}
+                                 for ln in plan["lines"] if ln["kind"] == "manual" for p in forecast]
+    memo = {}
+
+    def project(rows, element, alias):
+        ref = _re.compile(r"^\[([^/\]]+)/([^\]]+)\]$")
+        out = []
+        for row in rows:
+            new = {}
+            for col in element["columns"]:
+                found = ref.match(col.get("formula", ""))
+                new[col["name"]] = row.get(found.group(2)) if found else None
+            out.append(new)
+        return out
+
+    def rows_of(element_id):
+        if element_id in memo:
+            return memo[element_id]
+        el = elements[element_id]
+        if el["kind"] == "input-table":
+            result = [dict(r) for r in inputs[element_id]]
+        else:
+            result = source_rows(el)
+        memo[element_id] = result
+        return result
+
+    def source_rows(el):
+        src = el["source"]
+        if src["kind"] == "data-model":
+            return project(dm[src["elementId"]], el, None)
+        if src["kind"] == "table":
+            return project(rows_of(src["elementId"]), el, None)
+        if src["kind"] == "union":
+            merged = []
+            for source in src["sources"]:
+                merged.extend(rows_of(source["elementId"]))
+            return project(merged, el, None)
+        if src["kind"] == "join":
+            rows = rows_of(src["primarySource"]["elementId"])
+            for join in src["joins"]:
+                right_id = join["right"]["elementId"]
+                assert "groupings" not in elements[right_id], (
+                    f"join to grouped table {right_id!r} also matches its detail rows")
+                right = rows_of(right_id)
+                keys = [(c["left"].strip("[]"), c["right"].strip("[]")) for c in join["columns"]]
+                joined = []
+                for row in rows:
+                    hits = [r for r in right if all(row.get(l) == r.get(rk) for l, rk in keys)]
+                    joined.extend([{**row, **{f"{join['name']}/{k}": v for k, v in h.items()}} for h in hits]
+                                  or [dict(row)])
+                rows = joined
+            # re-key columns for [alias/Col] formulas
+            alias = src["name"]
+            flat = []
+            for row in rows:
+                flat.append({k: v for k, v in row.items()})
+            ref = _re.compile(r"^\[([^/\]]+)/([^\]]+)\]$")
+            out = []
+            for row in flat:
+                new = {}
+                for col in el["columns"]:
+                    found = ref.match(col.get("formula", ""))
+                    if found and found.group(1) == alias:
+                        new[col["name"]] = row.get(found.group(2))
+                    elif found:
+                        new[col["name"]] = row.get(f"{found.group(1)}/{found.group(2)}")
+                    else:
+                        new[col["name"]] = None
+                out.append(new)
+            return out
+        raise AssertionError(f"unsupported source {src['kind']}")
+
+    counts = {}
+    for row in rows_of("pnlCombined"):
+        key = (row["Line Item"], row["Month"])
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 # ---------------------------------------------------------------- calc module
 class TestRowExpressions(unittest.TestCase):
     def tree(self, text, resolve=None):
@@ -504,25 +609,89 @@ class TestBuilderGeneral(Base):
                       sql["spine"])
         self.assertIn("(NULL::date,'Q1 FY25',1,NULL::date,'In-Store','Net Sales'", sql["glDetail"])
 
-    def test_percent_lines_get_a_second_pass_over_forecast_section_totals(self):
+    def test_percent_lines_get_a_second_pass_without_a_join_to_a_grouped_table(self):
         plan, _, _ = self.quarterly()
         spec = BUILD.build_wb_spec(plan, "<dm>", ELS)
         elements = {e["id"]: e for p in spec["pages"] for e in p["elements"]}
         self.assertIn("forecastCalc", elements)
-        totals = elements["forecastTotals"]
-        self.assertEqual(totals["groupings"], [{"id": "bySectionMonth", "groupBy": ["t_mn", "t_sec"],
-                                                "calculations": ["t_amt"]}])
+        self.assertIn("forecastRef", elements)
+        self.assertNotIn("forecastTotals", elements)
         final = elements["forecast"]
-        self.assertEqual(final["source"]["primarySource"], {"kind": "table", "elementId": "forecastCalc"})
-        self.assertEqual(final["source"]["joins"][0]["columns"],
-                         [{"left": "[Month Num]", "right": "[Month Num]"},
-                          {"left": "[Of Section]", "right": "[Section]"}])
+        self.assertEqual(final["source"], {"kind": "table", "elementId": "forecastCalc"})
         amount = next(c for c in final["columns"] if c["name"] == "Amount")["formula"]
-        self.assertIn('If([PJ/Kind] = "pct", [PJ/Eff Rate] * Coalesce([Totals/Section Amount], 0)', amount)
+        self.assertIn('If([Forecast Base/Kind] = "pct", [Forecast Base/Eff Rate] * If(', amount)
+        self.assertIn('[Forecast Base/Of Section] = "Net Sales" and [Forecast Base/Month Num] = 5, '
+                      'SumIf([Forecast Base Ref/Amount], [Forecast Base Ref/Section] = "Net Sales" '
+                      'and [Forecast Base Ref/Month Num] = 5)', amount)
+        self.assertIn("Month Num] = 6, SumIf", amount)
         base_amount = next(c for c in elements["forecastCalc"]["columns"] if c["name"] == "Amount")["formula"]
         self.assertIn('[Kind] = "pct", 0', base_amount)
         self.assertIn('elementId="forecastCalc"', spec["layout"])
-        self.assertIn('elementId="forecastTotals"', spec["layout"])
+        self.assertIn('elementId="forecastRef"', spec["layout"])
+
+    def test_each_line_reaches_the_combined_table_once_per_period(self):
+        # Sigma double counted percent lines when the second pass joined to a grouped table.
+        # Simulate row multiplicity through the generated spec: actuals rows are the GL rows,
+        # every forecast line-period must arrive exactly once, and no join may read a grouped table.
+        for seeded in (False, True):
+            plan, _, _ = self.quarterly()
+            plan["intent"] = "what-if"
+            spec = BUILD.build_wb_spec(plan, "<dm>", ELS)
+            counts = reach_counts(plan, spec, seeded=seeded)
+            for ln in plan["lines"]:
+                for period in plan["periods"][4:]:
+                    self.assertEqual(counts[(ln["line"], period["label"])], 1,
+                                     (ln["line"], period["label"], seeded))
+            gl = {}
+            for row in plan["actuals"]:
+                gl[(row["line"], row["month"])] = gl.get((row["line"], row["month"]), 0) + 1
+            for key, n in gl.items():
+                self.assertEqual(counts[key], n, key)
+
+    def test_the_simulator_flags_a_join_to_a_grouped_table(self):
+        plan, _, _ = self.quarterly()
+        spec = BUILD.build_wb_spec(plan, "<dm>", ELS)
+        elements = {e["id"]: e for p in spec["pages"] for e in p["elements"]}
+        elements["forecastRef"]["groupings"] = [{"id": "g", "groupBy": ["r_sec"], "calculations": []}]
+        elements["forecast"]["source"] = {"kind": "join", "name": "PJ",
+            "primarySource": {"kind": "table", "elementId": "forecastCalc"},
+            "joins": [{"name": "T", "joinType": "left-outer",
+                       "left": {"kind": "table", "elementId": "forecastCalc"},
+                       "right": {"kind": "table", "elementId": "forecastRef"},
+                       "columns": [{"left": "[Section]", "right": "[Section]"}]}]}
+        with self.assertRaisesRegex(AssertionError, "grouped table"):
+            reach_counts(plan, spec, seeded=False)
+
+    def test_kpis_cover_only_the_fy_periods_when_the_fy_column_is_partial(self):
+        plan, _, built = self.quarterly()
+        self.assertEqual(plan["fyLabel"], "FY26 Total")
+        spec = BUILD.build_wb_spec(plan, "<dm>", ELS)
+        elements = {e["id"]: e for p in spec["pages"] for e in p["elements"]}
+        self.assertEqual([elements[k]["name"] for k in ("kpiRev", "kpiEbitda", "kpiNI", "kpiGM")],
+                         ["FY26 Total Net Sales", "FY26 Operating Profit", "FY26 Pre-tax Income",
+                          "FY26 Gross Margin %"])
+        window = "[PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6"
+        self.assertEqual(elements["kpiRev"]["columns"][0]["formula"],
+                         f"SumIf([PnL Combined/Net Sales Amt], {window})")
+        for key in ("kpiEbitda", "kpiNI", "kpiGM"):
+            formula = elements[key]["columns"][0]["formula"]
+            self.assertNotIn("Sum([", formula)
+            self.assertIn(window, formula)
+        # the window is the periods behind the parity targets: periods 3..6
+        ev = calc.Evaluation(plan)
+        total = sum(ev.totals["Net Sales"][i] for i in range(2, 6))
+        self.assertAlmostEqual(total, built["targets"]["Total Net Sales"], places=6)
+        # trend and pivot keep every period
+        self.assertIn("Sum([PnL Combined/Net Sales Amt])", elements["monthlyTrend"]["columns"][2]["formula"])
+
+    def test_kpis_sum_all_periods_without_a_partial_fy_column(self):
+        fixture.build_pnl(self.path)
+        plan, _ = draft_plan(self.path, intent="what-if", connection="c", folder="f")
+        self.assertNotIn("fyPeriods", plan)
+        spec = BUILD.build_wb_spec(plan, "<dm>", ELS)
+        elements = {e["id"]: e for p in spec["pages"] for e in p["elements"]}
+        self.assertEqual(elements["kpiRev"]["name"], "Total Revenue")
+        self.assertEqual(elements["kpiRev"]["columns"][0]["formula"], "Sum([PnL Combined/Revenue Amt])")
 
     def test_plans_without_percent_lines_keep_one_forecast_table(self):
         fixture.build_pnl(self.path)
@@ -540,11 +709,10 @@ class TestBuilderGeneral(Base):
         self.assertEqual(names[-4:], ["Net Sales Amt", "COGS Amt", "SG&A Amt", "Other Income Expense Amt"])
         sga = next(c for c in elements["pnlCombined"]["columns"] if c["name"] == "SG&A Amt")
         self.assertIn('[Union of 2 Sources/Section] = "SG&A"', sga["formula"])
-        self.assertEqual([elements[k]["name"] for k in ("kpiRev", "kpiEbitda", "kpiNI", "kpiGM")],
-                         ["Total Net Sales", "Operating Profit", "Pre-tax Income", "Gross Margin %"])
+        window = "[PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6"
         self.assertEqual(elements["kpiEbitda"]["columns"][0]["formula"],
-                         "Sum([PnL Combined/Net Sales Amt]) - Sum([PnL Combined/COGS Amt]) - "
-                         "Sum([PnL Combined/SG&A Amt])")
+                         f"SumIf([PnL Combined/Net Sales Amt], {window}) - SumIf([PnL Combined/COGS Amt], "
+                         f"{window}) - SumIf([PnL Combined/SG&A Amt], {window})")
         self.assertEqual(elements["monthlyTrend"]["name"], "Quarterly Net Sales, Operating Profit & Pre-tax Income")
 
     def test_quarter_labels_order_the_trend_and_pivot_by_period_number(self):
@@ -646,7 +814,7 @@ class TestRetailQuarterlyBudget(Base):
         self.assertIn("EXTERNAL_LINK_VALUE", stdout)
         wb = json.loads((out / "wb_spec.json").read_text())
         ids = {e["id"] for e in wb["contents"]["elements"]}
-        self.assertTrue({"forecastCalc", "forecastTotals", "forecast", "sourceChart1"} <= ids)
+        self.assertTrue({"forecastCalc", "forecastRef", "forecast", "sourceChart1"} <= ids)
         bar = next(e for e in wb["contents"]["elements"] if e["id"] == "sourceChart1")
         self.assertEqual(bar["kind"], "bar-chart")
         self.assertEqual(bar["columns"][0]["formula"], "[PnL Combined/Month]")

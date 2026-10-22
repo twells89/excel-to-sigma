@@ -791,6 +791,7 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
     })
     if fy_labels and len(fy_labels) != len(periods):
         plan["fyPeriods"] = fy_labels
+        plan["fyLabel"] = _text(ws.cell(header_row, fy_col).value)
     summary = {
         "reportSheet": ws.title, "glSheet": gl_name, "grain": grain,
         "kinds": dict(Counter(line["kind"] for line in lines)),
