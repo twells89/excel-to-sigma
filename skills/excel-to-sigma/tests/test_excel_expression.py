@@ -67,6 +67,22 @@ class ConcatenationPrecedenceTests(unittest.TestCase):
             self.value('=1+(2&"x")')
 
 
+class LogicalFunctionTests(unittest.TestCase):
+    def value(self, formula, values):
+        node = parse_expression(formula, sheet='Model', workbook_mode=True)
+        return evaluate(node, lambda ref: values.get(ref.address), excel_errors=True)
+
+    def test_and_or_ignore_blank_cells(self):
+        values = {'A1': None, 'A2': True, 'A3': False}
+        self.assertIs(self.value('=AND(A1:A2)', values), True)
+        self.assertIs(self.value('=OR(A1,A3)', values), False)
+
+    def test_and_or_of_only_blanks_return_value_error(self):
+        for formula in ('=AND(A1)', '=OR(A1:A2)'):
+            with self.subTest(formula=formula), self.assertRaisesRegex(ExcelCalcError, '#VALUE!'):
+                self.value(formula, {})
+
+
 class CriteriaEqualityTests(unittest.TestCase):
     def assert_criteria_results(self, values, cases):
         for argument, count, total in cases:

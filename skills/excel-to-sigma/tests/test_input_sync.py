@@ -152,17 +152,19 @@ class TestSeedPlanner(unittest.TestCase):
     def test_date_only_seed_matches_datetime_readback(self):
         source = [{"Setting": "AsOfDate", "AsOfDate": "2026-06-30"}]
         initial = plan_seed(source, [], ["Setting"], "Row ID")
-        rerun = plan_seed(
-            source,
-            [{"Setting": "AsOfDate", "AsOfDate": dt.datetime(2026, 6, 30, 12),
-              "Row ID": "server-1"}],
-            ["Setting"], "Row ID", prior_seed=initial,
-            column_types={"Setting": "text", "AsOfDate": "datetime"},
-        )
+        for hour in (0, 12):
+            with self.subTest(hour=hour):
+                rerun = plan_seed(
+                    source,
+                    [{"Setting": "AsOfDate", "AsOfDate": dt.datetime(2026, 6, 30, hour),
+                      "Row ID": "server-1"}],
+                    ["Setting"], "Row ID", prior_seed=initial,
+                    column_types={"Setting": "text", "AsOfDate": "datetime"},
+                )
 
-        self.assertEqual(rerun["conflicts"], [])
-        self.assertEqual(rerun["updates"], [])
-        self.assertEqual(len(rerun["unchanged"]), 1)
+                self.assertEqual(rerun["conflicts"], [])
+                self.assertEqual(rerun["updates"], [])
+                self.assertEqual(len(rerun["unchanged"]), 1)
 
     def test_datetime_wire_string_normalizes_only_for_approved_datetime_column(self):
         source = [{"Key": "A", "Value": "2026-06-30"}]
