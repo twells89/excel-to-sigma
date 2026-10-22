@@ -79,7 +79,7 @@ Excel formal Table → Sigma input table → (publish) → SIGDS_ writeback
   `draft-forecast-plan.py` → `build-forecast-model.py`. Validated live in Sigma
   (2026-10-22) with exact parity on a monthly and a quarterly model.
 - ✅ Formula grids over formal Tables (pipeline by rep, headcount and opex plan,
-  inventory projection): `draft-table-report.py` → `build-table-report.py`. Validated
+  inventory projection, 13-week cash flow): `draft-table-report.py` → `build-table-report.py`. Validated
   live in Sigma (2026-10-22) with exact parity on every summary cell.
 - ✅ Linked input tables through Sigma MCP Code Mode: `linked-input-program.py` emits
   the create / seed / edit programs. Validated live (2026-10-22).

@@ -50,7 +50,7 @@ inventory, then a source-specific Sigma MCP build) with the drafters' reasons in
 | Before `--post` or declaring completion | `refs/coverage-contract.md` — the fail-loud contract and hard completion gates |
 | Formal Table to input table (the data-entry path) | `refs/input-tables.md` (the source-swap goes through a warehouse view, not a direct DM binding), `refs/excel-translation.md` |
 | Cell-drawn planning / forecast model (no formal Table) | `refs/model-taxonomy.md`, `refs/forecast-recipes.md` |
-| Formula grids over formal Tables (pipeline by rep, headcount plan, inventory projection) | `refs/table-report-recipes.md` |
+| Formula grids over formal Tables (pipeline by rep, headcount plan, inventory projection, 13-week cash flow) | `refs/table-report-recipes.md` |
 | Broker / FactSet research model, or a fleet off one template | `refs/research-recipes.md`, `refs/research-template-coa.md` |
 | `.xlsm` / macros | `refs/macro-handling.md` |
 | Charts, validation, conditional formatting, formats to rebuild | `refs/presentation-migration.md`; `refs/generic-source-presentation.md` for the generic presentation inventory |
@@ -291,7 +291,9 @@ not mapped, to rebuild by hand before dispositioning `CHARTS_PRESENT`.
 `build-table-report.py` -> `build-table-report.py --post`. For workbooks whose
 outputs are formula grids over formal Excel Tables (SUMIFS/COUNTIFS summaries by
 row label and column header or date window, XLOOKUP/INDEX-MATCH lookups, running
-balances, row × period expansions). Tables people edit become input tables (seed them
+balances, row × period expansions) and for period ledgers such as a 13-week cash flow
+(table-sourced lines, a named-scenario factor, growth and cadence lines, beginning and
+ending cash, running minimum). Tables people edit become input tables (seed them
 through Sigma MCP), read-only tables become data-model data, and every summary cell is
 recomputed from the table data and compared with Excel's cached value before the plan
 is written. See `refs/table-report-recipes.md` for the Sigma shapes (SumIf wrapped in
