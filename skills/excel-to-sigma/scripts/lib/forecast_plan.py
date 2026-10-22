@@ -617,7 +617,10 @@ def source_charts(wf, wv, lines, actuals, actual_months, forecast_months, tolera
                 ref = s.tx.strRef.f if s.tx is not None and s.tx.strRef is not None else None
                 label = (_range_values(wv, ref) or [None])[0] if ref else None
                 metric = TARGET_LABELS.get(str(label).strip().lower()) if label else None
-                cat_ref = (s.cat.strRef or s.cat.numRef).f if s.cat is not None else None
+                cat_source = None
+                if s.cat is not None:
+                    cat_source = s.cat.strRef if s.cat.strRef is not None else s.cat.numRef
+                cat_ref = cat_source.f if cat_source is not None else None
                 cats = _range_values(wv, cat_ref) if cat_ref else None
                 vals = _range_values(wv, s.val.numRef.f) if s.val is not None and s.val.numRef else None
                 if not metric or not cats or not vals:
@@ -636,12 +639,18 @@ def source_charts(wf, wv, lines, actuals, actual_months, forecast_months, tolera
                     unmapped.append(f"{where}: quarter categories {categories} do not follow the plan months")
                     continue
                 buckets = buckets[:len(labels)]
-            elif all(parse_month(c) for c in categories):
-                grain = "month"
-                buckets = [((m["month"],), [m["month"]]) for m in months][:len(categories)]
             else:
-                unmapped.append(f"{where}: categories are neither quarters nor months")
-                continue
+                labels = [parse_month(c) for c in categories]
+                if not all(labels):
+                    unmapped.append(f"{where}: categories are neither quarters nor months")
+                    continue
+                expected = [(int(m["end"][:4]), int(m["end"][5:7]))
+                            for m in months[:len(labels)]]
+                if labels != expected:
+                    unmapped.append(f"{where}: month categories {categories} do not follow the plan months")
+                    continue
+                grain = "month"
+                buckets = [((m["month"],), [m["month"]]) for m in months][:len(labels)]
             for metric, vals in metrics:
                 for (key, members), want in zip(buckets, vals):
                     got = sum(monthly[m][metric] for m in members)

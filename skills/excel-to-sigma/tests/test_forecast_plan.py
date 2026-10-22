@@ -266,7 +266,7 @@ class TestFailLoud(Base):
         self.assertFalse((self.dir / "plan.json").exists())
 
 
-def add_metric_chart(labels, title="Revenue & Gross Profit"):
+def add_metric_chart(labels, title="Revenue & Gross Profit", min_col=2, max_col=None):
     """mutate hook: a P&L line chart whose series are the given total rows by month."""
     from openpyxl.chart import LineChart, Reference, Series
     from openpyxl.chart.data_source import StrRef
@@ -275,13 +275,13 @@ def add_metric_chart(labels, title="Revenue & Gross Profit"):
     def mutate(pnl, gl, drivers):
         chart = LineChart()
         chart.title = title
-        last_col = 1 + len(fixture.MONTHS)
+        last_col = max_col or 1 + len(fixture.MONTHS)
         for label in labels:
             row = find_cell(pnl, label)
-            series = Series(Reference(pnl, min_col=2, max_col=last_col, min_row=row))
+            series = Series(Reference(pnl, min_col=min_col, max_col=last_col, min_row=row))
             series.tx = SeriesLabel(strRef=StrRef(f"'P&L'!$A${row}"))
             chart.series.append(series)
-        chart.set_categories(Reference(pnl, min_col=2, max_col=last_col,
+        chart.set_categories(Reference(pnl, min_col=min_col, max_col=last_col,
                                        min_row=fixture.HEADER_ROW))
         pnl.add_chart(chart, "P2")
     return mutate
@@ -300,6 +300,24 @@ class TestSourceCharts(Base):
         plan, info, _ = self.draft(mutate=add_metric_chart(["Total Revenue", "Subscription"]))
         self.assertEqual(plan["sourceCharts"], [])
         self.assertIn("not Total Revenue/Gross Profit/EBITDA/Net Income", info["unmappedCharts"][0])
+
+    def test_chart_with_mid_span_months_is_left_for_review(self):
+        plan, info, _ = self.draft(
+            mutate=add_metric_chart(["Total Revenue"], min_col=5, max_col=7))
+        self.assertEqual(plan["sourceCharts"], [])
+        self.assertIn("month categories", info["unmappedCharts"][0])
+
+    def test_chart_with_literal_categories_is_left_for_review(self):
+        from openpyxl.chart.data_source import AxDataSource, StrData, StrVal
+
+        def literal_categories(pnl, gl, drivers):
+            add_metric_chart(["Total Revenue"])(pnl, gl, drivers)
+            points = [StrVal(idx=i, v=month) for i, month in enumerate(fixture.MONTHS)]
+            pnl._charts[-1].series[0].cat = AxDataSource(strLit=StrData(pt=points))
+
+        plan, info, _ = self.draft(mutate=literal_categories)
+        self.assertEqual(plan["sourceCharts"], [])
+        self.assertEqual(len(info["unmappedCharts"]), 1)
 
     def test_chart_values_that_disagree_with_the_plan_fail(self):
         # Total rows are not line rows, so only the chart check reads this cache.
