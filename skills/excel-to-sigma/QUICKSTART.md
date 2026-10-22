@@ -6,7 +6,11 @@ End-to-end on the bundled sample fixture. ~10 min; three of the steps are clicks
 ```bash
 cd <this skill>/scripts
 python3 -m venv .venv && .venv/bin/pip install -r ../requirements.txt
-# Sigma creds in ~/.sigma-migration/env  (SIGMA_BASE_URL / SIGMA_CLIENT_ID / SIGMA_CLIENT_SECRET)
+# Sigma sign-in (needed only for --post): browser OAuth, then every builder picks it up
+export SIGMA_BASE_URL='https://<your-sigma-api-host>'
+eval "$(bash browser-login.sh)"            # refresh token stays in the OS keychain
+# or: sigma auth login -p <name>   and pass --sigma-profile <name> to a builder
+# unattended fallback: SIGMA_CLIENT_ID / SIGMA_CLIENT_SECRET in env or ~/.sigma-migration/env
 ```
 
 ## 1. Make (or bring) an Excel model
@@ -51,9 +55,10 @@ excluded — Sigma auto-populates them.)
 > Builds the empty input-table **structure** through REST. The CLI stops there;
 > seed the resulting table through Sigma MCP Code Mode or use UI CSV paste.
 > **Don't use `--linked` for a shippable
-> table** — linked context columns don't resolve via POST ("multiple values");
-> use the established UI path, or validate MCP `add_linked_input_table()`
-> end-to-end before shipping. See `refs/input-tables.md`.
+> table** — linked context columns don't resolve via POST ("multiple values").
+> For a linked table use `scripts/linked-input-program.py`, which emits the Sigma MCP
+> Code Mode programs (create, seed, edit; validated live 2026-10-22). See
+> `refs/input-tables.md`.
 
 ## 5. Load data + view  (MCP + UI — see refs/input-tables.md)
 

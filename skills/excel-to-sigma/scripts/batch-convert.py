@@ -32,6 +32,9 @@ from lib.migration_gate import (
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if os.path.join(HERE, "lib") not in sys.path:
+    sys.path.insert(0, os.path.join(HERE, "lib"))
+import sigma_auth  # noqa: E402
 
 
 def load_mod(fn, name):
@@ -284,6 +287,8 @@ def _parser():
     parser.add_argument("--sheet")
     parser.add_argument("--out")
     parser.add_argument("--post", action="store_true")
+    parser.add_argument("--sigma-profile", metavar="NAME",
+                        help="Sigma CLI profile for --post auth (see build-research-model.py)")
     parser.add_argument("--post-review", action="store_true",
                         help="legacy flag; reviewed files still require --review-dispositions")
     parser.add_argument("--review-dispositions",
@@ -345,6 +350,7 @@ def main(argv=None):
         conn, folder = args.conn, args.folder
         if not (conn and folder):
             _parser().error("--post requires --conn and --folder")
+        sigma_auth.apply_cli_args(args)
         e = BUILD.env(); base = e["SIGMA_BASE_URL"]; tok = BUILD.token(e)
         for entry, plan in zip(manifest, plans):
             if entry["bucket"] != "AUTO_PARITY":

@@ -17,11 +17,14 @@ description: >-
 > model reading `FROM` that view → section rollups — was proven with **exact
 > parity** on a representative 540-row forecast model. The read/output half (DM +
 > workbook from a landed seed) was validated earlier (2026-06-03). The discovery
-> + formula-translation layer is designed and spiked, not yet a general one-shot
-> converter; the cell-drawn actuals + driver-growth forecast archetype is the
-> exception (router, plan drafter, builder with source-bound local parity; shapes
-> outside it fail loudly). Complex-workbook support means **inventory + explicit
-> routing + parity**, not a promise that arbitrary Excel programs convert automatically.
+> + formula-translation layer is not a general one-shot converter; two archetypes
+> are the exception, each with a router gate, a plan drafter that verifies every
+> formula cell against Excel's cached values, and a builder with local parity:
+> **forecast** (cell-drawn P&L, any sections, month/quarter/week periods) and
+> **table-report** (formula grids over formal Tables). Both were validated live in
+> Sigma on 2026-10-22 with exact parity. Shapes outside them fail loudly.
+> Complex-workbook support means **inventory + explicit routing + parity**, not a
+> promise that arbitrary Excel programs convert automatically.
 
 **Start here — do not read every ref.** Run the router first; it picks the archetype
 and names the refs, decisions and commands for this workbook:
@@ -35,9 +38,11 @@ It runs the audit, discovery and (for macro files) macro classification, writes
 and prints JSON: `auditStatus`, `archetype`, `readRefs`, `beforePost`, `askUser`,
 `nextCommands`, `userHandoffs`, `routeReason`. Exit code 2 means `BLOCKED`. Read the refs
 it lists, ask the user the `askUser` questions, then run the `nextCommands` in order.
-`forecast` is named only when the plan drafter accepts the workbook's shape; a
-SUMIFS/driver workbook it rejects routes to `cell-model` (source inventory, then a
-source-specific Sigma MCP build) with the drafter's reason in `routeReason`.
+Routes are tried in order and each is named only when its drafter accepts the
+workbook: research template → `forecast` → `table-report` → `input-table`. A
+SUMIFS/driver workbook both drafters reject routes to `cell-model` (source
+inventory, then a source-specific Sigma MCP build) with the drafters' reasons in
+`routeReason`.
 
 | When | Read |
 |---|---|
@@ -45,6 +50,7 @@ source-specific Sigma MCP build) with the drafter's reason in `routeReason`.
 | Before `--post` or declaring completion | `refs/coverage-contract.md` — the fail-loud contract and hard completion gates |
 | Formal Table to input table (the data-entry path) | `refs/input-tables.md` (the source-swap goes through a warehouse view, not a direct DM binding), `refs/excel-translation.md` |
 | Cell-drawn planning / forecast model (no formal Table) | `refs/model-taxonomy.md`, `refs/forecast-recipes.md` |
+| Formula grids over formal Tables (pipeline by rep, headcount plan, inventory projection, 13-week cash flow) | `refs/table-report-recipes.md` |
 | Broker / FactSet research model, or a fleet off one template | `refs/research-recipes.md`, `refs/research-template-coa.md` |
 | `.xlsm` / macros | `refs/macro-handling.md` |
 | Charts, validation, conditional formatting, formats to rebuild | `refs/presentation-migration.md`; `refs/generic-source-presentation.md` for the generic presentation inventory |
@@ -120,28 +126,26 @@ edit ambiguous cells before selecting the input surface.
 
 ### What's actually buildable via API today (validated 2026-06-10 by MCP query)
 
-> **Hard-won correction.** Earlier drafts claimed linked input tables were the
-> "powerful path, fully API, no seed." **That was wrong — validated only by
-> structure (`/elements`), never by querying the data.** A linked input table
-> authored through workbook code representation has **inherited columns that don't
-> resolve** — every row shows **"multiple values"** (publish doesn't fix it;
-> re-POSTing a known-good UI-built spec reproduces the break). The linked-column
-> key-correlation is state the REST spec can't carry. Sigma MCP exposes a
-> dedicated linked-input-table constructor, but validate that path separately. See
-> `refs/input-tables.md`.
+> **Hard-won correction.** A linked input table authored through the REST workbook
+> code representation has **inherited columns that don't resolve** — every row shows
+> **"multiple values"** (publish doesn't fix it; re-POSTing a known-good UI-built spec
+> reproduces the break), so REST linked tables stay unsupported. **Sigma MCP Code Mode
+> linked tables are validated live (2026-10-22):** `scripts/linked-input-program.py`
+> emits the 3-call create / seed / edit programs. See `refs/input-tables.md`.
 
 So, honestly, by usage pattern:
 
 | Need | API today? | How |
 |---|---|---|
 | **Edit-in-place of the migrated rows** (the common spreadsheet case) | ✅ with Sigma MCP Code Mode | create the empty input-table **structure** with REST, then pre-query and seed it through MCP `InputTable.upsert_rows()`; `update_rows()` targets returned/system row IDs. UI CSV remains the fallback. |
-| **Net-new entry at a grain** (blank forecast grid) | ⚠️ path-dependent | REST linked-off-spine creation leaves context columns as "multiple values"; UI works. MCP exposes `add_linked_input_table()`, but validate create/read/update end to end before shipping it. |
-| **Augment / annotate existing rows** (notes/flags beside live data) | ⚠️ path-dependent | needs working linked columns; use UI or a separately verified MCP linked-table build |
+| **Net-new entry at a grain** (blank forecast grid) | ✅ via MCP Code Mode | REST linked-off-spine creation still leaves context columns as "multiple values" — do not use it. Build the linked table through MCP: `scripts/linked-input-program.py` (validated live 2026-10-22, one row per key). |
+| **Augment / annotate existing rows** (notes/flags beside live data) | ✅ via MCP Code Mode | same MCP linked-table recipe (editable columns beside inherited source columns); published-mode edits by non-editors and warehouse views over the table remain untested |
 
 REST can scaffold input-table *structure* and build read-only DMs. Sigma MCP
-Code Mode can seed and update rows in an existing empty input table; it is a
-separate connector capability and is not invoked by this skill's CLI. Working
-linked context columns and warehouse-view creation still require UI/live review.
+Code Mode can seed and update rows in an existing empty input table and can create,
+seed and edit **linked** input tables (validated live 2026-10-22; this skill's
+`scripts/linked-input-program.py` only emits the programs, it never calls MCP).
+Warehouse-view creation still requires UI/live review.
 
 Design so the editable surfaces exist from day one, and seed them through MCP or
 the UI. **Don't build a read-only model and call it a migration.**
@@ -151,13 +155,25 @@ the UI. **Don't build a read-only model and call it a migration.**
 ## Prerequisites
 
 ### Sigma access
+Sign in with OAuth first; client credentials are only the unattended fallback. Run
+these from the skill directory. Every Sigma-calling script resolves auth through
+`scripts/lib/sigma_auth.py`:
+
 ```bash
-# neutral cred file written by the sigma-migration setup (see refs/input-tables.md)
-bash -c 'source ~/.sigma-migration/env; TOKEN=$(curl -s -X POST "$SIGMA_BASE_URL/v2/auth/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=$SIGMA_CLIENT_ID&client_secret=$SIGMA_CLIENT_SECRET" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)[\"access_token\"])"); <cmd>'
+export SIGMA_BASE_URL='https://<your-sigma-api-host>'   # e.g. https://aws-api.sigmacomputing.com
+eval "$(bash scripts/browser-login.sh)"                  # browser OAuth (PKCE); refresh token stays in the OS keychain
+# or, with the Sigma CLI:  sigma auth login -p <name>   then pass --sigma-profile <name> (or SIGMA_CLI_PROFILE=<name>)
+python scripts/build-forecast-model.py plan.json --post --sigma-profile <name>   # example
+python scripts/get_token.py --workdir <dir>              # shell-neutral auth.json handoff (0600)
 ```
+Resolution order: `SIGMA_API_TOKEN` (+ `SIGMA_BASE_URL`) in the environment, then
+`<SIGMA_WORKDIR>/auth.json` / `./auth.json`, then the Sigma CLI profile
+(`--sigma-profile` / `SIGMA_CLI_PROFILE`), then the provider (`get_token.py`: keychain
+browser session, then `SIGMA_CLIENT_ID`/`SIGMA_CLIENT_SECRET` from the environment or
+`~/.sigma-migration/env`). Tokens last ~1h: they refresh after 50 minutes when the mint
+time is known and once on a 401. Details: `scripts/AUTH_RUNTIME.md`,
+`refs/browser-oauth-login.md`.
+
 The **data-entry half requires a write-enabled connection** (input tables write
 back to a `SIGDS_` schema). Confirm via `GET /v2/connections` → `writeAccess: true`.
 Verified write connection on tj-wells-1989: `cb2f5180-…` (Snowflake ymb68310).
@@ -267,16 +283,34 @@ needs source evidence; the syntax `=prior` alone does not prove one.
 
 **Forecast path:** `migrate.py plan` -> `draft-forecast-plan.py` -> dry-run
 `build-forecast-model.py` -> `build-forecast-model.py --post`. The drafter derives the
-plan from the workbook, fails loudly on any shape it does not recognise (sheet, month
-row, sections, a mixed or unparsable forecast row, missing GL columns), and recomputes
-every line-month and GL month against Excel's cached values before writing it. It
-raises `FLAT_CARRY_POLICY` for `=prior` lines; the dry run reports it as pending and
-`--post` needs a source-bound disposition. The builder's local parity check compares
-the plan to `parityTargets` and exits 1 on any mismatch. Workbook line charts whose
-series are Total Revenue / Gross Profit / EBITDA / Net Income by month or quarter are
-recorded as `sourceCharts` (every point checked against cached values) and the builder
-emits a matching Sigma line chart; the drafter lists any other chart as not mapped, to
-rebuild by hand before dispositioning `CHARTS_PRESENT`.
+plan from the workbook: sections are discovered from the sheet with a sign role taken
+from the derived rows (Gross Margin = Net Sales − COGS, …); periods may be months,
+quarters (`Q3 FY25`) or weeks; forecast cells may be growth, YoY, percent-of-total,
+flat, manual or an external link (kept as manual values with an `EXTERNAL_LINK_VALUE`
+review issue); rates may come from several driver cells. It fails loudly on anything
+else, and recomputes every line, total and derived row per period against Excel's
+cached values before writing the plan. It raises `FLAT_CARRY_POLICY` for `=prior`
+lines and `DRIVER_FORMULA_FROZEN` for a driver cell that holds a formula (the plan keeps
+only its cached rate); the dry run reports it as pending and `--post` needs a source-bound
+disposition. The builder's local parity check compares the plan to `parityTargets`
+(every derived row's FY or total value) and exits 1 on any mismatch; when the FY
+column covers only some periods, the KPI cards cover exactly those periods. Workbook
+line and bar charts whose series are the plan's totals or derived rows are recorded
+as `sourceCharts` (every point checked against cached values) and the builder emits a
+matching Sigma chart over the same period range; the drafter lists any other chart as
+not mapped, to rebuild by hand before dispositioning `CHARTS_PRESENT`.
+
+**Table-report path:** `migrate.py plan` -> `draft-table-report.py` -> dry-run
+`build-table-report.py` -> `build-table-report.py --post`. For workbooks whose
+outputs are formula grids over formal Excel Tables (SUMIFS/COUNTIFS summaries by
+row label and column header or date window, XLOOKUP/INDEX-MATCH lookups, running
+balances, row × period expansions) and for period ledgers such as a 13-week cash flow
+(table-sourced lines, a named-scenario factor, growth and cadence lines, beginning and
+ending cash, running minimum). Tables people edit become input tables (seed them
+through Sigma MCP), read-only tables become data-model data, and every summary cell is
+recomputed from the table data and compared with Excel's cached value before the plan
+is written. See `refs/table-report-recipes.md` for the Sigma shapes (SumIf wrapped in
+`Coalesce(…, 0)`, Lookup, CumulativeSum by key, constant-key cross join).
 
 Present the detected map and confirm edit intent, source freshness, and formula
 dependencies before selecting a build. The live-actuals/driver-growth union in
@@ -364,14 +398,15 @@ element and seed missing natural keys with MCP `InputTable.upsert_rows()`, or us
 the UI to **paste / upload** the Phase-1 CSV and **Publish**. Finally use
 **Warehouse views → Create new** in the UI.
 
-> **Do NOT auto-build linked input tables via the spec.** It looks like it works
+> **Do NOT auto-build linked input tables via the REST spec.** It looks like it works
 > (the POST succeeds, `/elements` shows the columns) but the **inherited columns
 > resolve to "multiple values"** — the REST spec omits the linked correlation
 > state (validated
 > 2026-06-10, publish doesn't fix it). `build-input-table-wb.py --linked` only
 > scaffolds the PK/grain + entry columns. If a usage pattern needs live context
-> columns beside editable cells, use the established UI path or validate MCP
-> `add_linked_input_table()` create/read/update behavior end to end.
+> columns beside editable cells, use the Sigma MCP Code Mode path (validated live
+> 2026-10-22): `scripts/linked-input-program.py` emits the 3-call create / seed /
+> edit programs over a one-row-per-key source. See `refs/input-tables.md`.
 
 ## Phase 4 — Source-swap the DM onto the view (`scripts/build-dm-on-view.py`)
 
@@ -412,7 +447,7 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | workbook create/validate/update | ✅ `POST /v2/workbooks` (`dryRun` then create), `PUT .../contents` |
 | input-table **structure** (columns/types; title, style, sort) | ✅ code representation |
 | input validation (literal/range/dynamic-list/file constraints) | ✅ code representation |
-| **linked** input table (inherited columns resolve) | ⚠️ REST spec POST yields "multiple values"; UI works; MCP `add_linked_input_table()` exists but was not validated in the 2026-10-15 empty-table seed regression |
+| **linked** input table (inherited columns resolve) | ❌ REST spec POST yields "multiple values"; ✅ MCP Code Mode `add_linked_input_table()` validated live 2026-10-22 (`scripts/linked-input-program.py`); UI works |
 | seed **records inside REST workbook code representation** | ❌ records are excluded from the spec |
 | seed/update rows in an existing input table | ✅ Sigma MCP Code Mode `build_workbook` with `InputTable.upsert_rows()` / `update_rows()`; pre-query natural keys because inserts do not deduplicate them automatically |
 | **Publish** for UI edits | ⚠️ UI; MCP row writes persisted and were immediately queryable in the 2026-10-15 regression, while published-mode UI permissions remain untested |
@@ -436,9 +471,8 @@ edit/restore, persistence, and table evidence. Each table readback must report
 the exact approved row count and typed `naturalKeys`; missing, extra, or
 same-count substituted keys block completion. Otherwise hand off
 CSV/clipboard import and **Publish**. In either path,
-**Create warehouse view** remains an explicit UI hand-off. Linked mode remains
-live-review until an end-to-end MCP create/read/update/query regression proves
-inherited columns work.
+**Create warehouse view** remains an explicit UI hand-off. Linked tables use the MCP
+recipe in `refs/input-tables.md` (`scripts/linked-input-program.py`), never the REST spec.
 
 `stage` audits the exact source bytes and always refuses `BLOCKED` or blocker
 severity. Pending review issues may be built in the isolated test workspace

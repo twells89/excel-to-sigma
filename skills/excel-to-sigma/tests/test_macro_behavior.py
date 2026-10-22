@@ -224,6 +224,24 @@ class TestMacroBehavior(unittest.TestCase):
         with self.assertRaisesRegex(MacroBehaviorError, "module bytes changed"):
             validate_macro_source(analysis)
 
+    def test_crlf_module_with_recorded_macro_attributes_terminates(self):
+        # A recorded macro exported by the VBE: CRLF line endings plus a procedure
+        # `Attribute` line. `End Sub` must still close the procedure (this raised
+        # "unterminated procedure: Macro1" on CRLF sources).
+        source = self.write_module(
+            'Attribute VB_Name = "Module1"\r\nSub Macro1()\r\n'
+            'Attribute Macro1.VB_ProcData.VB_Invoke_Func = " \\n14"\r\n\'\r\n'
+            '\' Macro1 Macro\r\n\'\r\n    Range("A1").Select\r\n'
+            '    ActiveCell.FormulaR1C1 = "123"\r\nEnd Sub\r\n',
+            "Module1.bas",
+        )
+
+        procedures = analyze_macro_source(source)["procedures"]
+
+        self.assertEqual([p["name"] for p in procedures], ["Macro1"])
+        self.assertEqual(procedures[0]["calls"], [])  # the Attribute line is metadata, not a call
+        self.assertTrue(procedures[0]["sourceBody"].rstrip().endswith("End Sub"))
+
 
 if __name__ == "__main__":
     unittest.main()

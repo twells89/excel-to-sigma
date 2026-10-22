@@ -2,10 +2,12 @@
 """Draft a build-forecast-model.py plan from a cell-drawn actuals + driver P&L workbook.
 
 Reads the P&L (formulas + Excel's cached values), the GL actuals tab, and the drivers
-tab; classifies each line's forecast as growth / flat / manual; re-derives every
-line-month from the drafted plan and compares it with the workbook's cached values;
-and writes a source-bound plan JSON. Any shape it does not recognise fails with the
-offending cell instead of being coerced.
+tab; discovers the sections and their sign roles from the derived rows; classifies each
+line's forecast as growth / year-over-year / percent-of-total / flat / manual (an
+external-link cell is kept as its cached value and flagged for review); re-derives every
+line, total and derived row for every month or quarter from the drafted plan and compares
+it with the workbook's cached values; and writes a source-bound plan JSON. Any shape it
+does not recognise fails with the offending cell instead of being coerced.
 
 usage: draft-forecast-plan.py <xlsx> --intent what-if --connection <id> --folder <id> --out plan.json
 Next:  build-forecast-model.py plan.json  (dry run), then  ... --post --review-dispositions review.json
@@ -31,8 +33,9 @@ def parse_args(argv=None):
     parser.add_argument("--sheet", help="report sheet (default: most SUMIFS/driver-growth cells)")
     parser.add_argument("--currency-format", default="$,.0f")
     parser.add_argument("--pct-format", default=".1%")
-    parser.add_argument("--tolerance", type=float, default=0.01,
-                        help="absolute tolerance when re-deriving cached values (default: 0.01)")
+    parser.add_argument("--tolerance", type=float, default=None,
+                        help="absolute tolerance when re-deriving cached values (default: float noise "
+                             "only, max(1e-6, 1e-9 * |cached value|))")
     parser.add_argument("--out", required=True, help="plan JSON to write")
     return parser.parse_args(argv)
 
@@ -54,14 +57,25 @@ def main(argv=None):
     print(f"plan -> {out}")
     print(f"  {info['lines']} lines ({kinds}) | {info['glRows']} GL rows ({info['glSheet']}) "
           f"| {info['drivers']} drivers | intent={plan['intent']}")
-    print(f"  months: {info['actualRange'][0]}-{info['actualRange'][1]} actual, "
+    unit = "months" if info["grain"] == "month" else "periods"
+    print(f"  {unit}: {info['actualRange'][0]}-{info['actualRange'][1]} actual, "
           f"{info['forecastRange'][0]}-{info['forecastRange'][1]} forecast "
           f"(report sheet {info['reportSheet']!r})")
-    print("  parity targets (" + (f"FY column {info['fyColumn']}" if info["fyColumn"] else "summed months")
-          + "): " + ("  ".join(f"{k}={v:,.2f}" for k, v in info["parityTargets"].items()) or "none"))
-    if info["missingTargets"]:
+    print("  sections: " + "; ".join(info["sections"]))
+    print("  derived rows: " + (", ".join(info["derivedRows"]) or "none"))
+    covered = (f"FY column {info['fyColumn']}" + (f" over {len(info['fyPeriods'])} of the {unit}"
+                                                    if info["fyPeriods"] else "")
+               if info["fyColumn"] else f"summed {unit}")
+    print(f"  parity targets ({covered}): "
+          + ("  ".join(f"{k}={v:,.2f}" for k, v in info["parityTargets"].items()) or "none"))
+    if info["missingTargets"] and not info["parityTargets"]:
         print("  no target found for: " + ", ".join(info["missingTargets"]))
-    print("  verified: every line-month and GL month sum matches the workbook's cached values")
+    for note in info["skippedTargets"]:
+        print(f"  no parity target: {note}")
+    if info["ignoredColumns"]:
+        print("  columns not carried (outside the periods and FY total): " + ", ".join(info["ignoredColumns"]))
+    print(f"  verified: {info['verifiedCells']} line / total / derived-row cells and every GL "
+          f"{unit[:-1]} sum match the workbook's cached values")
     for chart in info["charts"]:
         print(f"  source chart mapped + values verified: {chart}")
     for chart in info["unmappedCharts"]:

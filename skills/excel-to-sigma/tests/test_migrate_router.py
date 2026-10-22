@@ -23,6 +23,7 @@ sys.path.insert(0, str(SCRIPTS / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import forecast_pnl_fixture as fixture  # noqa: E402
+import table_report_fixture as table_fixture  # noqa: E402
 from migration_gate import source_sha256  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("migrate_router", SCRIPTS / "migrate.py")
@@ -78,17 +79,32 @@ class TestRouter(unittest.TestCase):
         self.assertFalse((self.out / "review.template.json").exists())
 
     def test_sumifs_workbook_the_drafter_rejects_routes_to_cell_model(self):
-        # SUMIFS actuals but an unsupported section: the route must not name the drafter.
+        # SUMIFS actuals but a forecast formula the drafter cannot read: the route must not
+        # name the drafter.
         path = self.dir / "pnl.xlsx"
-        fixture.build_pnl(path, mutate=lambda pnl, gl, drivers: pnl.cell(4, 1, "Other Income"))
+
+        def odd_forecast(pnl, gl, drivers):
+            pnl["E5"] = "=D5*1.05"
+        fixture.build_pnl(path, mutate=odd_forecast)
         code, result = self.plan(path)
         self.assertEqual(code, 0)
         self.assertEqual(result["archetype"], "cell-model")
         self.assertIn("forecast drafter rejects the shape", result["routeReason"])
-        self.assertIn("unsupported section 'Other Income'", result["routeReason"])
+        self.assertIn("unrecognised forecast cell '=D5*1.05'", result["routeReason"])
         self.assertFalse(any("draft-forecast-plan.py" in c for c in result["nextCommands"]))
         self.assertIn("source-workbook.py", result["nextCommands"][0])
         self.assertIn("refs/source-workbook-model.md", result["readRefs"])
+
+    def test_quarterly_budget_with_discovered_sections_routes_to_the_drafter(self):
+        # 03 Retail Quarterly Budget: Net Sales / COGS / SG&A / Other sections, quarter
+        # headers, year-over-year and percent-of-sales forecasts, an external-link cell.
+        source = (Path(__file__).resolve().parent / "fixtures" / "broader-eight"
+                  / "03 Retail Quarterly Budget.xlsx")
+        code, result = self.plan(source)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "forecast")
+        self.assertIn("forecast drafter accepts this workbook: 10 lines", result["routeReason"])
+        self.assertIn("draft-forecast-plan.py", result["nextCommands"][0])
 
     def test_accepted_forecast_reports_the_drafter_shape(self):
         path = self.dir / "pnl.xlsx"
@@ -103,6 +119,66 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["tables"], [{"name": "tblEntries", "sheet": "Entries", "rows": 20}])
         self.assertIn("refs/input-tables.md", result["readRefs"])
         self.assertIn("xlsx-to-input-csv.py", result["nextCommands"][0])
+
+    def test_formal_tables_with_formula_grids_route_to_the_table_report_drafter(self):
+        path = self.dir / "staff.xlsx"
+        table_fixture.build_staff(path)
+        code, result = self.plan(path)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "table-report")
+        self.assertIn("table-report drafter accepts this workbook: 1 table(s), 2 frames, 28 source cells verified",
+                      result["routeReason"])
+        self.assertIn("refs/table-report-recipes.md", result["readRefs"])
+        self.assertIn("refs/input-tables.md", result["readRefs"])
+        commands = result["nextCommands"]
+        self.assertIn("draft-table-report.py", commands[0])
+        self.assertIn(str(self.out / "plan.json"), commands[0])
+        self.assertIn("build-table-report.py", commands[1])
+        self.assertNotIn("--post", commands[1])
+        self.assertIn("--post --review-dispositions", commands[2])
+        self.assertFalse(any("draft-forecast-plan.py" in c for c in commands))
+        self.assertIn("Rebuild the source charts (CHARTS_PRESENT)", result["userHandoffs"])
+        self.assertTrue(any("RUNNING_BALANCE_PARTITION_REVIEW" in n for n in result["notes"]))
+
+    def test_the_broader_eight_table_workbooks_route_to_table_report(self):
+        fixtures = ROOT / "tests" / "fixtures" / "broader-eight"
+        for name, tables in (("04 Sales Pipeline Forecast.xlsx", 3), ("06 13-Week Cash Flow.xlsx", 4),
+                             ("07 Headcount and Opex Plan.xlsx", 2), ("08 Inventory Replenishment Plan.xlsm", 3)):
+            code, result = self.plan(fixtures / name)
+            self.assertEqual(result["archetype"], "table-report", name)
+            self.assertIn(f"{tables} table(s)", result["routeReason"])
+            # the forecast drafter's rejection is kept as context, not as the route
+            self.assertIn("forecast drafter rejects the shape", result["routeReason"])
+        _, inventory = self.plan(fixtures / "08 Inventory Replenishment Plan.xlsm")
+        self.assertEqual([m["status"] for m in inventory["macros"]], ["AUTO"])  # macro-classify no longer crashes
+
+    def test_the_13_week_cash_flow_routes_to_table_report_instead_of_cell_model(self):
+        code, result = self.plan(ROOT / "tests" / "fixtures" / "broader-eight" / "06 13-Week Cash Flow.xlsx")
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "table-report")
+        self.assertIn("table-report drafter accepts this workbook: 4 table(s), 3 frames, 166 source cells verified",
+                      result["routeReason"])
+        self.assertIn("forecast drafter rejects the shape", result["routeReason"])   # kept as context only
+        self.assertIn("draft-table-report.py", result["nextCommands"][0])
+        self.assertFalse(any("source-workbook.py" in c for c in result["nextCommands"]))
+        self.assertIn("Set the selected scenario and other parameters in the Parameters input table",
+                      " ".join(result["userHandoffs"]))
+
+    def test_a_forecast_workbook_is_still_routed_to_the_forecast_drafter(self):
+        code, result = self.plan(ROOT / "tests" / "fixtures" / "broader-eight" / "02 SaaS Driver Forecast FY26.xlsx")
+        self.assertEqual(result["archetype"], "forecast")
+
+    def test_table_workbook_with_an_unrecognised_formula_names_the_cell_and_stays_cell_model(self):
+        good = self.dir / "staff.xlsx"
+        table_fixture.build_staff(good)
+        bad = self.dir / "staff-bad.xlsx"
+        table_fixture.patch_cell(good, bad, "Dept", "B4", formula="INDIRECT(\"Cost!G4\")")
+        code, result = self.plan(bad)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "cell-model")
+        self.assertIn("table-report drafter rejects the shape", result["routeReason"])
+        self.assertIn("Dept!B4", result["routeReason"])
+        self.assertFalse(any("draft-table-report.py" in c for c in result["nextCommands"]))
 
     def test_unknown_archetype_asks_the_user(self):
         wb = Workbook()

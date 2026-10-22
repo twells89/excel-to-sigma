@@ -6,7 +6,8 @@ This is the source-swap target: a fact element sourced from
 formal Table in the Excel file and a flattened *_REPORT element (in-SQL join) for
 section rollups.
 
-Auth: reads ~/.sigma-migration/env. Verify parity afterward by querying the
+Auth: lib/sigma_auth.py (Sigma CLI profile via --sigma-profile, browser OAuth, env token,
+or client credentials). Verify parity afterward by querying the
 report element (Sigma MCP) grouped by the rollup dimension.
 
 Usage:
@@ -19,35 +20,21 @@ Usage:
 import argparse
 import json
 import os
-import urllib.request
-import urllib.parse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import sigma_auth  # noqa: E402
 
 
 def token():
-    env = {}
-    with open(os.path.expanduser("~/.sigma-migration/env")) as f:
-        for line in f:
-            line = line.strip().replace("export ", "")
-            if "=" in line:
-                k, v = line.split("=", 1)
-                env[k] = v.strip().strip('"').strip("'")
-    data = urllib.parse.urlencode({
-        "grant_type": "client_credentials",
-        "client_id": env["SIGMA_CLIENT_ID"],
-        "client_secret": env["SIGMA_CLIENT_SECRET"],
-    }).encode()
-    req = urllib.request.Request(env["SIGMA_BASE_URL"] + "/v2/auth/token", data=data,
-                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
-    return env["SIGMA_BASE_URL"], json.load(urllib.request.urlopen(req))["access_token"]
+    base, tok, _method = sigma_auth.get_session()
+    return base, tok
 
 
 def home_folder(base, tok):
-    req = urllib.request.Request(base + "/v2/whoami",
-                                 headers={"Authorization": f"Bearer {tok}"})
-    uid = json.load(urllib.request.urlopen(req))["userId"]
-    req = urllib.request.Request(base + f"/v2/members/{uid}",
-                                 headers={"Authorization": f"Bearer {tok}"})
-    return json.load(urllib.request.urlopen(req)).get("homeFolderId")
+    uid = sigma_auth.api("GET", "/v2/whoami", base_url=base)["userId"]
+    return sigma_auth.api("GET", f"/v2/members/{uid}", base_url=base).get("homeFolderId")
 
 
 def title(alias):
@@ -92,7 +79,9 @@ def main():
     ap.add_argument("--categories-from", default=None)
     ap.add_argument("--categories-table", default="tblCategory")
     ap.add_argument("--join-key", default="CATEGORY_CODE")
+    sigma_auth.add_cli_args(ap)
     args = ap.parse_args()
+    sigma_auth.apply_cli_args(args)
 
     base, tok = token()
     folder = args.folder or home_folder(base, tok)
@@ -133,11 +122,7 @@ def main():
     spec = {"name": args.name, "schemaVersion": 1, "folderId": folder,
             "pages": [{"id": "model", "name": "Model", "elements": elements}]}
 
-    body = json.dumps(spec).encode()
-    req = urllib.request.Request(base + "/v2/dataModels/spec", data=body, method="POST",
-                                 headers={"Authorization": f"Bearer {tok}",
-                                          "Content-Type": "application/json"})
-    resp = json.load(urllib.request.urlopen(req))
+    resp = sigma_auth.api("POST", "/v2/dataModels/spec", spec, base_url=base)
     print("dataModelId:", resp.get("dataModelId"))
     print("url:", resp.get("url"))
     print("\nNEXT: `describe` the model via the Sigma MCP (element + column IDs are "
