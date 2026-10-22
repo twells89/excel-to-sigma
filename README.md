@@ -121,8 +121,11 @@ skills/excel-to-sigma/
 
 ## Requirements
 
-- Sigma client credentials: `SIGMA_BASE_URL`, `SIGMA_CLIENT_ID`, and
-  `SIGMA_CLIENT_SECRET` in `~/.sigma-migration/env` for the bundled REST builders.
+- Sigma sign-in for the bundled REST builders: interactive browser OAuth
+  (`eval "$(bash scripts/browser-login.sh)"`, refresh token kept in the OS keychain) or
+  the Sigma CLI (`sigma auth login`, then `--sigma-profile <name>`). Client credentials
+  (`SIGMA_BASE_URL`, `SIGMA_CLIENT_ID`, `SIGMA_CLIENT_SECRET` in the environment or
+  `~/.sigma-migration/env`) are the unattended fallback.
 - A **write-enabled** Sigma connection for the data-entry half (input tables write
   back to a `SIGDS_` schema).
 - Python 3 and the pinned dependencies. From the skill directory, run

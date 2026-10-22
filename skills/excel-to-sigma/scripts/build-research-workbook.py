@@ -26,6 +26,9 @@ from lib.migration_gate import MigrationGateError, gate_source, plan_review_issu
 warnings.filterwarnings("ignore")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if os.path.join(HERE, "lib") not in sys.path:
+    sys.path.insert(0, os.path.join(HERE, "lib"))
+import sigma_auth  # noqa: E402
 def _load(fn, name):
     s = importlib.util.spec_from_file_location(name, os.path.join(HERE, fn))
     m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
@@ -173,6 +176,7 @@ def _parser():
     parser.add_argument("--editable-sheet")
     parser.add_argument("--raw-label", default="Raw data")
     parser.add_argument("--post", action="store_true")
+    sigma_auth.add_cli_args(parser)
     parser.add_argument("--review-dispositions")
     parser.add_argument("--draft", action="store_true",
                         help="local dry-run: report pending review issues instead of failing "
@@ -255,6 +259,7 @@ def main(argv=None):
         print("DRY RUN — /tmp/research-wb/dm.json written. Re-run with --post --conn --folder to build.")
         return 0
 
+    sigma_auth.apply_cli_args(args)
     e = BRM.env(); base = e["SIGMA_BASE_URL"]; tok = BRM.token(e)
     dm = BRM.api(base, tok, "POST", "/v2/dataModels/spec", dm_spec); dm_id = dm["dataModelId"]
     print("dataModelId:", dm_id)

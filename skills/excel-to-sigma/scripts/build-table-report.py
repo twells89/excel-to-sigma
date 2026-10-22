@@ -27,6 +27,7 @@ _LIB = _HERE / "lib"
 if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 import workbook_wire  # noqa: E402
+import sigma_auth  # noqa: E402
 from lib import table_report_model as trm  # noqa: E402
 from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
 
@@ -45,6 +46,7 @@ def parse_args(argv=None):
     parser.add_argument("--source", help="source workbook used to produce the plan")
     parser.add_argument("--review-dispositions", help="source-bound review dispositions JSON")
     parser.add_argument("--post", action="store_true", help="create the data model and workbook")
+    sigma_auth.add_cli_args(parser)
     parser.add_argument("--out-dir", default="/tmp/table-report-build",
                         help="where specs and seed CSVs are written (default: /tmp/table-report-build)")
     parser.add_argument("--parity-tolerance", type=float, default=0.01,
@@ -115,6 +117,7 @@ def main(argv=None):
         print(f"DRY RUN - specs written to {out_dir}/ ({written}). Re-run with --post to build live.")
         return 0
 
+    sigma_auth.apply_cli_args(args)
     helpers = _forecast_helpers()
     env = helpers.env()
     base, tok = env["SIGMA_BASE_URL"], helpers.token(env)

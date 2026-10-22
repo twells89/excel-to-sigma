@@ -28,6 +28,7 @@ _LIB = Path(__file__).resolve().parent / "lib"
 if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 import workbook_wire  # noqa: E402
+import sigma_auth  # noqa: E402
 from lib import forecast_calc as calc  # noqa: E402
 from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
 
@@ -90,19 +91,12 @@ def forecast_layout(editable, extra_model_ids=(), chart_ids=(), kpi_ids=KPI_IDS)
     return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)
 
 def env():
-    e = {}
-    for line in open(os.path.expanduser("~/.sigma-migration/env")):
-        line = line.strip().replace("export ", "")
-        if "=" in line: k, v = line.split("=", 1); e[k] = v.strip().strip('"').strip("'")
-    return e
-def token(e):
-    d = urllib.parse.urlencode({"grant_type": "client_credentials", "client_id": e["SIGMA_CLIENT_ID"], "client_secret": e["SIGMA_CLIENT_SECRET"]}).encode()
-    return json.load(urllib.request.urlopen(urllib.request.Request(e["SIGMA_BASE_URL"] + "/v2/auth/token", data=d, headers={"Content-Type": "application/x-www-form-urlencoded"})))["access_token"]
+    """Resolve Sigma auth (lib/sigma_auth.py: env token, auth.json, CLI profile, OAuth/client creds)."""
+    base, tok, method = sigma_auth.get_session()
+    return {"SIGMA_BASE_URL": base, "SIGMA_API_TOKEN": tok, "SIGMA_AUTH_METHOD": method}
+def token(e): return e["SIGMA_API_TOKEN"]
 def api(base, tok, method, path, body=None):
-    r = urllib.request.Request(base + path, data=(json.dumps(body).encode() if body else None), method=method,
-        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json", "Accept": "application/json"})
-    try: return json.load(urllib.request.urlopen(r))
-    except urllib.error.HTTPError as ex: print("HTTP", ex.code, ex.read().decode()[:1500]); raise
+    return sigma_auth.api(method, path, body, base_url=base)
 
 # ---------- DM ----------
 def values_sql(rows, cols):
@@ -632,6 +626,7 @@ def parse_args(argv=None):
     parser.add_argument("--source", help="source XLSX used to produce the plan")
     parser.add_argument("--review-dispositions", help="source-bound review dispositions JSON")
     parser.add_argument("--post", action="store_true", help="create the data model and workbook")
+    sigma_auth.add_cli_args(parser)
     parser.add_argument("--out-dir", default="/tmp/fcst-build",
                         help="where specs and seed CSVs are written (default: /tmp/fcst-build)")
     parser.add_argument("--parity-tolerance", type=float, default=0.01,
@@ -689,6 +684,7 @@ def main(argv=None):
             json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
         return 0
+    sigma_auth.apply_cli_args(args)
     e=env(); base=e["SIGMA_BASE_URL"]; tok=token(e)
     dm=api(base,tok,"POST","/v2/dataModels/spec",dm_spec); dm_id=dm["dataModelId"]
     print("dataModelId:",dm_id)

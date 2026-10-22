@@ -65,12 +65,10 @@ Excel path.
 
 ## Auth
 
-```bash
-bash -c 'source ~/.sigma-migration/env; TOKEN=$(curl -s -X POST "$SIGMA_BASE_URL/v2/auth/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=$SIGMA_CLIENT_ID&client_secret=$SIGMA_CLIENT_SECRET" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)[\"access_token\"])"); <curl using $TOKEN>'
-```
+Prefer OAuth: `eval "$(bash scripts/browser-login.sh)"` (or `sigma auth login` and
+`--sigma-profile`); for ad-hoc curl use `python scripts/get_token.py --print-token`.
+Client credentials in `~/.sigma-migration/env` are the unattended fallback; see
+SKILL.md "Sigma access" and `scripts/AUTH_RUNTIME.md`.
 Tokens expire ~1h. Never `source` settings.json (it's JSON). Don't assign to the
 shell-reserved `UID` var (use `MID` etc.).
 
