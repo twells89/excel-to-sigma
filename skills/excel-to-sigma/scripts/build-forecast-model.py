@@ -334,8 +334,13 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
             x = {"id": f"s{i}_x", "name": "Month", "formula": f'DateTrunc("month", [{C}/Month End])', "format": DATEF}
         ys = [{"id": f"s{i}_y{j}", "name": metric, "formula": metric_formula[metric], "format": cur}
               for j, metric in enumerate(sc["series"], 1)]
+        # Keep the source chart's period range (a Jan-Mar chart stays Jan-Mar).
+        period = {"id": f"s{i}_d", "name": "Period Date", "formula": f"[{C}/Month End]"}
+        period_filter = [{"id": f"s{i}_range", "columnId": period["id"], "kind": "date-range",
+                          "mode": "between", "startDate": sc["periodStart"], "endDate": sc["periodEnd"]}]
         source_charts.append({"id": f"sourceChart{i}", "kind": "line-chart", "name": sc["title"],
-            "source": {"kind": "table", "elementId": "pnlCombined"}, "columns": [x] + ys,
+            "source": {"kind": "table", "elementId": "pnlCombined"}, "columns": [x] + ys + [period],
+            "filters": period_filter,
             "xAxis": {"columnId": x["id"], "sort": {"direction": "ascending"}},
             "yAxis": {"columnIds": [y["id"] for y in ys], "format": {"marks": "grid", "scale": {"type": "linear", "zero": False}}},
             "legend": {"position": "bottom"},

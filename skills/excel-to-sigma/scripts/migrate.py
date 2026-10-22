@@ -21,6 +21,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "lib"))
 
+from forecast_plan import PlanDraftError, draft_plan  # noqa: E402
 from migration_gate import source_sha256  # noqa: E402
 from xlsx_audit import audit_workbook  # noqa: E402
 
@@ -84,6 +85,20 @@ ROUTES = {
         ],
         "handoffs": ["Paste seed.csv into the input table", "Publish", "Create warehouse view on the input table"],
     },
+    # SUMIFS / driver signals, but not the shape the forecast drafter and builder support.
+    "cell-model": {
+        "refs": ["refs/sigma-build-gotchas.md", "refs/model-taxonomy.md", "refs/source-workbook-model.md",
+                 "refs/workbook-expression-context.md", "refs/native-calculations.md"],
+        "decisions": ["edit intent per sheet (read-only report / editable plan / live what-if)",
+                      "which sheets and ranges carry the model", "write-enabled connectionId", "target folderId"],
+        "next": [
+            "python scripts/source-workbook.py <file> --out <workdir>/source-model.json   "
+            "# source-bound cell/formula inventory",
+            "Build source-specific with Sigma MCP Code Mode per refs/model-taxonomy.md; no bundled "
+            "builder fits this shape (see routeReason)",
+        ],
+        "handoffs": [],
+    },
     "unknown": {
         "refs": ["refs/sigma-build-gotchas.md", "refs/model-taxonomy.md"],
         "decisions": ["what the workbook is used for (entry vs report)"],
@@ -122,6 +137,17 @@ def plan(args):
             return 1
         (workdir / "discovery.json").write_text(json.dumps(discovery, indent=2) + "\n", encoding="utf-8")
         kind = archetype(discovery)
+    route_reason = None
+    if kind == "forecast":
+        # Same shape checks the drafter applies, so the route never names a command that
+        # fails on this workbook. Placeholder connection/folder: nothing is written.
+        try:
+            _, shape = draft_plan(source, intent="what-if", connection="<connection>", folder="<folder>")
+            route_reason = (f"forecast drafter accepts this workbook: {shape['lines']} lines "
+                            f"{shape['kinds']} on {shape['reportSheet']!r}")
+        except PlanDraftError as error:
+            kind = "cell-model"
+            route_reason = f"SUMIFS/driver signals, but the forecast drafter rejects the shape: {error}"
     route = ROUTES[kind]
     refs = list(route["refs"])
 
@@ -156,6 +182,7 @@ def plan(args):
         "issues": [{"code": i["code"], "severity": i.get("severity"), "route": i.get("route")}
                    for i in audit.get("issues", [])],
         "archetype": kind,
+        "routeReason": route_reason,
         "modelMap": {s["sheet"]: s["classes"] for s in discovery.get("reportSheets", [])},
         "tables": [{"name": t["name"], "sheet": t["sheet"], "rows": t["rows"]} for t in discovery.get("tables", [])],
         "macros": macros,

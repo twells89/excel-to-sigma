@@ -558,16 +558,20 @@ def _range_values(wv, formula):
             for c in range(min_col, max_col + 1)]
 
 
-def _metric_series(lines, actuals, months):
-    """Plan totals per month for each parity metric, computed the way the builder does."""
+def _metric_series(lines, actuals, actual_months, forecast_months):
+    """Plan totals per month for each parity metric, computed the way the builder does.
+
+    The actual/forecast boundary is the plan's ``actualMonths``: a final actual month
+    with no GL postings is still an actual month.
+    """
+    months = actual_months + forecast_months
     by_section = {m["month"]: Counter() for m in months}
     for r in actuals:
         by_section[r["month"]][r["section"]] += r["amt"]
-    last_actual = max(m["num"] for m in months if any(a["month"] == m["month"] for a in actuals))
+    last_actual = actual_months[-1]["num"]
     for ln in lines:
         base = ln.get("juneBase", 0)
-        fc = [m for m in months if m["num"] > last_actual]
-        for i, m in enumerate(fc):
+        for i, m in enumerate(forecast_months):
             if ln["kind"] == "manual":
                 value = ln["manual"][i]
             elif ln["kind"] == "flat":
@@ -595,7 +599,7 @@ def source_charts(wf, wv, lines, actuals, actual_months, forecast_months, tolera
     Returns ``(charts, unmapped)`` where ``unmapped`` names charts left to review.
     """
     months = actual_months + forecast_months
-    monthly = _metric_series(lines, actuals, months)
+    monthly = _metric_series(lines, actuals, actual_months, forecast_months)
     quarters = []
     for m in months:
         year, month = int(m["end"][:4]), int(m["end"][5:7])
@@ -658,8 +662,12 @@ def source_charts(wf, wv, lines, actuals, actual_months, forecast_months, tolera
                         raise PlanDraftError(
                             f"chart {where}: series {metric!r} at {key} is {want!r} in the workbook "
                             f"but {got:,.2f} from the plan")
+            # The source chart's own period range, so the rebuilt chart shows the same subset.
+            covered = [m for m in months if any(m["month"] in members for _, members in buckets)]
             charts.append({"title": title, "kind": "line", "grain": grain,
                            "series": [metric for metric, _ in metrics],
+                           "categories": [str(c) for c in categories],
+                           "periodStart": covered[0]["end"][:8] + "01", "periodEnd": covered[-1]["end"],
                            "sourceSheet": ws.title, "verifiedPoints": len(metrics) * len(buckets)})
     return charts, unmapped
 

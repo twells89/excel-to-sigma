@@ -77,6 +77,25 @@ class TestRouter(unittest.TestCase):
         self.assertIsNone(result["reviewTemplate"])  # AUTO -> nothing to disposition
         self.assertFalse((self.out / "review.template.json").exists())
 
+    def test_sumifs_workbook_the_drafter_rejects_routes_to_cell_model(self):
+        # SUMIFS actuals but an unsupported section: the route must not name the drafter.
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path, mutate=lambda pnl, gl, drivers: pnl.cell(4, 1, "Other Income"))
+        code, result = self.plan(path)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "cell-model")
+        self.assertIn("forecast drafter rejects the shape", result["routeReason"])
+        self.assertIn("unsupported section 'Other Income'", result["routeReason"])
+        self.assertFalse(any("draft-forecast-plan.py" in c for c in result["nextCommands"]))
+        self.assertIn("source-workbook.py", result["nextCommands"][0])
+        self.assertIn("refs/source-workbook-model.md", result["readRefs"])
+
+    def test_accepted_forecast_reports_the_drafter_shape(self):
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path)
+        _, result = self.plan(path)
+        self.assertIn("forecast drafter accepts this workbook: 6 lines", result["routeReason"])
+
     def test_input_table_archetype(self):
         code, result = self.plan(self.table_workbook())
         self.assertEqual(code, 0)

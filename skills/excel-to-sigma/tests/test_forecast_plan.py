@@ -292,9 +292,25 @@ class TestSourceCharts(Base):
         plan, info, _ = self.draft(mutate=add_metric_chart(["Total Revenue", "Gross Profit"]))
         self.assertEqual(plan["sourceCharts"], [{
             "title": "Revenue & Gross Profit", "kind": "line", "grain": "month",
-            "series": ["Revenue", "Gross Profit"], "sourceSheet": "P&L",
+            "series": ["Revenue", "Gross Profit"], "categories": fixture.MONTHS,
+            "periodStart": "2026-01-01", "periodEnd": "2026-06-30", "sourceSheet": "P&L",
             "verifiedPoints": 2 * len(fixture.MONTHS)}])
         self.assertEqual(info["unmappedCharts"], [])
+
+    def test_chart_over_a_month_subset_keeps_its_range_in_the_built_chart(self):
+        # Source chart shows Jan-Mar only; the Sigma chart must not widen to Jan-Jun.
+        fixture.build_pnl(self.path, mutate=add_metric_chart(["Total Revenue"], max_col=4))
+        plan, _ = draft_plan(self.path, intent="what-if", connection="conn", folder="fold")
+        (chart,) = plan["sourceCharts"]
+        self.assertEqual((chart["periodStart"], chart["periodEnd"], chart["verifiedPoints"]),
+                         ("2026-01-01", "2026-03-31", 3))
+        spec = BUILD.build_wb_spec(plan, "<dm-id>", {"glDetail": "glDetail", "spine": "spine",
+                                                     "assumptions": "assumptions"})
+        built = next(e for e in spec["pages"][0]["elements"] if e["id"] == "sourceChart1")
+        self.assertEqual(built["filters"], [{
+            "id": "s1_range", "columnId": "s1_d", "kind": "date-range", "mode": "between",
+            "startDate": "2026-01-01", "endDate": "2026-03-31"}])
+        self.assertIn("s1_d", [c["id"] for c in built["columns"]])
 
     def test_chart_with_a_non_metric_series_is_left_for_review(self):
         plan, info, _ = self.draft(mutate=add_metric_chart(["Total Revenue", "Subscription"]))
@@ -326,6 +342,22 @@ class TestSourceCharts(Base):
         with self.assertRaisesRegex(PlanDraftError, r"chart .*'Revenue'"):
             draft_plan(self.path, intent="what-if", connection="conn", folder="fold")
 
+    def test_zero_activity_final_actual_month_keeps_the_plan_boundary(self):
+        # Every line is 0 in Mar (the last actual month) and the GL has no Mar postings,
+        # so the boundary must come from the plan's actualMonths, not from GL activity.
+        lines = [(sec, label, kind, param, amounts[:-1] + [0.0])
+                 for sec, label, kind, param, amounts in fixture.DEFAULT_LINES]
+
+        def drop_zero_postings(pnl, gl, drivers):
+            for row in range(gl.max_row, 4, -1):
+                if gl.cell(row, 6).value == 0:
+                    gl.delete_rows(row)
+
+        fixture.build_pnl(self.path, lines=lines, mutate=drop_zero_postings)
+        plan, _ = draft_plan(self.path, intent="what-if", connection="conn", folder="fold")
+        self.assertEqual([m["month"] for m in plan["actualMonths"]], ["Jan-26", "Feb-26", "Mar-26"])
+        self.assertNotIn("Mar-26", {a["month"] for a in plan["actuals"]})
+
     def _total_row(self):
         probe = self.dir / "probe.xlsx"
         fixture.build_pnl(probe)
@@ -341,7 +373,8 @@ class TestSourceCharts(Base):
         chart = next(e for e in overview if e["id"] == "sourceChart1")
         self.assertEqual(chart["kind"], "line-chart")
         self.assertEqual(chart["name"], "Revenue & Gross Profit")
-        self.assertEqual([c["name"] for c in chart["columns"]], ["Month", "Revenue", "Gross Profit"])
+        self.assertEqual([c["name"] for c in chart["columns"]],
+                         ["Month", "Revenue", "Gross Profit", "Period Date"])
         self.assertIn('elementId="sourceChart1"', spec["layout"])
 
 

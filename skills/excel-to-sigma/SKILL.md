@@ -33,8 +33,11 @@ python scripts/migrate.py plan <file.xlsx|.xlsm> --out-dir <workdir>
 It runs the audit, discovery and (for macro files) macro classification, writes
 `migration-audit.json`, `discovery.json` and `review.template.json` to `<workdir>`,
 and prints JSON: `auditStatus`, `archetype`, `readRefs`, `beforePost`, `askUser`,
-`nextCommands`, `userHandoffs`. Exit code 2 means `BLOCKED`. Read the refs it lists,
-ask the user the `askUser` questions, then run the `nextCommands` in order.
+`nextCommands`, `userHandoffs`, `routeReason`. Exit code 2 means `BLOCKED`. Read the refs
+it lists, ask the user the `askUser` questions, then run the `nextCommands` in order.
+`forecast` is named only when the plan drafter accepts the workbook's shape; a
+SUMIFS/driver workbook it rejects routes to `cell-model` (source inventory, then a
+source-specific Sigma MCP build) with the drafter's reason in `routeReason`.
 
 | When | Read |
 |---|---|
