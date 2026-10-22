@@ -340,6 +340,22 @@ def normalize_spec(spec):
                 raise LinkedInputError(path + ".values." + column + " is not an editable column")
             clean[column] = _cell(value, edit_types[column], path + ".values." + column)
         out["rows"].append({"key": dict(rkey), "values": clean})
+    source_keys = spec.get("sourceKeys")
+    if source_keys is not None:
+        if len(key) != 1:
+            raise LinkedInputError("sourceKeys supports a single key column only; check multi-key seeds by hand")
+        if (not isinstance(source_keys, list) or not source_keys
+                or any(v is None or isinstance(v, bool) or not isinstance(v, (str, int, float)) for v in source_keys)):
+            raise LinkedInputError("sourceKeys must be a non-empty list of the distinct key values queried from the grouped source")
+        known = set(source_keys)
+        missing = [r["key"][key[0]] for r in out["rows"] if r["key"][key[0]] not in known]
+        if missing:
+            raise LinkedInputError("seed keys not in sourceKeys (update_rows fails the WHOLE call atomically on an unknown key): "
+                                   + ", ".join(repr(m) for m in missing))
+        out["sourceKeys"] = list(source_keys)
+    elif out["rows"]:
+        warnings.append("no sourceKeys given: update_rows fails the whole call atomically ('no row matches the key') "
+                        "if any seed key is absent from the grouped source; query its distinct keys and pre-check the seeds")
     out["warnings"] = warnings
     out["columnTypes"] = types
     return out
@@ -530,12 +546,16 @@ def _sql_lit(value):
 def readback_queries(spec, ids=None):
     """Readback SQL for the workbook `query` tool (type "workbook").
 
-    ``ids["describe"]`` = {"elementId": ..., "columns": {name: columnId}} as printed by
-    ``describe`` of the linked element; missing ids stay as ``<...>`` placeholders.
+    Ids come from call 2's printed output (``linkedTableId``, ``printedColumnIds``) - the same
+    ids ``describe`` returns - and may be overridden by ``ids["describe"]`` = {"elementId": ...,
+    "columns": {name: columnId}}; missing ids stay as ``<...>`` placeholders.
     """
-    desc = (ids or {}).get("describe") or {}
-    columns = desc.get("columns") or {}
-    element = '"workbook".' + _q(desc.get("elementId") or "<ELEMENT ID>")
+    ids = ids or {}
+    desc = ids.get("describe") or {}
+    # call 2 prints the same ids `describe` returns (live-verified 2026-10-22); describe overrides.
+    columns = dict(ids.get("printedColumnIds") or {})
+    columns.update(desc.get("columns") or {})
+    element = '"workbook".' + _q(desc.get("elementId") or ids.get("linkedTableId") or "<ELEMENT ID>")
 
     def col(name):
         return _q(columns.get(name) or "<COLUMN ID: " + name + ">")
@@ -643,7 +663,10 @@ def emit(spec, ids=None):
                       "unresolvedPlaceholders": sorted(set(re.findall(r"<[A-Z ]+ ID>", text)))})
     manifest = {"calls": calls,
                 "idsToCapture": {"call1": ["dataPageId", "pageId", "planBaseId"],
-                                 "call2": ["linkedTableId"], "describe": ["elementId", "columns"]},
+                                 "call2": ["linkedTableId", "column:<name> (also fills the readback SQL)"],
+                                 "describe": "optional override of the readback element/column ids"},
+                "call3Note": "update_rows is atomic: one seed key absent from the grouped source fails the whole call "
+                             "(persisted:false, no rows written). Pre-query the source's distinct keys and set sourceKeys.",
                 "unvalidated": ["published-mode edit by a non-editor user",
                                 "warehouse view over a linked input table"] + spec["warnings"]}
     return {"programs": programs, "readback": readback, "manifest": manifest, "warnings": spec["warnings"]}

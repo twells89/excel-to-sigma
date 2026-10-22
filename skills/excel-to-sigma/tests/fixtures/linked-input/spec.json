@@ -10,6 +10,6 @@
   "formulas": [{"name": "Effective Rate", "formula": {"op": "coalesce", "args": [{"col": "Override Rate"}, {"col": "Baseline Rate"}]}}],
   "rows": [
     {"key": {"Line Item": "Subscription - Enterprise"}, "values": {"Override Rate": 0.045, "Rationale": "spike test"}},
-    {"key": {"Line Item": "Hosting"}, "values": {"Override Rate": 0.025, "Rationale": "spike test"}}
+    {"key": {"Line Item": "Cloud Hosting"}, "values": {"Override Rate": 0.025, "Rationale": "spike test"}}
   ]
 }

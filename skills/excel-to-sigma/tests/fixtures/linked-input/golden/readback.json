@@ -18,7 +18,7 @@
     },
     {
       "name": "seeded_rows",
-      "sql": "SELECT \"<COLUMN ID: Line Item>\" AS \"Line Item\", \"<COLUMN ID: Baseline Rate>\" AS \"Baseline Rate\", \"<COLUMN ID: Override Rate>\" AS \"Override Rate\", \"<COLUMN ID: Rationale>\" AS \"Rationale\", \"<COLUMN ID: Effective Rate>\" AS \"Effective Rate\" FROM \"workbook\".\"<ELEMENT ID>\" WHERE \"<COLUMN ID: Line Item>\" IN ('Subscription - Enterprise', 'Hosting') ORDER BY 1"
+      "sql": "SELECT \"<COLUMN ID: Line Item>\" AS \"Line Item\", \"<COLUMN ID: Baseline Rate>\" AS \"Baseline Rate\", \"<COLUMN ID: Override Rate>\" AS \"Override Rate\", \"<COLUMN ID: Rationale>\" AS \"Rationale\", \"<COLUMN ID: Effective Rate>\" AS \"Effective Rate\" FROM \"workbook\".\"<ELEMENT ID>\" WHERE \"<COLUMN ID: Line Item>\" IN ('Subscription - Enterprise', 'Cloud Hosting') ORDER BY 1"
     }
   ],
   "expected": {

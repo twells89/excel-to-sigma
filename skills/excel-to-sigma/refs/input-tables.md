@@ -122,6 +122,14 @@ to an ad-hoc input-table view.)
 - Element screenshot: values rendered, pencil icons on editable columns.
 - Downstream: a new table sourced from `lt.to_source()` on another page returned
   20 rows, 2 overridden, Enterprise effective 0.045 / baseline 0.035.
+- **Emitter run (2026-10-22, throwaway workbook 9a9c30ea-fd74-401a-b2c6-421748bad9ac,
+  `emit --ids` flow):** calls 1 and 2 worked as generated. After the corrected call 3
+  (keys 'Subscription - Enterprise' 0.045 and 'Cloud Hosting' 0.025), readback:
+  `row_count` 20, `distinct_keys` 20, Override Rate non-null 2, Rationale non-null 2,
+  Override Rate sum 0.07, Baseline Rate sum 0.212, Effective Rate sum 0.227
+  (= 0.212 − 0.035 − 0.02 + 0.045 + 0.025). The first attempt, seeding the nonexistent key
+  'Hosting', failed atomically (see below). `readback.json` `expected` carries the seeded
+  counts and Override Rate sum (0.07); the baseline and effective sums depend on the source.
 
 ### The 3-call recipe (`scripts/linked-input-program.py`)
 
@@ -137,7 +145,8 @@ REST call. Run each program through `build_workbook` in order. Spec fields: see
 `subtract`, `multiply`, `divide`, plus unary `number`, `{col}` / `{const}` leaves),
 `table.editMode` (`draft` default, `published-explore`, `published-all-users`), `rows`
 (`{key: {...}, values: {...}}`, unique keys, at most 2,000), optional `sourceColumns`
-(from `describe`, enables collision and existence checks).
+(from `describe`, enables collision and existence checks), and `sourceKeys` (distinct key
+values queried from the grouped source; the emitter refuses seed keys not in it).
 
 1. **Call 1** (`target: new` with name + description, or `existing`): hidden data page
    plus the visible page, `base = data_page.add_table(<source>)` (the data model member
@@ -157,11 +166,31 @@ REST call. Run each program through `build_workbook` in order. Spec fields: see
 
 Capture the printed ids with `linked-input-program.py ids --from-output out.txt --out
 ids.json --workbook-id <id>` and re-run `emit --ids ids.json` so calls 2 and 3 carry real
-ids (otherwise they contain `<... ID>` placeholders). Then `describe` the linked element,
-add `{"describe": {"elementId": ..., "columns": {name: columnId}}}` to `ids.json`, re-emit,
-and run the SQL in `readback.json` through the `query` tool (`type: workbook`): rows,
-distinct keys (`row_count` must equal `distinct_keys`), non-null editable counts, sums, and
-the seeded rows. Compare to the `expected` block.
+ids (otherwise they contain `<... ID>` placeholders). The `column:<name>=<id>` lines
+call 2 prints are **exactly the ids `describe` returns** for the linked element
+(live-verified 2026-10-22: Line Item `C4D9LE3LYP`, Baseline Rate `KzntvkpDNW`, Override
+Rate `LWP7CD4GQW`, Rationale `X25VJK2G2J`, Effective Rate `_Z1CQn3Lxq`, element
+`_QN9bCd1zA`), so `ids` collects them (with `linkedTableId`) and `emit --ids` fills the
+readback SQL from them — no separate `describe` step. `{"describe": {"elementId": ...,
+"columns": {name: columnId}}}` in `ids.json` remains an optional override. Run the SQL in
+`readback.json` through the `query` tool (`type: workbook`): rows, distinct keys
+(`row_count` must equal `distinct_keys`), non-null editable counts, sums, and the seeded
+rows. Compare to the `expected` block.
+
+### Seed keys must exist: `update_rows` is atomic (live 2026-10-22)
+
+`update_rows` with a key that is not in the source **fails the whole call**:
+`ValueError ... no row matches the key at index 1`, result `persisted: false`, and a
+readback showed **0 rows written** — the valid rows in the same call were not applied
+either. So pre-check every seed key before call 3:
+
+1. `query` the grouped source for its distinct key values
+   (`SELECT DISTINCT "<key col>" FROM ...`; e.g. 'Cloud Hosting' exists, 'Hosting' does not).
+2. Put them in the spec as `sourceKeys`. The emitter then refuses seed keys not in it and
+   names them. Without `sourceKeys` it emits a warning (also in `manifest.json` `call3Note`)
+   and cannot protect you. `sourceKeys` supports a single key column; check multi-key
+   seeds by hand.
+3. A failed call 3 is safe to fix and resubmit: nothing was written.
 
 ### Requirements and rules the live run proved
 

@@ -43,15 +43,15 @@
       "planBaseId"
     ],
     "call2": [
-      "linkedTableId"
+      "linkedTableId",
+      "column:<name> (also fills the readback SQL)"
     ],
-    "describe": [
-      "elementId",
-      "columns"
-    ]
+    "describe": "optional override of the readback element/column ids"
   },
+  "call3Note": "update_rows is atomic: one seed key absent from the grouped source fails the whole call (persisted:false, no rows written). Pre-query the source's distinct keys and set sourceKeys.",
   "unvalidated": [
     "published-mode edit by a non-editor user",
-    "warehouse view over a linked input table"
+    "warehouse view over a linked input table",
+    "no sourceKeys given: update_rows fails the whole call atomically ('no row matches the key') if any seed key is absent from the grouped source; query its distinct keys and pre-check the seeds"
   ]
 }

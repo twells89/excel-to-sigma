@@ -164,6 +164,24 @@ class ValidationTests(unittest.TestCase):
         self.fails("collides with another column", editable=[{"name": "baseline rate", "type": "number"}])
         self.fails("collides with another column", formulas=[{"name": "Override Rate", "formula": {"const": 1}}])
 
+    def test_source_keys_reject_unknown_seed_keys(self):
+        keys = ["Subscription - Enterprise", "Cloud Hosting", "Customer Support"]
+        normalize_spec(spec(sourceKeys=keys))
+        bad = copy.deepcopy(SPEC["rows"])
+        bad[1]["key"]["Line Item"] = "Hosting"
+        with self.assertRaises(LinkedInputError) as caught:
+            normalize_spec(spec(sourceKeys=keys, rows=bad))
+        self.assertIn("'Hosting'", str(caught.exception))
+        self.assertIn("atomically", str(caught.exception))
+        self.fails("non-empty list", sourceKeys=[])
+        self.fails("single key column only", sourceKeys=["A"], key=["A", "B"], rows=[])
+
+    def test_warning_without_source_keys(self):
+        self.assertTrue(any("no sourceKeys" in w for w in emit(SPEC)["warnings"]))
+        keys = ["Subscription - Enterprise", "Cloud Hosting"]
+        self.assertFalse(any("no sourceKeys" in w for w in emit(spec(sourceKeys=keys))["warnings"]))
+        self.assertIn("atomic", emit(SPEC)["manifest"]["call3Note"])
+
     def test_source_columns_are_checked_when_given(self):
         self.fails("is not in sourceColumns", sourceColumns=["Line Item", "Other"])
         self.fails("source.memberColumn", sourceColumns=["Line Item"], key=["Line Item"], inherited=[])
@@ -207,6 +225,19 @@ class ReadbackTests(unittest.TestCase):
         self.assertIn('"workbook"."<ELEMENT ID>"', queries["rows"])
         self.assertIn('"<COLUMN ID: Line Item>"', queries["distinct_keys"])
 
+    def test_readback_ids_from_call2_output_without_describe(self):
+        ids = parse_printed_ids("linkedTableId=EL9\ncolumn:Line Item=a1\ncolumn:Baseline Rate=a2\n"
+                                "column:Override Rate=a3\ncolumn:Rationale=a4\ncolumn:Effective Rate=a5\n")
+        q = {item["name"]: item["sql"] for item in emit(SPEC, ids)["readback"]["queries"]}
+        self.assertIn('FROM "workbook"."EL9"', q["rows"])
+        self.assertIn('COUNT(DISTINCT "a1")', q["distinct_keys"])
+        self.assertNotIn("<", q["sums"])
+        override = {"describe": {"elementId": "EL1", "columns": {"Line Item": "z1"}}}
+        q = {item["name"]: item["sql"] for item in readback_queries(normalize_spec(SPEC), {**ids, **override})["queries"]}
+        self.assertIn('FROM "workbook"."EL1"', q["rows"])
+        self.assertIn('COUNT(DISTINCT "z1")', q["distinct_keys"])
+        self.assertIn('COUNT("a3")', q["non_null_editable"])
+
     def test_sql_with_describe_ids(self):
         ids = {"describe": {"elementId": "EL1", "columns": {
             "Line Item": "c1", "Baseline Rate": "c2", "Override Rate": "c3", "Rationale": "c4", "Effective Rate": "c5"}}}
@@ -219,7 +250,7 @@ class ReadbackTests(unittest.TestCase):
         self.assertEqual(q["sums"],
                          'SELECT SUM("c3") AS "Override Rate sum", SUM("c2") AS "Baseline Rate sum", '
                          'SUM("c5") AS "Effective Rate sum" FROM "workbook"."EL1"')
-        self.assertIn("""WHERE "c1" IN ('Subscription - Enterprise', 'Hosting')""", q["seeded_rows"])
+        self.assertIn("""WHERE "c1" IN ('Subscription - Enterprise', 'Cloud Hosting')""", q["seeded_rows"])
         self.assertEqual(out["expected"]["nonNullEditable"], {"Override Rate": 2, "Rationale": 2})
         self.assertEqual(out["expected"]["numericEditableSums"], {"Override Rate": 0.07})
 

@@ -15,6 +15,6 @@ if not isinstance(v1, LiteralEditableColumn):
     raise RuntimeError('expected editable column: Rationale')
 lt.update_rows([
     ({k0: 'Subscription - Enterprise'}, {v0: 0.045, v1: 'spike test'}),
-    ({k0: 'Hosting'}, {v0: 0.025, v1: 'spike test'}),
+    ({k0: 'Cloud Hosting'}, {v0: 0.025, v1: 'spike test'}),
 ])
 print('updatedKeys=2')
