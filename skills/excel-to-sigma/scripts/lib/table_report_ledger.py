@@ -45,7 +45,8 @@ NON_CONSTANT = {"c", "period", "key", "prev", "agg", "cumsum", "cummin"}
 
 
 def _is_int(value):
-    return isinstance(value, int) and not isinstance(value, bool)
+    return (isinstance(value, int) and not isinstance(value, bool)) or \
+        (isinstance(value, float) and value.is_integer())
 
 
 def _constant(ir):
