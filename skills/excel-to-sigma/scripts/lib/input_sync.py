@@ -88,7 +88,13 @@ def _index(rows, key_columns, origin):
 def _same(left, right, column_type=None):
     if column_type == "datetime":
         try:
-            return _parse_datetime(left) == _parse_datetime(right)
+            date_only = any(
+                isinstance(value, dt.date) and not isinstance(value, dt.datetime)
+                or isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+                for value in (left, right)
+            )
+            return (_parse_datetime(left, date_only=date_only)
+                    == _parse_datetime(right, date_only=date_only))
         except (TypeError, ValueError):
             return False
     return _json_value(left) == _json_value(right) and type(left) is type(right)
@@ -240,6 +246,8 @@ def _parse_datetime(value, date_only=False):
     if isinstance(value, dt.datetime):
         if value.tzinfo is not None:
             value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        if date_only and value.time() == dt.time.min:
+            value = value.replace(hour=12)
         return value
     if isinstance(value, dt.date):
         return dt.datetime(value.year, value.month, value.day, 12)
