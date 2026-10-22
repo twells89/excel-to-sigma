@@ -199,6 +199,8 @@ class TestSourceScalarKPIs(unittest.TestCase):
             layout.replace('<Group id="retained"/>', '<Container><Group id="retained"/></Container>'),
             layout.replace('<Group id="retained"/>', '<Group id="retained"/>authored text'),
             layout.replace('<Page id="sales-overview">', '<Page id="sales-overview">authored text'),
+            layout.replace('gridRow="48 / 54"/>', 'gridRow="48 / 54"/>authored text'),
+            'authored text' + layout,
             ''.join(reversed(re.findall(r'<Page\b.*?</Page>', layout))),
         ]
         for changed in mutations:

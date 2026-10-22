@@ -338,9 +338,13 @@ def _without_added(contents, added):
     result = copy.deepcopy(contents)
     result['elements'] = [element for element in result['elements'] if element['id'] not in added]
     root = _layout(result)
+    if root.text is not None and root.text.strip(' \t\r\n'):
+        raise ValueError('scalar layout has authored text before its first node')
     for parent in root.iter():
         for child in list(parent):
             if child.tag == 'Element' and child.get('elementId') in added:
+                if child.tail is not None and child.tail.strip(' \t\r\n'):
+                    raise ValueError('scalar append added authored layout text')
                 parent.remove(child)
     # Indentation changes carry no layout meaning; retain all authored text.
     for node in root.iter():
