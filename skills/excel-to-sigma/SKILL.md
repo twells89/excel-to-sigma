@@ -269,7 +269,11 @@ row, sections, a mixed or unparsable forecast row, missing GL columns), and reco
 every line-month and GL month against Excel's cached values before writing it. It
 raises `FLAT_CARRY_POLICY` for `=prior` lines; the dry run reports it as pending and
 `--post` needs a source-bound disposition. The builder's local parity check compares
-the plan to `parityTargets` and exits 1 on any mismatch.
+the plan to `parityTargets` and exits 1 on any mismatch. Workbook line charts whose
+series are Total Revenue / Gross Profit / EBITDA / Net Income by month or quarter are
+recorded as `sourceCharts` (every point checked against cached values) and the builder
+emits a matching Sigma line chart; the drafter lists any other chart as not mapped, to
+rebuild by hand before dispositioning `CHARTS_PRESENT`.
 
 Present the detected map and confirm edit intent, source freshness, and formula
 dependencies before selecting a build. The live-actuals/driver-growth union in

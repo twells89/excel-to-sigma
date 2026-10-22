@@ -62,6 +62,10 @@ def main(argv=None):
     if info["missingTargets"]:
         print("  no target found for: " + ", ".join(info["missingTargets"]))
     print("  verified: every line-month and GL month sum matches the workbook's cached values")
+    for chart in info["charts"]:
+        print(f"  source chart mapped + values verified: {chart}")
+    for chart in info["unmappedCharts"]:
+        print(f"  source chart NOT mapped (rebuild by hand): {chart}")
     print("  review issues: " + (", ".join(info["reviewIssues"]) or "none from the drafter")
           + " (plus any workbook-audit issues; see migrate.py plan)")
     return 0

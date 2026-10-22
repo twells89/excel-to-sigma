@@ -266,6 +266,67 @@ class TestFailLoud(Base):
         self.assertFalse((self.dir / "plan.json").exists())
 
 
+def add_metric_chart(labels, title="Revenue & Gross Profit"):
+    """mutate hook: a P&L line chart whose series are the given total rows by month."""
+    from openpyxl.chart import LineChart, Reference, Series
+    from openpyxl.chart.data_source import StrRef
+    from openpyxl.chart.series import SeriesLabel
+
+    def mutate(pnl, gl, drivers):
+        chart = LineChart()
+        chart.title = title
+        last_col = 1 + len(fixture.MONTHS)
+        for label in labels:
+            row = find_cell(pnl, label)
+            series = Series(Reference(pnl, min_col=2, max_col=last_col, min_row=row))
+            series.tx = SeriesLabel(strRef=StrRef(f"'P&L'!$A${row}"))
+            chart.series.append(series)
+        chart.set_categories(Reference(pnl, min_col=2, max_col=last_col,
+                                       min_row=fixture.HEADER_ROW))
+        pnl.add_chart(chart, "P2")
+    return mutate
+
+
+class TestSourceCharts(Base):
+    def test_metric_line_chart_is_mapped_and_verified(self):
+        plan, info, _ = self.draft(mutate=add_metric_chart(["Total Revenue", "Gross Profit"]))
+        self.assertEqual(plan["sourceCharts"], [{
+            "title": "Revenue & Gross Profit", "kind": "line", "grain": "month",
+            "series": ["Revenue", "Gross Profit"], "sourceSheet": "P&L",
+            "verifiedPoints": 2 * len(fixture.MONTHS)}])
+        self.assertEqual(info["unmappedCharts"], [])
+
+    def test_chart_with_a_non_metric_series_is_left_for_review(self):
+        plan, info, _ = self.draft(mutate=add_metric_chart(["Total Revenue", "Subscription"]))
+        self.assertEqual(plan["sourceCharts"], [])
+        self.assertIn("not Total Revenue/Gross Profit/EBITDA/Net Income", info["unmappedCharts"][0])
+
+    def test_chart_values_that_disagree_with_the_plan_fail(self):
+        # Total rows are not line rows, so only the chart check reads this cache.
+        fixture.build_pnl(self.path, mutate=add_metric_chart(["Total Revenue"]),
+                          cached_overrides={("P&L", f"B{self._total_row()}"): 999999})
+        with self.assertRaisesRegex(PlanDraftError, r"chart .*'Revenue'"):
+            draft_plan(self.path, intent="what-if", connection="conn", folder="fold")
+
+    def _total_row(self):
+        probe = self.dir / "probe.xlsx"
+        fixture.build_pnl(probe)
+        from openpyxl import load_workbook
+        return find_cell(load_workbook(probe)["P&L"], "Total Revenue")
+
+    def test_builder_emits_a_line_chart_per_source_chart(self):
+        fixture.build_pnl(self.path, mutate=add_metric_chart(["Total Revenue", "Gross Profit"]))
+        plan, _ = draft_plan(self.path, intent="what-if", connection="conn", folder="fold")
+        spec = BUILD.build_wb_spec(plan, "<dm-id>", {"glDetail": "glDetail", "spine": "spine",
+                                                     "assumptions": "assumptions"})
+        overview = spec["pages"][0]["elements"]
+        chart = next(e for e in overview if e["id"] == "sourceChart1")
+        self.assertEqual(chart["kind"], "line-chart")
+        self.assertEqual(chart["name"], "Revenue & Gross Profit")
+        self.assertEqual([c["name"] for c in chart["columns"]], ["Month", "Revenue", "Gross Profit"])
+        self.assertIn('elementId="sourceChart1"', spec["layout"])
+
+
 class TestBuilderHandoff(Base):
     def run_main(self, module, argv):
         out, err = io.StringIO(), io.StringIO()

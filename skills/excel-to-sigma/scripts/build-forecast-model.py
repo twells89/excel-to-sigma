@@ -34,8 +34,17 @@ DATEF = {"kind": "datetime", "formatString": "%b-%y"}
 def q(s): return "'" + str(s).replace("'", "''") + "'"
 
 
-def forecast_layout(editable, extra_model_ids=()):
-    """Dense four-page layout: overview, detail, editable inputs, hidden plumbing."""
+def forecast_layout(editable, extra_model_ids=(), chart_ids=()):
+    """Dense four-page layout: overview, detail, editable inputs, hidden plumbing.
+
+    Source-chart ids sit beside the monthly trend (first) and then full width below it.
+    """
+    charts = [("monthlyTrend", 1, 25 if not chart_ids else 13, 10, 25)]
+    if chart_ids:
+        charts.append((chart_ids[0], 13, 25, 10, 25))
+    for i, element_id in enumerate(chart_ids[1:]):
+        charts.append((element_id, 1, 25, 25 + i * 15, 40 + i * 15))
+    pivot_row = 25 + max(len(chart_ids) - 1, 0) * 15
     pages = [
         ("pnl", [
             ("pnlHeader", 1, 25, 1, 4),
@@ -43,8 +52,8 @@ def forecast_layout(editable, extra_model_ids=()):
             ("kpiEbitda", 7, 13, 4, 10),
             ("kpiNI", 13, 19, 4, 10),
             ("kpiGM", 19, 25, 4, 10),
-            ("monthlyTrend", 1, 25, 10, 25),
-            ("pnlPivot", 1, 25, 25, 55),
+            *charts,
+            ("pnlPivot", 1, 25, pivot_row, pivot_row + 30),
         ]),
         ("detail", [("glTable", 1, 25, 1, 37)]),
         ("inputs", [
@@ -313,7 +322,25 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         "columns":[{"id":"g1","name":"Txn Date","formula":f"[{DMP}/Txn Date]"},{"id":"g2","name":"Month","formula":f"[{DMP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{DMP}/Line Item]"},{"id":"g4","name":"Department","formula":f"[{DMP}/Department]"},{"id":"g5","name":"Vendor","formula":f"[{DMP}/Vendor]"},{"id":"g6","name":"Amount","formula":f"[{DMP}/Amount]","format":cur}]}
     assumpTable={"id":"assumpTable","kind":"table","name":"Forecast Assumptions","source":dm("assumptions"),
         "columns":[{"id":"d1","name":"Driver","formula":f"[{DMP}/Driver]"},{"id":"d2","name":"Monthly Rate","formula":f"[{DMP}/Monthly Rate]","format":PCT(P)},{"id":"d3","name":"Basis","formula":f"[{DMP}/Basis]"}]}
-    main_els=[header]+kpis+[trend,pivot]
+    # Source-workbook charts the drafter mapped and verified (plan.sourceCharts).
+    metric_formula = {"Revenue": REV, "Gross Profit": f"{REV} - {COGS}",
+                      "EBITDA": f"{REV} - {COGS} - {OPEX}", "Net Income": f"{REV} - {COGS} - {OPEX} - {BELOW}"}
+    source_charts = []
+    for i, sc in enumerate(P.get("sourceCharts") or [], 1):
+        if sc["grain"] == "quarter":
+            x = {"id": f"s{i}_x", "name": "Quarter",
+                 "formula": f'Concat(Text(DatePart("year", [{C}/Month End])), " Q", Text(DatePart("quarter", [{C}/Month End])))'}
+        else:
+            x = {"id": f"s{i}_x", "name": "Month", "formula": f'DateTrunc("month", [{C}/Month End])', "format": DATEF}
+        ys = [{"id": f"s{i}_y{j}", "name": metric, "formula": metric_formula[metric], "format": cur}
+              for j, metric in enumerate(sc["series"], 1)]
+        source_charts.append({"id": f"sourceChart{i}", "kind": "line-chart", "name": sc["title"],
+            "source": {"kind": "table", "elementId": "pnlCombined"}, "columns": [x] + ys,
+            "xAxis": {"columnId": x["id"], "sort": {"direction": "ascending"}},
+            "yAxis": {"columnIds": [y["id"] for y in ys], "format": {"marks": "grid", "scale": {"type": "linear", "zero": False}}},
+            "legend": {"position": "bottom"},
+            "style": {"backgroundColor": "#FFFFFF", "borderColor": {"kind": "theme", "ref": "colors-border"}, "borderWidth": 1, "borderRadius": "round"}})
+    main_els=[header]+kpis+[trend]+source_charts+[pivot]
     detail_els=[glTable]
     input_els=[assumpTable]
     hidden_els=[actuals,spineWrap,forecast,pnlCombined]
@@ -329,7 +356,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
            {"id":"model","name":"Model (sources)","visibility":"hidden","elements":hidden_els}]
     # Nested draft; wire_workbook flattens + wraps at the POST / dry-run boundary.
     return {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],
-            "pages":pages,"layout":forecast_layout(editable, extra_model_ids)}
+            "pages":pages,"layout":forecast_layout(editable, extra_model_ids, [c["id"] for c in source_charts])}
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)

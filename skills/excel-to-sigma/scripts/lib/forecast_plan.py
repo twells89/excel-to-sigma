@@ -22,7 +22,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
-from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 
 try:
     from .migration_gate import source_sha256
@@ -349,6 +349,8 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
     if fy_col and not _fy_is_month_sum(vs, line_rows, month_cols, fy_col, tolerance):
         fy_col = None
     targets = parity_targets(vs, derived_rows, month_cols, fy_col)
+    charts, unmapped_charts = source_charts(wf, wv, lines, actuals, actual_months, forecast_months,
+                                            tolerance)
 
     issues = []
     if flat_lines:
@@ -376,6 +378,7 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
         "lines": lines,
         "assumptions": assumptions,
         "actuals": actuals,
+        "sourceCharts": charts,
         "draftReviewIssues": issues,
     }
     summary = {
@@ -388,6 +391,8 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
         "parityTargets": targets,
         "missingTargets": [m for m in TARGET_LABELS.values() if m not in targets],
         "reviewIssues": [issue["code"] for issue in issues],
+        "charts": [f"{c['title']} ({c['grain']}, {len(c['series'])} series)" for c in charts],
+        "unmappedCharts": unmapped_charts,
     }
     return plan, summary
 
@@ -532,3 +537,126 @@ def parity_targets(vs, derived_rows, month_cols, fy_col):
         if _is_number(value):
             targets[metric] = float(value)
     return targets
+
+
+# ---------------------------------------------------------------- source charts
+QUARTER_LABEL_RE = re.compile(r"^\s*Q([1-4])\b", re.I)
+
+
+def _range_values(wv, formula):
+    """Cached values of a chart reference such as ``Quarterly!$B$4:$E$4`` (row or column)."""
+    found = re.fullmatch(r"(?:'((?:[^']|'')+)'|([^!]+))!(\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?)",
+                         formula or "")
+    if not found:
+        return None
+    sheet = (found.group(1) or found.group(2)).replace("''", "'")
+    if sheet not in wv.sheetnames:
+        return None
+    min_col, min_row, max_col, max_row = range_boundaries(found.group(3).replace("$", ""))
+    ws = wv[sheet]
+    return [ws.cell(r, c).value for r in range(min_row, max_row + 1)
+            for c in range(min_col, max_col + 1)]
+
+
+def _metric_series(lines, actuals, months):
+    """Plan totals per month for each parity metric, computed the way the builder does."""
+    by_section = {m["month"]: Counter() for m in months}
+    for r in actuals:
+        by_section[r["month"]][r["section"]] += r["amt"]
+    last_actual = max(m["num"] for m in months if any(a["month"] == m["month"] for a in actuals))
+    for ln in lines:
+        base = ln.get("juneBase", 0)
+        fc = [m for m in months if m["num"] > last_actual]
+        for i, m in enumerate(fc):
+            if ln["kind"] == "manual":
+                value = ln["manual"][i]
+            elif ln["kind"] == "flat":
+                value = base
+            else:
+                value = base * (1 + ln["rate"]) ** (m["num"] - last_actual)
+            by_section[m["month"]][ln["section"]] += value
+    out = {}
+    for m in months:
+        s = by_section[m["month"]]
+        rev = s["Revenue"]
+        gp = rev - s["Cost of Revenue"]
+        ebitda = gp - s["Operating Expenses"]
+        out[m["month"]] = {"Revenue": rev, "Gross Profit": gp, "EBITDA": ebitda,
+                           "Net Income": ebitda - s["Below the Line"]}
+    return out
+
+
+def source_charts(wf, wv, lines, actuals, actual_months, forecast_months, tolerance):
+    """Map workbook line charts whose series are P&L metrics to plan ``sourceCharts``.
+
+    A chart maps when every series title is Total Revenue / Gross Profit / EBITDA /
+    Net Income and its categories are quarters (``Q1 ...``) or months. Mapped charts
+    must reproduce their cached series values from the plan; a mismatch raises.
+    Returns ``(charts, unmapped)`` where ``unmapped`` names charts left to review.
+    """
+    months = actual_months + forecast_months
+    monthly = _metric_series(lines, actuals, months)
+    quarters = []
+    for m in months:
+        year, month = int(m["end"][:4]), int(m["end"][5:7])
+        key = (year, (month - 1) // 3 + 1)
+        if not quarters or quarters[-1][0] != key:
+            quarters.append((key, []))
+        quarters[-1][1].append(m["month"])
+
+    charts, unmapped = [], []
+    for ws in wf.worksheets:
+        for chart in getattr(ws, "_charts", []):
+            title = _chart_title(chart) or f"{type(chart).__name__} on {ws.title}"
+            where = f"{title!r} on {ws.title!r}"
+            if type(chart).__name__ != "LineChart" or not chart.series:
+                unmapped.append(f"{where}: only line charts are mapped")
+                continue
+            metrics, categories = [], None
+            for s in chart.series:
+                ref = s.tx.strRef.f if s.tx is not None and s.tx.strRef is not None else None
+                label = (_range_values(wv, ref) or [None])[0] if ref else None
+                metric = TARGET_LABELS.get(str(label).strip().lower()) if label else None
+                cat_ref = (s.cat.strRef or s.cat.numRef).f if s.cat is not None else None
+                cats = _range_values(wv, cat_ref) if cat_ref else None
+                vals = _range_values(wv, s.val.numRef.f) if s.val is not None and s.val.numRef else None
+                if not metric or not cats or not vals:
+                    metrics = None
+                    break
+                metrics.append((metric, vals))
+                categories = cats
+            if not metrics:
+                unmapped.append(f"{where}: a series is not Total Revenue/Gross Profit/EBITDA/Net Income")
+                continue
+            if all(QUARTER_LABEL_RE.match(str(c or "")) for c in categories):
+                grain = "quarter"
+                buckets = [(key, members) for key, members in quarters]
+                labels = [int(QUARTER_LABEL_RE.match(str(c)).group(1)) for c in categories]
+                if [key[1] for key, _ in buckets[:len(labels)]] != labels:
+                    unmapped.append(f"{where}: quarter categories {categories} do not follow the plan months")
+                    continue
+                buckets = buckets[:len(labels)]
+            elif all(parse_month(c) for c in categories):
+                grain = "month"
+                buckets = [((m["month"],), [m["month"]]) for m in months][:len(categories)]
+            else:
+                unmapped.append(f"{where}: categories are neither quarters nor months")
+                continue
+            for metric, vals in metrics:
+                for (key, members), want in zip(buckets, vals):
+                    got = sum(monthly[m][metric] for m in members)
+                    if not _is_number(want) or abs(got - want) > tolerance:
+                        raise PlanDraftError(
+                            f"chart {where}: series {metric!r} at {key} is {want!r} in the workbook "
+                            f"but {got:,.2f} from the plan")
+            charts.append({"title": title, "kind": "line", "grain": grain,
+                           "series": [metric for metric, _ in metrics],
+                           "sourceSheet": ws.title, "verifiedPoints": len(metrics) * len(buckets)})
+    return charts, unmapped
+
+
+def _chart_title(chart):
+    try:
+        return "".join(run.t for p in chart.title.tx.rich.p for run in (p.r or [])).strip() or None
+    except AttributeError:
+        return None
