@@ -43,7 +43,8 @@ GROWTH_RE = re.compile(
     r"^=\$?([A-Z]{1,3})\$?(\d+)\*\(1\+(?:'((?:[^']|'')+)'|([A-Za-z0-9_.]+))!\$?([A-Z]{1,3})\$?(\d+)\)$")
 FLAT_RE = re.compile(r"^=\$?([A-Z]{1,3})\$?(\d+)$")
 UNQUOTED_SPACE_RE = re.compile(r"\s+(?=(?:[^']*'[^']*')*[^']*$)")
-FY_HEADER_RE = re.compile(r"^(fy|total|full[ -]?year|annual|year)", re.I)
+FY_HEADER_RE = re.compile(
+    r"^(?:fy(?:\s*\d{2,4}|\s+total)?|total|full[ -]?year|annual|year)$", re.I)
 
 
 class PlanDraftError(RuntimeError):

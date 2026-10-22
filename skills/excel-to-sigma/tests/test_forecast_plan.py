@@ -96,6 +96,16 @@ class TestClassification(Base):
         self.assertIsNone(info["fyColumn"])
         self.assertAlmostEqual(plan["parityTargets"]["Revenue"], built["targets"]["Revenue"], places=6)
 
+    def test_non_fy_summary_headers_fall_back_to_summed_months(self):
+        for header in ("Year to Date", "FY26 Budget", "Total Variance"):
+            with self.subTest(header=header):
+                def rename_fy(pnl, gl, drivers):
+                    pnl["H3"] = header
+                plan, info, built = self.draft(mutate=rename_fy)
+                self.assertIsNone(info["fyColumn"])
+                self.assertAlmostEqual(
+                    plan["parityTargets"]["Revenue"], built["targets"]["Revenue"], places=6)
+
     def test_source_binding_and_identity_fields(self):
         plan, _, _ = self.draft()
         from migration_gate import source_sha256
