@@ -942,6 +942,23 @@ def build_business_input_architecture(plan, *, connection_id, folder_id, researc
         architecture["nativeWiring"] = business_native_wiring(
             architecture, workflow, extracted, build_operational_input_elements(architecture))
         architecture["formulaTargets"] = {}
+        if workflow == "sales":
+            # These scalars require stable physical-row readback and narrow SDK
+            # append. They are deliberately outside the full-contents graph and
+            # cannot establish formulaTargets before assigned native readback.
+            try:
+                from .source_scalar_kpis import extract_sales_overview_scalars
+            except ImportError:
+                from source_scalar_kpis import extract_sales_overview_scalars
+            try:
+                architecture["sourceScopedScalars"] = extract_sales_overview_scalars(plan["source"]["path"])
+            except ValueError as error:
+                # A Sales workflow need not use this particular Overview family.
+                # Preserve ordinary build behavior while exposing no scalar owner.
+                architecture["sourceScopedScalars"] = {
+                    "status": "UNRESOLVED_UNSUPPORTED_SOURCE_SHAPE",
+                    "sourceHash": plan["source"]["sha256"], "sourcePath": plan["source"]["path"],
+                    "reason": str(error), "owners": [], "productionStatus": "BLOCKED"}
         if workflow == "inventory":
             for column in extracted["derivedColumns"]:
                 for cell in column["sourceCells"]:
@@ -1192,7 +1209,9 @@ def emit_business_input_program(spec, binding):
     if spec["workflow"] == "sales":
         live_formulas = [
             ("Weighted ACV", f"sigma.formula.multiply({by_name['Probability']}, {by_name['ACV']})"),
-            ("Cycle Days", f"sigma.formula.date_diff('day', {by_name['Created Date']}, {by_name['Expected Close']})"),
+            ("Cycle Days", "sigma.formula.multiply("
+             f"sigma.formula.date_diff('millisecond', {by_name['Created Date']}, {by_name['Expected Close']}), "
+             "sigma.formula.const_num(0.000000011574074074074074))"),
         ]
     elif spec["workflow"] == "inventory":
         available = f"sigma.formula.subtract({by_name['On Hand']}, {by_name['Allocated']})"

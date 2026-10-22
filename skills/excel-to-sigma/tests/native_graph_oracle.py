@@ -13,7 +13,7 @@ import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
 
 
-def scalar(formula, row):
+def scalar(formula, row, *, truncate_integer_division=False):
     code = re.sub(r'\[([^\]]+)\]', lambda m: 'field(' + repr(m.group(1)) + ')', formula)
     code = re.sub(r'(?<![<>=!])=(?!=)', '==', code).replace('^', '**').replace('<>', '!=')
     ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -24,7 +24,14 @@ def scalar(formula, row):
         if isinstance(node, ast.Name) and node.id == 'Null': return None
         if isinstance(node, ast.BinOp):
             a, b = run(node.left), run(node.right)
-            return None if a is None or b is None else ops[type(node.op)](a, b)
+            if a is None or b is None:
+                return None
+            # Opt into the observed warehouse behavior for precision regressions;
+            # Python's true division otherwise hides integer DateDiff truncation.
+            if (truncate_integer_division and isinstance(node.op, ast.Div)
+                    and isinstance(a, int) and isinstance(b, int)):
+                return math.trunc(a / b)
+            return ops[type(node.op)](a, b)
         if isinstance(node, ast.Compare):
             a, b = run(node.left), run(node.comparators[0])
             return False if a is None or b is None else ops[type(node.ops[0])](a, b)
@@ -67,16 +74,21 @@ def scalar(formula, row):
                 return math.copysign(math.ceil(abs(number)*scale)/scale, number)
             if node.func.id == 'DateDiff':
                 unit, a, b = (run(arg) for arg in args)
+                if a is None or b is None:
+                    return None
+                if unit == 'millisecond':
+                    return (b-a) // dt.timedelta(milliseconds=1)
                 assert unit == 'day'
                 return (b-a).days
         raise AssertionError('unsupported local oracle expression: '+ast.dump(node))
     return run(ast.parse(code, mode='eval').body)
 
 
-def project(columns, row):
+def project(columns, row, *, truncate_integer_division=False):
     local, output = dict(row), {}
     for column in columns:
-        value = scalar(column['formula'], local)
+        value = scalar(column['formula'], local,
+                       truncate_integer_division=truncate_integer_division)
         output[column['name']] = local[column['name']] = value
     return output
 
