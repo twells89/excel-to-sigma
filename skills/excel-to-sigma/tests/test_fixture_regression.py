@@ -5,6 +5,19 @@ import fixture_regression as oracle
 FIX=Path(__file__).resolve().parent/'fixtures'
 class FixtureRegressionTests(unittest.TestCase):
     def path(self,name):return FIX/('fixture-'+name+'.xlsx')
+    def test_sales_cycle_days_oracle_retains_source_timestamp_fraction(self):
+        import datetime as dt
+        for created,close,expected in [
+            ('2026-01-01T08:00:00','2026-01-02T20:00:00',1.5),
+            ('2026-01-02T05:00:00','2026-01-01T23:00:00',-.25),
+            ('2026-01-01T08:00:00','2026-01-01T08:00:00.001',.000000011574074074074073),
+            ('2026-01-01T08:00:00.001','2026-01-01T08:00:00',-.000000011574074074074073),
+        ]:
+            with self.subTest(created=created,close=close):
+                edits={'Pipeline!B2':dt.datetime.fromisoformat(created),
+                       'Pipeline!C2':dt.datetime.fromisoformat(close)}
+                actual=oracle.sales(self.path('sales-pipeline'),edits)['rows'][0]['Cycle Days']
+                self.assertAlmostEqual(actual,expected,delta=1e-14)
     def test_independent_primary_and_secondary_denominators_and_edits(self):
         forecast=oracle.forecast(self.path('forecast-model'));self.assertEqual(len(forecast['monthlyValues']),144)
         self.assertEqual(len(forecast['rows'])*13,234)

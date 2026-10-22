@@ -1192,7 +1192,9 @@ def emit_business_input_program(spec, binding):
     if spec["workflow"] == "sales":
         live_formulas = [
             ("Weighted ACV", f"sigma.formula.multiply({by_name['Probability']}, {by_name['ACV']})"),
-            ("Cycle Days", f"sigma.formula.date_diff('day', {by_name['Created Date']}, {by_name['Expected Close']})"),
+            ("Cycle Days", "sigma.formula.multiply("
+             f"sigma.formula.date_diff('millisecond', {by_name['Created Date']}, {by_name['Expected Close']}), "
+             "sigma.formula.const_num(0.000000011574074074074074))"),
         ]
     elif spec["workflow"] == "inventory":
         available = f"sigma.formula.subtract({by_name['On Hand']}, {by_name['Allocated']})"

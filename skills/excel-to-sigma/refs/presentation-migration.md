@@ -52,6 +52,19 @@ owns its availability, reorder-point, days-cover, `ROUNDUP`, and status chain on
 `inventory`. Expense consumes the reviewed Task 2 policy join and owns the
 numeric-Amount count check on `expenseNumericAmountCount`. Companion settings
 and policy inputs are constructed separately, never duplicated by the wiring.
+Sales Cycle Days preserves Excel `=C-B` fractional days in both native wiring
+and SDK construction using
+`DateDiff("millisecond", start, end) * 0.000000011574074074074074`.
+The floating days-per-millisecond factor preserves positive and negative one
+millisecond differences. Dividing the integer `DateDiff` result by `86400000`
+can truncate fractional days in the warehouse, even with a decimal divisor;
+do not replace the multiplication with that division. The SDK's `const_num`
+may render this factor as `1.1574074074074074e-8`.
+Precision is limited to Sigma's integer millisecond result and the retained
+source timestamps; finer-than-millisecond Excel values require separate parity
+review. The independent fixture oracle retains timestamp fractions instead of
+rounding expected values to whole days. Local tests do not replace runtime query
+or production acceptance gates.
 The artifact exposes this through `businessOperationalWiring`, produced by
 `build_shared_input_architecture` and `build_operational_input_elements` rather
 than a second formula contract. Research reuses its Task 2 shared input table and
