@@ -241,9 +241,9 @@ class TestSummaryGrid(Workdir):
         element = next(e for e in parts["visible"] if e["name"] == self.frame["title"])
         formulas = {c["name"]: c["formula"] for c in element["columns"]}
         self.assertEqual(formulas["Region"], "[tblOrders/Region]")
-        self.assertEqual(formulas["Jan"], 'SumIf([tblOrders/Revenue], (([tblOrders/Ship Date] >= Date("2026-01-01"))'
-                                          ' and ([tblOrders/Ship Date] <= Date("2026-01-31"))))')
-        self.assertEqual(formulas["Big"], 'CountIf(([tblOrders/Bucket] = "Big"))')
+        self.assertEqual(formulas["Jan"], 'Coalesce(SumIf([tblOrders/Revenue], (([tblOrders/Ship Date] >= '
+                                          'Date("2026-01-01")) and ([tblOrders/Ship Date] <= Date("2026-01-31")))), 0)')
+        self.assertEqual(formulas["Big"], 'Coalesce(CountIf(([tblOrders/Bucket] = "Big")), 0)')
         self.assertEqual(formulas["Avg Rev"], "Avg([tblOrders/Revenue])")
         self.assertEqual(formulas["Attain"], "If(IsNull([Target]) or [Target] = 0, 0, ([Total] / [Target]))")
         group = element["groupings"][0]
@@ -271,6 +271,20 @@ class TestSummaryGrid(Workdir):
         message = self.rejected(path)
         self.assertIn("Summary!B7", message)
         self.assertIn("total row cell must be SUM of the grid rows above it", message)
+
+    def test_empty_matches_are_zero_in_excel_so_every_conditional_aggregate_is_coalesced(self):
+        # criteria that match no rows must feed totals as 0, not NULL (Sigma's SumIf is NULL there)
+        model = trm.compute(self.plan)
+        empty = ["agg", "sum", "Revenue", ["op", "=", ["c", "Bucket"], ["s", "Nope"]]]
+        self.assertEqual(model.ev(["op", "+", empty, ["n", 5]], trm.Env(group=model.table_rows("tblOrders"))), 5)
+        parts = trm.build_parts(self.plan, "<dm>", trm.local_dm_elements(self.plan))
+        element = next(e for e in parts["visible"] if e["name"] == self.frame["title"])
+        for column in element["columns"][1:]:
+            formula = column["formula"]
+            if re.search(r"\b(Sum|Count|Min|Max)(If)?\(", formula) and "Avg" not in formula:
+                bare = re.sub(r"Coalesce\((?:Sum|Count|Min|Max)(?:If)?\(.*?\), 0\)", "", formula)
+                self.assertNotRegex(bare, r"\b(Sum|Count|Min|Max)(If)?\(", column["name"])
+        self.assertEqual(element["columns"][5]["formula"], "Avg([tblOrders/Revenue])")  # #DIV/0! stays an error
 
     def test_a_label_without_rows_is_refused_because_a_grouped_table_would_drop_it(self):
         path = self.dir / "ghost.xlsx"
@@ -416,7 +430,7 @@ class TestKeyedGrid(Workdir):
         self.assertEqual(formulas["Net Change"], "((-[Out]) + [In])")
         self.assertEqual(formulas["Projected balance"],
                          "(Lookup([tblItem/Opening], [Item], [tblItem/Item]) + CumulativeSum([Net Change]))")
-        self.assertEqual(formulas["Low"], "Min([Projected balance])")
+        self.assertEqual(formulas["Low"], "Coalesce(Min([Projected balance]), 0)")
         self.assertEqual(formulas["Short?"], 'If(([Low] < 20), "LOW", "")')
         group = element["groupings"][0]
         self.assertEqual(len(group["calculations"]), 2)  # the summary rides on the keyed grouping
@@ -487,7 +501,7 @@ class TestExpansionGrid(Workdir):
         self.assertIn('Lookup([Parameters/Value], "Uplift", [Parameters/Parameter])', measure)
         self.assertIn("[Period]", measure)
         pivot = next(e for e in parts["visible"] if e["kind"] == "pivot-table")
-        self.assertEqual(pivot["axisTotals"], [{"axisId": "grand-row-total", "visibility": "visible"}])
+        self.assertEqual(pivot["axisTotals"], [{"axisId": "grand-row-total", "visibility": "hidden"}])
 
     def test_read_only_tables_live_in_the_data_model_and_editable_ones_do_not(self):
         read_only = tr.draft_table_report(self.path, intent="read-only", connection="c", folder="f")[0]
@@ -795,6 +809,29 @@ class TestBroaderEightFixtures(unittest.TestCase):
         wide = next(t for t in plan["tables"] if t["name"] == "tblDeptBudget")
         self.assertEqual(wide["columns"][-1]["name"], "Total (Jan to Dec)")
         self.assertTrue(wide["columns"][-1]["synthetic"])
+
+    def test_04_empty_month_windows_and_missing_categories_are_coalesced_to_zero(self):
+        plan = self.plans["04"][0]
+        parts = trm.build_parts(plan, "<dm>", trm.local_dm_elements(plan))
+        element = next(e for e in parts["visible"] if e["name"] == "H2 FY26 Weighted Forecast")
+        formulas = {c["name"]: c["formula"] for c in element["columns"]}
+        self.assertTrue(formulas["Jul-26"].startswith("Coalesce(SumIf("))   # Jordan Lee has no July deals
+        self.assertEqual(formulas["Commit"].count("Coalesce(SumIf("), 2)   # both terms of the addition
+        rows = self.summary_rows("04", "s_h2_fy26_weighted_forecast")
+        self.assertEqual(rows["Jordan Lee"]["Jul-26"], 0)
+        self.assertEqual(rows["Sam Ortiz"]["Dec-26"], 0)
+        self.assertEqual(round(rows["Sam Ortiz"]["Total Weighted"], 2), 280200.0)
+
+    def test_no_emitted_element_asks_for_visible_axis_totals(self):
+        import workbook_wire
+        for key, plan_info in self.plans.items():
+            plan = plan_info[0]
+            spec = workbook_wire.wire_workbook(
+                trm.build_wb_spec(plan, "<dm>", trm.local_dm_elements(plan)))
+            for element in spec["contents"]["elements"]:
+                self.assertNotIn('"visibility": "visible"', json.dumps(element), (key, element["id"]))
+                for total in element.get("axisTotals", []):
+                    self.assertEqual(total["visibility"], "hidden")
 
     def test_every_fixture_plan_builds_specs_whose_references_resolve(self):
         for key, plan_info in self.plans.items():

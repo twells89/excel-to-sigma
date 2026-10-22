@@ -817,10 +817,14 @@ class Emitter:
             raise PlanError("aggregate outside a summary frame")
         value = self.agg_col(column) if column is not None else None
         cond = source.emit(flt) if flt is not None else None
+        # Excel's SUMIFS/COUNTIFS/MINIFS/MAXIFS give 0 for an empty match, Sigma's conditional
+        # aggregates give NULL (which then poisons any arithmetic), so they are wrapped in
+        # Coalesce(.., 0). AVERAGEIFS stays unwrapped: an empty match is #DIV/0! in Excel.
         if fn == "count":
-            return f"CountIf({cond})" if cond else f"Count({self.count_ref})"
+            return f"Coalesce(CountIf({cond}), 0)" if cond else f"Coalesce(Count({self.count_ref}), 0)"
         name = {"sum": "Sum", "avg": "Avg", "min": "Min", "max": "Max"}[fn]
-        return f"{name}If({value}, {cond})" if cond else f"{name}({value})"
+        text = f"{name}If({value}, {cond})" if cond else f"{name}({value})"
+        return text if fn == "avg" else f"Coalesce({text}, 0)"
 
 
 # ---- tables as the builders see them (plan tables + the parameter table)
@@ -1213,7 +1217,7 @@ def _pivot(plan, frame, fid, ids, rows, axis_col, axis_values):
     return {"id": pid, "kind": "pivot-table", "name": f"{title} (by period)",
             "source": {"kind": "table", "elementId": fid}, "columns": columns, "values": [value_id],
             "rowsBy": row_by, "columnsBy": [{"columnId": axis_id, "sort": {"direction": "ascending"}}],
-            "axisTotals": [{"axisId": "grand-row-total", "visibility": "visible"}], "style": dict(CARD)}
+            "axisTotals": [{"axisId": "grand-row-total", "visibility": "hidden"}], "style": dict(CARD)}
 
 
 def layout_xml(pages):
