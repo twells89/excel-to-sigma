@@ -88,7 +88,8 @@ ROUTES = {
         "handoffs": ["Paste seed.csv into the input table", "Publish", "Create warehouse view on the input table"],
     },
     # Formal Tables + formula grids (SUMIFS/COUNTIFS summaries, ordinal roster x period grids,
-    # running balances) that draft-table-report.py reproduces and verifies cell by cell.
+    # running balances, period ledgers such as a 13-week cash flow) that draft-table-report.py
+    # reproduces and verifies cell by cell.
     "table-report": {
         "refs": ["refs/sigma-build-gotchas.md", "refs/model-taxonomy.md", "refs/input-tables.md",
                  "refs/table-report-recipes.md"],
@@ -107,6 +108,8 @@ ROUTES = {
                      "(InputTable.upsert_rows; query first - it does not enforce keys)",
                      "Query a few summary cells and the running balance against the plan's parity targets "
                      "(CumulativeSum partition and grouped-table behaviour are live-validated only then)",
+                     "Set the selected scenario and other parameters in the Parameters input table "
+                     "(a workbook control is a filter, not a formula parameter)",
                      "Rebuild the source charts (CHARTS_PRESENT)", "Publish the workbook"],
     },
     # SUMIFS / driver signals, but not the shape the forecast drafter and builder support.
@@ -244,7 +247,8 @@ def plan(args):
         ] + (["The drafter may add plan review issues (e.g. FLAT_CARRY_POLICY); add their codes to "
               "review.json too before --post."] if kind == "forecast" else []
              ) + (["The drafter adds plan review issues (e.g. GROUPED_ROWS_FROM_DATA, "
-                   "RUNNING_BALANCE_PARTITION_REVIEW); add their codes to review.json too before --post."]
+                   "RUNNING_BALANCE_PARTITION_REVIEW, INDIRECT_SCENARIO_LOOKUP, LEDGER_TRANSPOSED); add their "
+                   "codes to review.json too before --post."]
                   if kind == "table-report" else []),
     }
     print(json.dumps(result, indent=2))

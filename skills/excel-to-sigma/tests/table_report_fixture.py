@@ -361,3 +361,115 @@ def build_a1_table(path):
         book.put(summary, f"B{r}", f"=SUMIFS(tblLines[Amount],tblLines[Kind],$A{r})",
                  sum(q * p for k, q, p in LINES if k == kind))
     book.save(path)
+
+
+# ----------------------------------------------------------------------------- cash ledger
+CASH_AR = [("INV-1", 100.0, 1), ("INV-2", 200.0, 1), ("INV-3", 50.0, 3), ("INV-4", 400.0, 5), ("INV-5", 70.0, 5)]
+CASH_AP = [("Acme", 30.0, 1), ("Acme", 20.0, 1), ("Bolt", 40.0, 4)]   # no unique vendor: a keyless table
+CASH_RATES = {"Base": 0.9, "Low": 0.5, "High": 1.0}
+CASH_RENT = [10, 0, 0, 0, 10]
+CASH_OPENING, CASH_MIN, CASH_SEED, CASH_GROWTH, CASH_PAYROLL = 1000.0, 300.0, 80.0, 0.1, 60.0
+CASH_FIRST_DAY = date(2026, 1, 2)
+CASH_ROWS = ["Week Ending", "Beginning Cash", "Collections", "New Sales", "Total Receipts", "Payroll", "Rent",
+             "Payments", "Total Out", "Net", "Ending Cash", "Cushion", "Lowest Ending"]
+
+
+def cash_expected(scenario="Base", weeks=5):
+    """Independent recomputation of the ledger (no drafter code) for ``scenario``."""
+    out = {name: [] for name in CASH_ROWS}
+    prev_end = None
+    for i in range(weeks):
+        week = i + 1
+        collections = sum(a for _, a, w in CASH_AR if w == week) * CASH_RATES[scenario]
+        new_sales = CASH_SEED * (1 + CASH_GROWTH) ** i
+        receipts = collections + new_sales
+        payroll = CASH_PAYROLL if week % 2 == 0 else 0
+        payments = sum(a for _, a, w in CASH_AP if w == week)
+        total_out = payroll + CASH_RENT[i] + payments
+        net = receipts - total_out
+        beginning = CASH_OPENING if prev_end is None else prev_end
+        ending = beginning + net
+        prev_end = ending
+        row = {"Week Ending": date.fromordinal(CASH_FIRST_DAY.toordinal() + 7 * i), "Beginning Cash": beginning,
+               "Collections": collections, "New Sales": new_sales, "Total Receipts": receipts,
+               "Payroll": payroll, "Rent": CASH_RENT[i], "Payments": payments, "Total Out": total_out,
+               "Net": net, "Ending Cash": ending, "Cushion": ending - CASH_MIN}
+        for name, value in row.items():
+            out[name].append(value)
+        out["Lowest Ending"].append(min(out["Ending Cash"]))
+    return out
+
+
+def build_cash(path, scenario="Base", sections=True, selected=None, stray=False):
+    """A 5-week cash ledger: SUMIFS rows x a scenario factor (INDIRECT over named cells), a growth recursion,
+    a MOD cadence, typed rent, a date row from a date parameter, a carried running balance, a running MIN,
+    SUM totals and a caption. ``Payments`` reads a keyless table (``Acme`` twice).
+
+    ``selected`` types a different scenario into the selector cell than the one the values were computed
+    for; ``stray`` adds a formula far below the ledger (outside any grid)."""
+    from openpyxl.workbook.defined_name import DefinedName
+
+    book = _Book()
+    cash = book.sheet("Cash")
+    inputs = book.sheet("Inputs")
+    book.table(book.sheet("Invoices"), "tblIn", ["Invoice", "Amount", "Week"], [list(r) for r in CASH_AR])
+    book.table(book.sheet("Bills"), "tblOut", ["Vendor", "Amount", "Pay Week"], [list(r) for r in CASH_AP])
+    for r, (label, value) in enumerate([("Scenario", selected or scenario), ("Opening cash", CASH_OPENING),
+                                        ("Minimum cash", CASH_MIN), ("Week 1 ends", CASH_FIRST_DAY),
+                                        ("Seed receipts", CASH_SEED), ("Weekly growth", CASH_GROWTH),
+                                        ("Payroll", CASH_PAYROLL)], 1):
+        inputs.cell(r, 1, label)
+        inputs.cell(r, 2, value)
+    inputs["B4"].number_format = DATE_FORMAT
+    inputs["A10"], inputs["B10"] = "Scenario", "Collection rate"
+    for r, (name, rate) in enumerate(CASH_RATES.items(), 11):
+        inputs.cell(r, 1, name)
+        inputs.cell(r, 2, rate)
+    names = {"Scenario": "Inputs!$B$1", "OpeningCash": "Inputs!$B$2", "MinCash": "Inputs!$B$3",
+             "Rate_Base": "Inputs!$B$11", "Rate_Low": "Inputs!$B$12", "Rate_High": "Inputs!$B$13"}
+    for name, ref in names.items():
+        book.wb.defined_names[name] = DefinedName(name, attr_text=ref)
+    weeks = 5
+    expected = cash_expected(scenario, weeks)
+    book.put(cash, "A1", '="Case: "&Scenario', f"Case: {scenario}")
+    cash["A3"] = "Wk"
+    for i in range(weeks):
+        cash.cell(3, 2 + i, i + 1)
+    cash.cell(3, 2 + weeks, "Total")
+    letters = [get_column_letter(2 + i) for i in range(weeks)]
+    rows, r = {}, 4
+    for name in CASH_ROWS:
+        if sections and name in ("Collections", "Payroll"):
+            cash.cell(r, 1, "Receipts" if name == "Collections" else "Disbursements")
+            r += 1
+        rows[name] = r
+        cash.cell(r, 1, name)
+        r += 1
+    rr = rows
+    for i, col in enumerate(letters):
+        prev = letters[i - 1] if i else None
+        formulas = {
+            "Week Ending": ("=Inputs!$B$4" if i == 0 else f"={prev}{rr['Week Ending']}+7"),
+            "Beginning Cash": ("=OpeningCash" if i == 0 else f"={prev}{rr['Ending Cash']}"),
+            "Collections": f"=SUMIFS(tblIn[Amount],tblIn[Week],{col}$3)*INDIRECT(\"Rate_\"&Scenario)",
+            "New Sales": ("=Inputs!$B$5" if i == 0 else f"={prev}{rr['New Sales']}*(1+Inputs!$B$6)"),
+            "Total Receipts": f"={col}{rr['Collections']}+{col}{rr['New Sales']}",
+            "Payroll": f"=IF(MOD({col}$3,2)=0,Inputs!$B$7,0)",
+            "Payments": f"=SUMIFS(tblOut[Amount],tblOut[Pay Week],{col}$3)",
+            "Total Out": f"=SUM({col}{rr['Payroll']}:{col}{rr['Payments']})",
+            "Net": f"={col}{rr['Total Receipts']}-{col}{rr['Total Out']}",
+            "Ending Cash": f"={col}{rr['Beginning Cash']}+{col}{rr['Net']}",
+            "Cushion": f"={col}{rr['Ending Cash']}-MinCash",
+            "Lowest Ending": f"=MIN($B${rr['Ending Cash']}:{col}{rr['Ending Cash']})",
+        }
+        for name, formula in formulas.items():
+            book.put(cash, f"{col}{rr[name]}", formula, expected[name][i], date_format=name == "Week Ending")
+        cash[f"{col}{rr['Rent']}"] = CASH_RENT[i]
+    total_col = get_column_letter(2 + weeks)
+    for name in ("Collections", "New Sales", "Total Receipts", "Payroll", "Rent", "Payments", "Total Out", "Net"):
+        book.put(cash, f"{total_col}{rr[name]}", f"=SUM(B{rr[name]}:{letters[-1]}{rr[name]})", sum(expected[name]))
+    if stray:
+        cash["A30"] = "Scratch"
+        book.put(cash, "B30", "=B5+1", CASH_OPENING + 1)
+    book.save(path)
+    return {"rows": rr, "expected": expected}
