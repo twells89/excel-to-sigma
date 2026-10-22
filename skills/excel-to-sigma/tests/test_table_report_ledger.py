@@ -343,7 +343,7 @@ class TestLedgerModelPieces(unittest.TestCase):
 
     def test_emitter_renders_the_new_nodes(self):
         em = trm.Emitter(col=lambda n: f"[{n}]", period="[Wk]")
-        self.assertEqual(em.emit(["f", "MOD", ["period"], ["n", 2]]), "Mod([Wk], 2)")
+        self.assertEqual(em.emit(["f", "MOD", ["period"], ["n", 2]]), "Mod(Mod([Wk], 2) + 2, 2)")
         self.assertEqual(em.emit(["op", "^", ["n", 2], ["period"]]), "Power(2, [Wk])")
         self.assertEqual(em.emit(["cummin", ["c", "E"], None, "Wk"]), "CumulativeMin([E])")
         self.assertEqual(em.emit(["f", "ADDDAYS", ["pd", "d"], ["n", 7]]),
@@ -385,7 +385,7 @@ class TestLedgerEmission(Workdir):
         self.assertEqual(formulas["Wk"], "[Cash Periods/Wk]")
         self.assertEqual(formulas["Rent"], "Coalesce([Cash Periods/Rent], 0)")
         self.assertEqual(formulas["Payroll"],
-                         'If((Mod([Wk], 2) = 0), Lookup([Parameters/Value], "Payroll", [Parameters/Parameter]), 0)')
+                         'If((Mod(Mod([Wk], 2) + 2, 2) = 0), Lookup([Parameters/Value], "Payroll", [Parameters/Parameter]), 0)')
         self.assertEqual(formulas["Payments"],
                          "Coalesce(Lookup([tblOut by Pay Week/Amount], [Wk], [tblOut by Pay Week/Pay Week]), 0)")
         self.assertEqual(formulas["Ending Cash"],

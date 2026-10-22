@@ -125,6 +125,17 @@ def col_values(tab, name):
     return column.formulas if column.kind == "literal" else column.cached
 
 
+WILDCARD_RE = re.compile(r"[*?~]")
+
+
+def _wildcard_free(value, where, what):
+    """Excel reads ``* ? ~`` in a label/criteria cell as wildcards (and ``~`` as an escape); Sigma matches
+    text exactly, so such a label would silently match different rows. Refuse it, naming the cell."""
+    if isinstance(value, str) and WILDCARD_RE.search(value):
+        raise PlanDraftError(f"{where}: {what} {value!r} contains * ? or ~, which Excel treats as wildcards in "
+                             "criteria and MATCH but Sigma matches literally; rename the label")
+
+
 # ---------------------------------------------------------------- workbook model
 class Col:
     def __init__(self, name, kind, cells, formulas, cached, fmt):
@@ -146,6 +157,10 @@ class Tab:
             if column.name == name:
                 return column
         return None
+
+    def cells_of(self, name):
+        column = self.col(name)
+        return column.cells if column is not None else []
 
 
 def _infer_type(values, where, name):
@@ -470,13 +485,17 @@ class Lowerer:
             raise self.fail(f"table {node.table} has no column {kind[1]!r}")
         return table, kind[1]
 
-    def lookup_node(self, key_ir, key_table, key_col, value_table, value_col, default):
+    def lookup_node(self, key_ir, key_table, key_col, value_table, value_col, default, wildcards=False):
         if key_table is not value_table:
             raise self.fail("lookup key and result columns belong to different tables")
         keys = [k for k in col_values(key_table, key_col) if k is not None]
-        if len(set(keys)) != len(keys):
-            raise self.fail(f"lookup key {key_table.name}[{key_col}] has duplicate values; Sigma's Lookup "
-                            "would not match Excel's first-match rule")
+        folded = [k.lower() if isinstance(k, str) else k for k in keys]
+        if len(set(folded)) != len(folded):
+            raise self.fail(f"lookup key {key_table.name}[{key_col}] has duplicate values (text keys are "
+                            "compared ignoring case); Sigma's Lookup would not match Excel's first-match rule")
+        if wildcards:     # MATCH(.., 0) reads * ? ~ in its lookup value as wildcards
+            for coord, key in zip(key_table.cells_of(key_col), col_values(key_table, key_col)):
+                _wildcard_free(key, coord, f"{key_table.name}[{key_col}] key")
         return ["lk", key_table.name, key_ir, key_col, value_col, default]
 
     def xlookup(self, node):
@@ -500,7 +519,8 @@ class Lowerer:
             if len(match) == 3 and isinstance(match[2], Number) and match[2].value == 0:
                 value_table, value_col = self.table_ref(args[0], "INDEX return column")
                 key_table, key_col = self.table_ref(match[1], "MATCH lookup column")
-                return self.lookup_node(self.lower(match[0]), key_table, key_col, value_table, value_col, None)
+                return self.lookup_node(self.lower(match[0]), key_table, key_col, value_table, value_col, None,
+                                        wildcards=True)
         raise self.fail("INDEX is only supported as INDEX(tblX[Col], MATCH(key, tblX[Key], 0)) here")
 
     def param_ref(self, ref):
@@ -738,6 +758,7 @@ class SummaryCtx(Ctx):
                 total_name = f"Total ({kind[1]} to {kind[2]})"
                 self.reg.added_columns.append((table.name, total_name, span))
                 key = low.lower(match[0])
+                low.lookup_node(key, key_table, key_col, key_table, key_col, None, wildcards=True)
                 return ["lk", table.name, key, key_col, total_name, None]
         raise low.fail("INDEX with a column range is only supported as "
                        "SUM(INDEX(tblX[[A]:[B]], MATCH(label, tblX[Key], 0), 0))")
@@ -1151,6 +1172,7 @@ class Drafter:
             raise PlanDraftError(f"{block.sheet}: ordinal grid must expand exactly one table "
                                  f"(found {sorted(bases) or 'none'})")
         base = self.tabs[next(iter(bases))]
+        row_key = self.expansion_row_key(block, base, attr)
         if base.n != len(labels):
             raise PlanDraftError(f"{block.sheet}: ordinal rows 1..{len(labels)} do not cover all "
                                  f"{base.n} rows of {base.name}; a full expansion would add rows Excel omits")
@@ -1191,7 +1213,8 @@ class Drafter:
         fmt = _fmt_kind(block.ws.cell(block.first_row, first_col))
         self.frames.append({
             "id": frame_id, "kind": "expansion", "title": title, "sheet": block.sheet,
-            "base": base.name, "attrs": [attr[c] for c in sorted(attr)], "measure": measure_name,
+            "base": base.name, "attrs": ([row_key] if row_key else []) + [attr[c] for c in sorted(attr)],
+            "measure": measure_name,
             "axis": {"name": axis_name, "type": "datetime", "values": [p.isoformat() for p in periods]},
             "columns": [{"name": measure_name, "type": measure_type, "expr": measure_ir,
                          **({"format": fmt} if fmt else {})}]})
@@ -1228,6 +1251,34 @@ class Drafter:
                             [[_addr(block.sheet, r, rowtotal), [i], self.cached(block, r, rowtotal)]
                              for i, r in enumerate(block.rows)])
 
+    def expansion_row_key(self, block, base, attr):
+        """The pivot over an expansion groups by the attribute columns the grid shows, so those must
+        identify ONE base row each, or distinct rows collapse into one (a roster grid showing only
+        ``Dept`` becomes one row per department). Returns the base column to lead the row dimensions
+        with when the shown attributes are not unique, else ``None``; raises when no column can."""
+        shown = [attr[c] for c in sorted(attr)]
+        keys = [tuple(col_values(base, name)[i] for name in shown) for i in range(base.n)]
+        if shown and len(set(keys)) == len(keys):
+            return None
+        for column in base.columns:
+            if column.kind != "literal" or column.name in shown:
+                continue
+            values = col_values(base, column.name)
+            if all(v is not None for v in values) and len(set(values)) == len(values):
+                self.issues.append({
+                    "code": "EXPANSION_ROW_KEY_ADDED", "severity": "review",
+                    "route": "expansion-row-key-review",
+                    "message": f"{block.sheet}: the grid shows {shown or 'no attribute columns'}, which do not "
+                               f"identify one {base.name} row, so the Sigma pivot also groups by "
+                               f"{base.name}[{column.name}] (a unique column) to keep one pivot row per "
+                               f"{base.name} row, as in Excel; the pivot therefore shows that extra column.",
+                    "evidence": [f"{block.sheet}!{get_column_letter(block.lc)}{block.first_row}"]})
+                return column.name
+        where = _addr(block.sheet, block.first_row, min(attr) if attr else block.lc)
+        raise PlanDraftError(f"{where}: the columns this grid shows from {base.name} ({shown or 'none'}) do not "
+                             f"identify one row each and {base.name} has no unique, non-blank column to add, so "
+                             "a Sigma pivot would merge distinct rows; add a unique key column to the table")
+
     @staticmethod
     def rename_axis(node, axis_name):
         if isinstance(node, list):
@@ -1258,6 +1309,7 @@ class Drafter:
         for r, v in zip(block.rows, labels):
             if _is_formula(v) or v is None:
                 raise PlanDraftError(f"{_addr(block.sheet, r, block.lc)}: row labels must be literal values")
+            _wildcard_free(v, _addr(block.sheet, r, block.lc), "row label")
         header_names = {}
         matrix_cols, summary_cols, literal_cols = [], [], []
         for col in block.cols:
@@ -1666,9 +1718,90 @@ def list_charts(wf, checks=()):
     return out
 
 
+# ---------------------------------------------------------------- text-case hazards
+def _frame_tables(frame, frames):
+    """Names of the plan tables whose columns a frame's expressions read."""
+    kind = frame["kind"]
+    if kind == "expansion":
+        return [frame["base"]]
+    if kind == "keyed":
+        return [frame["table"]]
+    if kind == "ledger":
+        return [frame["spine"]]
+    source = frame["source"]
+    if source["kind"] == "table":
+        return [source["name"]]
+    parent = next((f for f in frames if f["id"] == source["name"]), None)
+    return _frame_tables(parent, frames) if parent else []
+
+
+def _text_literal_compares(expr):
+    """``(column, literal)`` for every comparison of a column with a non-empty text literal."""
+    for node in trm.walk(expr):
+        if node[0] == "op" and node[1] in trm.COMPARE:
+            for column, literal in ((node[2], node[3]), (node[3], node[2])):
+                if column[0] == "c" and literal[0] == "s" and literal[1] != "":
+                    yield column[1], literal[1]
+
+
+def reject_case_hazards(plan, tabs):
+    """Excel compares text case-insensitively everywhere (``=``, SUMIFS criteria, MATCH, grouping into
+    one row per label); Sigma compares exactly. Rather than guess, refuse a workbook whose data would
+    behave differently: case variants of one value in a column the report groups by, or a text literal
+    that the data holds in another case. Raises ``PlanDraftError`` naming the cell."""
+    def text_column(table, name):
+        tab = tabs.get(table)
+        column = tab.col(name) if tab is not None else None
+        if column is None or column.kind != "literal" or column.type != "text":
+            return None
+        return column
+
+    def collisions(table, name, why):
+        column = text_column(table, name)
+        if column is None:
+            return
+        first = {}
+        for coord, value in zip(column.cells, column.formulas):
+            if isinstance(value, str):
+                other = first.setdefault(value.lower(), (coord, value))
+                if other[1] != value:
+                    raise PlanDraftError(f"{coord}: {table}[{name}] holds {value!r} and {other[1]!r} "
+                                         f"({other[0]}), the same text in different case; {why}")
+
+    def against_literal(table, name, literal, where):
+        column = text_column(table, name)
+        if column is None:
+            return
+        for coord, value in zip(column.cells, column.formulas):
+            if isinstance(value, str) and value != literal and value.lower() == literal.lower():
+                raise PlanDraftError(f"{coord}: {table}[{name}] holds {value!r} but {where} compares it with "
+                                     f"{literal!r}; Excel matches text ignoring case, Sigma exactly")
+
+    for table in plan["tables"]:
+        for column in table["columns"]:
+            if "expr" in column:
+                for name, literal in _text_literal_compares(column["expr"]):
+                    against_literal(table["name"], name, literal, f"{table['name']}[{column['name']}]")
+                for node in trm.walk(column["expr"]):
+                    if node[0] == "lk":
+                        collisions(node[1], node[3], "Sigma's Lookup would not match Excel's case-insensitive match")
+    for frame in plan["frames"]:
+        for name in _frame_tables(frame, plan["frames"]):
+            for column in frame["columns"]:
+                for col, literal in _text_literal_compares(column["expr"]):
+                    against_literal(name, col, literal, f"{frame['title']}[{column['name']}]")
+                for node in trm.walk(column["expr"]):
+                    if node[0] == "lk":
+                        collisions(node[1], node[3], "Sigma's Lookup would not match Excel's case-insensitive match")
+            if frame["kind"] == "summary":
+                collisions(name, frame["by"], "Excel merges them into one row, a Sigma grouped table keeps two")
+            if frame["kind"] == "keyed":
+                collisions(name, frame["rowKey"], "Excel merges them into one row, a Sigma grouped table keeps two")
+
+
 # ---------------------------------------------------------------- entry point
 def draft_table_report(source, *, intent, connection, folder, name=None, currency_format="$,.0f",
-                       pct_format=".1%", tolerance=0.01):
+                       pct_format=".1%", tolerance=None):
     """Return ``(plan, summary)``; raise ``PlanDraftError`` on any shape or value it cannot prove."""
     if intent not in INTENTS:
         raise PlanDraftError(f"intent must be one of {', '.join(INTENTS)}")
@@ -1782,6 +1915,7 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
         ],
         "draftReviewIssues": issues,
     }
+    reject_case_hazards(plan, tabs)
     try:
         trm.validate_plan(plan)
         model = trm.compute(plan)

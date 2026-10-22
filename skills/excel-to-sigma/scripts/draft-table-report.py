@@ -3,8 +3,8 @@
 
 Reads the tables (literal columns = data, calculated columns = row formulas) and the report
 grids (summary / expansion / keyed), lowers every formula to a small IR, recomputes every
-recognised cell from the table data, and compares it with Excel's cached value (tolerance
-0.01; text flags exact). It writes a source-bound plan JSON. Any formula it does not
+recognised cell from the table data, and compares it with Excel's cached value (tight
+relative tolerance, float noise only; text flags exact). It writes a source-bound plan JSON. Any formula it does not
 recognise, and any mismatch, fails with the exact sheet!cell - nothing is coerced and no
 cached value is frozen into the plan as a "conversion".
 
@@ -33,8 +33,9 @@ def parse_args(argv=None):
     parser.add_argument("--name", help="workbook name (default: workbook title, else file stem)")
     parser.add_argument("--currency-format", default="$,.0f")
     parser.add_argument("--pct-format", default=".1%")
-    parser.add_argument("--tolerance", type=float, default=0.01,
-                        help="absolute tolerance when re-deriving cached values (default: 0.01)")
+    parser.add_argument("--tolerance", type=float, default=None,
+                        help="absolute tolerance when re-deriving cached values (default: tight "
+                             "max(1e-6, 1e-12*|value|), i.e. float noise only)")
     parser.add_argument("--out", required=True, help="plan JSON to write")
     return parser.parse_args(argv)
 
