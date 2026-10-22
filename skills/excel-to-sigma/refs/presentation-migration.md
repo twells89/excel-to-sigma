@@ -131,6 +131,12 @@ its exact native formula. Inventory uses `logicalElementId=inventory` and
 Amount count KPI column. These are pending review/runtime targets, not approval
 or parity evidence.
 
+Sales Overview `B6`/`B7` scalar totals have a separate
+[source-scoped native KPI append planner](source-scalar-kpis.md). Its contract is
+exposed as `sourceScopedScalars`; its physical-row identity receipt and actual
+assigned-ID readback are required before target ownership. Keep these additions
+outside the full-contents path on workbooks containing private native actions.
+
 Before the presentation PUT, run `presentation-inputs.py bind-target` with the
 latest GET/readback document ID and version. Re-run it after a research column
 extension changes the version, then approve the assigned post-extension
