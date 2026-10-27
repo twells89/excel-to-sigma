@@ -105,6 +105,20 @@ class TestLookupKpis(unittest.TestCase):
             self.assertNotIn("Total Amount", [k["label"] for k in broken["presentation"]["kpis"]])
             self.assertTrue(any(n["code"] == "PRESENTATION_ELEMENT_DROPPED" for n in notes))
 
+    def test_a_failed_kpi_with_a_colon_does_not_drop_its_shorter_peer(self):
+        plan = copy.deepcopy(self.plan)
+        short = next(k for k in plan["presentation"]["kpis"] if k["label"] == "Budget")
+        colon = copy.deepcopy(short)
+        colon.update(id=f"{short['id']}_actual", label="Budget: Actual")
+        plan["presentation"]["kpis"].append(colon)
+        model = trm.compute(plan)
+        problem = "KPI Budget: Actual: emitted 1 vs oracle 2"
+        with mock.patch.object(pres, "check_emitted", return_value=([], [problem], [])):
+            pres.drop_unexpressible(plan, model)
+        labels = [k["label"] for k in plan["presentation"]["kpis"]]
+        self.assertIn("Budget", labels)
+        self.assertNotIn("Budget: Actual", labels)
+
     def test_a_draft_carries_a_drop_as_a_review_issue(self):
         path = build_budget(Path(self.tmp.name) / "braces.xlsx", regions=("East", "We}}st", "North"))
         plan, info = draft(path)
@@ -292,6 +306,29 @@ class TestLedgerChartPeriods(unittest.TestCase):
         axis = next(f for f in plan["frames"] if f["kind"] == "ledger")["axis"]
         self.assertTrue(column["formula"].endswith(f"/{axis}]"))
         self.assertTrue(column.get("hidden"))
+
+    def test_the_period_column_honors_the_hidden_column_surface(self):
+        plan = self.draft_with_chart(4)
+        self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
+        ps.SURFACES["chart_hidden_column"] = False
+        el = element(wb_spec(plan), plan["presentation"]["charts"][0]["id"])
+        flt = el["filters"][0]
+        column = next(c for c in el["columns"] if c["id"] == flt["columnId"])
+        self.assertNotIn("hidden", column)
+
+    def test_a_failed_chart_with_a_colon_does_not_drop_its_shorter_peer(self):
+        plan = self.draft_with_chart(4)
+        short = plan["presentation"]["charts"][0]
+        colon = copy.deepcopy(short)
+        colon.update(id=f"{short['id']}_first", title="Collections: First")
+        plan["presentation"]["charts"].append(colon)
+        model = trm.compute(plan)
+        problem = "chart Collections: First: emitted series do not match"
+        with mock.patch.object(pres, "check_emitted", return_value=([], [problem], [])):
+            pres.drop_unexpressible(plan, model)
+        titles = [chart["title"] for chart in plan["presentation"]["charts"]]
+        self.assertIn("Collections", titles)
+        self.assertNotIn("Collections: First", titles)
 
     def test_a_chart_over_every_period_needs_no_filter(self):
         plan = self.draft_with_chart(6)
