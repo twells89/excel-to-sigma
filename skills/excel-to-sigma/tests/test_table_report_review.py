@@ -570,6 +570,17 @@ class TestDropsByElementId(unittest.TestCase):
                          ["ch_weighted_pipeline_by_owner_month", "ch_pipeline_by_stage"])
         self.assertEqual(len([n for n in notes if n["code"] == "PRESENTATION_ELEMENT_DROPPED"]), 2)
 
+    def test_brackets_in_a_problem_message_do_not_hide_the_element_id(self):
+        plan, _ = draft(SOURCES["04"])
+        plan = copy.deepcopy(plan)
+        chart = plan["presentation"]["charts"][0]
+        chart["series"][0]["values"][0] += 1                                 # this chart's first point disagrees
+        problems = [f"chart {chart['title']} [{chart['id']}]: Jul-26 at Cost [USD]: emitted 1 vs verified 2"]
+        with mock.patch.object(pres, "check_emitted", return_value=([], problems, [])):
+            notes = pres.drop_unexpressible(plan, trm.compute(plan))
+        self.assertNotIn(chart["id"], [c["id"] for c in plan["presentation"]["charts"]])
+        self.assertTrue(any(n["code"] == "PRESENTATION_ELEMENT_DROPPED" for n in notes))
+
     def test_the_problems_name_the_element_id(self):
         plan, _ = draft(SOURCES["04"])
         plan = copy.deepcopy(plan)

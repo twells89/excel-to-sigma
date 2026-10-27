@@ -628,11 +628,17 @@ def drop_unexpressible(plan, model):
     presentation["kpis"], presentation["charts"] = kept, charts
     # the emitted formulas themselves, evaluated over the plan's base rows, against the oracle
     _, problems, _ = check_emitted(plan, model)
+    # keyed by element id: a repeated label / title drops only one. Each problem starts with the exact
+    # "KPI <label> [<id>]: " / "chart <title> [<id>]: " prefix check_emitted wrote; match that prefix
+    # rather than parse brackets, since a label, series title or category may hold "[...]: " itself
+    prefixes = {f"KPI {kpi['label']} [{kpi['id']}]: ": kpi["id"] for kpi in presentation["kpis"]}
+    prefixes.update({f"chart {chart['title']} [{chart['id']}]: ": chart["id"] for chart in presentation["charts"]})
     failing = {}
-    for problem in problems:                   # "KPI <label> [<id>]: ..." / "chart <title> [<id>]: ..."
-        found = re.match(r"(?:KPI|chart) .*\[([^\[\]]+)\]: (.*)$", problem, re.S)
-        if found:                              # keyed by element id: a repeated label / title drops only one
-            failing.setdefault(found.group(1), found.group(2))
+    for problem in problems:
+        matches = [prefix for prefix in prefixes if problem.startswith(prefix)]
+        if matches:
+            prefix = max(matches, key=len)
+            failing.setdefault(prefixes[prefix], problem[len(prefix):])
     for kpi in list(presentation["kpis"]):
         if kpi["id"] in failing:
             presentation["kpis"].remove(kpi)
