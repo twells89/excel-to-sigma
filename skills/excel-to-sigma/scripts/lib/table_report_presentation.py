@@ -623,14 +623,22 @@ def drop_unexpressible(plan, model):
     presentation["kpis"], presentation["charts"] = kept, charts
     # the emitted formulas themselves, evaluated over the plan's base rows, against the oracle
     _, problems, _ = check_emitted(plan, model)
-    failing = {p.split(":")[0] for p in problems}
+    failure_prefixes = {
+        **{f"KPI {kpi['label']}:": [] for kpi in presentation["kpis"]},
+        **{f"chart {chart['title']}:": [] for chart in presentation["charts"]},
+    }
+    for problem in problems:
+        matches = [prefix for prefix in failure_prefixes if problem.startswith(prefix)]
+        if matches:
+            failure_prefixes[max(matches, key=len)].append(problem)
     for kpi in list(presentation["kpis"]):
-        if f"KPI {kpi['label']}" in failing:
+        prefix = f"KPI {kpi['label']}:"
+        if failure_prefixes[prefix]:
             presentation["kpis"].remove(kpi)
             drop("KPI", kpi["label"], "not emitted (its emitted formula does not match the oracle: "
-                 + next(p for p in problems if p.startswith(f"KPI {kpi['label']}:")).split(": ", 1)[1] + ")")
+                 + failure_prefixes[prefix][0][len(prefix):].lstrip() + ")")
     for chart in list(presentation["charts"]):
-        if f"chart {chart['title']}" in failing:
+        if failure_prefixes[f"chart {chart['title']}:"]:
             presentation["charts"].remove(chart)
             notes.append({"code": "PRESENTATION_ELEMENT_DROPPED", "kind": "chart",
                           "message": f"{chart['title']} ({chart['kind']}) on {chart['sheet']!r}: not emitted "
@@ -782,7 +790,10 @@ def _chart_elements(plan, chart, meta, accent):
             p_id = x_id
         else:
             p_id = f"{cid}_p"
-            columns.append({"id": p_id, "name": axis, "formula": f"[{label}/{axis}]", "hidden": True})
+            p_column = {"id": p_id, "name": axis, "formula": f"[{label}/{axis}]"}
+            if ps.SURFACES["chart_hidden_column"]:
+                p_column["hidden"] = True
+            columns.append(p_column)
         element["filters"] = [{"id": f"{cid}_f", "columnId": p_id, "kind": "list", "mode": "include",
                                "values": periods}]
     if chart["kind"] in ("donut", "pie"):
