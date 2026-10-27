@@ -444,8 +444,9 @@ class TestPipelinePresentation(unittest.TestCase):
         self.assertEqual(total["source"], {"kind": "table", "elementId": "w_tblpipeline"})
         self.assertIn("SumIf([tblPipeline/Weighted Amount]", total["columns"][0]["formula"])
         self.assertEqual(quota["source"], {"kind": "table", "elementId": "w_h2_fy26_weighted_forecast_inputs"})
-        self.assertEqual(quota["columns"][0]["formula"],
-                         "Coalesce(Sum([H2 FY26 Weighted Forecast Inputs/Quota]), 0)")
+        self.assertEqual(quota["columns"][0]["formula"].split(", (")[0],      # always limited to the frame's labels
+                         "Coalesce(SumIf([H2 FY26 Weighted Forecast Inputs/Quota]")
+        self.assertIn('[H2 FY26 Weighted Forecast Inputs/Owner] = "Alex Kim"', quota["columns"][0]["formula"])
         self.assertEqual(total["name"]["text"], "TOTAL WEIGHTED")
 
     def test_a_kpi_that_spans_two_sources_is_a_text_card_matching_the_kpi_charts(self):

@@ -107,6 +107,19 @@ def main(argv=None):
             print("  " + problem, file=sys.stderr)
         return 1
 
+    # the EMITTED KPI / chart formulas, evaluated over the plan's base rows, equal the oracle
+    shown, bad, unverified = presentation.check_emitted(plan, model, args.parity_tolerance)
+    for line in shown:
+        print(line)
+    for name in unverified:
+        print(f"EMITTED UNVERIFIED {name}: the offline evaluator does not model it (running sums)")
+    if bad:
+        print(f"EMITTED PRESENTATION FAILED - {len(bad)} emitted KPI / chart value(s) differ; no specs written:",
+              file=sys.stderr)
+        for problem in bad[:10]:
+            print("  " + problem, file=sys.stderr)
+        return 1
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     try:

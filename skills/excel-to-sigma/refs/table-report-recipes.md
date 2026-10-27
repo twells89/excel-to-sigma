@@ -74,7 +74,7 @@ the workbook to be one of those verified cells. Any unrecognised formula, any mi
 formula cell outside a recognised grid raises `PlanDraftError` naming `Sheet!Cell` - nothing is
 coerced and cached values are never frozen into the plan as a conversion.
 
-Blanks follow Excel, not SQL: an operand that can be blank (a blank cell in the data, or a lookup into one) is emitted as `Coalesce(x, 0)` / `Coalesce(x, "")` where Excel reads it as 0 / "", aggregate criteria use Excel's criteria rules (a blank matches only `<>`), and a formula cell that would be a blank is `0`. `tests/sigma_formula_eval.py` evaluates the EMITTED formulas with SQL NULL logic and compares every verified cell with Excel's cached value.
+Blanks follow Excel, not SQL: an operand that can be blank (a blank cell in the data, or a lookup into one) is emitted as `Coalesce(x, 0)` / `Coalesce(x, "")` where Excel reads it as 0 / "", aggregate criteria use Excel's criteria rules (a blank matches only `<>`), and a formula cell that would be a blank is `0`. `scripts/lib/sigma_formula_eval.py` evaluates the EMITTED formulas with SQL NULL logic and compares every verified cell with Excel's cached value.
 
 `build-table-report.py` re-runs the same check from the plan alone (`checks[]` hold the cached
 values) and then prints headline parity per summary frame and numeric column; a mismatch exits 1
@@ -149,11 +149,20 @@ Page order: header band, KPI row (`1/7 .. 19/25`, 7 rows), the hero chart full w
 band, one accent (not sprayed), no nested cards (KPIs carry their own card style), quiet labels instead of
 competing headings, no wide-table squeeze or empty card space, no navy slideware band.
 
+Gate: `check_emitted` (and `build-table-report.py`, exit 1) evaluates the EMITTED KPI and chart formulas over the plan's
+base rows with `scripts/lib/sigma_formula_eval.py` and compares them with the oracle; the drafter drops a KPI / chart that
+fails or cannot be emitted from source columns (lookup tables with duplicate keys, a label holding `}}` / `|` in a
+text card, a ledger chart over some periods without the list filter) and records review issue
+`PRESENTATION_ELEMENT_DROPPED`. Lookup KPIs always sum only the rows keyed by the frame's labels. Scaling commas
+(`#,##0,"K"`) show the full number without the unit (`NUMBER_FORMAT_APPROXIMATED`); a grid longer than
+`MAX_ORDER_LABELS` (40) keeps Sigma's key order (`SOURCE_ORDER_OMITTED`). Running-sum frames (ledger, keyed) are
+`EMITTED UNVERIFIED`: the evaluator does not model them.
+
 Verified live in a dry-run + render: the grouping `sort` / hidden `Min` calculation, source-level KPI and chart
 formulas, the KPI name / value styling, the text-card body and `labelAngle`. Still unconfirmed: the d3 `(` sign,
 `hidden` on a chart sort column, a `list` filter on a chart, `tableStyle.textStyles.header` vs `columnHeader` on
 pivots. Emitted KPI / series formulas are evaluated offline over the plan's base rows
-(`tests/sigma_formula_eval.py`) and must equal the oracle's frame cells.
+(`scripts/lib/sigma_formula_eval.py`) and must equal the oracle's frame cells.
 
 ## Charts
 

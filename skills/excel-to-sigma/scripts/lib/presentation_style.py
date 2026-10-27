@@ -194,6 +194,8 @@ def kpi_text_card(element_id, label, formula, fmt):
     Returns ``(container, text)``; the container carries the id of the KPI."""
     spec = (fmt or {}).get("formatString")
     value = f"{{{{{formula} | {spec}}}}}" if spec else f"{{{{{formula}}}}}"
+    value = (f"{_markup((fmt or {}).get('prefix', ''), strip=False)}{value}"
+             f"{_markup((fmt or {}).get('suffix', ''), strip=False)}")
     body = (f'<span style="color: {ROLES["muted"]}; font-size: {KPI_LABEL_PX}px">{_markup(label)}</span>\n\n'
             f'<span style="font-size: {KPI_VALUE_PX}px">**{value}**</span>')
     text = {"id": f"{element_id}_t", "kind": "text", "verticalAlign": "center", "body": body}
@@ -255,11 +257,11 @@ def single_color(hex_color):
     return {"by": "single", "value": hex_color} if SURFACES["chart_color_single"] else None
 
 
-def _markup(text):
+def _markup(text, strip=True):
     """Body text for a span: markdown/HTML specials neutralised (titles come from workbook cells)."""
-    return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            .replace("*", "\\*").replace("{", "(").replace("}", ")")
-            .replace("\n", " ").strip())
+    out = (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+           .replace("*", "\\*").replace("{", "(").replace("}", ")").replace("\n", " "))
+    return out.strip() if strip else out
 
 
 # ---------------------------------------------------------------- grid geometry (24-column page)

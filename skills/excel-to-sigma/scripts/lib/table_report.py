@@ -1932,6 +1932,15 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
                        "(or a plain number) was used. Confirm the display, not the values.",
             "evidence": [f"{code}: {'; '.join(note['reasons'])} (at {', '.join(note['where'][:3])})"
                          for code, note in reg.format_notes.items()]})
+    too_long = [f"{f['title']}: {len(f['labels'])} rows" for f in drafter.frames
+                if f["kind"] in ("summary", "keyed") and not f.get("hidden")
+                and len(f.get("labels") or []) > trm.MAX_ORDER_LABELS]
+    if too_long:
+        issues.append({
+            "code": "SOURCE_ORDER_OMITTED", "severity": "review", "route": "source-order-review",
+            "message": f"These grids have more than {trm.MAX_ORDER_LABELS} rows, too many for a source-order "
+                       "formula; Sigma's key order is used instead of the sheet's row order.",
+            "evidence": too_long})
     if any(f["kind"] == "summary" and not f.get("helper") for f in drafter.frames):
         issues.append({
             "code": "GROUPED_ROWS_FROM_DATA", "severity": "review", "route": "grouped-rows-from-data-review",
@@ -1975,6 +1984,14 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
     finalize_formats(plan, model)
     presentation, unmapped = pres.propose(plan, wf, src, model)
     plan["presentation"], plan["unmappedCharts"] = presentation, unmapped
+    notes = presentation.pop("notes", [])
+    if notes:
+        issues.append({
+            "code": "PRESENTATION_ELEMENT_DROPPED", "severity": "review", "route": "presentation-review",
+            "message": "These KPIs / charts could not be emitted from the frame's source columns (or their "
+                       "emitted formulas did not match the verified values), so they are left out of the "
+                       "Report page; values are unaffected.",
+            "evidence": [n["message"] for n in notes]})
     lines, problems = pres.check_presentation(plan, model, tolerance)
     if problems:
         raise PlanDraftError("the drafted presentation does not reproduce the verified cells "

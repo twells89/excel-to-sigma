@@ -39,7 +39,7 @@ EXACT = [
     ("[$$-409]#,##0.00", "currency", num("$,.2f"), False),
     ("€#,##0", "currency", num(",.0f", prefix="€"), False),
     ("£#,##0.00", "currency", num(",.2f", prefix="£"), False),
-    ("[$€-407] #,##0", "currency", num(",.0f", prefix="€"), False),
+    ("[$€-407] #,##0", "currency", num(",.0f", prefix="€ "), False),
     ("[$£-809]#,##0.00", "currency", num(",.2f", prefix="£"), False),
     ("0%", "percent", num(".0%"), False),
     ("0.0%", "percent", num(".1%"), False),

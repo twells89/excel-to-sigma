@@ -98,9 +98,12 @@ def _split_sections(code):
     return sections
 
 
+SYMBOL_MARK = "\uf8ff"      # where a [$symbol-locale] token sat (so a currency after the number is a suffix)
+
+
 def _clean(section):
-    """(text with quoted/escaped/bracketed items blanked, literals, color, currency symbol, conditions)."""
-    literals, color, symbol, conditions = [], None, None, []
+    """(text with quoted/escaped/bracketed items blanked, literals, font colors, currency symbol, conditions)."""
+    literals, color, symbol, conditions = [], [], None, []
     out = []
     index = 0
     while index < len(section):
@@ -119,9 +122,11 @@ def _clean(section):
                 low = bracket.lower()
                 if low in ("red", "black", "blue", "green", "white", "yellow", "magenta", "cyan") \
                         or low.startswith("color"):
-                    color = low
+                    color.append(bracket)
                 elif bracket.startswith("$"):
                     symbol = bracket[1:].split("-")[0]       # [$€-407] -> € ; [$-409] -> locale tag only
+                    if symbol:
+                        out.append(SYMBOL_MARK)
                 elif re.match(r"^(<=|>=|<>|<|>|=)", bracket):
                     conditions.append(bracket)
                 elif re.match(r"^[hms]+$", low):
@@ -135,11 +140,11 @@ def _clean(section):
 
 def _literal_text(text, literals):
     """Replace the literal placeholders by their text."""
-    return re.sub("[\ue000-\uf8ff]", lambda m: literals[ord(m.group(0)) - 0xE000], text)
+    return re.sub("[\ue000-\uf8fe]", lambda m: literals[ord(m.group(0)) - 0xE000], text)
 
 
 # ---------------------------------------------------------------- dates
-_DATE_TOKEN = re.compile(r"(yyyy|yy|y|mmmmm|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|AM/PM|A/P|am/pm|a/p)", re.I)
+_DATE_TOKEN = re.compile(r"(yyyy|yyy|yy|y|mmmmm|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|AM/PM|A/P|am/pm|a/p)", re.I)
 
 
 def _is_date_code(text):
@@ -165,7 +170,7 @@ def _translate_date(code, text, literals, conditions):
         if kind is None:
             out.append(_date_literal(raw, literals))
             continue
-        if kind in ("yyyy",):
+        if kind in ("yyyy", "yyy"):         # Excel reads yyy as a four-digit year
             out.append("%Y")
         elif kind in ("yy", "y"):
             out.append("%y")
@@ -263,20 +268,43 @@ def _parse_number_section(text, literals, symbol):
 
 
 CURRENCY_CHARS = "$€£¥"
+# openpyxl's built-ins 41-44 (accounting): the strings are `_(* #,##0_);_(* \(#,##0\);_(* "-"_);_(@_)` and kin
+# (44 even without its `;` separators), so they are special-cased like ``mm-dd-yy``.
+try:
+    from openpyxl.styles.numbers import BUILTIN_FORMATS as _BUILTIN
+except ImportError:  # pragma: no cover
+    _BUILTIN = {}
+ACCOUNTING_BUILTINS = {_BUILTIN[i]: (dollar, places) for i, (dollar, places) in
+                       {41: (False, 0), 42: (True, 0), 43: (False, 2), 44: (True, 2)}.items() if i in _BUILTIN}
+FORMAT_TOKENS = re.compile(r"[@0-9#?*_\\\[\];]")
 
 
 def _take_currency(parsed):
-    """(currency symbol | None, prefix text, suffix text) once the currency literal is lifted out."""
+    """(currency symbol | None, its side, prefix text, suffix text) with a ``$`` lifted out for d3's ``$``."""
     prefix, suffix, symbol = parsed["prefix"], parsed["suffix"], parsed["symbol"]
-    if not symbol:
+    side = None
+    if symbol:
+        side = "suffix" if SYMBOL_MARK in suffix else "prefix"
+        prefix, suffix = prefix.replace(SYMBOL_MARK, symbol), suffix.replace(SYMBOL_MARK, symbol)
+    else:
         for char in CURRENCY_CHARS:
             if char in prefix:
-                symbol, prefix = char, prefix.replace(char, "", 1)
+                symbol, side = char, "prefix"
                 break
             if char in suffix:
-                symbol, suffix = char, suffix.replace(char, "", 1)
+                symbol, side = char, "suffix"
                 break
-    return symbol or None, prefix.lstrip(), suffix.rstrip()
+    if symbol == "$" and side == "prefix":
+        prefix = prefix.replace("$", "", 1)
+    return symbol or None, side, prefix.lstrip(), suffix.rstrip()
+
+
+def _safe_literal(text, where, notes):
+    """A prefix / suffix that holds no format tokens (``@``, digits, placeholders); else dropped with a note."""
+    if text and FORMAT_TOKENS.search(text):
+        notes.append(f"the {where} text {text.strip()!r} holds format tokens and is not shown")
+        return ""
+    return text
 
 
 def translate(code, *, native_parens=True):
@@ -286,22 +314,38 @@ def translate(code, *, native_parens=True):
     code = str(code)
     if code == "mm-dd-yy":                     # openpyxl's name for built-in 14 (locale short date, m/d/yyyy)
         return Translation(code, "date", {"kind": "datetime", "formatString": "%-m/%-d/%Y"})
+    if code in ACCOUNTING_BUILTINS:
+        dollar, places = ACCOUNTING_BUILTINS[code]
+        return Translation(code, "currency" if dollar else "number",
+                           {"kind": "number", "formatString": f"({'$' if dollar else ''},.{places}f"}, False,
+                           ["the zero section is shown with the positive format"])
     sections = _split_sections(code)
-    pos_text, pos_lits, _, pos_symbol, pos_cond = _clean(sections[0])
+    pos_text, pos_lits, pos_colors, pos_symbol, pos_cond = _clean(sections[0])
     if pos_text.strip() == "@" and len(sections) == 1:
         return Translation(code, "text")
+    seconds = re.search(r"(?<=[sS])\.0+", pos_text)
+    if seconds and _is_date_code(re.sub(r"(?<=[sS])\.0+", "", pos_text)):
+        result = _translate_date(code, re.sub(r"(?<=[sS])\.0+", "", pos_text), pos_lits, pos_cond)
+        if result.format:
+            result.approximated.append("fractional seconds are not shown")
+        return result
     if _is_date_code(pos_text):
         return _translate_date(code, pos_text, pos_lits, pos_cond)
     notes = []
     if pos_cond:
         notes.append("conditional sections are not supported")
+    for color in pos_colors:
+        notes.append(f"[{color}] colors every value (not only negatives) and is not reproduced"
+                     if color.lower() == "red" and len(sections) == 1
+                     else f"font color [{color}] is not reproduced")
     parsed = _parse_number_section(pos_text, pos_lits, pos_symbol)
     if parsed is None:
         return Translation(code, "unknown", None, False, ["no digit placeholder"])
     if parsed["fraction"]:
         return Translation(code, "unknown", None, False, ["fraction formats are not supported"])
     if parsed["scale"]:
-        notes.append("trailing comma (divide by 1000) scaling is not supported")
+        notes.append("trailing comma (divide by 1000) scaling is not supported: the full number is shown, "
+                     "without the unit")
     if parsed["scientific"]:
         notes.append("scientific exponent is shown as e+N, not E+NN")
     if parsed["min_int"] > 1:
@@ -310,9 +354,11 @@ def translate(code, *, native_parens=True):
         notes.append("optional decimals (#) next to required ones (0) are all shown")
     negative_red, negative_parens = False, False
     if len(sections) > 1:
-        neg_text, neg_lits, neg_color, neg_symbol, _ = _clean(sections[1])
-        negative_red = bool(neg_color and neg_color.startswith("red"))
-        negative_parens = "(" in neg_text and ")" in neg_text
+        neg_text, neg_lits, neg_colors, neg_symbol, _ = _clean(sections[1])
+        negative_red = any(c.lower() == "red" for c in neg_colors)
+        notes += [f"font color [{c}] is not reproduced" for c in neg_colors if c.lower() != "red"]
+        shown = _literal_text(neg_text, neg_lits)
+        negative_parens = "(" in shown and ")" in shown
         if _DIGITS.search(neg_text):
             neg = _parse_number_section(neg_text, neg_lits, neg_symbol)
             if neg and (neg["decimals"] != parsed["decimals"] or neg["percent"] != parsed["percent"]):
@@ -328,9 +374,11 @@ def translate(code, *, native_parens=True):
     if negative_parens and not native_parens:
         notes.append("negatives in parentheses are shown with a minus sign")
         negative_parens = False
-    symbol, prefix, suffix = _take_currency(parsed)
-    dollar = symbol == "$"
-    precision = parsed["decimals"]
+    symbol, side, prefix, suffix = _take_currency(parsed)
+    dollar = symbol == "$" and side == "prefix"
+    precision = 0 if parsed["scale"] else parsed["decimals"]
+    if parsed["scale"]:
+        suffix = ""         # "K" / "M" would label a number Sigma did not divide
     if parsed["scientific"]:
         body = f".{precision}e"
     elif parsed["percent"]:
@@ -340,8 +388,7 @@ def translate(code, *, native_parens=True):
     group = THOUSANDS if parsed["thousands"] and not parsed["scientific"] else ""
     fmt = {"kind": "number",
            "formatString": f"{'(' if negative_parens else ''}{'$' if dollar else ''}{group}{body}"}
-    if symbol and not dollar:
-        prefix = symbol + prefix
+    prefix, suffix = _safe_literal(prefix, "prefix", notes), _safe_literal(suffix, "suffix", notes)
     if prefix:
         fmt["prefix"] = prefix
     if suffix:

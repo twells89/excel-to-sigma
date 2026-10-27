@@ -20,7 +20,10 @@ import math
 import re
 from datetime import date, timedelta
 
-import table_report_model as trm
+try:
+    from . import table_report_model as trm
+except ImportError:  # direct import when scripts/lib itself is on sys.path
+    import table_report_model as trm
 
 
 class Unsupported(Exception):

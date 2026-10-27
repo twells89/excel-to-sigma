@@ -855,9 +855,11 @@ class Emitter:
     """
 
     def __init__(self, col, key=None, period=None, prev=None, coltype=None, count_ref=None,
-                 agg_source=None, agg_col=None, blankable=None, tables=None, wrap_lookup=False):
+                 agg_source=None, agg_col=None, blankable=None, tables=None, wrap_lookup=False,
+                 utf8_strings=False):
         self.col, self.key_ref, self.period_ref, self.prev_ref = col, key, period, prev
         self.wrap_lookup = wrap_lookup      # a lookup of the group key inside a chart series: Max(Lookup(..))
+        self.utf8_strings = utf8_strings    # chart / KPI feeds: labels as typed, not \\uXXXX escapes
         self.coltype, self.count_ref = coltype, count_ref
         self.agg_source = agg_source  # Emitter used inside aggregate filters (source columns)
         self.agg_col = agg_col        # name -> source column ref for aggregate values
@@ -961,7 +963,7 @@ class Emitter:
         if tag == "n":
             return sigma_number(node[1])
         if tag == "s":
-            return SIGMA_STRING(node[1])
+            return json.dumps(node[1], ensure_ascii=False) if self.utf8_strings else SIGMA_STRING(node[1])
         if tag == "b":
             return "True" if node[1] else "False"
         if tag == "d":
@@ -1396,7 +1398,7 @@ def _calc_columns(plan, frame, fid, own, emitter):
 
 
 ORDER_NAME = "Source Order"
-MAX_ORDER_LABELS = 80
+MAX_ORDER_LABELS = 40      # a longer grid keeps Sigma's key order (nested If depth); see SOURCE_ORDER_OMITTED
 
 
 def order_labels(frame):
@@ -1414,8 +1416,8 @@ def order_formula(key_ref, labels, key_type="text"):
         if key_type == "datetime" or (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
                                       and key_type != "text"):
             return f'Date("{value}")'
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return SIGMA_STRING(str(value))
+        if key_type == "text" or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return json.dumps(str(value), ensure_ascii=False)      # UTF-8 as typed; a numeric label on a text key
         return sigma_number(value)
     text = str(len(labels) + 1)
     for position in range(len(labels), 0, -1):
@@ -1461,8 +1463,8 @@ def flatten_expr(node, cols):
 def member_ir(by, labels, key_type="text"):
     """IR: the row key is one of the frame's labels."""
     def literal(value):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return ["d", value] if key_type == "datetime" else ["s", value]
+        if key_type == "text" or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return ["d", value] if key_type == "datetime" else ["s", str(value)]
         return ["n", value]
     tests = [["op", "=", ["c", by], literal(v)] for v in labels]
     return tests[0] if len(tests) == 1 else ["f", "OR"] + tests
@@ -1506,23 +1508,25 @@ def _frame_feed(plan, frame, src_id, src_label, src_types, src_blank, info, wrap
     ``series[name]``: the frame column as a chart-level formula (the chart groups by the key column);
     ``terms[name]``: the column as signed leaf terms ``{sign, element, label, formula}`` whose sum over ALL
     source rows (restricted to the frame's labels when the data has other keys) is the column's frame total.
+    A lookup term always sums only the rows of the lookup table whose key is one of the frame's labels (that
+    table can list keys the source does not); ``why[name]`` says why a column has no terms.
     """
     by = frame["by"]
     ref = lambda n: f"[{src_label}/{n}]"                                       # noqa: E731
     src_em = Emitter(col=ref, key=ref(by), coltype=lambda n: src_types.get(n),
-                     blankable=lambda n: (src_blank or {}).get(n, False), tables=info)
+                     blankable=lambda n: (src_blank or {}).get(n, False), tables=info, utf8_strings=True)
 
     def no_group_column(name):
         raise PlanError(f"{name!r} is a frame column, not a source column")
     own_types = {c["name"]: c["type"] for c in frame["columns"]}
     em = Emitter(col=no_group_column, key=ref(by), coltype=lambda n: own_types.get(n), count_ref=ref(by),
-                 agg_source=src_em, agg_col=ref, tables=info, wrap_lookup=True)
+                 agg_source=src_em, agg_col=ref, tables=info, wrap_lookup=True, utf8_strings=True)
     plain = Emitter(col=no_group_column, key=ref(by), coltype=lambda n: own_types.get(n), count_ref=ref(by),
-                    agg_source=src_em, agg_col=ref, tables=info)
+                    agg_source=src_em, agg_col=ref, tables=info, utf8_strings=True)
     cols = {c["name"]: c for c in frame["columns"]}
     member = member_ir(by, restrict, src_types.get(by, "text")) if restrict else None
     feed = {"element": src_id, "label": src_label, "key": ref(by), "keyType": src_types.get(by, "text"),
-            "series": {}, "terms": {}}
+            "series": {}, "terms": {}, "why": {}}
     for column in frame["columns"]:
         name = column["name"]
         feed["series"][name] = feed["terms"][name] = None
@@ -1532,9 +1536,11 @@ def _frame_feed(plan, frame, src_id, src_label, src_types, src_blank, info, wrap
         try:
             feed["series"][name] = em.column_formula(name, flat)
         except (PlanError, KeyError):
-            pass
+            feed["why"][name] = "not expressible from the frame's source columns"
         leaves = leaf_terms(flat)
         if not leaves:
+            feed["terms"][name] = None
+            feed["why"].setdefault(name, "not a signed sum of aggregates / lookups")
             continue
         terms = []
         for sign, leaf in leaves:
@@ -1542,21 +1548,39 @@ def _frame_feed(plan, frame, src_id, src_label, src_types, src_blank, info, wrap
                 node = restrict_aggs(leaf, member) if member else leaf
                 terms.append({"sign": sign, "element": src_id, "label": src_label,
                               "formula": plain.column_formula(name, node)})
-            else:      # a per-label lookup: its total is the lookup table's column summed over the frame's labels
-                _, table, key, key_col, value_col, default = leaf
-                if key != ["key"] or default is not None or table not in wrapper:
-                    terms = None
-                    break
-                value = f"[{table}/{value_col}]"
-                if restrict:
-                    cond = Emitter(col=lambda n, t=table: f"[{t}/{n}]", tables=info).emit_crit(
-                        member_ir(key_col, restrict, src_types.get(by, "text")))
-                    text = f"Coalesce(SumIf({value}, {cond}), 0)"
-                else:
-                    text = f"Coalesce(Sum({value}), 0)"
-                terms.append({"sign": sign, "element": wrapper[table], "label": table, "formula": text})
+                continue
+            term, why = _lookup_term(plan, frame, leaf, sign, wrapper, info)
+            if term is None:
+                terms = None
+                feed["why"][name] = why
+                break
+            terms.append(term)
         feed["terms"][name] = terms
     return feed
+
+
+def _lookup_term(plan, frame, leaf, sign, wrapper, info):
+    """A per-label lookup's frame total: the lookup table's value column over the rows keyed by the frame's
+    labels. ``(term, None)`` or ``(None, reason)``; duplicate keys would double count, so they refuse."""
+    _, table, key, key_col, value_col, default = leaf
+    if key != ["key"] or default is not None or table not in wrapper:
+        return None, f"the lookup into {table} is not a plain per-label lookup"
+    data = plan_table(plan, table)
+    names = [c["name"] for c in literal_columns(data)]
+    key_type = next((c["type"] for c in data["columns"] if c["name"] == key_col), "text")
+    labels = frame["labels"]
+    if key_col in names:
+        index = names.index(key_col)
+        keys = [row[index] for row in data.get("rows") or []]
+        repeated = sorted({str(k) for k in keys if k in labels and keys.count(k) > 1})
+        if repeated:
+            return None, (f"{table}[{key_col}] has duplicate keys ({', '.join(repeated)}): summing the lookup "
+                          "would double count")
+    value = f"[{table}/{value_col}]"
+    cond = Emitter(col=lambda n, t=table: f"[{t}/{n}]", tables=info, utf8_strings=True).emit_crit(
+        member_ir(key_col, labels, key_type))
+    return {"sign": sign, "element": wrapper[table], "label": table,
+            "formula": f"Coalesce(SumIf({value}, {cond}), 0)"}, None
 
 
 def _frame_types(plan, frame, types):

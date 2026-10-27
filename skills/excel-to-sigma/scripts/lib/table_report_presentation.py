@@ -19,10 +19,12 @@ from datetime import date, datetime
 try:
     from . import excel_formats as ef
     from . import presentation_style as ps
+    from . import sigma_formula_eval as se
     from . import table_report_model as trm
 except ImportError:  # direct import when scripts/lib itself is on sys.path
     import excel_formats as ef
     import presentation_style as ps
+    import sigma_formula_eval as se
     import table_report_model as trm
 
 KPI_NAME = re.compile(r"total|commit|quota|target|goal|plan|budget|forecast|revenue|bookings|pipeline|variance"
@@ -420,6 +422,130 @@ def check_charts(plan, model, tolerance=None):
     return lines, problems
 
 
+class EmittedEvaluator:
+    """Evaluate the EMITTED KPI / chart formulas (Sigma NULL logic) over the plan's base rows."""
+
+    def __init__(self, plan):
+        self.plan = plan
+        self.model = se.EmittedModel(plan)
+        self.eval = se.Evaluator(self.model._lookup)
+        self.frames = self.model.parts["frames"]
+
+    def rows(self, element_id):
+        return self.model.source_rows({"source": {"kind": "table", "elementId": element_id}})
+
+    def _ctx(self, rows):
+        return se.Ctx(lambda ref: None, rows, lambda src: se.Ctx(self.model._ref(src, {})))
+
+    def aggregate(self, element_id, formula):
+        """The formula over every row of the element (a KPI)."""
+        return self.eval.ev(se.parse(formula), self._ctx(self.rows(element_id)))
+
+    def grouped(self, element_id, key_formula, formula):
+        """``{key: value}``: the formula per group of the key column (a chart series)."""
+        groups = {}
+        for src in self.rows(element_id):
+            key = self.eval.ev(se.parse(key_formula), se.Ctx(self.model._ref(src, {})))
+            groups.setdefault(key, []).append(src)
+        return {key: self.eval.ev(se.parse(formula), self._ctx(rows)) for key, rows in groups.items()}
+
+    def kpi(self, kpi):
+        """The KPI's value from its emitted terms (each term over its own source element)."""
+        top, bottom = kpi_terms(kpi, self.frames)
+
+        def side(terms):
+            return sum(t["sign"] * (self.aggregate(t["element"], t["formula"]) or 0) for t in terms)
+        value = side(top)
+        if bottom is None:
+            return value
+        denominator = side(bottom)
+        return 0 if denominator == 0 else value / denominator
+
+
+def check_emitted(plan, model, tolerance=None):
+    """Evaluate the EMITTED KPI and chart formulas over the plan's base rows (``sigma_formula_eval``) and
+    compare them with the oracle's frame totals and cells. Returns ``(lines, problems, unverified)``;
+    ``unverified`` names what the evaluator cannot model (running sums), which is reported, not guessed."""
+    presentation = plan.get("presentation") or {}
+    lines, problems, unverified = [], [], []
+    if not presentation.get("kpis") and not presentation.get("charts"):
+        return lines, problems, unverified
+    parts = trm.build_parts(plan, "<dm>", trm.local_dm_elements(plan))
+    page = compose_report(plan, parts)
+    elements = {e["id"]: e for e in page["elements"]}
+    try:
+        evaluator = EmittedEvaluator(plan)
+    except Exception as error:      # noqa: BLE001 - the evaluator could not even load the plan
+        return lines, problems, [f"all ({type(error).__name__}: {error})"]
+    for kpi in presentation.get("kpis", []):
+        label = f"KPI {kpi['label']}"
+        frame = _frame(plan, kpi["frame"])
+        rows = [r for r in model.frame_rows(kpi["frame"])
+                if frame["kind"] != "summary" or r[frame["by"]] in frame["labels"]]
+        if kpi["kind"] == "total":
+            want = sum(_num(r[kpi["column"]]) for r in rows)
+        else:
+            bottom = sum(_num(r[kpi["den"]]) for r in rows)
+            want = 0 if bottom == 0 else sum(_num(r[kpi["num"]]) for r in rows) / bottom
+        try:
+            got = evaluator.kpi(kpi)
+            card = elements.get(kpi["id"])
+            if card and card["kind"] == "kpi-chart":     # the formula text actually emitted on the card
+                emitted = evaluator.aggregate(card["source"]["elementId"], card["columns"][0]["formula"])
+                if not trm.values_match(emitted, got, trm.tolerance_for(got) * 10):
+                    problems.append(f"{label}: the card's formula gives {emitted!r}, its terms give {got!r}")
+        except (se.Unsupported, RecursionError):
+            unverified.append(label)
+            continue
+        except Exception as error:      # noqa: BLE001
+            problems.append(f"{label}: the emitted formula does not evaluate ({error})")
+            continue
+        scale = tolerance if tolerance is not None else trm.tolerance_for(want) * max(1, len(rows))
+        for reference, name in ((want, "oracle"), (kpi["expected"], "source")):
+            if not trm.values_match(got, reference, scale):
+                problems.append(f"{label}: emitted {got!r} vs {name} {reference!r}")
+                break
+        else:
+            lines.append(f"EMITTED PASS {label}: emitted={got:,.4f} oracle={want:,.4f}")
+    for chart in presentation.get("charts", []):
+        label = f"chart {chart['title']}"
+        element = elements.get(chart["id"])
+        if element is None:
+            continue
+        names = {c["id"]: c for c in element["columns"]}
+        key = names[element["xAxis"]["columnId"] if "xAxis" in element else element["color"]["columnId"]]
+        y_ids = element["yAxis"]["columnIds"] if "yAxis" in element else [element["value"]["columnId"]]
+        points = bad = 0
+        try:
+            for y_id, series in zip(y_ids, chart["series"]):
+                got = evaluator.grouped(element["source"]["elementId"], key["formula"], names[y_id]["formula"])
+                for sel, category, want in zip(series["sels"], chart["categories"], series["values"]):
+                    wanted = trm.parse_date(category) if chart["categoryKind"] == "ledger" else sel[0]
+                    points += 1
+                    oracle = model.cell(chart["frame"], series["column"], series["kind"], sel)
+                    value = got.get(wanted)
+                    if value is None or not (trm.values_match(value, want, tolerance)
+                                             and trm.values_match(value, oracle, tolerance)):
+                        bad += 1
+                        problems.append(f"{label}: {series['title']} at {category}: emitted {value!r} "
+                                        f"vs verified {want!r}")
+        except (se.Unsupported, RecursionError):
+            unverified.append(label)
+            continue
+        except Exception as error:      # noqa: BLE001
+            problems.append(f"{label}: the emitted series do not evaluate ({error})")
+            continue
+        periods = chart_periods(plan, chart)
+        if periods is not None:
+            flt = (element.get("filters") or [{}])[0]
+            if sorted(flt.get("values") or []) != sorted(periods):
+                bad += 1
+                problems.append(f"{label}: its period filter {flt.get('values')!r} is not the chart's {periods!r}")
+        if not bad:
+            lines.append(f"EMITTED PASS {label}: {points} points equal the verified cells")
+    return lines, problems, unverified
+
+
 def check_presentation(plan, model, tolerance=None):
     """Local presentation parity: KPI totals and chart points. ``(lines, problems)``."""
     lines, problems = check_kpis(plan, model, tolerance)
@@ -448,34 +574,97 @@ def propose(plan, wf, source_path, model, sheet_title=None):
                     "restrict": {f["id"]: list(f["labels"]) for f in plan["frames"]
                                  if f["kind"] == "summary" and not f.get("hidden")
                                  and len(model.frame_rows(f["id"])) > len(f["labels"])}}
-    unmapped += _keep_expressible(plan, presentation)
+    draft_plan = dict(plan, presentation=presentation)
+    notes = drop_unexpressible(draft_plan, model)
+    unmapped += [n["message"] for n in notes if n["kind"] == "chart"]
+    presentation["notes"] = notes
     return presentation, unmapped
 
 
-def _keep_expressible(plan, presentation):
-    """Drop the KPIs / charts the builder cannot emit from the frame's source columns; return the notes."""
-    probe = dict(plan, presentation=presentation)
-    parts = trm.build_parts(probe, "<dm>", trm.local_dm_elements(probe))
+def drop_unexpressible(plan, model):
+    """Drop every KPI / chart that cannot be emitted from the frame's source columns, or whose EMITTED formulas
+    do not evaluate to the oracle's values; ``plan["presentation"]`` is edited in place. Returns the notes
+    ``[{code, kind, message}]`` (each becomes a review issue; a dropped chart also stays in ``unmappedCharts``)."""
+    presentation = plan["presentation"]
+    parts = trm.build_parts(plan, "<dm>", trm.local_dm_elements(plan))
     frames = parts["frames"]
-    notes, charts = [], []
-    kpis = [k for k in presentation["kpis"] if kpi_terms(k, frames) is not None]
-    presentation["kpis"] = kpis if len(kpis) >= MIN_KPIS else []
+    notes = []
+
+    def drop(kind, label, why):
+        notes.append({"code": "PRESENTATION_ELEMENT_DROPPED", "kind": kind,
+                      "message": f"{kind} {label!r}: {why}"})
+    kept = []
+    for kpi in presentation["kpis"]:
+        pair = kpi_terms(kpi, frames)
+        if pair is None:
+            feed = (frames.get(kpi["frame"]) or {}).get("feed") or {}
+            names = [kpi.get("column")] if kpi["kind"] == "total" else [kpi.get("num"), kpi.get("den")]
+            why = next((feed.get("why", {}).get(n) for n in names if feed.get("why", {}).get(n)),
+                       "its terms span several tables and text cards are off")
+            drop("KPI", kpi["label"], f"not emitted ({why})")
+            continue
+        sources = {t["element"] for side in pair if side for t in side}
+        formula = kpi_formula(pair)
+        if len(sources) > 1 and ("}}" in formula or "|" in formula):
+            drop("KPI", kpi["label"], "not emitted (a label holds '}}' or '|', which breaks the {{ }} text "
+                                      "interpolation of a card spanning several tables)")
+            continue
+        kept.append(kpi)
+    charts = []
     for chart in presentation["charts"]:
-        why = chart_gap(chart, frames)
+        why = chart_gap(chart, frames, plan)
         if why:
-            notes.append(f"{chart['title']} ({chart['kind']}) on {chart['sheet']!r}: not emitted ({why}) - "
-                         "rebuild from the presentation plan (refs/presentation-migration.md)")
+            notes.append({"code": "PRESENTATION_ELEMENT_DROPPED", "kind": "chart",
+                          "message": f"{chart['title']} ({chart['kind']}) on {chart['sheet']!r}: not emitted "
+                                     f"({why}) - rebuild from the presentation plan "
+                                     "(refs/presentation-migration.md)"})
         else:
             charts.append(chart)
-    presentation["charts"] = charts
+    presentation["kpis"], presentation["charts"] = kept, charts
+    # the emitted formulas themselves, evaluated over the plan's base rows, against the oracle
+    _, problems, _ = check_emitted(plan, model)
+    failing = {p.split(":")[0] for p in problems}
+    for kpi in list(presentation["kpis"]):
+        if f"KPI {kpi['label']}" in failing:
+            presentation["kpis"].remove(kpi)
+            drop("KPI", kpi["label"], "not emitted (its emitted formula does not match the oracle: "
+                 + next(p for p in problems if p.startswith(f"KPI {kpi['label']}:")).split(": ", 1)[1] + ")")
+    for chart in list(presentation["charts"]):
+        if f"chart {chart['title']}" in failing:
+            presentation["charts"].remove(chart)
+            notes.append({"code": "PRESENTATION_ELEMENT_DROPPED", "kind": "chart",
+                          "message": f"{chart['title']} ({chart['kind']}) on {chart['sheet']!r}: not emitted "
+                                     "(its emitted series do not match the verified cells) - rebuild from the "
+                                     "presentation plan (refs/presentation-migration.md)"})
+    if 0 < len(presentation["kpis"]) < MIN_KPIS:
+        presentation["kpis"] = []
     return notes
 
 
-def chart_gap(chart, frames):
+def ledger_periods(plan, frame):
+    """The period values of a ledger's spine, in order."""
+    table = trm.plan_table(plan, frame["spine"])
+    names = [c["name"] for c in trm.literal_columns(table)]
+    index = names.index(frame["axis"]) if frame["axis"] in names else None
+    return [row[index] for row in table.get("rows") or []] if index is not None else []
+
+
+def chart_periods(plan, chart):
+    """``None`` when a ledger chart covers every period, else the periods it covers (it then needs a filter)."""
+    if chart["categoryKind"] != "ledger":
+        return None
+    frame = _frame(plan, chart["frame"])
+    mine = [s[0] for s in chart["series"][0]["sels"]]
+    return None if sorted(mine) == sorted(ledger_periods(plan, frame)) else mine
+
+
+def chart_gap(chart, frames, plan=None):
     """Why a mapped chart cannot be emitted from its frame's source columns (``None`` when it can)."""
     feed = (frames.get(chart["frame"]) or {}).get("feed")
     if not feed:
         return "its frame has no source-level feed"
+    if plan is not None and chart_periods(plan, chart) is not None and not ps.SURFACES["chart_list_filter"]:
+        return "it covers only some of the ledger's periods and the list filter that would limit it is off"
     missing = [s["column"] for s in chart["series"] if not feed["series"].get(s["column"])]
     if missing:
         return f"{', '.join(missing)} cannot be computed from the frame's source columns"
@@ -584,6 +773,17 @@ def _chart_elements(plan, chart, meta, accent):
     if restrict and chart["categoryKind"] == "summary" and ps.SURFACES["chart_list_filter"]:
         element["filters"] = [{"id": f"{cid}_f", "columnId": x_id, "kind": "list", "mode": "include",
                                "values": list(restrict)}]
+    periods = chart_periods(plan, chart)
+    if periods is not None and ps.SURFACES["chart_list_filter"]:
+        # a chart over some of a ledger's periods plots exactly those (the table has a row per period)
+        axis = frame["axis"]
+        if chart["categoryColumn"] == axis:
+            p_id = x_id
+        else:
+            p_id = f"{cid}_p"
+            columns.append({"id": p_id, "name": axis, "formula": f"[{label}/{axis}]", "hidden": True})
+        element["filters"] = [{"id": f"{cid}_f", "columnId": p_id, "kind": "list", "mode": "include",
+                               "values": periods}]
     if chart["kind"] in ("donut", "pie"):
         element["kind"] = f"{chart['kind']}-chart"
         element["value"] = {"columnId": y_ids[0]}
@@ -665,7 +865,7 @@ def compose_report(plan, parts):
                                    [(text["id"], 1, ps.PAGE_COLS + 1, 1, 1 + ps.KPI_ROWS)]))
                 end = top + ps.KPI_ROWS
         cursor = end
-    charts = [c for c in pres.get("charts", []) if c["frame"] in frames and not chart_gap(c, frames)]
+    charts = [c for c in pres.get("charts", []) if c["frame"] in frames and not chart_gap(c, frames, plan)]
     detail = parts["visible"]
     by_id = {m["id"]: m for m in parts.get("visibleMeta", [])}
     main = pres.get("main")
@@ -689,9 +889,11 @@ def compose_report(plan, parts):
         for index in range(0, len(loose), 2):
             row = loose[index:index + 2]
             splits = [(1, 25)] if len(row) == 1 else [(1, 13), (13, 25)]
+            top = end                      # both charts of a pair start together and end together
             for chart, (c0, c1) in zip(row, splits):
-                end = place(_chart_elements(plan, chart, frames[chart["frame"]], accent), c0, c1, ps.CHART_ROWS,
-                            row=end)
+                place(_chart_elements(plan, chart, frames[chart["frame"]], accent), c0, c1, ps.CHART_ROWS,
+                      row=top)
+            end = top + ps.CHART_ROWS
         cursor = end
     if detail and (kpis or charts):
         cursor = place(ps.divider("trDivider"), 1, ps.PAGE_COLS + 1, ps.DIVIDER_ROWS)
