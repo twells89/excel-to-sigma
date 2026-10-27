@@ -630,7 +630,7 @@ def drop_unexpressible(plan, model):
     _, problems, _ = check_emitted(plan, model)
     failing = {}
     for problem in problems:                   # "KPI <label> [<id>]: ..." / "chart <title> [<id>]: ..."
-        found = re.match(r"(?:KPI|chart) .*\[([^\[\]]+)\]: (.*)$", problem, re.S)
+        found = re.match(r"(?:KPI|chart) .*?\[([^\[\]]+)\]: (.*)$", problem, re.S)
         if found:                              # keyed by element id: a repeated label / title drops only one
             failing.setdefault(found.group(1), found.group(2))
     for kpi in list(presentation["kpis"]):
