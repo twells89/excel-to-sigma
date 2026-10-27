@@ -601,6 +601,10 @@ def _chart_elements(plan, chart, meta, accent):
         element["lineAreaStyle"] = {"interpolation": "monotone"}
     else:
         element["kind"] = "bar-chart"
+        if len(chart["categories"]) <= 12 and ps.SURFACES["chart_label_angle"]:      # flat category labels
+            axis_format = element["xAxis"].get("format") or {}
+            element["xAxis"]["format"] = {**axis_format, "labels": {**(axis_format.get("labels") or {}),
+                                                                    "labelAngle": 0}}
         element["yAxis"] = {"columnIds": y_ids, "format": {"marks": "grid"}}
         element["stacking"] = chart["stacking"]
         if chart["orientation"] == "horizontal":
@@ -652,38 +656,47 @@ def compose_report(plan, parts):
             c0, c1 = 1 + number * width, 1 + (number + 1) * width
             if len(sources) == 1:
                 element = ps.kpi_card(kpi["id"], kpi["label"].upper(), {"kind": "table", "elementId": sources[0]},
-                                      formula, kpi.get("format"), accent["hex"], primary=number == 0)
+                                      formula, kpi.get("format"))
                 end = place(element, c0, c1, ps.KPI_ROWS, row=top)
             else:      # a kpi-chart has one source: a card whose text interpolates the cross-element formula
-                card, text = ps.kpi_text_card(kpi["id"], kpi["label"].upper(), formula, kpi.get("format"),
-                                              accent["hex"], primary=number == 0)
+                card, text = ps.kpi_text_card(kpi["id"], kpi["label"].upper(), formula, kpi.get("format"))
                 elements.extend([card, text])
                 placements.append((card["id"], c0, c1, top, top + ps.KPI_ROWS,
                                    [(text["id"], 1, ps.PAGE_COLS + 1, 1, 1 + ps.KPI_ROWS)]))
                 end = top + ps.KPI_ROWS
         cursor = end
     charts = [c for c in pres.get("charts", []) if c["frame"] in frames and not chart_gap(c, frames)]
-    if charts:
-        hero = next((c for c in charts if c["kind"] not in ("donut", "pie")), charts[0])
-        ordered = [hero] + [c for c in charts if c is not hero]
-        index = 0
-        while index < len(ordered):
-            row = ordered[index:index + 2]
-            splits = [(1, 25)] if len(row) == 1 else ([(1, 17), (17, 25)] if index == 0 else [(1, 13), (13, 25)])
-            top = cursor
-            for chart, (c0, c1) in zip(row, splits):
-                end = place(_chart_elements(plan, chart, frames[chart["frame"]], accent),
-                            c0, c1, ps.CHART_ROWS, row=top)
-            cursor = end
-            index += len(row)
     detail = parts["visible"]
     by_id = {m["id"]: m for m in parts.get("visibleMeta", [])}
+    main = pres.get("main")
+    detail = sorted(detail, key=lambda e: 0 if by_id.get(e["id"], {}).get("frame") == main else 1)
+    hero = next((c for c in charts if c["kind"] not in ("donut", "pie")), charts[0] if charts else None)
+    # a supporting chart whose categories are a grid's row labels sits beside that grid's table
+    beside = {}
+    for chart in charts:
+        if chart is hero or chart["categoryKind"] != "summary":
+            continue
+        table = next((e for e in detail if e["kind"] == "table" and e["id"] not in beside
+                      and by_id.get(e["id"], {}).get("frame") == chart["frame"]
+                      and by_id[e["id"]]["role"] == "grouped"), None)
+        if table is not None:
+            beside[table["id"]] = chart
+    if hero is not None:
+        loose = [c for c in charts if c is not hero and c not in beside.values()]
+        top = cursor
+        end = place(_chart_elements(plan, hero, frames[hero["frame"]], accent), 1, ps.PAGE_COLS + 1,
+                    ps.CHART_ROWS, row=top)
+        for index in range(0, len(loose), 2):
+            row = loose[index:index + 2]
+            splits = [(1, 25)] if len(row) == 1 else [(1, 13), (13, 25)]
+            for chart, (c0, c1) in zip(row, splits):
+                end = place(_chart_elements(plan, chart, frames[chart["frame"]], accent), c0, c1, ps.CHART_ROWS,
+                            row=end)
+        cursor = end
     if detail and (kpis or charts):
         cursor = place(ps.divider("trDivider"), 1, ps.PAGE_COLS + 1, ps.DIVIDER_ROWS)
         cursor = place(ps.section_label("trDetail", "Detail"), 1, ps.PAGE_COLS + 1, ps.LABEL_ROWS)
     negative = {f["id"]: {c["name"] for c in f["columns"] if c.get("negativeRed")} for f in plan["frames"]}
-    main = pres.get("main")
-    detail = sorted(detail, key=lambda e: 0 if by_id.get(e["id"], {}).get("frame") == main else 1)
     for element in detail:
         meta = by_id.get(element["id"], {"frame": None, "role": "table", "rows": 8})
         frame = _frame(plan, meta["frame"]) if meta["frame"] else {}
@@ -693,7 +706,13 @@ def compose_report(plan, parts):
         if meta["role"] in ("grouped", "ledger"):
             rows = (pres.get("rows") or {}).get(meta["frame"], rows)
         height = ps.table_height(rows, extra_header_rows=1 if element["kind"] == "pivot-table" else 0)
-        cursor = place(element, 1, ps.PAGE_COLS + 1 if wide else 17, height)
+        if element["id"] in beside:                       # table 1 / 15, its chart 15 / 25, the taller height
+            chart = beside[element["id"]]
+            height = max(height, ps.CHART_ROWS)
+            place(_chart_elements(plan, chart, frames[chart["frame"]], accent), 15, ps.PAGE_COLS + 1, height)
+            cursor = place(element, 1, 15, height, row=cursor)
+        else:
+            cursor = place(element, 1, ps.PAGE_COLS + 1 if wide else 15, height)
     settings = ps.settings_theme(accent["hex"]) if charts else {}
     return {"elements": elements, "placements": placements, "settings": settings}
 

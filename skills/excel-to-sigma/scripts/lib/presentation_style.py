@@ -36,8 +36,10 @@ SURFACES = {
     "table_text_styles": True,     # table/pivot .tableStyle.textStyles.{header, columnHeader}
     "conditional_single": True,    # table/pivot .conditionalFormats[{type: single, condition: <, value, style}]
     "divider": True,               # divider element                                               (verified)
-    "order_group_key": True,       # hidden base-level `Source Order` column FIRST in groupings[].groupBy
+    "order_group_sort": True,      # hidden `Min(<order If>)` calculation first in calculations + groupings[].sort
+                                   # (grouping sort is accepted live though the offline OpenAPI omits it)
     "chart_hidden_column": True,   # chart columns[].hidden (sort-only order column)
+    "chart_label_angle": True,     # bar-chart xAxis.format.labels.labelAngle: 0 (12 categories or fewer)
     "chart_list_filter": True,     # chart filters[{kind: list, mode: include}] on the category column
     "kpi_text_card": True,         # container card + text with {{Sum([A/x]) / Sum([B/y]) | fmt}} for a KPI that
                                    # spans several source elements (a kpi-chart has ONE source)
@@ -166,34 +168,52 @@ def divider(element_id):
     return {"id": element_id, "kind": "divider"}
 
 
-def kpi_card(element_id, label, source, formula, fmt, accent_hex, primary=False):
-    """Recipe 2 without the wrapper container: the KPI carries its own card style and a colored title.
+KPI_LABEL_PX, KPI_VALUE_PX = 14, 28
 
-    The first KPI (the primary metric) takes the accent; its peers stay muted so the accent is not sprayed.
-    """
-    color = accent_hex if primary else ROLES["muted"]
+
+def kpi_card(element_id, label, source, formula, fmt):
+    """Recipe 2 without the wrapper container: the KPI carries its own card style. Every card is a peer: a quiet
+    muted 14 px title and a bold 28 px value, no accent on the first."""
     column = {"id": f"{element_id}_v", "formula": formula}
     if fmt:
         column["format"] = fmt
     element = {"id": element_id, "kind": "kpi-chart", "source": source, "columns": [column],
-               "value": {"columnId": column["id"], "fontSize": 28}}
-    element["name"] = {"text": label, "color": color} if SURFACES["kpi_name_object"] else label
+               "value": {"columnId": column["id"], "fontSize": KPI_VALUE_PX, "fontWeight": "bold"}}
+    element["name"] = ({"text": label, "color": ROLES["muted"], "fontSize": KPI_LABEL_PX,
+                        "fontWeight": "normal"} if SURFACES["kpi_name_object"] else label)
     if SURFACES["kpi_card_style"]:
         element["style"] = card_style()
     return element
 
 
-def kpi_text_card(element_id, label, formula, fmt, accent_hex, primary=False):
+def kpi_text_card(element_id, label, formula, fmt):
     """A KPI whose formula spans several source elements: a card container holding a text element that
-    interpolates the formula (``{{ast | d3 format}}``; cross-element aggregates are verified in text bodies).
+    interpolates the formula (``{{ast | d3 format}}``), laid out like the kpi-chart cards: a muted 14 px title,
+    a blank line, a bold 28 px value. Span styles may only use color, background-color, font-size and
+    font-family (Sigma rejects font-weight), so the weight is markdown bold.
     Returns ``(container, text)``; the container carries the id of the KPI."""
-    color = accent_hex if primary else ROLES["muted"]
     spec = (fmt or {}).get("formatString")
     value = f"{{{{{formula} | {spec}}}}}" if spec else f"{{{{{formula}}}}}"
-    text = {"id": f"{element_id}_t", "kind": "text", "verticalAlign": "center",
-            "body": f'<span style="color: {color}">**{_markup(label)}**</span>\n# {value}'}
+    body = (f'<span style="color: {ROLES["muted"]}; font-size: {KPI_LABEL_PX}px">{_markup(label)}</span>\n\n'
+            f'<span style="font-size: {KPI_VALUE_PX}px">**{value}**</span>')
+    text = {"id": f"{element_id}_t", "kind": "text", "verticalAlign": "center", "body": body}
     container = {"id": element_id, "kind": "container", "style": card_style()}
     return container, text
+
+
+SPAN_PROPERTIES = {"color", "background-color", "font-size", "font-family"}
+
+
+def disallowed_span_styles(body):
+    """CSS properties in a text body's ``<span style>`` that Sigma does not accept (empty when all are fine)."""
+    import re
+    bad = set()
+    for style in re.findall(r'<span style="([^"]*)"', body or ""):
+        for declaration in filter(None, (d.strip() for d in style.split(";"))):
+            prop = declaration.split(":", 1)[0].strip().lower()
+            if prop not in SPAN_PROPERTIES:
+                bad.add(prop)
+    return sorted(bad)
 
 
 def table_style(header, kind="table"):

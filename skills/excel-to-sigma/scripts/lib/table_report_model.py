@@ -1725,7 +1725,7 @@ def build_parts(plan, dm_id, dm_elements):
             period_id = next(c["id"] for c in columns if c["name"] == frame["periodKey"])
             order_id = None
             labels = order_labels(frame)
-            if labels and ORDER_NAME not in own and ps.SURFACES["order_group_key"]:   # hidden row-level order column
+            if labels and ORDER_NAME not in own and ps.SURFACES["order_group_sort"]:   # hidden row-level order column
                 order_id = f"{fid}_ord"
                 columns.append({"id": order_id, "name": ORDER_NAME, "hidden": True,
                                 "formula": order_formula(f"[{frame['rowKey']}]", labels,
@@ -1743,12 +1743,17 @@ def build_parts(plan, dm_id, dm_elements):
                 columns += extra
                 calc_ids += [c["id"] for c in extra]
                 element_of[summary["id"]] = fid
+            grouping = {"id": f"{fid}_by_key", "groupBy": [by_id], "calculations": calc_ids}
+            if order_id and calc_ids:      # group-level order: Min of the hidden row-level order column
+                group_order = {"id": f"{fid}_ordg", "name": f"{ORDER_NAME} (group)", "hidden": True,
+                               "formula": f"Min([{ORDER_NAME}])"}
+                columns.append(group_order)
+                grouping["calculations"] = [group_order["id"]] + calc_ids
+                grouping["sort"] = [{"columnId": group_order["id"], "direction": "ascending"}]
             element = {"id": fid, "kind": "table", "name": frame["title"],
                        "source": {"kind": "table", "elementId": wrapper[table]}, "columns": columns,
                        "sort": [{"columnId": period_id, "direction": "ascending"}],
-                       "groupings": [{"id": f"{fid}_by_key",
-                                      "groupBy": ([order_id] if order_id and calc_ids else []) + [by_id],
-                                      "calculations": calc_ids}]}
+                       "groupings": [grouping]}
             key_rows = distinct_count(plan, table, frame["rowKey"])
             if calc_ids:
                 show(element, frame, "grouped", key_rows)
@@ -1789,22 +1794,23 @@ def build_parts(plan, dm_id, dm_elements):
                 src_blank = frame_blank.get(parent["id"])
             key_col = {"id": f"{fid}_key", "name": frame["by"], "formula": f"[{src_label}/{frame['by']}]"}
             calcs = _summary_columns(plan, frame, fid, src_types, src_label, src_blank, info)
-            group_by, lead = [key_col["id"]], []
+            grouping = {"id": f"{fid}_by", "groupBy": [key_col["id"]], "calculations": [c["id"] for c in calcs]}
+            tail = []
             labels = order_labels(frame)
-            if labels and ps.SURFACES["order_group_key"] and ORDER_NAME not in {c["name"] for c in calcs} \
+            if labels and ps.SURFACES["order_group_sort"] and ORDER_NAME not in {c["name"] for c in calcs} \
                     and ORDER_NAME != frame["by"]:
-                # source order: a hidden BASE-level row formula leads the group keys (Sigma sorts groups by their
-                # keys, ascending); element ``sort`` only reaches the base level, never a grouping calculation
-                lead = [{"id": f"{fid}_ord", "name": ORDER_NAME, "hidden": True,
-                         "formula": order_formula(f"[{src_label}/{frame['by']}]", labels,
-                                                  src_types.get(frame["by"], "text"))}]
-                group_by.insert(0, lead[0]["id"])
+                # source order: a hidden grouping calculation ``Min(<row-level If over the key>)`` placed first,
+                # and a grouping-level sort on it (accepted live; the group-key ``hidden`` flag is dropped)
+                tail = [{"id": f"{fid}_ord", "name": ORDER_NAME, "hidden": True,
+                         "formula": "Min(" + order_formula(f"[{src_label}/{frame['by']}]", labels,
+                                                           src_types.get(frame["by"], "text")) + ")"}]
+                grouping["calculations"].insert(0, tail[0]["id"])
+                grouping["sort"] = [{"columnId": tail[0]["id"], "direction": "ascending"}]
             # hidden helper frames (ledger source aggregates) stay on the Model page
             element = {
                 "id": fid, "kind": "table", "name": frame["title"],
-                "source": {"kind": "table", "elementId": src_id}, "columns": [key_col] + calcs + lead,
-                "groupings": [{"id": f"{fid}_by", "groupBy": group_by,
-                               "calculations": [c["id"] for c in calcs]}]}
+                "source": {"kind": "table", "elementId": src_id}, "columns": [key_col] + calcs + tail,
+                "groupings": [grouping]}
             if frame.get("hidden"):
                 hidden.append(element)
             else:
@@ -1925,20 +1931,16 @@ def build_wb_spec(plan, dm_id, dm_elements):
         import table_report_presentation as presentation
     parts = build_parts(plan, dm_id, dm_elements)
     page = presentation.compose_report(plan, parts)
-    pages = [{"id": "report", "name": "Report", "elements": page["elements"]},
-             {"id": "inputs", "name": "Inputs", "elements": parts["inputs"]},
-             {"id": "model", "name": "Model (sources)", "visibility": "hidden", "elements": parts["hidden"]}]
-    inputs, cursor = [], 1
-    for element in parts["inputs"]:
-        inputs.append((element["id"], 1, 25, cursor, cursor + 14))
-        cursor += 14
-    model, cursor = [], 1
-    for element in parts["hidden"]:
-        model.append((element["id"], 1, 25, cursor, cursor + 12))
-        cursor += 12
+    pages = [{"id": "report", "name": "Report", "elements": page["elements"]}]
+    layout_pages = [("report", page["placements"])]
+    if parts["inputs"]:      # no input tables (read-only intent): no empty Inputs page
+        pages.append({"id": "inputs", "name": "Inputs", "elements": parts["inputs"]})
+        layout_pages.append(("inputs", [(e["id"], 1, 25, 1 + 14 * n, 15 + 14 * n)
+                                        for n, e in enumerate(parts["inputs"])]))
+    pages.append({"id": "model", "name": "Model (sources)", "visibility": "hidden", "elements": parts["hidden"]})
+    layout_pages.append(("model", [(e["id"], 1, 25, 1 + 12 * n, 13 + 12 * n) for n, e in enumerate(parts["hidden"])]))
     spec = {"name": plan["name"], "schemaVersion": 1, "kind": "workbook", "folderId": plan["folderId"],
-            "pages": pages,
-            "layout": layout_xml([("report", page["placements"]), ("inputs", inputs), ("model", model)])}
+            "pages": pages, "layout": layout_xml(layout_pages)}
     if page.get("settings"):
         spec["settings"] = page["settings"]
     return spec
