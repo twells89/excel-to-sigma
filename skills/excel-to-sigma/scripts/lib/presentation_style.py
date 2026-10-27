@@ -436,6 +436,7 @@ MAX_VISIBLE_ROWS = 15      # longer tables / pivots scroll inside their card ins
 
 
 ROOMY_FACTOR = 2.5        # presentation preset / medium+ cell spacing render rows ~2.4x taller (live render)
+HEADER_ROOMY_FACTOR = 1.5  # ...but a pivot's header rows only ~30 px (live: body rows ~48 px, header rows ~30 px)
 
 
 def roomy_tables(look):
@@ -455,11 +456,12 @@ def roomy_tables(look):
 
 def table_height(n_rows, extra_header_rows=0, roomy=False):
     """Grid rows for a table / pivot: sized for its data rows, at most ``MAX_VISIBLE_ROWS`` of them (the rest
-    scroll), one row of slack. ``extra_header_rows`` and the chrome come on top. ``roomy``: the rows render ~2.5x
-    taller (presentation preset), so the row allowance is too."""
+    scroll), one row of slack. ``extra_header_rows`` and the chrome come on top. ``roomy``: the body rows render ~2.5x
+    taller (presentation preset), so the row allowance is too; header rows count only 1.5x."""
     factor = ROOMY_FACTOR if roomy else 1
     visible = min(max(n_rows, 1), MAX_VISIBLE_ROWS)
-    pixels = CHROME_PX + ROW_PX * factor * (visible + extra_header_rows)
+    header_factor = HEADER_ROOMY_FACTOR if roomy else 1
+    pixels = CHROME_PX + ROW_PX * factor * visible + ROW_PX * header_factor * extra_header_rows
     return max(MIN_TABLE_ROWS, math.ceil(pixels / GRID_ROW_PX) + 1)
 
 

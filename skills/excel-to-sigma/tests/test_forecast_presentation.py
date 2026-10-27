@@ -478,6 +478,11 @@ class TestComposition(Base):
         many = ps.table_height(200, extra_header_rows=fp.PIVOT_HEADER_ROWS, roomy=True)
         self.assertEqual(many, ps.table_height(ps.MAX_VISIBLE_ROWS, extra_header_rows=fp.PIVOT_HEADER_ROWS, roomy=True))
         self.assertGreater(ps.table_height(rows, extra_header_rows=3, roomy=True), ps.table_height(rows, 3))
+        # live measurement: body rows ~48 px, pivot header rows ~30 px (not 2.5x a row)
+        pixels = lambda n, header: (ps.table_height(n, extra_header_rows=header, roomy=True) - 1) * ps.GRID_ROW_PX
+        self.assertLess(pixels(14, 3), ps.CHROME_PX + 14 * 48 + 3 * 50)
+        self.assertGreaterEqual(pixels(14, 3), ps.CHROME_PX + 14 * ps.ROW_PX * ps.ROOMY_FACTOR + 3 * 30)
+        self.assertEqual(ps.table_height(14, extra_header_rows=3, roomy=False), 22)    # the spreadsheet preset is unchanged
         gl = next(p for p in layout_pages(self.spec(plan)["layout"])["detail"] if p[0] == "glTable")
         self.assertEqual(gl[4] - gl[3], ps.table_height(len(plan["actuals"]), roomy=True))
 
