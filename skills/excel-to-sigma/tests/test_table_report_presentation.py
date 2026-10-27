@@ -945,7 +945,7 @@ class TestPageComposition(SyntheticCase):
         heights = [ps.table_height(n) for n in (1, 4, 6, 13, 30, 500)]
         self.assertEqual(heights, sorted(heights))
         self.assertEqual(heights[0], ps.MIN_TABLE_ROWS)
-        self.assertEqual(heights[-1], ps.MAX_TABLE_ROWS)
+        self.assertEqual(heights[-1], heights[-2])                   # 30 and 500 rows: capped at 15 visible rows
         self.assertLess(ps.table_height(4), 14)
 
     def test_surfaces_can_be_switched_off_and_the_builder_simply_omits_the_field(self):

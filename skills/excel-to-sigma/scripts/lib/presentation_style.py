@@ -364,7 +364,8 @@ DIVIDER_ROWS = 1
 GRID_ROW_PX = 23           # measured on a live render: 20 grid rows ~ 464 px
 ROW_PX = 20                # one data row of the spreadsheet-preset table
 CHROME_PX = 140            # title + header + summary bar + card padding of a table
-MIN_TABLE_ROWS, MAX_TABLE_ROWS = 9, 40
+MIN_TABLE_ROWS = 9
+MAX_VISIBLE_ROWS = 15      # longer tables / pivots scroll inside their card instead of stretching the page
 
 
 ROOMY_FACTOR = 2.5        # presentation preset / medium+ cell spacing render rows ~2.4x taller (live render)
@@ -386,10 +387,10 @@ def roomy_tables(look):
 
 
 def table_height(n_rows, extra_header_rows=0, roomy=False):
-    """Grid rows for a table / pivot that shows ``n_rows`` data rows (sized to its rows, one row of slack).
-    ``roomy``: the look's rows are ~2.5x taller, so the row allowance is too."""
+    """Grid rows for a table / pivot: sized for its data rows, at most ``MAX_VISIBLE_ROWS`` of them (the rest
+    scroll), one row of slack. ``extra_header_rows`` and the chrome come on top. ``roomy``: the rows render ~2.5x
+    taller (presentation preset), so the row allowance is too."""
     factor = ROOMY_FACTOR if roomy else 1
-    pixels = CHROME_PX + ROW_PX * factor * (max(n_rows, 1) + extra_header_rows)
-    rows = math.ceil(pixels / GRID_ROW_PX) + 1
-    max_rows = math.ceil(MAX_TABLE_ROWS * factor)
-    return max(MIN_TABLE_ROWS, min(max_rows, rows))
+    visible = min(max(n_rows, 1), MAX_VISIBLE_ROWS)
+    pixels = CHROME_PX + ROW_PX * factor * (visible + extra_header_rows)
+    return max(MIN_TABLE_ROWS, math.ceil(pixels / GRID_ROW_PX) + 1)

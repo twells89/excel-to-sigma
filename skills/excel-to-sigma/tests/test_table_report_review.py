@@ -414,8 +414,7 @@ class TestRoomyTables(unittest.TestCase):
         self.assertGreater(ps.table_height(6, roomy=True), ps.table_height(6))
         pixels = lambda rows, roomy: (ps.table_height(rows, roomy=roomy) - 1) * ps.GRID_ROW_PX   # noqa: E731
         self.assertGreaterEqual(pixels(6, True) - ps.CHROME_PX, 2.3 * 6 * ps.ROW_PX)               # ~2.5x rows
-        self.assertGreater(ps.table_height(20, roomy=True), ps.MAX_TABLE_ROWS)
-        self.assertGreaterEqual(pixels(20, True), ps.CHROME_PX + 20 * ps.ROW_PX * ps.ROOMY_FACTOR)
+        self.assertGreaterEqual(pixels(15, True), ps.CHROME_PX + 15 * ps.ROW_PX * ps.ROOMY_FACTOR)   # all 15 fit
         self.assertEqual(ps.table_height(6, roomy=False), ps.table_height(6))
 
     def test_the_default_look_is_sized_roomy_because_it_uses_the_presentation_preset(self):
@@ -506,8 +505,27 @@ class TestDefaultTablePreset(unittest.TestCase):
             self.assertNotIn("preset", el.get("tableStyle", {}))
         self.assertFalse(ps.roomy_tables(None))
 
-    def test_the_scaled_cap_applies_to_the_default_look_too(self):
-        self.assertEqual(ps.table_height(500, roomy=True), int(ps.MAX_TABLE_ROWS * ps.ROOMY_FACTOR))
+    def test_a_long_table_is_sized_for_15_visible_rows_and_scrolls_in_every_mode(self):
+        self.assertEqual(ps.MAX_VISIBLE_ROWS, 15)
+        for roomy in (False, True):
+            self.assertEqual(ps.table_height(50, roomy=roomy), ps.table_height(15, roomy=roomy), roomy)
+            self.assertEqual(ps.table_height(500, extra_header_rows=1, roomy=roomy),
+                             ps.table_height(15, extra_header_rows=1, roomy=roomy), roomy)
+            self.assertGreater(ps.table_height(15, roomy=roomy), ps.table_height(14, roomy=roomy) - 1)
+        self.assertEqual(ps.table_height(6), 13)                    # a short table is unchanged
+        self.assertEqual(ps.table_height(4), 11)
+        # a roomy 15-row table still fits all 15 rows by the pixel maths
+        pixels = (ps.table_height(15, roomy=True) - 1) * ps.GRID_ROW_PX
+        self.assertGreaterEqual(pixels, ps.CHROME_PX + 15 * ps.ROW_PX * ps.ROOMY_FACTOR)
+        self.assertGreater(ps.table_height(15), ps.table_height(6))
+
+    def test_long_report_tables_and_grouped_detail_are_capped_in_the_layout(self):
+        plan, _ = draft(SOURCES["07"])                              # the monthly pivot has one row per employee
+        spans = {n[0]: n[4] - n[3] for n in placements(wb_spec(plan))}
+        self.assertEqual(spans["pv_monthly_cost"], ps.table_height(15, extra_header_rows=1, roomy=True))
+        plan, _ = draft(SOURCES["08"])
+        spans = {n[0]: n[4] - n[3] for n in placements(wb_spec(plan))}
+        self.assertLessEqual(spans["f_k_projection"], ps.table_height(15, roomy=True))
 
 
 class TestTextCardWithoutKpiType(unittest.TestCase):
