@@ -1942,5 +1942,144 @@
    "vendor": "IRS",
    "amt": 5671.5
   }
- ]
+ ],
+ "presentation": {
+  "version": 1,
+  "title": "FY26 Monthly P&L \u2014 Actuals Jan-Jun, Forecast Jul-Dec",
+  "subtitle": "02 SaaS Driver Forecast FY26.xlsx \u00b7 P&L sheet \u00b7 as of 2026-10-20",
+  "accent": {
+   "source": "#DDE7F5",
+   "hue": "blue",
+   "hex": "#2563EB",
+   "tint": "#F0F7FF",
+   "border": "#BAD9F8"
+  },
+  "headers": {
+   "pivot": {
+    "fill": "#DDE7F5",
+    "bold": true
+   },
+   "gl": {
+    "fill": "#DDE7F5",
+    "bold": true
+   },
+   "assumptions": {
+    "fill": "#DDE7F5",
+    "bold": true
+   }
+  },
+  "formats": {
+   "money": {
+    "code": "#,##0;[Red](#,##0)",
+    "cell": "P&L!B7",
+    "format": {
+     "kind": "number",
+     "formatString": "(,.0f"
+    },
+    "negativeRed": true
+   },
+   "sections": {
+    "Revenue": {
+     "code": "#,##0;[Red](#,##0)",
+     "cell": "P&L!B9",
+     "format": {
+      "kind": "number",
+      "formatString": "(,.0f"
+     },
+     "negativeRed": true
+    },
+    "Cost of Revenue": {
+     "code": "#,##0;[Red](#,##0)",
+     "cell": "P&L!B14",
+     "format": {
+      "kind": "number",
+      "formatString": "(,.0f"
+     },
+     "negativeRed": true
+    },
+    "Operating Expenses": {
+     "code": "#,##0;[Red](#,##0)",
+     "cell": "P&L!B23",
+     "format": {
+      "kind": "number",
+      "formatString": "(,.0f"
+     },
+     "negativeRed": true
+    },
+    "Below the Line": {
+     "code": "#,##0;[Red](#,##0)",
+     "cell": "P&L!B29",
+     "format": {
+      "kind": "number",
+      "formatString": "(,.0f"
+     },
+     "negativeRed": true
+    }
+   },
+   "derived": {
+    "Gross Profit": {
+     "code": "#,##0;[Red](#,##0)",
+     "cell": "P&L!B15",
+     "format": {
+      "kind": "number",
+      "formatString": "(,.0f"
+     },
+     "negativeRed": true
+    },
+    "Gross Margin %": {
+     "code": "0.0%",
+     "cell": "P&L!B16",
+     "format": {
+      "kind": "number",
+      "formatString": ".1%"
+     }
+    },
+    "EBITDA": {
+     "code": "#,##0;[Red](#,##0)",
+     "cell": "P&L!B24",
+     "format": {
+      "kind": "number",
+      "formatString": "(,.0f"
+     },
+     "negativeRed": true
+    },
+    "Net Income": {
+     "code": "#,##0;[Red](#,##0)",
+     "cell": "P&L!B31",
+     "format": {
+      "kind": "number",
+      "formatString": "(,.0f"
+     },
+     "negativeRed": true
+    }
+   },
+   "percent": {
+    "code": "0.0%",
+    "cell": "P&L!B16",
+    "format": {
+     "kind": "number",
+     "formatString": ".1%"
+    }
+   },
+   "lines": {},
+   "gl": {
+    "code": "General"
+   },
+   "glDate": {
+    "kind": "datetime",
+    "formatString": "%Y-%m-%d"
+   },
+   "drivers": {
+    "code": "0.0%",
+    "cell": "Assumptions!B5",
+    "format": {
+     "kind": "number",
+     "formatString": ".1%"
+    }
+   }
+  },
+  "notes": [
+   "Source ratio row(s) Gross Margin % are not rows of the P&L pivot (it lists lines and section totals); the ratio KPI card carries the headline ratio."
+  ]
+ }
 }

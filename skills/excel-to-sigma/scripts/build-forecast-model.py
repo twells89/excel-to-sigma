@@ -30,6 +30,8 @@ if str(_LIB) not in sys.path:
 import workbook_wire  # noqa: E402
 import sigma_auth  # noqa: E402
 from lib import forecast_calc as calc  # noqa: E402
+from lib import forecast_presentation as fp  # noqa: E402
+from lib import presentation_style as ps  # noqa: E402
 from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
 
 CUR = lambda p: {"kind": "number", "formatString": p["currencyFormat"]}
@@ -440,6 +442,12 @@ def amount_formula(row, table, sec_cols, fy_nums, fy=False):
     return out
 
 
+def metric_key_of(P, section):
+    """The name a source chart gives a section's total (its total label, mapped like the parity targets)."""
+    label = next((m["totalLabel"] for m in P.get("sections", []) if m["name"] == section and m.get("totalLabel")), None)
+    return calc.TARGET_LABELS.get(label.lower(), label) if label else "Revenue"
+
+
 def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     U = "Union of 2 Sources"
@@ -462,6 +470,12 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         approved_graph = emit_workbook_wiring(manifest, receipt)["wiring"]
         editable = False  # Assigned wide input is the only editable surface.
     cur = CUR(P)
+    pres = P.get("presentation")      # None: a plan drafted before the presentation port -> the legacy page
+    if pres is not None and fp.check_look(P):
+        raise PlanError(fp.check_look(P))
+    look = (pres or {}).get("look")
+    fm = fp.Formats(P, cur, PCT(P))   # source number formats per element; CLI defaults for General / legacy plans
+    accent = (pres or {}).get("accent") or ps.accent_from_fill(None)
     def dm(elid): return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
     elements = []
     # actuals wrap (live)
@@ -483,9 +497,9 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
     pct_branch = '[Kind] = "pct", 0, ' if has_pct else ""
     if editable:
         rateInput = {"id":"rateInput","kind":"input-table","name":"Growth Rates (editable)","inputMode":"edit","source":{"kind":"empty","connectionId":conn},
-            "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"RATE","type":"number","name":"Rate","format":PCT(P)}],"order":["LINE_ITEM","RATE"]}
+            "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"RATE","type":"number","name":"Rate","format":fm.drivers}],"order":["LINE_ITEM","RATE"]}
         manualInput = {"id":"manualInput","kind":"input-table","name":"Manual Forecast (editable)","inputMode":"edit","source":{"kind":"empty","connectionId":conn},
-            "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"MONTH","type":"text","name":"Month"},{"id":"MONTH_NUM","type":"number","name":"Month Num"},{"id":"MONTH_END","type":"datetime","name":"Month End"},{"id":"AMOUNT","type":"number","name":"Amount","format":cur}],"order":["LINE_ITEM","MONTH","AMOUNT"]}
+            "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"MONTH","type":"text","name":"Month"},{"id":"MONTH_NUM","type":"number","name":"Month Num"},{"id":"MONTH_END","type":"datetime","name":"Month End"},{"id":"AMOUNT","type":"number","name":"Amount","format":fm.money}],"order":["LINE_ITEM","MONTH","AMOUNT"]}
         forecast = {"id":stage1_id,"kind":"table","name":stage1_name,
             "source":{"kind":"join","name":"FJ","primarySource":{"kind":"table","elementId":"spineWrap"},
                 "joins":[{"name":"Rates","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"rateInput"},"columns":[{"left":"[Line Item]","right":"[Line Item]"}]},
@@ -497,7 +511,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
                 *([{"id":"f_of","name":"Of Section","formula":"[FJ/Of Section]"}] if has_pct else []),
                 {"id":"f_er","name":"Eff Rate","formula":"Coalesce([Rates/Rate], [FJ/Default Rate])"},
                 {"id":"f_em","name":"Eff Manual","formula":"Coalesce([Manual/Amount], [FJ/Manual Value])"},
-                {"id":"f_amt","name":"Amount","formula":'If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [June Base], ' + pct_branch + '[June Base] * (1 + [Eff Rate]) ^ [N])',"format":cur},
+                {"id":"f_amt","name":"Amount","formula":'If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [June Base], ' + pct_branch + '[June Base] * (1 + [Eff Rate]) ^ [N])',"format":fm.money},
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
     else:
         forecast = {"id":stage1_id,"kind":"table","name":stage1_name,"source":{"kind":"table","elementId":"spineWrap"},
@@ -506,7 +520,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
                 {"id":"f_m","name":"Month","formula":"[Forecast Spine/Month]"},{"id":"f_mn","name":"Month Num","formula":"[Forecast Spine/Month Num]"},{"id":"f_me","name":"Month End","formula":"[Forecast Spine/Month End]"},
                 *([{"id":"f_k","name":"Kind","formula":"[Forecast Spine/Kind]"},{"id":"f_of","name":"Of Section","formula":"[Forecast Spine/Of Section]"},
                    {"id":"f_er","name":"Eff Rate","formula":"[Forecast Spine/Default Rate]"}] if has_pct else []),
-                {"id":"f_amt","name":"Amount","formula":'If([Forecast Spine/Kind] = "manual", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = "flat", [Forecast Spine/June Base], ' + ('[Forecast Spine/Kind] = "pct", 0, ' if has_pct else "") + '[Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])',"format":cur},
+                {"id":"f_amt","name":"Amount","formula":'If([Forecast Spine/Kind] = "manual", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = "flat", [Forecast Spine/June Base], ' + ('[Forecast Spine/Kind] = "pct", 0, ' if has_pct else "") + '[Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])',"format":fm.money},
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
     forecast_stages = [forecast]
     if has_pct:
@@ -519,7 +533,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         forecastRef = {"id":"forecastRef","kind":"table","name":ref_name,"source":{"kind":"table","elementId":stage1_id},
             "columns":[{"id":"r_sec","name":"Section","formula":f"[{stage1_name}/Section]"},
                        {"id":"r_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},
-                       {"id":"r_amt","name":"Amount","formula":f"[{stage1_name}/Amount]","format":cur}]}
+                       {"id":"r_amt","name":"Amount","formula":f"[{stage1_name}/Amount]","format":fm.money}]}
         pairs = sorted({(ln["of"], v["num"]) for ln in P["lines"] if ln["kind"] == "pct_of_total"
                         for v in calc.month_views(periods)[n_act:]}, key=lambda t: (t[1], t[0]))
         branches = ", ".join(
@@ -530,7 +544,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
             "columns":[{"id":"g_sec","name":"Section","formula":f"[{stage1_name}/Section]"},{"id":"g_so","name":"Section Order","formula":f"[{stage1_name}/Section Order]"},
                 {"id":"g_line","name":"Line Item","formula":f"[{stage1_name}/Line Item]"},{"id":"g_lo","name":"Line Order","formula":f"[{stage1_name}/Line Order]"},
                 {"id":"g_m","name":"Month","formula":f"[{stage1_name}/Month]"},{"id":"g_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},{"id":"g_me","name":"Month End","formula":f"[{stage1_name}/Month End]"},
-                {"id":"g_amt","name":"Amount","formula":f'If([{stage1_name}/Kind] = "pct", [{stage1_name}/Eff Rate] * If({branches}, 0), [{stage1_name}/Amount])',"format":cur},
+                {"id":"g_amt","name":"Amount","formula":f'If([{stage1_name}/Kind] = "pct", [{stage1_name}/Eff Rate] * If({branches}, 0), [{stage1_name}/Amount])',"format":fm.money},
                 {"id":"g_p","name":"Period","formula":'"Forecast"'}]}
         forecast_stages = [forecast, forecastRef, final]
         forecast = final
@@ -541,7 +555,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         "columns":[{"id":"c_sec","name":"Section","formula":f"[{U}/Section]"},{"id":"c_so","name":"Section Order","formula":f"[{U}/Section Order]"},
             {"id":"c_line","name":"Line Item","formula":f"[{U}/Line Item]"},{"id":"c_lo","name":"Line Order","formula":f"[{U}/Line Order]"},
             {"id":"c_m","name":"Month","formula":f"[{U}/Month]"},{"id":"c_mn","name":"Month Num","formula":f"[{U}/Month Num]"},{"id":"c_me","name":"Month End","formula":f"[{U}/Month End]"},
-            {"id":"c_amt","name":"Amount","formula":f"[{U}/Amount]","format":cur},{"id":"c_p","name":"Period","formula":f"[{U}/Period]"},
+            {"id":"c_amt","name":"Amount","formula":f"[{U}/Amount]","format":fm.money},{"id":"c_p","name":"Period","formula":f"[{U}/Period]"},
             *[{"id":col_id,"name":col_name,"formula":f'If([{U}/Section] = {literal}, [{U}/Amount], 0)'}
               for col_id, col_name, literal in sec_cols.values()]]}
     if approved_inputs is not None:
@@ -573,24 +587,29 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
     # KPI cards: first positive section, the next-to-last and last amount rows, and the
     # first amount row as a share of that section (Gross Margin %).
     middle, bottom = kpi_rows(P, rows)
-    slots = [("kpiRev", kpi_title(rev_label), REV_FY, cur)]
+    slots = [("kpiRev", kpi_title(rev_label), REV_FY, fm.section(first_positive))]
     if middle is not None:
-        slots.append(("kpiEbitda", kpi_title(rows[middle]["label"]), signed(rows[middle], True), cur))
-    slots.append(("kpiNI", kpi_title(rows[bottom]["label"]), signed(rows[bottom], True), cur))
+        slots.append(("kpiEbitda", kpi_title(rows[middle]["label"]), signed(rows[middle], True), fm.derived(rows[middle]["label"])))
+    slots.append(("kpiNI", kpi_title(rows[bottom]["label"]), signed(rows[bottom], True), fm.derived(rows[bottom]["label"])))
     if len(rows) >= 2:
         first = rows[0]
         ratio_name = "Gross Margin %" if first["label"].lower() == "gross profit" else f"{first['label']} %"
-        slots.append(("kpiGM", kpi_title(ratio_name), f"({signed(first, True)}) / {REV_FY}", PCT(P)))
-    kpis = [kpi(*slot) for slot in slots]
-    kpis[0]["style"]["borderColor"] = "#2563EB"
-    header={"id":"pnlHeader","kind":"text","body":f"# {P['name']}\n{grain_adj} actuals and forecast performance",
-        "style":{"backgroundColor":"#F8FAFC","color":"#0F172A","borderRadius":"round"}}
+        slots.append(("kpiGM", kpi_title(ratio_name), f"({signed(first, True)}) / {REV_FY}", fm.ratio(ratio_name)))
+    if pres is None:
+        kpis = [kpi(*slot) for slot in slots]
+        kpis[0]["style"]["borderColor"] = "#2563EB"
+        header={"id":"pnlHeader","kind":"text","body":f"# {P['name']}\n{grain_adj} actuals and forecast performance",
+            "style":{"backgroundColor":"#F8FAFC","color":"#0F172A","borderRadius":"round"}}
+    else:       # equal peer cards (table-report recipe): the same formulas, source formats, no accent on the first
+        kpis = [ps.kpi_card(eid, name.upper(), {"kind": "table", "elementId": "pnlCombined"}, f, fmt, look)
+                for eid, name, f, fmt in slots]
     tail = [rows[i] for i in sorted({middle, bottom} - {None})]
     trend_series = [(first_positive, REV)] + [(r["label"], signed(r)) for r in tail]
     trend_names = [name for name, _ in trend_series]
     trend_label = ", ".join(trend_names[:-1]) + " & " + trend_names[-1] if len(trend_names) > 1 else trend_names[0]
-    series_cols = [{"id":"t_" + re.sub(r"\W+", "_", name.lower()).strip("_"),"name":name,"formula":f,"format":cur}
-                   for name, f in trend_series]
+    trend_formats = [fm.section(first_positive)] + [fm.derived(r["label"]) for r in tail]
+    series_cols = [{"id":"t_" + re.sub(r"\W+", "_", name.lower()).strip("_"),"name":name,"formula":f,"format":fmt}
+                   for (name, f), fmt in zip(trend_series, trend_formats)]
     if grain_is_month:
         x_cols = [{"id":"t_month","name":"Month","formula":f'DateTrunc("month", [{C}/Month End])',"format":DATEF}]
         x_axis = {"columnId":"t_month","sort":{"direction":"ascending"}}
@@ -604,6 +623,10 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         "yAxis":{"columnIds":[c["id"] for c in series_cols],"format":{"marks":"grid","scale":{"type":"linear","zero":False}}},
         "legend":{"position":"bottom"},"lineAreaStyle":{"interpolation":"monotone"},
         "style":{"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}}
+    if pres is not None:
+        trend.pop("style"); style = ps.chart_card(look)
+        if style: trend["style"] = style
+        ps.flat_labels(trend["xAxis"], len(periods))
     if grain_is_month:
         p_period = [{"id":"p_m","name":"Month","formula":f"[{C}/Month End]","format":DATEF}]
         p_cols_by = [{"columnId":"p_per","sort":{"direction":"ascending"}},{"columnId":"p_m","sort":{"direction":"ascending"}}]
@@ -614,28 +637,31 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         "columns":[{"id":"p_sec","name":"Section","formula":f"[{C}/Section]"},{"id":"p_so","name":"Section Order","formula":f"[{C}/Section Order]"},
             {"id":"p_line","name":"Line Item","formula":f"[{C}/Line Item]"},{"id":"p_lo","name":"Line Order","formula":f"[{C}/Line Order]"},
             {"id":"p_per","name":"Period","formula":f"[{C}/Period]"},*p_period,
-            {"id":"p_amt","name":"Amount","formula":f"Sum([{C}/Amount])","format":cur}],
+            {"id":"p_amt","name":"Amount","formula":f"Sum([{C}/Amount])","format":fm.money}],
         "values":["p_amt"],
         "rowsBy":[{"columnId":"p_sec","sort":{"direction":"ascending","by":"p_so","aggregation":"min"}},{"columnId":"p_line","sort":{"direction":"ascending","by":"p_lo","aggregation":"min"}}],
         "columnsBy":p_cols_by,
         "axisTotals":[{"axisId":"grand-row-total","visibility":"hidden"}],
         "style":{"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}}
     glTable={"id":"glTable","kind":"table","name":"GL Transaction Detail (Actuals)","source":dm("glDetail"),
-        "columns":[{"id":"g1","name":"Txn Date","formula":f"[{DMP}/Txn Date]"},{"id":"g2","name":"Month","formula":f"[{DMP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{DMP}/Line Item]"},{"id":"g4","name":"Department","formula":f"[{DMP}/Department]"},{"id":"g5","name":"Vendor","formula":f"[{DMP}/Vendor]"},{"id":"g6","name":"Amount","formula":f"[{DMP}/Amount]","format":cur}]}
+        "columns":[{"id":"g1","name":"Txn Date","formula":f"[{DMP}/Txn Date]",**({"format":fm.gl_date} if pres is not None and fm.gl_date else {})},{"id":"g2","name":"Month","formula":f"[{DMP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{DMP}/Line Item]"},{"id":"g4","name":"Department","formula":f"[{DMP}/Department]"},{"id":"g5","name":"Vendor","formula":f"[{DMP}/Vendor]"},{"id":"g6","name":"Amount","formula":f"[{DMP}/Amount]","format":fm.gl}]}
     assumpTable={"id":"assumpTable","kind":"table","name":"Forecast Assumptions","source":dm("assumptions"),
-        "columns":[{"id":"d1","name":"Driver","formula":f"[{DMP}/Driver]"},{"id":"d2","name":rate_name,"formula":f"[{DMP}/{rate_name}]","format":PCT(P)},{"id":"d3","name":"Basis","formula":f"[{DMP}/Basis]"}]}
+        "columns":[{"id":"d1","name":"Driver","formula":f"[{DMP}/Driver]"},{"id":"d2","name":rate_name,"formula":f"[{DMP}/{rate_name}]","format":fm.drivers},{"id":"d3","name":"Basis","formula":f"[{DMP}/Basis]"}]}
     # Source-workbook charts the drafter mapped and verified (plan.sourceCharts). Series are
     # named like the plan's section totals / amount rows (classic rows use Revenue, Gross
     # Profit, EBITDA, Net Income).
-    metric_formula = {}
+    metric_formula, metric_format = {}, {}
     for sec in sections:
         label = next((m_["totalLabel"] for m_ in P.get("sections", []) if m_["name"] == sec["name"] and m_.get("totalLabel")), None)
         if label:
             metric_formula[calc.TARGET_LABELS.get(label.lower(), label)] = sec_sum(sec["name"])
+            metric_format[calc.TARGET_LABELS.get(label.lower(), label)] = fm.section(sec["name"])
     for row in rows:
         metric_formula[calc.TARGET_LABELS.get(row["label"].lower(), row["label"])] = signed(row)
+        metric_format[calc.TARGET_LABELS.get(row["label"].lower(), row["label"])] = fm.derived(row["label"])
     if not P.get("sections"):
         metric_formula["Revenue"] = REV
+        metric_format["Revenue"] = fm.section(first_positive)
     source_charts = []
     for i, sc in enumerate(P.get("sourceCharts") or [], 1):
         if sc["grain"] == "quarter":
@@ -645,7 +671,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
             x = {"id": f"s{i}_x", "name": "Period", "formula": f"[{C}/Month]"}
         else:
             x = {"id": f"s{i}_x", "name": "Month", "formula": f'DateTrunc("month", [{C}/Month End])', "format": DATEF}
-        ys = [{"id": f"s{i}_y{j}", "name": metric, "formula": metric_formula[metric], "format": cur}
+        ys = [{"id": f"s{i}_y{j}", "name": metric, "formula": metric_formula[metric], "format": metric_format[metric]}
               for j, metric in enumerate(sc["series"], 1)]
         is_bar = sc.get("kind") == "bar"
         if sc["grain"] == "period":
@@ -665,16 +691,36 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
             "yAxis": {"columnIds": [y["id"] for y in ys], "format": {"marks": "grid", "scale": {"type": "linear", "zero": is_bar}}},
             "legend": {"position": "bottom"},
             "style": {"backgroundColor": "#FFFFFF", "borderColor": {"kind": "theme", "ref": "colors-border"}, "borderWidth": 1, "borderRadius": "round"}}
+        if pres is not None:      # the table-report chart recipe: card chrome, flat labels, one colour for one series
+            chart.pop("style"); style = ps.chart_card(look)
+            if style: chart["style"] = style
+            ps.flat_labels(chart["xAxis"], len(sc["categories"]))
+            if len(ys) == 1:
+                chart["legend"] = {"visibility": "hidden"}
+                one = ps.single_color((sc.get("colors") or [None])[0] or accent["hex"]) if look is None else None
+                if one: chart["color"] = one
         source_charts.append(chart)
-    main_els=[header]+kpis+[trend]+source_charts+[pivot]
-    detail_els=[glTable]
-    input_els=[assumpTable]
     hidden_els=[actuals,spineWrap,*forecast_stages,pnlCombined]
     extra_model_ids = [e["id"] for e in forecast_stages[:-1]] if has_pct else []
     if approved_inputs is not None:
         extra = [e for e in approved_graph["elements"] if e["id"] not in {n["id"] for n in hidden_els}]
         hidden_els += extra
         extra_model_ids = [e["id"] for e in extra]
+    if pres is not None:
+        # The generated trend repeats a mapped source chart that shows the same series at the plan's grain.
+        trend_keys = [metric_key_of(P, first_positive)] + [calc.TARGET_LABELS.get(r["label"].lower(), r["label"]) for r in tail]
+        charts = ([] if fp.trend_covered(P, trend_keys, periods[0]["grain"]) else [trend]) + source_charts
+        page = fp.compose(P, kpis=kpis, charts=charts, pivot=pivot, gl=glTable, assump=assumpTable if P.get("assumptions") else None,
+                          inputs=[rateInput, manualInput] if editable else [], hidden=hidden_els,
+                          hidden_ids=[e["id"] for e in hidden_els], fm=fm, n_pivot_rows=len(P["lines"]) + len(sections))
+        spec = {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],
+                "pages":page["pages"],"layout":page["layout"]}
+        if page.get("settings"):
+            spec["settings"] = page["settings"]
+        return spec
+    main_els=[header]+kpis+[trend]+source_charts+[pivot]
+    detail_els=[glTable]
+    input_els=[assumpTable]
     if editable: input_els+=[rateInput,manualInput]
     pages=[{"id":"pnl","name":"P&L Overview","elements":main_els},
            {"id":"detail","name":"Detail","elements":detail_els},

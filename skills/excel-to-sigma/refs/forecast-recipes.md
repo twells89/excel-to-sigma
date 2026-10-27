@@ -118,6 +118,33 @@ across pages fine.
   needs a data-model control + `parameters` binding. Use an **editable input table** for
   adjustable rates instead (proven), unless/until you wire DM parameters.
 
+## 7. Presentation (the P&L Overview page)
+
+Presentation never changes a value: the data model, `parityTargets`, every KPI / chart formula and every section sum
+are the ones the builder always emitted (`tests/test_forecast_presentation.py` pins them to what main emitted before
+this port, `tests/fixtures/forecast-regression/main-dfa51f4-forecast-values.json`). Plan field `presentation`
+(`lib/forecast_presentation.py`; a plan without it builds the earlier page, byte for byte):
+
+| Source | Sigma |
+|---|---|
+| number format of the P&L line / section-total / derived-row cells (`lib/excel_formats.py`) | the format of the pivot value column, KPI cards, trend / source-chart series and the hidden model's Amount columns: `#,##0;[Red](#,##0)` -> `(,.0f` + a `conditionalFormats` rule `{type: single, condition: "<", value: 0, style: {color, backgroundColor: "none"}}` on the pivot (`includeValues` / `includeSubtotals` / `includeGrandTotals`) and GL table; `#,##0;\(#,##0\);"-"` -> `(,.0f` (the zero dash has no Sigma format field: review issue `NUMBER_FORMAT_APPROXIMATED`); `0.0%` -> `.1%` |
+| General cell | `--currency-format` / `--pct-format` (the plan's `currencyFormat` / `pctFormat`); a General GL amount shows like the P&L cells it feeds |
+| a P&L line whose format differs from the rest | the pivot has one value format: the dominant (money) one stays and the line is listed in `NUMBER_FORMAT_APPROXIMATED`; the source's ratio rows are not rows of the pivot (the ratio KPI carries them) |
+| sheet title cell (`A1`), file, sheet, `as of` date | header band (container tinted with the accent + a text with the title and one quiet subline), not the plan name |
+| header fill / bold / font colour of the report sheet, the GL sheet and the drivers table | `tableStyle.textStyles.header` (pivot also `columnHeader`) beside `preset: presentation` |
+| section rows | pivot `totals.subTotalFontWeight: bold` (unconfirmed live) |
+| source chart series colours (`srgbClr`) | `settings.theme.overrides.categoricalScheme` (those colours first); one series -> `color: {by: single}` |
+
+Page: header band, KPI row (equal peer `kpi-chart` cards from `presentation_style.kpi_card`, uppercase 14 px muted titles, bold
+28 px values, no accent on the first), the chart(s), a divider + quiet `DETAIL` label, then the pivot sized by `table_height` (15 visible
+rows at most, 3 pivot header rows, roomy preset). One chart is full width; two sit side by side; three or more are a full-width hero
+and pairs. **De-duplication:** the generated `monthlyTrend` is dropped when a mapped source chart has the same series (compared by
+section-total / amount-row name) at the plan's grain over every period (`forecast_presentation.trend_covered`); a source chart with
+fewer series, another grain or a partial range keeps both. Category labels are flat (`xAxis.format.labels.labelAngle: 0`) for 12
+categories or fewer. The Detail page is the GL table; the Inputs page holds the drivers (plus the editable inputs) and is left out when
+there is nothing to show; the Model page stays hidden. `--look` (`draft-forecast-plan.py --look look.json`, from
+`style-reference.py`) swaps the look exactly as in `refs/table-report-recipes.md`.
+
 ## Corrected July–December snapshot
 
 For the explicitly approved 18-line/108-value replacement of the broken source

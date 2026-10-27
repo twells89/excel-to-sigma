@@ -50,6 +50,10 @@ SURFACES = {
     "chart_list_filter": True,     # chart filters[{kind: list, mode: include}] on the category column
     "kpi_text_card": True,         # container card + text with {{Sum([A/x]) / Sum([B/y]) | fmt}} for a KPI that
                                    # spans several source elements (a kpi-chart has ONE source)
+    "pivot_subtotal_bold": True,   # pivot-table totals.subTotalFontWeight: bold (a P&L pivot's section rows)
+                                   # (OpenAPI pivot-table.totals; to confirm live)
+    "pivot_negative_scope": True,  # pivot conditionalFormats[].includeValues / includeSubtotals / includeGrandTotals
+                                   # (OpenAPI pivot-table.conditionalFormats; to confirm live)
 }
 
 # ---------------------------------------------------------------- palette (styling.rb DEFAULT_ROLES)
@@ -307,6 +311,31 @@ def disallowed_span_styles(body):
     return sorted(bad)
 
 
+def cell_header_style(cell, keep_light_text=False):
+    """The source cell's header look (fill / bold / font color) for a Sigma table header style, or ``None``.
+
+    ``cell`` is an openpyxl cell (only ``fill`` and ``font`` are read). A white / pure-white fill is no fill. The
+    font color is kept unless it is plain black / white; ``keep_light_text`` also keeps white text, which a dark
+    header fill needs to stay legible (a white font on a white fill is not a header look, so it needs a fill)."""
+    import re
+    out = {}
+    fill = cell.fill
+    if fill is not None and fill.fill_type == "solid":
+        rgb = fill.fgColor.rgb if isinstance(fill.fgColor.rgb, str) else None
+        if rgb and re.fullmatch(r"[0-9A-Fa-f]{6,8}", rgb) and rgb[-6:].upper() != "FFFFFF":
+            out["fill"] = "#" + rgb[-6:].upper()
+    font = cell.font
+    if font is not None and font.b:
+        out["bold"] = True
+    if font is not None and font.color is not None:
+        rgb = font.color.rgb if isinstance(font.color.rgb, str) else None
+        if rgb and re.fullmatch(r"[0-9A-Fa-f]{6,8}", rgb):
+            hexed = rgb[-6:].upper()
+            if hexed not in ("000000", "FFFFFF") or (keep_light_text and hexed == "FFFFFF" and out.get("fill")):
+                out["color"] = "#" + hexed
+    return out or None
+
+
 def table_style(header, kind="table", look=None):
     """``tableStyle.textStyles`` header fill / weight / color from the source header cells.
 
@@ -346,10 +375,39 @@ def negative_red_rule(column_ids):
             "style": {"color": NEGATIVE, "backgroundColor": "none"}}
 
 
+def style_table(element, header, negative_ids, look=None):
+    """Card chrome, source header style and Excel's red negatives on a Report-page table / pivot.
+
+    With a reference ``look`` the card is the reference's table style (none when it has none) and the reference's
+    table preset joins Excel's header fill / bold in ``tableStyle``. ``header`` is a source header look
+    (``{"fill", "bold", "color"}``) or ``None``; ``negative_ids`` the column ids that carry ``[Red]`` negatives."""
+    if look is not None:
+        element.pop("style", None)
+        card = look_style(look, "table")
+        if card:
+            element["style"] = card
+    else:
+        element["style"] = card_style()
+    style = table_style(header, element["kind"], look)
+    if style:
+        element["tableStyle"] = style
+    rule = negative_red_rule(negative_ids)
+    if rule:
+        element["conditionalFormats"] = [rule]
+
+
 def chart_card(look=None):
     if look is not None:
         return look_style(look, "chart") if SURFACES["chart_card_style"] else None
     return card_style() if SURFACES["chart_card_style"] else None
+
+
+def flat_labels(axis, categories):
+    """Flat category labels (``labelAngle: 0``) on an x axis when the chart has 12 categories or fewer."""
+    if categories <= 12 and SURFACES["chart_label_angle"]:
+        fmt = axis.get("format") or {}
+        axis["format"] = {**fmt, "labels": {**(fmt.get("labels") or {}), "labelAngle": 0}}
+    return axis
 
 
 def single_color(hex_color):
@@ -403,3 +461,30 @@ def table_height(n_rows, extra_header_rows=0, roomy=False):
     visible = min(max(n_rows, 1), MAX_VISIBLE_ROWS)
     pixels = CHROME_PX + ROW_PX * factor * (visible + extra_header_rows)
     return max(MIN_TABLE_ROWS, math.ceil(pixels / GRID_ROW_PX) + 1)
+
+
+def layout_xml(pages):
+    """Dense grid layout: [(page id, [(element id, col_start, col_end, row_start, row_end[, children])])].
+
+    A placement with ``children`` (the same tuples, rows relative to the container's own grid) is a
+    ``<Container>`` holding them.
+    """
+    blocks = []
+    for page_id, placements in pages:
+        lines = [f'<Page type="grid" gridTemplateColumns="repeat({PAGE_COLS}, 1fr)" gridTemplateRows="auto" '
+                 f'id="{page_id}">']
+        for element_id, c0, c1, r0, r1, *rest in placements:
+            if not rest:
+                lines.append(f'  <Element elementId="{element_id}" gridColumn="{c0} / {c1}" '
+                             f'gridRow="{r0} / {r1}"/>')
+                continue
+            lines.append(f'  <Container elementId="{element_id}" type="grid" gridColumn="{c0} / {c1}" '
+                         f'gridRow="{r0} / {r1}" gridTemplateColumns="repeat({PAGE_COLS}, 1fr)" '
+                         'gridTemplateRows="auto">')
+            for child, cc0, cc1, cr0, cr1 in rest[0]:
+                lines.append(f'    <Element elementId="{child}" gridColumn="{cc0} / {cc1}" '
+                             f'gridRow="{cr0} / {cr1}"/>')
+            lines.append("  </Container>")
+        lines.append("</Page>")
+        blocks.append("\n".join(lines))
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)

@@ -299,6 +299,15 @@ line and bar charts whose series are the plan's totals or derived rows are recor
 as `sourceCharts` (every point checked against cached values) and the builder emits a
 matching Sigma chart over the same period range; the drafter lists any other chart as
 not mapped, to rebuild by hand before dispositioning `CHARTS_PRESENT`.
+The forecast workbook keeps the source's presentation the same way the table-report path does
+(`lib/forecast_presentation.py`, shared styling in `lib/presentation_style.py`): number formats come
+from the source cells (per line, section total, derived row, GL amount and driver rate; `--currency-format`
+/ `--pct-format` only fill a General cell), the header band carries the report sheet's title cell, the
+KPI cards are equal peers, a generated trend chart is dropped when a mapped source chart already shows the
+same series at the plan's grain, and the P&L pivot / GL table use the presentation preset with the source
+header fill. `draft-forecast-plan.py ... --look look.json` applies a reference look as for table reports. Values are
+untouched; a plan drafted before this (no `presentation` block) builds the earlier page unchanged
+(`refs/forecast-recipes.md`, Presentation).
 
 **Table-report path:** `migrate.py plan` -> `draft-table-report.py` -> dry-run
 `build-table-report.py` -> `build-table-report.py --post`. For workbooks whose

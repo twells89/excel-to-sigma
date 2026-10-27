@@ -32,9 +32,11 @@ from openpyxl.utils import column_index_from_string, get_column_letter, range_bo
 try:
     from .migration_gate import source_sha256
     from . import forecast_calc as calc
+    from . import forecast_presentation as fpres
 except ImportError:  # direct import when scripts/lib itself is on sys.path
     from migration_gate import source_sha256
     import forecast_calc as calc
+    import forecast_presentation as fpres
 
 SECTIONS = ("Revenue", "Cost of Revenue", "Operating Expenses", "Below the Line")
 LEGACY_SIGNS = {"Revenue": 1, "Cost of Revenue": -1, "Operating Expenses": -1, "Below the Line": -1}
@@ -531,11 +533,12 @@ def _infer_signs(sections, derived):
 
 # ---------------------------------------------------------------- drafting
 def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
-               currency_format="$,.0f", pct_format=".1%", tolerance=None):
+               currency_format="$,.0f", pct_format=".1%", tolerance=None, look=None):
     """Return ``(plan, summary)`` for ``source``; raise ``PlanDraftError`` on any unknown shape.
 
     ``tolerance`` is an absolute bound on cached-value comparisons; by default only float
-    noise is allowed (see ``forecast_calc.close``). Any failure that is not already a
+    noise is allowed (see ``forecast_calc.close``). ``look`` is a reference look
+    (``style-reference.py``) the built workbook takes instead of the default presentation. Any failure that is not already a
     ``PlanDraftError`` (an unexpected cell value, a defect in this module) is reported as
     one naming the last cell read, so a caller that routes on ``PlanDraftError`` never
     crashes on a workbook.
@@ -544,7 +547,7 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
     try:
         return _draft_plan(source, intent=intent, connection=connection, folder=folder, name=name,
                            sheet=sheet, currency_format=currency_format, pct_format=pct_format,
-                           tolerance=tolerance)
+                           tolerance=tolerance, look=look)
     except PlanDraftError:
         raise
     except Exception as error:  # noqa: BLE001 - the router must never crash on a workbook
@@ -554,9 +557,11 @@ def draft_plan(source, *, intent, connection, folder, name=None, sheet=None,
 
 
 def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_format, pct_format,
-                tolerance):
+                tolerance, look=None):
     if intent not in INTENTS:
         raise PlanDraftError(f"intent must be one of {', '.join(INTENTS)}")
+    if fpres.rl.problem(look):
+        raise PlanDraftError(fpres.rl.problem(look).replace("presentation.look", "--look"))
     src = Path(source).expanduser().resolve()
     if not src.is_file():
         raise PlanDraftError(f"source workbook not found: {src}")
@@ -738,6 +743,7 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
                 f"{ln['of']!r} itself holds percentage lines (circular)")
 
     assumptions = []
+    first_driver = None     # (sheet, first driver row, rate column): the drivers table's source cells
     for dsheet, dcol in driver_ranges:
         dws = wv[dsheet]
         rate_col = column_index_from_string(dcol)
@@ -745,6 +751,7 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
             rate = dws.cell(drow, rate_col).value
             drv_name = next((_text(c.value) for c in dws[drow][:rate_col - 1] if _text(c.value)), None)
             if drv_name and _is_number(rate):
+                first_driver = first_driver or (dsheet, drow, rate_col)
                 note_driver(dsheet, dcol, drow, float(rate))
                 basis = next((_text(c.value) for c in dws[drow][rate_col:] if _text(c.value)), "")
                 assumptions.append([drv_name, float(rate), basis])
@@ -808,6 +815,11 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
             if fy_col and _is_number(vs.cell(meta["totalRow"], fy_col).value):
                 meta["fyTotal"] = float(vs.cell(meta["totalRow"], fy_col).value)
     charts, unmapped_charts = source_charts(wf, wv, ev, tolerance)
+    gl_row, gl_cols = gl_header(wf[gl_name])
+    presentation, format_notes = fpres.propose(
+        src=src, wf=wf, ws=ws, header_row=header_row, period_cols=period_cols, line_rows=line_rows,
+        totals=totals, derived=derived, gl=wf[gl_name], gl_header=gl_row, gl_cols=gl_cols,
+        driver=first_driver, look=look)
 
     issues = []
     if flat_lines:
@@ -841,6 +853,15 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
             "evidence": [f"{cell}: {formula} (cached {rate:g}"
                          + (f"; read by {', '.join(users)}" if users else "") + ")"
                          for cell, (formula, rate, users) in frozen_drivers.items()],
+        })
+    if format_notes.codes:
+        issues.append({
+            "code": "NUMBER_FORMAT_APPROXIMATED",
+            "severity": "review",
+            "route": "number-format-review",
+            "message": ("These Excel number formats have no exact Sigma format; the closest d3 / strftime "
+                        "format was used. Confirm the display, not the values."),
+            "evidence": format_notes.evidence(),
         })
     name_signed = [s for s in sections if sign_sources[s] == "name"]
     if name_signed:
@@ -877,6 +898,7 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
         "assumptions": assumptions,
         "actuals": actuals,
         "sourceCharts": charts,
+        "presentation": presentation,
         "draftReviewIssues": issues,
     })
     if fy_labels and len(fy_labels) != len(periods):
@@ -900,6 +922,14 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
         "charts": [f"{c['title']} ({c['grain']}, {len(c['series'])} series)" for c in charts],
         "unmappedCharts": unmapped_charts,
         "verifiedCells": verified_count(lines, totals, derived, period_cols),
+        "presentation": {
+            "title": presentation["title"],
+            "money": ((presentation["formats"]["money"].get("format") or {}).get("formatString")
+                      or f"{currency_format} (--currency-format: the source cells are General)"),
+            "percent": next((e["format"]["formatString"] for e in presentation["formats"]["derived"].values()
+                             if fpres.ef.is_percent_format(e.get("format"))), None),
+            "notes": presentation["notes"],
+        },
     }
     return plan, summary
 
@@ -931,15 +961,8 @@ GL_ROLE_NAMES = {"month": "period", "line": "line item", "amt": "amount", "date"
                  "dept": "department", "vendor": "vendor"}
 
 
-def read_actuals(gl, lines, actual_periods, grain="month"):
-    """Map the GL header by column name and return plan ``actuals`` rows.
-
-    Period, line item and amount are required; date, department/store and vendor are
-    read when the sheet has them (blank otherwise).
-    """
-    by_line = {line["line"]: line for line in lines}
-    labels = {p["label"].casefold(): p["label"] for p in actual_periods}
-    word = "month" if grain == "month" else "period"
+def gl_header(gl):
+    """``(header row, {role: column})`` of the GL sheet: the first row that maps period, line item and amount."""
     header_row, cols, seen = None, {}, []
     for row in range(1, min(gl.max_row, 40) + 1):
         found = {}
@@ -966,7 +989,19 @@ def read_actuals(gl, lines, actual_periods, grain="month"):
     if ambiguous:
         raise PlanDraftError(f"{gl.title!r} row {header_row}: more than one column matches "
                              f"{', '.join(ambiguous)}")
-    col = {role: found[0] for role, found in cols.items()}
+    return header_row, {role: found[0] for role, found in cols.items()}
+
+
+def read_actuals(gl, lines, actual_periods, grain="month"):
+    """Map the GL header by column name and return plan ``actuals`` rows.
+
+    Period, line item and amount are required; date, department/store and vendor are
+    read when the sheet has them (blank otherwise).
+    """
+    by_line = {line["line"]: line for line in lines}
+    labels = {p["label"].casefold(): p["label"] for p in actual_periods}
+    word = "month" if grain == "month" else "period"
+    header_row, col = gl_header(gl)
 
     out = []
     for row in range(header_row + 1, gl.max_row + 1):
@@ -1250,6 +1285,9 @@ def source_charts(wf, wv, ev, tolerance):
                 covered = [periods[i] for _, members in buckets for i in members]
                 entry["periodStart"] = covered[0]["end"][:8] + "01"
                 entry["periodEnd"] = covered[-1]["end"]
+            colors = fpres.series_colors(chart)
+            if colors:
+                entry["colors"] = colors
             entry.update(sourceSheet=ws.title, verifiedPoints=len(metrics) * len(buckets))
             charts.append(entry)
     return charts, unmapped

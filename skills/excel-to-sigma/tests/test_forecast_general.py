@@ -667,9 +667,9 @@ class TestBuilderGeneral(Base):
         self.assertEqual(plan["fyLabel"], "FY26 Total")
         spec = BUILD.build_wb_spec(plan, "<dm>", ELS)
         elements = {e["id"]: e for p in spec["pages"] for e in p["elements"]}
-        self.assertEqual([elements[k]["name"] for k in ("kpiRev", "kpiEbitda", "kpiNI", "kpiGM")],
-                         ["FY26 Total Net Sales", "FY26 Operating Profit", "FY26 Pre-tax Income",
-                          "FY26 Gross Margin %"])
+        self.assertEqual([elements[k]["name"]["text"] for k in ("kpiRev", "kpiEbitda", "kpiNI", "kpiGM")],
+                         ["FY26 TOTAL NET SALES", "FY26 OPERATING PROFIT", "FY26 PRE-TAX INCOME",
+                          "FY26 GROSS MARGIN %"])
         window = "[PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6"
         self.assertEqual(elements["kpiRev"]["columns"][0]["formula"],
                          f"SumIf([PnL Combined/Net Sales Amt], {window})")
@@ -690,7 +690,7 @@ class TestBuilderGeneral(Base):
         self.assertNotIn("fyPeriods", plan)
         spec = BUILD.build_wb_spec(plan, "<dm>", ELS)
         elements = {e["id"]: e for p in spec["pages"] for e in p["elements"]}
-        self.assertEqual(elements["kpiRev"]["name"], "Total Revenue")
+        self.assertEqual(elements["kpiRev"]["name"]["text"], "TOTAL REVENUE")
         self.assertEqual(elements["kpiRev"]["columns"][0]["formula"], "Sum([PnL Combined/Revenue Amt])")
 
     def test_plans_without_percent_lines_keep_one_forecast_table(self):

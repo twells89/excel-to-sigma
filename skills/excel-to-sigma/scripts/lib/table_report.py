@@ -32,6 +32,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 
 try:
     from . import excel_formats as ef
+    from . import presentation_style as ps
     from . import table_report_model as trm
     from . import table_report_presentation as pres
     from .excel_expression import (Binary, Boolean, ColumnRange, ExpressionError, Function,
@@ -40,6 +41,7 @@ try:
     from .migration_gate import source_sha256
 except ImportError:  # direct import when scripts/lib itself is on sys.path
     import excel_formats as ef
+    import presentation_style as ps
     import table_report_model as trm
     import table_report_presentation as pres
     from excel_expression import (Binary, Boolean, ColumnRange, ExpressionError, Function,
@@ -84,20 +86,7 @@ def _rc(ref):
 
 def _style_of(cell):
     """The source cell's header look (fill / bold / font color) for the Sigma table header style, or ``None``."""
-    out = {}
-    fill = cell.fill
-    if fill is not None and fill.fill_type == "solid":
-        rgb = fill.fgColor.rgb if isinstance(fill.fgColor.rgb, str) else None
-        if rgb and re.fullmatch(r"[0-9A-Fa-f]{6,8}", rgb) and rgb[-6:].upper() != "FFFFFF":
-            out["fill"] = "#" + rgb[-6:].upper()
-    font = cell.font
-    if font is not None and font.b:
-        out["bold"] = True
-    if font is not None and font.color is not None:
-        rgb = font.color.rgb if isinstance(font.color.rgb, str) else None
-        if rgb and re.fullmatch(r"[0-9A-Fa-f]{6,8}", rgb) and rgb[-6:].upper() not in ("000000", "FFFFFF"):
-            out["color"] = "#" + rgb[-6:].upper()
-    return out or None
+    return ps.cell_header_style(cell)
 
 
 def _title(text):

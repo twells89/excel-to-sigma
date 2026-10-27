@@ -1929,29 +1929,8 @@ def _pivot(plan, frame, fid, ids, rows, axis_col, axis_values, order=None):
 
 
 def layout_xml(pages):
-    """Dense grid layout: [(page id, [(element id, col_start, col_end, row_start, row_end[, children])])].
-
-    A placement with ``children`` (the same tuples, rows relative to the container's own grid) is a
-    ``<Container>`` holding them.
-    """
-    blocks = []
-    for page_id, placements in pages:
-        lines = [f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" '
-                 f'id="{page_id}">']
-        for element_id, c0, c1, r0, r1, *rest in placements:
-            if not rest:
-                lines.append(f'  <Element elementId="{element_id}" gridColumn="{c0} / {c1}" '
-                             f'gridRow="{r0} / {r1}"/>')
-                continue
-            lines.append(f'  <Container elementId="{element_id}" type="grid" gridColumn="{c0} / {c1}" '
-                         f'gridRow="{r0} / {r1}" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">')
-            for child, cc0, cc1, cr0, cr1 in rest[0]:
-                lines.append(f'    <Element elementId="{child}" gridColumn="{cc0} / {cc1}" '
-                             f'gridRow="{cr0} / {cr1}"/>')
-            lines.append("  </Container>")
-        lines.append("</Page>")
-        blocks.append("\n".join(lines))
-    return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)
+    """Dense grid layout (shared with the forecast builder: ``presentation_style.layout_xml``)."""
+    return ps.layout_xml(pages)
 
 
 def build_wb_spec(plan, dm_id, dm_elements):
