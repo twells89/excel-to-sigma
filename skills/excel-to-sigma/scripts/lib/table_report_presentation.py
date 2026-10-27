@@ -462,6 +462,11 @@ class EmittedEvaluator:
         return 0 if denominator == 0 else value / denominator
 
 
+def _unverified_reason(error):
+    """Why the offline evaluator did not check something: only a running sum is a known, accepted gap."""
+    return "running sums" if "running sums" in str(error) else "not evaluated"
+
+
 def check_emitted(plan, model, tolerance=None):
     """Evaluate the EMITTED KPI and chart formulas over the plan's base rows (``sigma_formula_eval``) and
     compare them with the oracle's frame totals and cells. Returns ``(lines, problems, unverified)``;
@@ -478,7 +483,7 @@ def check_emitted(plan, model, tolerance=None):
     except Exception as error:      # noqa: BLE001 - the evaluator could not even load the plan
         return lines, problems, [f"all ({type(error).__name__}: {error})"]
     for kpi in presentation.get("kpis", []):
-        label = f"KPI {kpi['label']}"
+        label = f"KPI {kpi['label']} [{kpi['id']}]"
         frame = _frame(plan, kpi["frame"])
         rows = [r for r in model.frame_rows(kpi["frame"])
                 if frame["kind"] != "summary" or r[frame["by"]] in frame["labels"]]
@@ -494,8 +499,8 @@ def check_emitted(plan, model, tolerance=None):
                 emitted = evaluator.aggregate(card["source"]["elementId"], card["columns"][0]["formula"])
                 if not trm.values_match(emitted, got, trm.tolerance_for(got) * 10):
                     problems.append(f"{label}: the card's formula gives {emitted!r}, its terms give {got!r}")
-        except (se.Unsupported, RecursionError):
-            unverified.append(label)
+        except (se.Unsupported, RecursionError) as error:
+            unverified.append(f"{label} ({_unverified_reason(error)})")
             continue
         except Exception as error:      # noqa: BLE001
             problems.append(f"{label}: the emitted formula does not evaluate ({error})")
@@ -508,7 +513,7 @@ def check_emitted(plan, model, tolerance=None):
         else:
             lines.append(f"EMITTED PASS {label}: emitted={got:,.4f} oracle={want:,.4f}")
     for chart in presentation.get("charts", []):
-        label = f"chart {chart['title']}"
+        label = f"chart {chart['title']} [{chart['id']}]"
         element = elements.get(chart["id"])
         if element is None:
             continue
@@ -529,8 +534,8 @@ def check_emitted(plan, model, tolerance=None):
                         bad += 1
                         problems.append(f"{label}: {series['title']} at {category}: emitted {value!r} "
                                         f"vs verified {want!r}")
-        except (se.Unsupported, RecursionError):
-            unverified.append(label)
+        except (se.Unsupported, RecursionError) as error:
+            unverified.append(f"{label} ({_unverified_reason(error)})")
             continue
         except Exception as error:      # noqa: BLE001
             problems.append(f"{label}: the emitted series do not evaluate ({error})")
@@ -623,22 +628,18 @@ def drop_unexpressible(plan, model):
     presentation["kpis"], presentation["charts"] = kept, charts
     # the emitted formulas themselves, evaluated over the plan's base rows, against the oracle
     _, problems, _ = check_emitted(plan, model)
-    failure_prefixes = {
-        **{f"KPI {kpi['label']}:": [] for kpi in presentation["kpis"]},
-        **{f"chart {chart['title']}:": [] for chart in presentation["charts"]},
-    }
-    for problem in problems:
-        matches = [prefix for prefix in failure_prefixes if problem.startswith(prefix)]
-        if matches:
-            failure_prefixes[max(matches, key=len)].append(problem)
+    failing = {}
+    for problem in problems:                   # "KPI <label> [<id>]: ..." / "chart <title> [<id>]: ..."
+        found = re.match(r"(?:KPI|chart) .*\[([^\[\]]+)\]: (.*)$", problem, re.S)
+        if found:                              # keyed by element id: a repeated label / title drops only one
+            failing.setdefault(found.group(1), found.group(2))
     for kpi in list(presentation["kpis"]):
-        prefix = f"KPI {kpi['label']}:"
-        if failure_prefixes[prefix]:
+        if kpi["id"] in failing:
             presentation["kpis"].remove(kpi)
             drop("KPI", kpi["label"], "not emitted (its emitted formula does not match the oracle: "
-                 + failure_prefixes[prefix][0][len(prefix):].lstrip() + ")")
+                 + failing[kpi["id"]] + ")")
     for chart in list(presentation["charts"]):
-        if failure_prefixes[f"chart {chart['title']}:"]:
+        if chart["id"] in failing:
             presentation["charts"].remove(chart)
             notes.append({"code": "PRESENTATION_ELEMENT_DROPPED", "kind": "chart",
                           "message": f"{chart['title']} ({chart['kind']}) on {chart['sheet']!r}: not emitted "

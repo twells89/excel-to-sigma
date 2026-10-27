@@ -171,7 +171,11 @@ pivots. Emitted KPI / series formulas are evaluated offline over the plan's base
 makes ONE read-only `GET /v2/workbooks/{id}/spec` and writes the look (`lib/reference_look.py`, `extract_look`; `--spec
 saved.json` reads a saved GET response with no network). `draft-table-report.py --look look.json` records it as
 `presentation.look` (with `source {workbookId, name}`); `build-table-report.py` applies it. Without `--look` the
-default look is byte-identical to before.
+DEFAULT look applies (it is not frozen: it now includes the `presentation` table preset with its roomier sizing, the
+red rule's `backgroundColor: none` and the 15-visible-row table cap, so an older spec is not byte-identical).
+Workbook ids: a URL gives the segment after `/workbook/` (a UUID in it wins, else the text after its last `-`; the slug
+is rejected by the API); only elements on visible pages vote when the look is read; an unreadable shape is ignored
+rather than crashing; colours / sizes are validated before they reach a span style.
 
 | Copied from the reference | How it is applied |
 |---|---|

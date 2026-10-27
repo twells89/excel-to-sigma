@@ -258,6 +258,9 @@ def _parse_number_section(text, literals, symbol):
     optional = len(dec_digits) - fixed
     min_int = int_digits.count("0")
     return {
+        # format tokens are looked for OUTSIDE quotes (the placeholder text), so "FY26" / "Q1 " keep their digits
+        "prefix_tokens": bool(FORMAT_TOKENS.search(re.sub("[\ue000-\uf8ff]", "", prefix_raw.replace("%", "")))),
+        "suffix_tokens": bool(FORMAT_TOKENS.search(re.sub("[\ue000-\uf8ff]", "", suffix_raw.replace("%", "")))),
         "prefix": _literal_text(prefix_raw.replace("%", ""), literals),
         "suffix": _literal_text(suffix_raw.replace("%", ""), literals),
         "percent": percent, "scale": scale, "scientific": bool(sci), "thousands": thousands,
@@ -299,9 +302,10 @@ def _take_currency(parsed):
     return symbol or None, side, prefix.lstrip(), suffix.rstrip()
 
 
-def _safe_literal(text, where, notes):
-    """A prefix / suffix that holds no format tokens (``@``, digits, placeholders); else dropped with a note."""
-    if text and FORMAT_TOKENS.search(text):
+def _safe_literal(text, has_tokens, where, notes):
+    """A prefix / suffix whose unquoted part holds no format tokens (``@``, digits, placeholders); else dropped
+    with a note. Quoted text may hold anything (``" FY26"``)."""
+    if text and has_tokens:
         notes.append(f"the {where} text {text.strip()!r} holds format tokens and is not shown")
         return ""
     return text
@@ -388,7 +392,8 @@ def translate(code, *, native_parens=True):
     group = THOUSANDS if parsed["thousands"] and not parsed["scientific"] else ""
     fmt = {"kind": "number",
            "formatString": f"{'(' if negative_parens else ''}{'$' if dollar else ''}{group}{body}"}
-    prefix, suffix = _safe_literal(prefix, "prefix", notes), _safe_literal(suffix, "suffix", notes)
+    prefix = _safe_literal(prefix, parsed["prefix_tokens"], "prefix", notes)
+    suffix = _safe_literal(suffix, parsed["suffix_tokens"], "suffix", notes)
     if prefix:
         fmt["prefix"] = prefix
     if suffix:

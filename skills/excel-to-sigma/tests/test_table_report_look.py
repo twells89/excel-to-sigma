@@ -164,6 +164,120 @@ class TestStyleReferenceCli(unittest.TestCase):
             self.assertEqual(cli.main(["--out", str(Path(tmp) / "x.json")]), 2)
 
 
+URL_ID = "7C3Hwd6PvaK9h9FY53ztJe"
+
+
+class TestWorkbookIds(unittest.TestCase):
+    def test_a_url_gives_the_id_not_the_slug(self):
+        base = "https://app.sigmacomputing.com/org/workbook/Golden-Orders-Executive-Dashboard-" + URL_ID
+        self.assertEqual(rl.workbook_id(base), URL_ID)
+        self.assertEqual(rl.workbook_id(base + "/page/aBcD123?x=1"), URL_ID)
+        self.assertEqual(rl.workbook_id(base + "?:link_source=share#frag"), URL_ID)
+        self.assertEqual(rl.workbook_id("https://app.sigmacomputing.com/org/workbook/" + URL_ID), URL_ID)
+
+    def test_a_uuid_url_a_bare_uuid_and_a_bare_id_pass_through(self):
+        uuid = "fa2aeeb4-995d-4940-9dbb-e1cd3119d760"
+        self.assertEqual(rl.workbook_id(f"https://x.example/org/workbook/Golden-{uuid}/page/p1"), uuid)
+        self.assertEqual(rl.workbook_id(uuid), uuid)
+        self.assertEqual(rl.workbook_id(uuid.upper()), uuid)
+        self.assertEqual(rl.workbook_id(URL_ID), URL_ID)
+        self.assertIsNone(rl.workbook_id(""))
+
+
+class TestExtractRobustness(unittest.TestCase):
+    def test_hidden_pages_do_not_outvote_visible_ones(self):
+        plan, _ = draft(PIPELINE)
+        spec = wb_spec(plan)                                  # Report (visible), Inputs, hidden Model (sources)
+        look = rl.extract_look(spec)
+        self.assertEqual(look["styles"]["table"], ps.card_style())          # the Report tables, not 6 bare model ones
+        self.assertEqual(look["styles"]["kpi-chart"], ps.card_style())
+        self.assertEqual(look["tablePreset"], "presentation")
+
+    def test_when_nothing_visible_is_styled_the_styled_elements_are_used(self):
+        document = {"pages": [{"id": "p1", "name": "Main"}, {"id": "p2", "name": "Data", "visibility": "hidden"}],
+                    "layout": '<Page id="p1"><Element elementId="a"/></Page><Page id="p2">'
+                              '<Element elementId="b"/><Element elementId="c"/></Page>',
+                    "elements": [{"id": "a", "kind": "table"},
+                                 {"id": "b", "kind": "table", "style": {"borderRadius": "pill"}},
+                                 {"id": "c", "kind": "table"}]}
+        self.assertEqual(rl.extract_look({"document": document})["styles"]["table"], {"borderRadius": "pill"})
+
+    def test_unexpected_shapes_do_not_crash(self):
+        odd = [
+            {"document": {"elements": [{"id": "t", "kind": "text"}, {"id": "t2", "kind": "text", "body": None}]}},
+            {"document": {"elements": [{"id": "x", "kind": "table", "tableStyle": "presentation"},
+                                       {"id": "y", "kind": "pivot-table", "tableStyle": None}]}},
+            {"document": {"settings": None, "elements": []}},
+            {"document": {"settings": {"theme": "Light"}}},
+            {"document": {}},
+            {"document": {"elements": None, "pages": "x", "layout": 5}},
+            {"document": {"elements": [{"id": "k", "kind": "kpi-chart", "name": 5, "value": "big", "style": "x"},
+                                       "not an element", None]}},
+            {"document": {"settings": {"theme": {"overrides": {"colors": "dark"}}}}},
+            {"elements": [{"id": "c", "kind": "container", "style": ["x"]}]},
+            [], None, "text",
+        ]
+        for spec in odd:
+            look = rl.extract_look(spec)
+            self.assertEqual(look["version"], 1, spec)
+            json.dumps(look)
+
+    def test_look_values_that_go_into_span_styles_are_validated(self):
+        spec = {"document": {"elements": [
+            {"id": "k", "kind": "kpi-chart", "name": {"text": "n", "color": "red;} <b>", "fontSize": "huge",
+                                                      "fontWeight": "heavy"},
+             "value": {"columnId": "v", "fontSize": 30, "color": "#12345"}}]}}
+        look = rl.extract_look(spec)
+        self.assertEqual(look["kpi"]["name"], None)                                 # nothing valid survived
+        self.assertEqual(look["kpi"]["value"], {"fontSize": 30, "color": "#12345"})
+        hostile = {"version": 1, "theme": None, "styles": {}, "tablePreset": None,
+                   "kpi": {"name": {"color": 'red"><script>', "fontSize": "9px; x", "fontWeight": "bold"},
+                           "value": {"fontSize": "40;evil", "color": "#fff"}},
+                   "text": {"title": {"size": "30px", "color": "blue;"}, "subline": None, "color": None}}
+        _, text = ps.kpi_text_card("k", "REV", "Sum([T/x])", None, hostile)
+        self.assertEqual(ps.disallowed_span_styles(text["body"]), [])
+        self.assertNotIn("script", text["body"])
+        self.assertNotIn("evil", text["body"])
+        band, header = ps.header_band("h", "T", "S", {"tint": "#fff"}, hostile)
+        self.assertNotIn("blue;", header["body"])
+        self.assertEqual(ps.disallowed_span_styles(header["body"]), [])
+
+
+class TestStyleReferenceErrors(unittest.TestCase):
+    def load(self):
+        spec = importlib.util.spec_from_file_location("style_reference_cli_err", SCRIPTS / "style-reference.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def run_with(self, error):
+        import contextlib
+        import io
+        cli = self.load()
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cli.sigma_auth, "api", side_effect=error), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main([URL_ID, "--out", str(Path(tmp) / "look.json")])
+            self.assertFalse((Path(tmp) / "look.json").exists())
+        return code, out.getvalue() + err.getvalue()
+
+    def test_an_http_error_is_one_line_and_exit_1(self):
+        import urllib.error
+        code, text = self.run_with(urllib.error.HTTPError("https://x/v2/workbooks", 400, "Bad Request", {}, None))
+        self.assertEqual(code, 1)
+        self.assertIn("400", text)
+        self.assertIn(URL_ID, text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Traceback", text)
+
+    def test_an_auth_error_is_one_line_and_exit_1_without_a_token(self):
+        code, text = self.run_with(self.load().sigma_auth.SigmaAuthError("no credentials: set SIGMA_CLIENT_ID"))
+        self.assertEqual(code, 1)
+        self.assertIn("no credentials", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Traceback", text)
+
+
 # --------------------------------------------------------------------------- applying a look to 04
 def report_ids(spec):
     return [i for node in layout_tree(spec) for i in [node[0]] + [c[0] for c in node[5]]]

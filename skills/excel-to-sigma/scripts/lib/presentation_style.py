@@ -22,6 +22,11 @@ from __future__ import annotations
 import colorsys
 import math
 
+try:
+    from . import reference_look as rl
+except ImportError:  # direct import when scripts/lib itself is on sys.path
+    import reference_look as rl
+
 # ---------------------------------------------------------------- surfaces (allow-list of emitted shapes)
 SURFACES = {
     # name: OpenAPI location of the shape (and whether sigma-workbooks styling.md live-verified it)
@@ -128,7 +133,10 @@ def look_text(look, which):
 
 
 def _span(text, size=None, color=None):
-    """``text`` wrapped in a span carrying only font-size / color (plain text when there is neither)."""
+    """``text`` wrapped in a span carrying only font-size / color (plain text when there is neither). A value
+    that is not a number / hex colour (a hand-edited look.json) is ignored, never written into a style."""
+    size = size if rl._number(size) and size > 0 else None
+    color = color if rl.is_hex(color) else None
     parts = ([f"font-size: {size}px"] if size else []) + ([f"color: {color}"] if color else [])
     return f'<span style="{"; ".join(parts)}">{text}</span>' if parts else text
 
@@ -182,7 +190,7 @@ def header_band(element_id, title, subtitle, accent, look=None):
             container["style"] = style
         head, sub = look_text(look, "title"), look_text(look, "subline")
         color = head.get("color") or (look.get("text") or {}).get("color")
-        if head.get("heading"):
+        if isinstance(head.get("heading"), int) and 1 <= head["heading"] <= 6:
             body = f'{"#" * head["heading"]} {_span(_markup(title), None, color)}'
         elif head.get("size"):
             body = _span(_markup(title), head["size"], color)
@@ -230,10 +238,10 @@ def kpi_card(element_id, label, source, formula, fmt, look=None):
         column["format"] = fmt
     if look is not None:
         kpi = look.get("kpi") or {}
+        name = rl.safe_fields(kpi.get("name"), rl.KPI_NAME_FIELDS)
         element = {"id": element_id, "kind": "kpi-chart", "source": source, "columns": [column],
-                   "value": {"columnId": column["id"], **(kpi.get("value") or {})}}
-        element["name"] = {"text": label, **kpi["name"]} if kpi.get("name") and SURFACES["kpi_name_object"] \
-            else label
+                   "value": {"columnId": column["id"], **rl.safe_fields(kpi.get("value"), rl.KPI_VALUE_FIELDS)}}
+        element["name"] = {"text": label, **name} if name and SURFACES["kpi_name_object"] else label
         style = look_style(look, "kpi-chart")
         if style and SURFACES["kpi_card_style"]:
             element["style"] = style
@@ -260,7 +268,8 @@ def kpi_text_card(element_id, label, formula, fmt, look=None):
              f"{_markup((fmt or {}).get('suffix', ''), strip=False)}")
     if look is not None:
         kpi = look.get("kpi") or {}
-        name, val = kpi.get("name"), kpi.get("value")
+        name = rl.safe_fields(kpi.get("name"), rl.KPI_NAME_FIELDS)
+        val = rl.safe_fields(kpi.get("value"), rl.KPI_VALUE_FIELDS)
         title = _markup(label)
         if name:
             title = f"**{title}**" if name.get("fontWeight") == "bold" else title
@@ -377,7 +386,7 @@ def roomy_tables(look):
     (an org theme whose spacing we cannot know). Without a look the default sizing applies."""
     if not look:        # the default look uses the presentation preset, whose rows render ~2.4x taller
         return bool(SURFACES["default_table_preset"])
-    if look.get("tablePreset") == "presentation":
+    if look.get("tablePreset") == "presentation" and SURFACES["look_table_preset"]:   # only if it is emitted
         return True
     theme = look.get("theme") or {}
     spacing = (((theme.get("overrides") or {}).get("tableStyles")) or {}).get("cellSpacing")

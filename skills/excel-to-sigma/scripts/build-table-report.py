@@ -112,7 +112,7 @@ def main(argv=None):
     for line in shown:
         print(line)
     for name in unverified:
-        print(f"EMITTED UNVERIFIED {name}: the offline evaluator does not model it (running sums)")
+        print(f"EMITTED UNVERIFIED {name}")
     if bad:
         print(f"EMITTED PRESENTATION FAILED - {len(bad)} emitted KPI / chart value(s) differ; no specs written:",
               file=sys.stderr)

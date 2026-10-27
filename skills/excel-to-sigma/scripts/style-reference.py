@@ -12,6 +12,7 @@ titles still win.
 import argparse
 import json
 import sys
+import urllib.error
 from pathlib import Path
 
 _LIB = Path(__file__).resolve().parent / "lib"
@@ -36,8 +37,15 @@ def main(argv=None):
         response = json.loads(Path(args.spec).read_text(encoding="utf-8"))
     elif args.workbook:
         wid = workbook_id(args.workbook)
-        sigma_auth.apply_cli_args(args)
-        response = sigma_auth.api("GET", f"/v2/workbooks/{wid}/spec")
+        try:
+            sigma_auth.apply_cli_args(args)
+            response = sigma_auth.api("GET", f"/v2/workbooks/{wid}/spec")
+        except urllib.error.HTTPError as error:
+            print(f"style-reference: Sigma returned HTTP {error.code} for workbook {wid}", file=sys.stderr)
+            return 1
+        except sigma_auth.SigmaAuthError as error:
+            print(f"style-reference: {error}", file=sys.stderr)
+            return 1
     else:
         print("give a workbook id / URL, or --spec", file=sys.stderr)
         return 2

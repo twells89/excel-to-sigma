@@ -112,7 +112,7 @@ class TestLookupKpis(unittest.TestCase):
         colon.update(id=f"{short['id']}_actual", label="Budget: Actual")
         plan["presentation"]["kpis"].append(colon)
         model = trm.compute(plan)
-        problem = "KPI Budget: Actual: emitted 1 vs oracle 2"
+        problem = f"KPI Budget: Actual [{colon['id']}]: emitted 1 vs oracle 2"
         with mock.patch.object(pres, "check_emitted", return_value=([], [problem], [])):
             pres.drop_unexpressible(plan, model)
         labels = [k["label"] for k in plan["presentation"]["kpis"]]
@@ -323,7 +323,7 @@ class TestLedgerChartPeriods(unittest.TestCase):
         colon.update(id=f"{short['id']}_first", title="Collections: First")
         plan["presentation"]["charts"].append(colon)
         model = trm.compute(plan)
-        problem = "chart Collections: First: emitted series do not match"
+        problem = f"chart Collections: First [{colon['id']}]: emitted series do not match"
         with mock.patch.object(pres, "check_emitted", return_value=([], [problem], [])):
             pres.drop_unexpressible(plan, model)
         titles = [chart["title"] for chart in plan["presentation"]["charts"]]
@@ -547,6 +547,69 @@ class TestTextCardWithoutKpiType(unittest.TestCase):
         label, value = element(wb_spec(plan), "kpi_coverage_t")["body"].split("\n\n")
         self.assertEqual(label, '<span style="color: #64748B; font-size: 14px">COVERAGE</span>')
         self.assertTrue(value.startswith('<span style="font-size: 28px">'))
+
+
+class TestDropsByElementId(unittest.TestCase):
+    def test_a_failing_element_drops_alone_when_titles_or_labels_repeat(self):
+        plan, _ = draft(SOURCES["04"])
+        plan = copy.deepcopy(plan)
+        presentation = plan["presentation"]
+        twin = copy.deepcopy(presentation["kpis"][1])                        # same label as KPI 2, another id
+        twin["id"] = "kpi_commit_twin"
+        twin["expected"] += 1                                                # only the twin disagrees
+        presentation["kpis"].append(twin)
+        chart_twin = copy.deepcopy(presentation["charts"][0])               # same title as the bar chart
+        chart_twin["id"] = "ch_twin"
+        chart_twin["series"][0]["values"][0] += 1
+        presentation["charts"].append(chart_twin)
+        model = trm.compute(plan)
+        notes = pres.drop_unexpressible(plan, model)
+        self.assertEqual([k["id"] for k in presentation["kpis"]],
+                         ["kpi_total_weighted", "kpi_commit", "kpi_quota", "kpi_coverage"])
+        self.assertEqual([c["id"] for c in presentation["charts"]],
+                         ["ch_weighted_pipeline_by_owner_month", "ch_pipeline_by_stage"])
+        self.assertEqual(len([n for n in notes if n["code"] == "PRESENTATION_ELEMENT_DROPPED"]), 2)
+
+    def test_the_problems_name_the_element_id(self):
+        plan, _ = draft(SOURCES["04"])
+        plan = copy.deepcopy(plan)
+        plan["presentation"]["kpis"][0]["expected"] += 1
+        _, problems, _ = pres.check_emitted(plan, trm.compute(plan))
+        self.assertTrue(any("kpi_total_weighted" in p for p in problems), problems)
+
+
+class TestQuotedLiteralsWithDigits(unittest.TestCase):
+    def test_quoted_text_keeps_its_digits(self):
+        self.assertEqual(ef.translate('#,##0" FY26"').format, num(",.0f", suffix=" FY26"))
+        self.assertEqual(ef.translate('"Q1 "0').format, num(".0f", prefix="Q1 "))
+        self.assertEqual(ef.translate('0" per 100"').format, num(".0f", suffix=" per 100"))
+
+    def test_unquoted_tokens_are_still_refused(self):
+        for code in ('0.00" "@', '#,##0 @'):
+            result = ef.translate(code)
+            self.assertNotIn("@", (result.format or {}).get("suffix", ""))
+            self.assertTrue(any("format tokens" in n for n in result.approximated), code)
+
+
+class TestSmallPlausibleItems(unittest.TestCase):
+    def test_roomy_tables_respect_the_look_preset_toggle(self):
+        self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
+        look = {"tablePreset": "presentation", "theme": {"overrides": {"colors": {}}}}
+        self.assertTrue(ps.roomy_tables(look))
+        ps.SURFACES["look_table_preset"] = False
+        self.assertFalse(ps.roomy_tables(look))                      # the preset is not emitted: rows stay normal
+        self.assertTrue(ps.roomy_tables({"tablePreset": None, "theme": {"overrides": {
+            "tableStyles": {"cellSpacing": "large"}}}}))             # spacing still counts
+
+    def test_the_unverified_reason_is_running_sums_only_when_it_is(self):
+        plan, _ = draft(SOURCES["06"])
+        _, _, unverified = pres.check_emitted(plan, trm.compute(plan))
+        self.assertTrue(unverified and all("running sums" in u for u in unverified), unverified)
+        with mock.patch.object(pres.EmittedEvaluator, "grouped", side_effect=pres.se.Unsupported("a function")):
+            plan, _ = draft(SOURCES["04"])
+            _, _, unverified = pres.check_emitted(plan, trm.compute(plan))
+        self.assertTrue(unverified and all("(not evaluated)" in u for u in unverified), unverified)
+        self.assertFalse(any("running sums" in u for u in unverified))
 
 
 # --------------------------------------------------------------------------- merged summaries (bindings)
