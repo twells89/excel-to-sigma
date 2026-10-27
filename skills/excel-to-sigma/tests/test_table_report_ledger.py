@@ -529,9 +529,12 @@ class TestCashFlowFixture(unittest.TestCase):
         keyless = next(i for i in self.plan["draftReviewIssues"] if i["code"] == "KEYLESS_TABLE_ROWS")
         self.assertEqual(keyless["evidence"], ["tblAP"])
 
-    def test_the_source_chart_is_listed_against_the_verified_ending_cash_column(self):
-        self.assertEqual(len(self.info["unmappedCharts"]), 1)
-        self.assertIn("series read verified g_13wcf.Ending Cash", self.info["unmappedCharts"][0])
+    def test_the_source_chart_is_mapped_to_the_verified_ending_cash_column(self):
+        self.assertEqual(self.info["unmappedCharts"], [])
+        self.assertEqual(self.info["mappedCharts"], ["Ending Cash vs Minimum (line) -> g_13wcf"])
+        chart = self.plan["presentation"]["charts"][0]
+        self.assertEqual((chart["kind"], chart["categoryColumn"]), ("line", "Week Ending"))
+        self.assertEqual([s["column"] for s in chart["series"]], ["Ending Cash"])
 
     def test_builder_runs_with_parity_pass_and_specs_resolve(self):
         import json

@@ -65,6 +65,10 @@ def main(argv=None):
         print("  editable (input tables, seeded afterwards): " + ", ".join(info["editable"]))
     if info["readOnly"]:
         print("  read-only (data-model VALUES): " + ", ".join(info["readOnly"]))
+    for chart in info["mappedCharts"]:
+        print(f"  source chart mapped to a verified frame: {chart}")
+    if info["kpis"]:
+        print("  KPI cards proposed: " + ", ".join(info["kpis"]))
     for chart in info["unmappedCharts"]:
         print(f"  source chart NOT mapped (rebuild by hand): {chart}")
     print("  review issues: " + (", ".join(info["reviewIssues"]) or "none from the drafter")

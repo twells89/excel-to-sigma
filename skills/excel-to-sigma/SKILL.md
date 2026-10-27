@@ -311,6 +311,12 @@ through Sigma MCP), read-only tables become data-model data, and every summary c
 recomputed from the table data and compared with Excel's cached value before the plan
 is written. See `refs/table-report-recipes.md` for the Sigma shapes (SumIf wrapped in
 `Coalesce(…, 0)`, Lookup, CumulativeSum by key, constant-key cross join).
+The Report page keeps the source's presentation: Excel number formats become explicit Sigma
+formats on every numeric column (never an inherited `%`), summary rows keep the sheet's order, the
+header fill / bold and the title cell carry over, source charts that read verified frame cells are
+emitted as native charts, and a header band + KPI cards (totals and a ratio of totals) lead the page;
+KPI totals and chart points are re-verified against the source cells before a spec is written
+(`refs/table-report-recipes.md`, Presentation).
 
 Present the detected map and confirm edit intent, source freshness, and formula
 dependencies before selecting a build. The live-actuals/driver-growth union in

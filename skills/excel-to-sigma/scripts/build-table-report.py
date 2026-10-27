@@ -29,6 +29,7 @@ if str(_LIB) not in sys.path:
 import workbook_wire  # noqa: E402
 import sigma_auth  # noqa: E402
 from lib import table_report_model as trm  # noqa: E402
+from lib import table_report_presentation as presentation  # noqa: E402
 from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
 
 
@@ -93,6 +94,17 @@ def main(argv=None):
     if not ok:
         print("LOCAL PARITY FAILED - no specs written; fix the plan (or the source) before building.",
               file=sys.stderr)
+        return 1
+
+    # presentation parity: every KPI total and every mapped chart point equals the verified source cells
+    shown, bad = presentation.check_presentation(plan, model, args.parity_tolerance)
+    for line in shown:
+        print(line)
+    if bad:
+        print(f"PRESENTATION PARITY FAILED - {len(bad)} KPI / chart value(s) differ; no specs written:",
+              file=sys.stderr)
+        for problem in bad[:10]:
+            print("  " + problem, file=sys.stderr)
         return 1
 
     out_dir = Path(args.out_dir)

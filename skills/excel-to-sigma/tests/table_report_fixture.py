@@ -154,11 +154,22 @@ RATES = {"Widget": 0.1, "Gadget": 0.2}
 TARGETS = {"East": 400.0, "West": 0.0, "North": 300.0}
 
 
-def build_orders(path, ghost=False, mixed=False, totals=None):
+def apply_formats(book, formats):
+    """``formats``: {sheet: {"B4:D6": "#,##0", ...}} number formats applied before the workbook is saved."""
+    for sheet, ranges in (formats or {}).items():
+        for rng, code in ranges.items():
+            for row in book.wb[sheet][rng]:
+                for cell in (row if isinstance(row, tuple) else (row,)):
+                    cell.number_format = code
+
+
+def build_orders(path, ghost=False, mixed=False, totals=None, formats=None, header_style=False, charts=None):
     """Tables with calculated columns + one summary grid (date windows, COUNTIFS, AVERAGEIFS...).
 
     ``ghost`` lists a region with no orders; ``mixed`` types a literal into a calculated column;
-    ``totals`` adds a Total row (``"sum"`` = SUM of the rows above, ``"bad"`` = a different formula).
+    ``totals`` adds a Total row (``"sum"`` = SUM of the rows above, ``"bad"`` = a different formula);
+    ``formats`` sets cell number formats; ``header_style`` bolds + fills the grid header and bolds the
+    title; ``charts`` is a callable ``(summary worksheet)`` that adds source charts.
     """
     book = _Book()
     data = book.sheet("Orders")
@@ -222,6 +233,15 @@ def build_orders(path, ghost=False, mixed=False, totals=None):
             book.put(summary, f"{col}{last + 1}", formula, sum(values))
     if mixed:
         data["M3"] = 99  # a typed value among the calculated Boxes cells
+    if header_style:
+        from openpyxl.styles import Font, PatternFill
+        summary["A1"].font = Font(bold=True, size=14)
+        for col in range(1, 9):
+            summary.cell(3, col).font = Font(bold=True)
+            summary.cell(3, col).fill = PatternFill("solid", fgColor="DDE7F5")
+    apply_formats(book, formats)
+    if charts:
+        charts(summary)
     book.save(path)
     return {"revenue": revenue}
 

@@ -122,7 +122,42 @@ column (the one-row total), columns that reference columns defined later in the 
 the running balance (`RUNNING_BALANCE_PARTITION_REVIEW`) and the data-driven rows
 (`GROUPED_ROWS_FROM_DATA`, `EXTRA_GROUP_KEYS`).
 
+## Presentation (the Report page)
+
+Presentation never changes a value; every figure below is re-derived from the verified cells before a spec is
+written (`build-table-report.py` prints `KPI PASS` / `CHART PASS` lines and exits 1 on any difference).
+Styling is ported from the sigma-skills `sigma-workbooks` skill (commit 95e67b7: `styling.md` Recipes 1-6,
+`styling.rb`) in `lib/presentation_style.py`; the recipes never override the source - source formats, row
+order and header fills win. Plan field `presentation` (`lib/table_report_presentation.py`) holds the title,
+accent, `kpis[]` and `charts[]`.
+
+| Source | Sigma |
+|---|---|
+| cell `number_format` (`lib/excel_formats.py`) | column `format`: `{"kind": "number", "formatString": <d3>, prefix?, suffix?}` / `{"kind": "datetime", "formatString": <strftime>}`. `#,##0` -> `,.0f`, `$#,##0.00` -> `$,.2f`, `0.0%` -> `.1%`, `€#,##0` -> `,.0f` + `prefix`, `yyyy-mm-dd` -> `%Y-%m-%d`, `mmm-yy` -> `%b-%y`. Never an Excel mask (`$#,##0` is a 400) |
+| `(...)` negative section | the d3 `(` sign: `#,##0;(#,##0)` -> `(,.0f` (**unconfirmed live**; `translate(native_parens=False)` falls back to a minus sign) |
+| `[Red]` negative section | `conditionalFormats: [{"type": "single", "columnIds": [...], "condition": "<", "value": 0, "style": {"color": "#EF4444"}}]` on the table / pivot |
+| General / unknown code | an explicit plain number (`,.Nf`, N from the values) so Sigma never inherits `%` from an operand (`Amount * Probability`) |
+| a code with no exact equivalent (fractions, `[h]`, scaling commas, conditions, accounting zero dash) | the closest plain format + review issue `NUMBER_FORMAT_APPROXIMATED` listing the codes and cells |
+| summary / keyed row order | a hidden `Source Order` calculation (`If([Key] = "a", 1, If(...))`) + element `sort`; pivot `rowsBy[0].sort = {by, aggregation: min}`; chart `xAxis.sort` by it. Expansion pivots keep ascending key order (table row order has no Sigma column) |
+| header fill / bold / font color | `tableStyle.textStyles.header` (pivots also `columnHeader`) |
+| sheet title cell | header band title (text element tinted with the accent) |
+| bar / column (clustered, stacked, 100%), line, doughnut, pie whose categories are a grid's row labels (or verified axis cells) and whose series read one verified column each | `bar-chart` (`stacking: none/stacked/normalized`, `orientation: horizontal` for bars), `line-chart`, `donut-chart` / `pie-chart`, sourced from the frame's element at its grouping (`source: {kind: table, elementId, groupingId}`), series `Sum([Frame/Column])`, title / series order / category order from the source. Colors: `settings.theme.overrides.categoricalScheme` (the only spec path for multi-series and donut colors) with the accent first; a single series takes `color: {by: single}` |
+| anything else (subset of rows, scatter / area / combo, values outside a verified frame) | listed in `unmappedCharts` with the reason (`CHARTS_PRESENT` stays a review item) |
+| KPI row | `kpi-chart` per additive column the source totals or that is named Total / Commit / Quota-like (never a period column, an average or a count of a filter) plus a ratio of two of them over the **totals** (`IFERROR(a/b, 0)` -> `If(IsNull(den) or den = 0, 0, Sum(a) / Sum(den))`); 2-4 equal peer cards, the first in the accent |
+
+Page order: header band, KPI row (`1/7 .. 19/25`, 7 rows), hero charts (`1/17` + `17/25`, 16 rows; a lone chart
+full width), divider + quiet `DETAIL` label, then the tables sized to their row count (`table_height`; a table with
+four columns or fewer takes `1/17` instead of stretching). The first summary grid leads; the expansion / keyed
+pivots follow. Anti-patterns avoided (styling.md checklist): focal point, no automatic 50/50, no repeated KPI
+band, one accent (not sprayed), no nested cards (KPIs carry their own card style), quiet labels instead of
+competing headings, no wide-table squeeze or empty card space, no navy slideware band.
+
+Unproven live (dry-run before relying on them): `source.groupingId` as a chart / KPI source (the chart and KPI
+formulas `Sum([Frame/Column])` assume the grouped rows), the d3 `(` sign, element `sort` on a grouped table by a
+hidden calculation, `hidden` on a chart sort column, `tableStyle.textStyles.header` vs `columnHeader` on pivots.
+
 ## Charts
 
-Source charts are listed as not mapped (`CHARTS_PRESENT` stays a review item); rebuild them from the
+Source charts that map (table above) are emitted as native Sigma charts and verified point by point;
+everything else is listed as not mapped (`CHARTS_PRESENT` stays a review item); rebuild those from the
 verified summary frames with `refs/presentation-migration.md`.

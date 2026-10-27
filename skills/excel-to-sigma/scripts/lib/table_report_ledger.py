@@ -314,12 +314,13 @@ class LedgerDraft:
                     tr._clean_name(left.value, left.coordinate)
             key_name, rate_name = key_name or "Scenario", rate_name or "Value"
             title = self.d.unique_title(tr._title(f"{rate_name} by {key_name}"))
-            fmt = tr._fmt_kind(first)
+            fmt = self.reg.format_entry(first.number_format, "number", [r[1] for r in rows],
+                                        f"{sheet}!{address}")
             self.reg.synthetic[title] = {
                 "name": title, "sheet": sheet,
                 "ref": ", ".join(f"{a}" for _, a, _ in cells), "editable": True, "synthetic": True,
                 "columns": [{"name": key_name, "type": "text"},
-                            {"name": rate_name, "type": "number", **({"format": fmt} if fmt else {})}],
+                            {"name": rate_name, "type": "number", **fmt}],
                 "rows": rows,
                 "note": f"Scenario values from the named ranges {prefix}* "
                         f"({', '.join(f'{n}={a}' for (n, _), (_, a, _) in zip(family, cells))})."}
@@ -560,8 +561,11 @@ class LedgerDraft:
         frame_id = f"g_{trm.slug(title)}"
         manual = [rec for rec in records if rec["kind"] == "manual"]
         spine_title = d.unique_title(f"{title} Periods")
-        spine_columns = [{"name": self.axis, "type": "number"}] + [
-            {"name": rec["name"], "type": "number"} for rec in manual]
+        spine_columns = [{"name": self.axis, "type": "number", "format": {"kind": "number", "formatString": ".0f"}}] + [
+            {"name": rec["name"], "type": "number",
+             **self.reg.format_entry(self.ws.cell(rec["row"], led.pcols[0]).number_format, "number",
+                                     rec["values"], tr._addr(self.sheet, rec["row"], led.pcols[0]))}
+            for rec in manual]
         spine_rows = [[p] + [rec["values"][i] for rec in manual] for i, p in enumerate(led.periods)]
         self.reg.synthetic[spine_title] = {
             "name": spine_title, "sheet": self.sheet,
@@ -577,13 +581,11 @@ class LedgerDraft:
                 continue
             column = columns[rec["name"]]
             ctype = self.col_type(rec)
-            entry = {"name": rec["name"], "type": ctype, "expr": column["expr"], "row": rec["row"]}
-            if ctype == "datetime":
-                entry["format"] = "date"
-            else:
-                fmt = tr._fmt_kind(self.ws.cell(rec["row"], led.pcols[0]))
-                if fmt:
-                    entry["format"] = fmt
+            first_cell = self.ws.cell(rec["row"], led.pcols[0])
+            entry = {"name": rec["name"], "type": ctype, "expr": column["expr"], "row": rec["row"],
+                     **self.reg.format_entry(first_cell.number_format, ctype,
+                                             [self.cached(rec["row"], c) for c in led.pcols],
+                                             tr._addr(self.sheet, rec["row"], led.pcols[0]))}
             frame_columns.append(entry)
             d.add_checks(frame_id, rec["name"], "ledger",
                          [[tr._addr(self.sheet, rec["row"], c), [p], self.cached(rec["row"], c)]
@@ -634,6 +636,9 @@ class LedgerDraft:
         frame = {"id": frame_id, "kind": "ledger", "title": title, "sheet": self.sheet,
                  "spine": spine_title, "axis": self.axis, "columns": frame_columns, "order": order,
                  "totals": totals, "totalLabel": led.total_label or "Total", "captions": captions}
+        style = tr._style_of(self.ws.cell(led.hr, led.lc))
+        if style:
+            frame["headerStyle"] = style
         if self.scenario:
             frame["scenario"] = {"parameter": self.scenario["parameter"], "table": self.scenario["table"],
                                  "options": self.scenario["options"]}
