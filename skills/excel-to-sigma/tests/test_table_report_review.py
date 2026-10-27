@@ -346,5 +346,46 @@ class TestChartRows(unittest.TestCase):
             self.assertEqual(loose[0][3], hero[4])                   # the pair starts where the hero ends
 
 
+# --------------------------------------------------------------------------- merged summaries (bindings)
+class TestMergedSummaryBindings(unittest.TestCase):
+    """A summary frame merged into a keyed host table (08) is shown by the HOST's element: the chart over the
+    summary's labels still pairs with it and the summary's red negatives still reach it."""
+
+    def setUp(self):
+        from test_table_report_presentation import SOURCES
+        plan, _ = draft(SOURCES["08"])
+        self.plan = copy.deepcopy(plan)
+        self.summary = next(f for f in self.plan["frames"] if f["id"] == "s_projection_summary")
+        self.second = copy.deepcopy(self.plan["presentation"]["charts"][0])
+        self.second.update(id="ch_second", title="Minimum projected (again)")
+        self.plan["presentation"]["charts"].append(self.second)           # not the hero: it pairs with a table
+        next(c for c in self.summary["columns"] if c["name"] == "Min Proj")["negativeRed"] = True
+
+    def test_the_host_table_is_bound_to_the_merged_summary(self):
+        parts = trm.build_parts(self.plan, "<dm>", trm.local_dm_elements(self.plan))
+        host = next(m for m in parts["visibleMeta"] if m["id"] == "f_k_projection")
+        self.assertEqual(host["frame"], "k_projection")
+        self.assertEqual(host["bindings"], ["s_projection_summary"])
+
+    def test_a_chart_over_the_merged_summary_pairs_with_its_host_table(self):
+        spec = wb_spec(self.plan)
+        nodes = {n[0]: n for n in placements(spec)}
+        host, chart = nodes["f_k_projection"], nodes["ch_second"]
+        self.assertEqual((host[1], host[2], chart[1], chart[2]), (1, 15, 15, 25))     # table | its chart
+        self.assertEqual(host[3:], chart[3:])                                         # same grid rows
+
+    def test_the_merged_summarys_red_negatives_reach_the_host_table(self):
+        host = element(wb_spec(self.plan), "f_k_projection")
+        ids = {c["name"]: c["id"] for c in host["columns"]}
+        rules = host["conditionalFormats"]
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["columnIds"], [ids["Min Proj"]])
+
+    def test_the_host_still_leads_when_its_summary_is_the_main_frame(self):
+        self.assertEqual(self.plan["presentation"]["main"], "s_projection_summary")
+        order = [n[0] for n in placements(wb_spec(self.plan))]
+        self.assertLess(order.index("f_k_projection"), order.index("pv_projection"))
+
+
 if __name__ == "__main__":
     unittest.main()

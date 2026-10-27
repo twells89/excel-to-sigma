@@ -1652,10 +1652,13 @@ def build_parts(plan, dm_id, dm_elements):
     def dm_source(key):
         return {"kind": "data-model", "dataModelId": dm_id, "elementId": dm_elements[key]}
 
-    def show(element, frame, role, rows):
+    def show(element, frame, role, rows, bindings=()):
         """A Report-page element and what the composer needs to size / style it."""
         visible.append(element)
-        visible_meta.append({"id": element["id"], "frame": frame["id"], "role": role, "rows": rows})
+        meta = {"id": element["id"], "frame": frame["id"], "role": role, "rows": rows}
+        if bindings:
+            meta["bindings"] = list(bindings)
+        visible_meta.append(meta)
 
     for table in tables:
         name, element_id = table["name"], ids.get("w", table["name"])
@@ -1783,7 +1786,8 @@ def build_parts(plan, dm_id, dm_elements):
                        "groupings": [grouping]}
             key_rows = distinct_count(plan, table, frame["rowKey"])
             if calc_ids:
-                show(element, frame, "grouped", key_rows)
+                show(element, frame, "grouped", key_rows,
+                     [summary["id"] for summary in merged.get(frame["id"], [])])
             else:
                 hidden.append(element)
             element_of[frame["id"]] = fid
