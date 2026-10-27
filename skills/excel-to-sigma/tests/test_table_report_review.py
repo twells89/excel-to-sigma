@@ -330,6 +330,15 @@ class TestLedgerChartPeriods(unittest.TestCase):
         self.assertIn("Collections", titles)
         self.assertNotIn("Collections: First", titles)
 
+    def test_a_failed_chart_with_brackets_in_its_category_is_dropped(self):
+        plan = self.draft_with_chart(4)
+        chart = plan["presentation"]["charts"][0]
+        model = trm.compute(plan)
+        problem = f"chart Collections [{chart['id']}]: Total at Cost [USD]: emitted 1 vs verified 2"
+        with mock.patch.object(pres, "check_emitted", return_value=([], [problem], [])):
+            pres.drop_unexpressible(plan, model)
+        self.assertNotIn(chart["id"], [item["id"] for item in plan["presentation"]["charts"]])
+
     def test_a_chart_over_every_period_needs_no_filter(self):
         plan = self.draft_with_chart(6)
         el = element(wb_spec(plan), plan["presentation"]["charts"][0]["id"])
