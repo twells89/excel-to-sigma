@@ -766,7 +766,8 @@ def _chart_elements(plan, chart, meta, accent):
         columns.append(y)
         y_ids.append(y["id"])
     element = {"id": cid, "name": chart["title"], "source": source, "columns": columns}
-    style = ps.chart_card()
+    look = (plan.get("presentation") or {}).get("look")
+    style = ps.chart_card(look)
     if style:
         element["style"] = style
     restrict = (plan.get("presentation") or {}).get("restrict", {}).get(chart["frame"])
@@ -792,7 +793,7 @@ def _chart_elements(plan, chart, meta, accent):
         return element
     element["xAxis"] = {"columnId": x_id, "sort": sort}
     element["legend"] = {"visibility": "hidden"} if len(y_ids) == 1 else {"position": "bottom"}
-    if len(y_ids) == 1 and ps.single_color(accent["hex"]):
+    if len(y_ids) == 1 and look is None and ps.single_color(accent["hex"]):   # a look's theme colours the series
         element["color"] = ps.single_color(accent["hex"])
     if chart["kind"] == "line":
         element["kind"] = "line-chart"
@@ -833,7 +834,9 @@ def compose_report(plan, parts):
         placements.append((element["id"], c0, c1, start, start + height))
         return start + height
 
-    band, header = ps.header_band("trHeader", pres.get("title") or plan["name"], pres.get("subtitle"), accent)
+    look = pres.get("look")           # a reference workbook's look: theme / card styles / KPI type, never our colours
+    band, header = ps.header_band("trHeader", pres.get("title") or plan["name"], pres.get("subtitle"), accent,
+                                  look)
     elements.extend([band, header])
     # the text sits inside its band (child rows are relative to the container's own grid)
     placements.append((band["id"], 1, ps.PAGE_COLS + 1, 1, 1 + ps.HEADER_ROWS,
@@ -856,10 +859,10 @@ def compose_report(plan, parts):
             c0, c1 = 1 + number * width, 1 + (number + 1) * width
             if len(sources) == 1:
                 element = ps.kpi_card(kpi["id"], kpi["label"].upper(), {"kind": "table", "elementId": sources[0]},
-                                      formula, kpi.get("format"))
+                                      formula, kpi.get("format"), look)
                 end = place(element, c0, c1, ps.KPI_ROWS, row=top)
             else:      # a kpi-chart has one source: a card whose text interpolates the cross-element formula
-                card, text = ps.kpi_text_card(kpi["id"], kpi["label"].upper(), formula, kpi.get("format"))
+                card, text = ps.kpi_text_card(kpi["id"], kpi["label"].upper(), formula, kpi.get("format"), look)
                 elements.extend([card, text])
                 placements.append((card["id"], c0, c1, top, top + ps.KPI_ROWS,
                                    [(text["id"], 1, ps.PAGE_COLS + 1, 1, 1 + ps.KPI_ROWS)]))
@@ -897,12 +900,12 @@ def compose_report(plan, parts):
         cursor = end
     if detail and (kpis or charts):
         cursor = place(ps.divider("trDivider"), 1, ps.PAGE_COLS + 1, ps.DIVIDER_ROWS)
-        cursor = place(ps.section_label("trDetail", "Detail"), 1, ps.PAGE_COLS + 1, ps.LABEL_ROWS)
+        cursor = place(ps.section_label("trDetail", "Detail", look), 1, ps.PAGE_COLS + 1, ps.LABEL_ROWS)
     negative = {f["id"]: {c["name"] for c in f["columns"] if c.get("negativeRed")} for f in plan["frames"]}
     for element in detail:
         meta = by_id.get(element["id"], {"frame": None, "role": "table", "rows": 8})
         frame = _frame(plan, meta["frame"]) if meta["frame"] else {}
-        _style_table(element, frame, negative.get(meta["frame"], set()))
+        _style_table(element, frame, negative.get(meta["frame"], set()), look)
         wide = len(_visible_columns(element)) > 4 or element["kind"] == "pivot-table"
         rows = meta["rows"]
         if meta["role"] in ("grouped", "ledger"):
@@ -915,14 +918,23 @@ def compose_report(plan, parts):
             cursor = place(element, 1, 15, height, row=cursor)
         else:
             cursor = place(element, 1, ps.PAGE_COLS + 1 if wide else 15, height)
-    settings = ps.settings_theme(accent["hex"]) if charts else {}
+    settings = ps.settings_theme(accent["hex"], look) if (charts or look is not None) else {}
     return {"elements": elements, "placements": placements, "settings": settings}
 
 
-def _style_table(element, frame, negative_names):
-    """Card chrome, source header style and Excel's red negatives on a Report-page table / pivot."""
-    element["style"] = ps.card_style()
-    style = ps.table_style(frame.get("headerStyle"), element["kind"])
+def _style_table(element, frame, negative_names, look=None):
+    """Card chrome, source header style and Excel's red negatives on a Report-page table / pivot.
+
+    With a reference ``look`` the card is the reference's table style (none when it has none) and the reference's
+    table preset joins Excel's header fill / bold in ``tableStyle``."""
+    if look is not None:
+        element.pop("style", None)
+        card = ps.look_style(look, "table")
+        if card:
+            element["style"] = card
+    else:
+        element["style"] = ps.card_style()
+    style = ps.table_style(frame.get("headerStyle"), element["kind"], look)
     if style:
         element["tableStyle"] = style
     ids = [c["id"] for c in element.get("columns", []) if c.get("name") in negative_names]

@@ -1838,7 +1838,7 @@ def finalize_formats(plan, model):
 
 # ---------------------------------------------------------------- entry point
 def draft_table_report(source, *, intent, connection, folder, name=None, currency_format="$,.0f",
-                       pct_format=".1%", tolerance=None):
+                       pct_format=".1%", tolerance=None, look=None):
     """Return ``(plan, summary)``; raise ``PlanDraftError`` on any shape or value it cannot prove."""
     if intent not in INTENTS:
         raise PlanDraftError(f"intent must be one of {', '.join(INTENTS)}")
@@ -1983,6 +1983,8 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
                              f"({len(problems)} mismatch(es) of {checked} cells):\n  {shown}{more}")
     finalize_formats(plan, model)
     presentation, unmapped = pres.propose(plan, wf, src, model)
+    if look:                # a reference workbook's look (style-reference.py): applied at build time
+        presentation["look"] = look
     plan["presentation"], plan["unmappedCharts"] = presentation, unmapped
     notes = presentation.pop("notes", [])
     if notes:

@@ -164,6 +164,26 @@ formulas, the KPI name / value styling, the text-card body and `labelAngle`. Sti
 pivots. Emitted KPI / series formulas are evaluated offline over the plan's base rows
 (`scripts/lib/sigma_formula_eval.py`) and must equal the oracle's frame cells.
 
+## Matching the look of an org workbook (`--look`)
+
+"Make it look like Golden Orders": `scripts/style-reference.py <workbookId | URL> --out look.json [--sigma-profile P]`
+makes ONE read-only `GET /v2/workbooks/{id}/spec` and writes the look (`lib/reference_look.py`, `extract_look`; `--spec
+saved.json` reads a saved GET response with no network). `draft-table-report.py --look look.json` records it as
+`presentation.look` (with `source {workbookId, name}`); `build-table-report.py` applies it. Without `--look` the
+default look is byte-identical to before.
+
+| Copied from the reference | How it is applied |
+|---|---|
+| `settings.theme`, exactly (a named org theme stays a name) | `settings.theme` = that theme; no `categoricalScheme` or other override of ours on top, so charts / donuts take the theme's palette and no per-chart colour is written |
+| the most common `style` per kind (container, kpi-chart, chart, table) | that kind's card style, else no `style` at all (the theme decides); the header band container takes the reference's container style |
+| most common kpi `name` (`color`, `fontSize`, `fontWeight`) and `value` styling | kpi-charts and the text-card KPIs (spans with only color / font-size, bold via `**`); none -> theme default |
+| first text's span `font-size` / colour (or heading level), second text's span (subline), `theme.overrides.colors.text` | header band title / subline, quiet `DETAIL` label colour |
+| most common `tableStyle.preset` | `tableStyle.preset` beside Excel's header fill / bold in `textStyles.header` (`SURFACES["look_table_preset"]`) |
+
+Not copied: the arrangement (header band, KPI row, hero chart, DETAIL, chart beside its table), and anything Excel
+decides: number formats, the header fill / bold, sheet row order, the title text. None of our own colours
+(`#0F172A`, `#64748B`, `#F0F7FF`, `#E2E8F0`, the accent) is written when a look is applied; Excel's `[Red]` negatives stay.
+
 ## Charts
 
 Source charts that map (table above) are emitted as native Sigma charts and verified point by point;

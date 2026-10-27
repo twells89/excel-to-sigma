@@ -39,6 +39,7 @@ SURFACES = {
     "order_group_sort": True,      # hidden `Min(<order If>)` calculation first in calculations + groupings[].sort
                                    # (grouping sort is accepted live though the offline OpenAPI omits it)
     "chart_hidden_column": True,   # chart columns[].hidden (sort-only order column)
+    "look_table_preset": True,     # tableStyle.preset from a reference look, beside textStyles (to confirm live)
     "chart_label_angle": True,     # bar-chart xAxis.format.labels.labelAngle: 0 (12 categories or fewer)
     "chart_list_filter": True,     # chart filters[{kind: list, mode: include}] on the category column
     "kpi_text_card": True,         # container card + text with {{Sum([A/x]) / Sum([B/y]) | fmt}} for a KPI that
@@ -114,8 +115,31 @@ def categorical_scheme(accent_hex):
     return [accent_hex] + rest
 
 
-def settings_theme(accent_hex):
-    """Workbook-level theme patch (the only spec path for multi-series and donut/pie slice colors)."""
+def look_style(look, kind):
+    """The reference look's card style for an element kind (container / kpi-chart / chart / table) or ``None``:
+    a look never borrows our own colours, so no style means the theme decides."""
+    style = ((look or {}).get("styles") or {}).get(kind)
+    return dict(style) if style else None
+
+
+def look_text(look, which):
+    return ((look or {}).get("text") or {}).get(which) or {}
+
+
+def _span(text, size=None, color=None):
+    """``text`` wrapped in a span carrying only font-size / color (plain text when there is neither)."""
+    parts = ([f"font-size: {size}px"] if size else []) + ([f"color: {color}"] if color else [])
+    return f'<span style="{"; ".join(parts)}">{text}</span>' if parts else text
+
+
+def settings_theme(accent_hex, look=None):
+    """Workbook-level theme patch (the only spec path for multi-series and donut/pie slice colors).
+
+    With a reference look the theme is the reference's, copied exactly (a named theme stays a name, so later org
+    theme edits carry through) and nothing of ours is layered on top."""
+    if look is not None:
+        import copy
+        return {"theme": copy.deepcopy(look["theme"])} if look.get("theme") else {}
     if not SURFACES["categorical_scheme"]:
         return {}
     return {"theme": {"overrides": {"categoricalScheme": categorical_scheme(accent_hex)}}}
@@ -140,25 +164,49 @@ def card_style():
     return dict(CARD)
 
 
-def header_band(element_id, title, subtitle, accent):
+def header_band(element_id, title, subtitle, accent, look=None):
     """Recipe 1 on a light canvas: a container tinted with the accent holding one text element (title from the
     source title cell + one quiet subline). A text element has no ``style`` in the OpenAPI, so the band is a
     container (``style {backgroundColor, borderRadius}``) with the text laid out inside it.
 
+    With a reference ``look`` the band takes the reference's container style (none when it has none), and the
+    title / subline use the reference's type sizes and colours; none of our own colours are written.
+
     Returns ``(container, text)``; the band id is ``<element_id>Band``.
     """
+    container = {"id": f"{element_id}Band", "kind": "container"}
+    if look is not None:
+        style = look_style(look, "container")
+        if style and SURFACES["container_style"]:
+            container["style"] = style
+        head, sub = look_text(look, "title"), look_text(look, "subline")
+        color = head.get("color") or (look.get("text") or {}).get("color")
+        if head.get("heading"):
+            body = f'{"#" * head["heading"]} {_span(_markup(title), None, color)}'
+        elif head.get("size"):
+            body = _span(_markup(title), head["size"], color)
+        else:
+            body = f"# {_span(_markup(title), None, color)}"
+        if subtitle:
+            body += ("\n" if body.startswith("#") else "\n\n") + (_span(_markup(subtitle), sub["size"], sub.get("color")) if sub.get("size")
+                            else _span(_markup(subtitle), None, sub.get("color")))
+        return container, {"id": element_id, "kind": "text", "body": body, "verticalAlign": "center"}
     body = f'# <span style="color: {ROLES["ink"]}">{_markup(title)}</span>'
     if subtitle:
         body += f'\n<span style="color: {ROLES["muted"]}">{_markup(subtitle)}</span>'
     text = {"id": element_id, "kind": "text", "body": body, "verticalAlign": "center"}
-    container = {"id": f"{element_id}Band", "kind": "container"}
     if SURFACES["container_style"]:
         container["style"] = {"backgroundColor": accent["tint"], "borderRadius": "round"}
     return container, text
 
 
-def section_label(element_id, text):
-    """Recipe 3, the quiet uppercase variant (a heading would compete with the header band)."""
+def section_label(element_id, text, look=None):
+    """Recipe 3, the quiet uppercase variant (a heading would compete with the header band). With a reference
+    look it is coloured only when the look gives a subline colour."""
+    if look is not None:
+        color = look_text(look, "subline").get("color")
+        return {"id": element_id, "kind": "text",
+                "body": f'<p class="p-small">{_span("**" + _markup(str(text).upper()) + "**", None, color)}</p>'}
     return {"id": element_id, "kind": "text",
             "body": f'<p class="p-small"><span style="color: {ROLES["muted"]}">**{_markup(str(text).upper())}**'
                     "</span></p>"}
@@ -171,12 +219,23 @@ def divider(element_id):
 KPI_LABEL_PX, KPI_VALUE_PX = 14, 28
 
 
-def kpi_card(element_id, label, source, formula, fmt):
+def kpi_card(element_id, label, source, formula, fmt, look=None):
     """Recipe 2 without the wrapper container: the KPI carries its own card style. Every card is a peer: a quiet
-    muted 14 px title and a bold 28 px value, no accent on the first."""
+    muted 14 px title and a bold 28 px value, no accent on the first. With a reference ``look`` the card takes
+    the reference's KPI style, title and value type (nothing when it has none: the theme decides)."""
     column = {"id": f"{element_id}_v", "formula": formula}
     if fmt:
         column["format"] = fmt
+    if look is not None:
+        kpi = look.get("kpi") or {}
+        element = {"id": element_id, "kind": "kpi-chart", "source": source, "columns": [column],
+                   "value": {"columnId": column["id"], **(kpi.get("value") or {})}}
+        element["name"] = {"text": label, **kpi["name"]} if kpi.get("name") and SURFACES["kpi_name_object"] \
+            else label
+        style = look_style(look, "kpi-chart")
+        if style and SURFACES["kpi_card_style"]:
+            element["style"] = style
+        return element
     element = {"id": element_id, "kind": "kpi-chart", "source": source, "columns": [column],
                "value": {"columnId": column["id"], "fontSize": KPI_VALUE_PX, "fontWeight": "bold"}}
     element["name"] = ({"text": label, "color": ROLES["muted"], "fontSize": KPI_LABEL_PX,
@@ -186,16 +245,29 @@ def kpi_card(element_id, label, source, formula, fmt):
     return element
 
 
-def kpi_text_card(element_id, label, formula, fmt):
+def kpi_text_card(element_id, label, formula, fmt, look=None):
     """A KPI whose formula spans several source elements: a card container holding a text element that
     interpolates the formula (``{{ast | d3 format}}``), laid out like the kpi-chart cards: a muted 14 px title,
     a blank line, a bold 28 px value. Span styles may only use color, background-color, font-size and
-    font-family (Sigma rejects font-weight), so the weight is markdown bold.
+    font-family (Sigma rejects font-weight), so the weight is markdown bold. With a reference ``look`` the type
+    mirrors the reference's KPI name / value styling.
     Returns ``(container, text)``; the container carries the id of the KPI."""
     spec = (fmt or {}).get("formatString")
     value = f"{{{{{formula} | {spec}}}}}" if spec else f"{{{{{formula}}}}}"
     value = (f"{_markup((fmt or {}).get('prefix', ''), strip=False)}{value}"
              f"{_markup((fmt or {}).get('suffix', ''), strip=False)}")
+    if look is not None:
+        kpi = look.get("kpi") or {}
+        name, val = kpi.get("name") or {}, kpi.get("value") or {}
+        title = _markup(label)
+        title = f"**{title}**" if name.get("fontWeight") == "bold" else title
+        body = (f'{_span(title, name.get("fontSize"), name.get("color"))}\n\n'
+                f'{_span("**" + value + "**", val.get("fontSize"), val.get("color"))}')
+        container = {"id": element_id, "kind": "container"}
+        style = look_style(look, "kpi-chart") or look_style(look, "container")
+        if style:
+            container["style"] = style
+        return container, {"id": f"{element_id}_t", "kind": "text", "verticalAlign": "center", "body": body}
     body = (f'<span style="color: {ROLES["muted"]}; font-size: {KPI_LABEL_PX}px">{_markup(label)}</span>\n\n'
             f'<span style="font-size: {KPI_VALUE_PX}px">**{value}**</span>')
     text = {"id": f"{element_id}_t", "kind": "text", "verticalAlign": "center", "body": body}
@@ -218,14 +290,16 @@ def disallowed_span_styles(body):
     return sorted(bad)
 
 
-def table_style(header, kind="table"):
+def table_style(header, kind="table", look=None):
     """``tableStyle.textStyles`` header fill / weight / color from the source header cells.
 
     ``header`` is ``{"fill": "#DDE7F5", "bold": True, "color": None}`` (any key optional). A pivot also
     gets ``columnHeader`` (its column-header band); a flat table uses ``header``.
     """
+    preset = (look or {}).get("tablePreset") if SURFACES["look_table_preset"] else None
+    out = {"preset": preset} if preset else {}
     if not header or not SURFACES["table_text_styles"]:
-        return None
+        return out or None
     style = {}
     if header.get("fill"):
         style["backgroundColor"] = header["fill"]
@@ -234,11 +308,11 @@ def table_style(header, kind="table"):
     if header.get("bold"):
         style["fontWeight"] = "bold"
     if not style:
-        return None
+        return out or None
     text_styles = {"header": dict(style)}
     if kind == "pivot-table":
         text_styles["columnHeader"] = dict(style)
-    return {"textStyles": text_styles}
+    return {**out, "textStyles": text_styles}
 
 
 def negative_red_rule(column_ids):
@@ -249,7 +323,9 @@ def negative_red_rule(column_ids):
             "style": {"color": NEGATIVE}}
 
 
-def chart_card():
+def chart_card(look=None):
+    if look is not None:
+        return look_style(look, "chart") if SURFACES["chart_card_style"] else None
     return card_style() if SURFACES["chart_card_style"] else None
 
 

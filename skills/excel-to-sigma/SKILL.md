@@ -317,6 +317,10 @@ header fill / bold and the title cell carry over, source charts that read verifi
 emitted as native charts, and a header band + KPI cards (totals and a ratio of totals) lead the page;
 KPI totals and chart points are re-verified against the source cells before a spec is written
 (`refs/table-report-recipes.md`, Presentation).
+To match an existing Sigma workbook's look (theme, card styles, KPI type, text type, table preset), run
+`scripts/style-reference.py <workbookId or URL> --out look.json` (one read-only GET) and draft with
+`draft-table-report.py ... --look look.json`; the arrangement stays ours and Excel's formats, header fill, row
+order and titles still win (`refs/table-report-recipes.md`, "Matching the look of an org workbook").
 
 Present the detected map and confirm edit intent, source freshness, and formula
 dependencies before selecting a build. The live-actuals/driver-growth union in

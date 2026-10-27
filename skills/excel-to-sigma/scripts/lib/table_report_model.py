@@ -796,6 +796,9 @@ def _validate_presentation(plan):
     pres = plan.get("presentation")
     if not pres:
         return
+    look = pres.get("look")
+    if look is not None and not (isinstance(look, dict) and look.get("version") == 1):
+        raise PlanError("presentation.look must be a version 1 look from style-reference.py")
     frames = {f["id"]: f for f in plan.get("frames", [])}
     for kpi in pres.get("kpis", []):
         if kpi.get("frame") not in frames or kpi.get("kind") not in ("total", "ratio"):

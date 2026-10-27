@@ -36,17 +36,21 @@ def parse_args(argv=None):
     parser.add_argument("--tolerance", type=float, default=None,
                         help="absolute tolerance when re-deriving cached values (default: tight "
                              "max(1e-6, 1e-12*|value|), i.e. float noise only)")
+    parser.add_argument("--look", help="look.json from style-reference.py: the Report page takes that workbook's "
+                                       "theme, card styles and KPI type (Excel's formats, header fill, row order "
+                                       "and titles still win)")
     parser.add_argument("--out", required=True, help="plan JSON to write")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
+    look = json.loads(Path(args.look).read_text(encoding="utf-8")) if args.look else None
     try:
         plan, info = draft_table_report(
             args.workbook, intent=args.intent, connection=args.connection, folder=args.folder,
             name=args.name, currency_format=args.currency_format, pct_format=args.pct_format,
-            tolerance=args.tolerance)
+            tolerance=args.tolerance, look=look)
     except PlanDraftError as error:
         print(f"DRAFT FAILED: {error}", file=sys.stderr)
         return 1
@@ -58,6 +62,9 @@ def main(argv=None):
           f"| {len(info['frames'])} frames | {info['params']} parameters | intent={plan['intent']}")
     for kind, title in info["frames"]:
         print(f"  frame {kind}: {title}")
+    if look:
+        print(f"  look: the Report page takes the look of {(look.get('source') or {}).get('name') or args.look} "
+              "(theme, card styles, KPI type); Excel's formats, header fill, row order and titles still win")
     print(f"  verified: {info['verifiedCells']} source cells reproduced from the table data "
           f"({info['formulaCells']} formula cells in the workbook, every one covered)")
     print(f"  parity targets: {info['parityTargets']} summary cells (re-checked by build-table-report.py)")
