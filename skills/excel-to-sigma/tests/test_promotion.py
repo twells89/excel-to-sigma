@@ -70,7 +70,7 @@ class PromotionTests(unittest.TestCase):
         changed=copy.deepcopy(candidate);changed['elements'][1]['body']='overwrite foreign'
         with self.assertRaises(ValueError):p.prepare_promotion(backup,current,changed,{**review,'candidateHash':p._digest(changed)},acceptance)
     def test_full_mandatory_evidence_unlocks_exact_original_candidate_and_dryrun_only(self):
-        from acceptance import build_acceptance_matrix,seal_matrix,validate_ledger,_append_validated
+        from acceptance import build_acceptance_matrix,seal_matrix,_append_validated
         from test_acceptance import AcceptanceTests
         p,current,rows,sdk,scope=self.fixture()
         manifests,targets,receipts=AcceptanceTests().bound_matrix_inputs()
@@ -111,10 +111,10 @@ class PromotionTests(unittest.TestCase):
                 capture['persistence']={'before':[{'ID':'row','Key':'a','Value':1}],'changed':[{'ID':'row','Key':'a','Value':2}],'reopened':[{'ID':'row','Key':'a','Value':2}],'restored':[{'ID':'row','Key':'a','Value':1}],
                     'rowIdColumn':'ID','keyColumns':['Key'],'allowedChanges':[{'key':{'Key':'a'},'column':'Value','value':2}],'reopenEvidenceId':'unit','restoreEvidenceId':'unit'}
             # append_evidence re-validates the whole chain on every call (quadratic across
-            # a ~100-case ledger); chain linearly here and validate the full ledger once.
+            # a ~100-case ledger); chain linearly here. prepare_promotion below validates the
+            # whole ledger (build_workflow_reports -> validate_ledger), as every consumer does.
             # test_incremental_chain_matches_append_evidence pins that this is the same ledger.
             ledger=_append_validated(ledger,m,capture)
-        self.assertTrue(validate_ledger(m,ledger))
         scope={**scope,'sourceHash':manifests['sales']['sourceHash'],'planHash':manifests['sales']['planHash']}
         backup=p.build_promotion_backup(scope,current,rows,sdk,{})
         candidate=copy.deepcopy(current['contents']);candidate['elements'].append({'id':'new','kind':'text','body':'Ready'})
