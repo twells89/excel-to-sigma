@@ -217,6 +217,7 @@ def divider(element_id):
 
 
 KPI_LABEL_PX, KPI_VALUE_PX = 14, 28
+DEFAULT_KPI_NAME_PX, DEFAULT_KPI_VALUE_PX = 18, 40      # what Sigma's own kpi-chart renders (no look KPI type)
 
 
 def kpi_card(element_id, label, source, formula, fmt, look=None):
@@ -258,11 +259,17 @@ def kpi_text_card(element_id, label, formula, fmt, look=None):
              f"{_markup((fmt or {}).get('suffix', ''), strip=False)}")
     if look is not None:
         kpi = look.get("kpi") or {}
-        name, val = kpi.get("name") or {}, kpi.get("value") or {}
+        name, val = kpi.get("name"), kpi.get("value")
         title = _markup(label)
-        title = f"**{title}**" if name.get("fontWeight") == "bold" else title
-        body = (f'{_span(title, name.get("fontSize"), name.get("color"))}\n\n'
-                f'{_span("**" + value + "**", val.get("fontSize"), val.get("color"))}')
+        if name:
+            title = f"**{title}**" if name.get("fontWeight") == "bold" else title
+            title = _span(title, name.get("fontSize"), name.get("color"))
+        else:         # Sigma's own kpi-chart: a bold ~18 px title ...
+            title = _span(f"**{title}**", DEFAULT_KPI_NAME_PX)
+        # ... over a bold ~40 px value, no colours
+        shown = _span("**" + value + "**", val.get("fontSize"), val.get("color")) if val else \
+            _span("**" + value + "**", DEFAULT_KPI_VALUE_PX)
+        body = f"{title}\n\n{shown}"
         container = {"id": element_id, "kind": "container"}
         style = look_style(look, "kpi-chart") or look_style(look, "container")
         if style:
@@ -296,6 +303,8 @@ def table_style(header, kind="table", look=None):
     ``header`` is ``{"fill": "#DDE7F5", "bold": True, "color": None}`` (any key optional). A pivot also
     gets ``columnHeader`` (its column-header band); a flat table uses ``header``.
     """
+    if look is not None:      # the reference's theme styles the headers; only the source's bold survives
+        header = {"bold": True} if header and header.get("bold") else None
     preset = (look or {}).get("tablePreset") if SURFACES["look_table_preset"] else None
     out = {"preset": preset} if preset else {}
     if not header or not SURFACES["table_text_styles"]:
@@ -320,7 +329,8 @@ def negative_red_rule(column_ids):
     if not column_ids or not SURFACES["conditional_single"]:
         return None
     return {"type": "single", "columnIds": list(column_ids), "condition": "<", "value": 0,
-            "style": {"color": NEGATIVE}}
+            # backgroundColor "none": Sigma paints its default (green) highlight when it is omitted
+            "style": {"color": NEGATIVE, "backgroundColor": "none"}}
 
 
 def chart_card(look=None):
@@ -353,8 +363,27 @@ CHROME_PX = 140            # title + header + summary bar + card padding of a ta
 MIN_TABLE_ROWS, MAX_TABLE_ROWS = 9, 40
 
 
-def table_height(n_rows, extra_header_rows=0):
-    """Grid rows for a table / pivot that shows ``n_rows`` data rows (sized to its rows, one row of slack)."""
-    pixels = CHROME_PX + ROW_PX * (max(n_rows, 1) + extra_header_rows)
+ROOMY_FACTOR = 2.5        # presentation preset / medium+ cell spacing render rows ~2.4x taller (live render)
+
+
+def roomy_tables(look):
+    """True when a reference look renders table rows taller than the spreadsheet default: its preset is
+    ``presentation``, its theme sets ``tableStyles.cellSpacing`` to medium / large, or its theme is only a name
+    (an org theme whose spacing we cannot know). Without a look the default sizing applies."""
+    if not look:
+        return False
+    if look.get("tablePreset") == "presentation":
+        return True
+    theme = look.get("theme") or {}
+    spacing = (((theme.get("overrides") or {}).get("tableStyles")) or {}).get("cellSpacing")
+    if spacing in ("medium", "large"):
+        return True
+    return bool(theme.get("name")) and not theme.get("overrides")
+
+
+def table_height(n_rows, extra_header_rows=0, roomy=False):
+    """Grid rows for a table / pivot that shows ``n_rows`` data rows (sized to its rows, one row of slack).
+    ``roomy``: the look's rows are ~2.5x taller, so the row allowance is too."""
+    pixels = CHROME_PX + ROW_PX * (ROOMY_FACTOR if roomy else 1) * (max(n_rows, 1) + extra_header_rows)
     rows = math.ceil(pixels / GRID_ROW_PX) + 1
     return max(MIN_TABLE_ROWS, min(MAX_TABLE_ROWS, rows))

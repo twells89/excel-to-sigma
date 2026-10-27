@@ -139,7 +139,7 @@ accent, `kpis[]` and `charts[]`.
 | General / unknown code | an explicit plain number (`,.Nf`, N from the values) so Sigma never inherits `%` from an operand (`Amount * Probability`) |
 | a code with no exact equivalent (fractions, `[h]`, scaling commas, conditions, accounting zero dash) | the closest plain format + review issue `NUMBER_FORMAT_APPROXIMATED` listing the codes and cells |
 | summary / keyed row order | a hidden grouping calculation `Source Order` = `Min(If([Key] = "a", 1, If(...)))`, FIRST in `groupings[].calculations`, plus a grouping-level `sort: [{columnId, direction: ascending}]` (accepted live though the offline OpenAPI omits it). A hidden group KEY is silently un-hidden by Sigma, and element `sort` only reaches the base level, so neither is used. The keyed frame keeps a hidden base-level order column for its pivot (`rowsBy[0].sort = {by, aggregation: min}`) and adds `Source Order (group)` = `Min([Source Order])` as its group calculation. Chart `xAxis.sort` uses an order column of its own. Expansion pivots keep ascending key order |
-| header fill / bold / font color | `tableStyle.textStyles.header` (pivots also `columnHeader`) |
+| header fill / bold / font color | `tableStyle.textStyles.header` (pivots also `columnHeader`); under a look only the bold is kept (the theme styles headers) |
 | sheet title cell | header band title (text element tinted with the accent) |
 | bar / column (clustered, stacked, 100%), line, doughnut, pie whose categories are a grid's row labels (or verified axis cells) and whose series read one verified column each | `bar-chart` (`stacking: none/stacked/normalized`, `orientation: horizontal` for bars), `line-chart`, `donut-chart` / `pie-chart` sourced from the frame's SOURCE element (a grouped table's calculations and keys cannot be referenced by name, even with `groupingId`): x = the key column, each series = the frame's own formula at chart level (`Coalesce(SumIf([tblPipeline/Weighted Amount], <window>), 0)`; a lookup of the key becomes `Max(Lookup(..))`), a `list` filter on the key when the data has keys the grid does not list; title / series order / category order from the source. Colors: `settings.theme.overrides.categoricalScheme` (the only spec path for multi-series and donut colors) with the accent first; a single series takes `color: {by: single}` |
 | anything else (subset of rows, scatter / area / combo, values outside a verified frame) | listed in `unmappedCharts` with the reason (`CHARTS_PRESENT` stays a review item) |
@@ -178,11 +178,16 @@ default look is byte-identical to before.
 | the most common `style` per kind (container, kpi-chart, chart, table) | that kind's card style, else no `style` at all (the theme decides); the header band container takes the reference's container style |
 | most common kpi `name` (`color`, `fontSize`, `fontWeight`) and `value` styling | kpi-charts and the text-card KPIs (spans with only color / font-size, bold via `**`); none -> theme default |
 | first text's span `font-size` / colour (or heading level), second text's span (subline), `theme.overrides.colors.text` | header band title / subline, quiet `DETAIL` label colour |
-| most common `tableStyle.preset` | `tableStyle.preset` beside Excel's header fill / bold in `textStyles.header` (`SURFACES["look_table_preset"]`) |
+| most common `tableStyle.preset`, and the theme itself | `tableStyle.preset` (`SURFACES["look_table_preset"]`); the reference's theme styles the table headers, so `textStyles.header` is just `{fontWeight: bold}` when the Excel header is bold (no Excel fill or font colour) |
 
 Not copied: the arrangement (header band, KPI row, hero chart, DETAIL, chart beside its table), and anything Excel
-decides: number formats, the header fill / bold, sheet row order, the title text. None of our own colours
-(`#0F172A`, `#64748B`, `#F0F7FF`, `#E2E8F0`, the accent) is written when a look is applied; Excel's `[Red]` negatives stay.
+decides: number formats, header bold, sheet row order, the title text (Excel's header FILL and font colour only
+apply to the default look; under a look the theme styles headers). None of our own colours
+(`#0F172A`, `#64748B`, `#F0F7FF`, `#E2E8F0`, the accent) is written when a look is applied; Excel's `[Red]` negatives stay
+(`style {color, backgroundColor: none}`: Sigma paints its default green highlight when the background is omitted). A look
+whose preset is `presentation`, whose theme sets `tableStyles.cellSpacing` medium / large, or that is only a named theme
+sizes tables with 2.5x the row allowance (those rows render ~2.4x taller); a text-card KPI under a look with no KPI type
+uses Sigma's own 18 px / 40 px bold type.
 
 ## Charts
 

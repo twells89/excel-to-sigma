@@ -916,7 +916,8 @@ def compose_report(plan, parts):
         rows = meta["rows"]
         if meta["role"] in ("grouped", "ledger"):
             rows = (pres.get("rows") or {}).get(meta["frame"], rows)
-        height = ps.table_height(rows, extra_header_rows=1 if element["kind"] == "pivot-table" else 0)
+        height = ps.table_height(rows, extra_header_rows=1 if element["kind"] == "pivot-table" else 0,
+                                 roomy=ps.roomy_tables(look))
         if element["id"] in beside:                       # table 1 / 15, its chart 15 / 25, the taller height
             chart = beside[element["id"]]
             height = max(height, ps.CHART_ROWS)

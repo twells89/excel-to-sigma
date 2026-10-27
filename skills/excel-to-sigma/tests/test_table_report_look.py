@@ -175,6 +175,11 @@ def report_text(spec):
     return json.dumps([e for e in spec["contents"]["elements"] if e["id"] in ids], sort_keys=True)
 
 
+def arrangement(spec):
+    """The layout minus row numbers: element order, column spans and containers (roomy looks lengthen tables)."""
+    return [[(n[0], n[1], n[2]) for n in layout_tree(spec, page)] for page in ("report", "inputs", "model")]
+
+
 def span_lint(spec):
     return [(e["id"], bad) for e in spec["contents"]["elements"] if e["kind"] == "text"
             for bad in [ps.disallowed_span_styles(e["body"])] if bad]
@@ -239,8 +244,8 @@ class TestApplyLook(unittest.TestCase):
         self.assertTrue(value.startswith('<span style="font-size: 30px">**{{If('))
         self.assertTrue(value.endswith("| .1%}}**</span>"))
         _, plain = element(self.specs["a"], "kpi_coverage"), element(self.specs["a"], "kpi_coverage_t")
-        self.assertTrue(plain["body"].split("\n\n")[0].startswith("COVERAGE"))       # no span at all
-        self.assertTrue(plain["body"].split("\n\n")[1].startswith("**{{If("))
+        self.assertEqual(plain["body"].split("\n\n")[0], '<span style="font-size: 18px">**COVERAGE**</span>')
+        self.assertTrue(plain["body"].split("\n\n")[1].startswith('<span style="font-size: 40px">**{{If('))
 
     def test_the_header_band_and_text_follow_the_reference(self):
         band_b = element(self.specs["b"], "trHeaderBand")
@@ -269,11 +274,24 @@ class TestApplyLook(unittest.TestCase):
         self.assertNotIn("style", summary)                  # tables had no card style in that reference
         self.assertNotIn("preset", element(self.specs["a"], "f_s_h2_fy26_weighted_forecast").get("tableStyle", {}))
 
-    def test_excel_keeps_the_header_fill_and_bold_beside_the_preset(self):
+    def test_under_a_look_the_theme_styles_the_headers_and_only_bold_survives(self):
         for key, spec in self.specs.items():
             for eid in ("f_s_h2_fy26_weighted_forecast", "f_s_open_deals_by_stage"):
                 header = element(spec, eid)["tableStyle"]["textStyles"]["header"]
-                self.assertEqual(header, {"backgroundColor": "#DDE7F5", "fontWeight": "bold"}, (key, eid))
+                self.assertEqual(header, {"fontWeight": "bold"}, (key, eid))        # no Excel fill or colour
+            self.assertNotIn("#DDE7F5", report_text(spec).upper(), key)
+        # without a look the Excel header fill is exactly as before
+        for eid in ("f_s_h2_fy26_weighted_forecast", "f_s_open_deals_by_stage"):
+            self.assertEqual(element(self.base, eid)["tableStyle"]["textStyles"]["header"],
+                             {"backgroundColor": "#DDE7F5", "fontWeight": "bold"})
+
+    def test_a_pivot_under_a_look_keeps_only_bold_too(self):
+        style = ps.table_style({"fill": "#DDE7F5", "bold": True, "color": "#1F3864"}, "pivot-table",
+                               self.looks["c"])
+        self.assertEqual(style, {"preset": "presentation", "textStyles": {"header": {"fontWeight": "bold"},
+                                                                          "columnHeader": {"fontWeight": "bold"}}})
+        plain = ps.table_style({"fill": "#DDE7F5", "color": "#1F3864"}, "table", self.looks["a"])
+        self.assertIsNone(plain)                          # not bold, no preset: nothing of Excel's, nothing to say
 
     def test_the_preset_is_behind_a_toggle(self):
         self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
@@ -285,7 +303,9 @@ class TestApplyLook(unittest.TestCase):
         presentation_only = {"style", "name", "value", "body", "tableStyle", "color", "legend"}
         base = {e["id"]: e for e in self.base["contents"]["elements"]}
         for key, spec in self.specs.items():
-            self.assertEqual(spec["contents"]["layout"], self.base["contents"]["layout"], key)
+            if key == "b":            # a reference with roomy tables (a, c) lengthens them; b keeps the default sizing
+                self.assertEqual(spec["contents"]["layout"], self.base["contents"]["layout"], key)
+            self.assertEqual(arrangement(spec), arrangement(self.base), key)
             now = {e["id"]: e for e in spec["contents"]["elements"]}
             self.assertEqual(set(now), set(base), key)
             for eid, el in now.items():
@@ -317,7 +337,7 @@ class TestApplyLook(unittest.TestCase):
         for number, path in SOURCES.items():
             plain, _ = draft(path)
             styled, _ = draft(path, look=self.looks["c"])
-            self.assertEqual(wb_spec(styled)["contents"]["layout"], wb_spec(plain)["contents"]["layout"], number)
+            self.assertEqual(arrangement(wb_spec(styled)), arrangement(wb_spec(plain)), number)
             self.assertEqual(span_lint(wb_spec(styled)), [], number)
 
 

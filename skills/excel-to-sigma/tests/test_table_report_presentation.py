@@ -215,7 +215,7 @@ class TestPipelinePresentation(unittest.TestCase):
         self.assertIn(ids["Jul-26"], rule["columnIds"])
         self.assertNotIn(ids["Quota"], rule["columnIds"])             # General: no red section
         self.assertNotIn(ids["Coverage"], rule["columnIds"])
-        self.assertEqual(rule["style"], {"color": ps.NEGATIVE})
+        self.assertEqual(rule["style"], {"color": ps.NEGATIVE, "backgroundColor": "none"})
 
     # ---- 3: row order
     def test_summary_rows_keep_the_sheet_order(self):

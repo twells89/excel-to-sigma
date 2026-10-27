@@ -346,6 +346,83 @@ class TestChartRows(unittest.TestCase):
             self.assertEqual(loose[0][3], hero[4])                   # the pair starts where the hero ends
 
 
+# --------------------------------------------------------------------------- live render fixes
+from test_table_report_look import SPEC_A, SPEC_B, SPEC_C, THEME_C, with_source  # noqa: E402
+from test_table_report_presentation import SOURCES  # noqa: E402
+
+
+class TestNegativeRedRule(unittest.TestCase):
+    def test_the_rule_colours_the_text_and_clears_the_background(self):
+        # Sigma paints its default highlight (green) when backgroundColor is omitted
+        rule = ps.negative_red_rule(["c1"])
+        self.assertEqual(rule["style"], {"color": ps.NEGATIVE, "backgroundColor": "none"})
+        self.assertEqual((rule["type"], rule["condition"], rule["value"]), ("single", "<", 0))
+
+    def test_every_emitted_negative_red_rule_has_it(self):
+        for number in ("06", "07"):
+            plan, _ = draft(SOURCES[number])
+            rules = [r for e in wb_spec(plan)["contents"]["elements"] for r in e.get("conditionalFormats", [])]
+            self.assertTrue(rules, number)
+            for rule in rules:
+                self.assertEqual(rule["style"].get("backgroundColor"), "none", number)
+
+
+class TestRoomyTables(unittest.TestCase):
+    def heights(self, look=None):
+        plan, _ = draft(SOURCES["04"], look=look)
+        spans = {n[0]: n[4] - n[3] for n in placements(wb_spec(plan))}
+        return spans["f_s_h2_fy26_weighted_forecast"], spans["f_s_open_deals_by_stage"]
+
+    def test_the_row_allowance_scales_for_roomy_looks_only(self):
+        self.assertGreater(ps.table_height(6, roomy=True), ps.table_height(6))
+        pixels = lambda rows, roomy: (ps.table_height(rows, roomy=roomy) - 1) * ps.GRID_ROW_PX   # noqa: E731
+        self.assertGreaterEqual(pixels(6, True) - ps.CHROME_PX, 2.3 * 6 * ps.ROW_PX)               # ~2.5x rows
+        self.assertEqual(ps.table_height(6, roomy=False), ps.table_height(6))
+
+    def test_default_sizing_is_unchanged_without_a_look(self):
+        self.assertEqual(self.heights(), (11, 16))     # the stage table takes its donut's 16 rows
+
+    def test_a_presentation_preset_or_roomy_cell_spacing_sizes_tables_roomy(self):
+        roomy = self.heights(with_source(SPEC_C))                 # preset presentation + cellSpacing medium
+        self.assertGreater(roomy[0], 11)
+        self.assertGreater(roomy[1], 16)
+        spacing_only = copy.deepcopy(SPEC_C)
+        for e in spacing_only["document"]["elements"]:
+            e.get("tableStyle", {}).pop("preset", None)
+        self.assertEqual(self.heights(with_source(spacing_only)), roomy)         # cellSpacing alone is enough
+        compact = copy.deepcopy(spacing_only)
+        compact["document"]["settings"]["theme"]["overrides"]["tableStyles"]["cellSpacing"] = "small"
+        self.assertEqual(self.heights(with_source(compact)), (11, 16))
+
+    def test_a_named_only_theme_cannot_be_known_so_it_is_roomy(self):
+        named = self.heights(with_source(SPEC_A))
+        self.assertGreater(named[1], 16)
+
+    def test_a_theme_with_overrides_but_no_table_spacing_keeps_the_default(self):
+        self.assertEqual(self.heights(with_source(SPEC_B)), (11, 16))
+
+
+class TestTextCardWithoutKpiType(unittest.TestCase):
+    def test_sigmas_default_kpi_type_is_mirrored_when_the_look_has_none(self):
+        for spec in (SPEC_A, SPEC_B):                                  # Golden-like and named-only: no KPI type
+            plan, _ = draft(SOURCES["04"], look=with_source(spec))
+            text = element(wb_spec(plan), "kpi_coverage_t")
+            label, value = text["body"].split("\n\n")
+            self.assertEqual(label, '<span style="font-size: 18px">**COVERAGE**</span>')
+            self.assertRegex(value, r'^<span style="font-size: 40px">\*\*\{\{If\(.*\| \.1%\}\}\*\*</span>$')
+            self.assertNotIn("color", text["body"])
+
+    def test_a_look_with_a_kpi_type_and_the_default_look_are_unchanged(self):
+        plan, _ = draft(SOURCES["04"], look=with_source(SPEC_C))
+        label, value = element(wb_spec(plan), "kpi_coverage_t")["body"].split("\n\n")
+        self.assertEqual(label, '<span style="font-size: 13px; color: #121b39">**COVERAGE**</span>')
+        self.assertTrue(value.startswith('<span style="font-size: 30px">'))
+        plan, _ = draft(SOURCES["04"])
+        label, value = element(wb_spec(plan), "kpi_coverage_t")["body"].split("\n\n")
+        self.assertEqual(label, '<span style="color: #64748B; font-size: 14px">COVERAGE</span>')
+        self.assertTrue(value.startswith('<span style="font-size: 28px">'))
+
+
 # --------------------------------------------------------------------------- merged summaries (bindings)
 class TestMergedSummaryBindings(unittest.TestCase):
     """A summary frame merged into a keyed host table (08) is shown by the HOST's element: the chart over the

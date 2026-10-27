@@ -6,7 +6,7 @@ usage: style-reference.py <workbookId | workbook URL> --out look.json [--sigma-p
 
 Read-only: one ``GET /v2/workbooks/{id}/spec`` through ``lib/sigma_auth.api``; nothing is ever written to Sigma.
 The look keeps the theme, card styles, KPI type, text type and table preset only - not the arrangement.
-Pass it to ``draft-table-report.py --look look.json``; Excel's own number formats, header fill, row order and
+Pass it to ``draft-table-report.py --look look.json``; Excel's own number formats, row order and
 titles still win.
 """
 import argparse
