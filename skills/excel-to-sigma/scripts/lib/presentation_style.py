@@ -435,32 +435,36 @@ MIN_TABLE_ROWS = 9
 MAX_VISIBLE_ROWS = 15      # longer tables / pivots scroll inside their card instead of stretching the page
 
 
-ROOMY_FACTOR = 2.5        # presentation preset / medium+ cell spacing render rows ~2.4x taller (live render)
-HEADER_ROOMY_FACTOR = 1.5  # ...but a pivot's header rows only ~30 px (live: body rows ~48 px, header rows ~30 px)
+# Live measurement of the presentation preset (screenshots at pixelWidth 1400 come back 1600 px wide: divide by
+# 1.143): body rows 48 px in the image = 42 CSS px (2.1 x ROW_PX), pivot header rows ~25 CSS px (1.25 x ROW_PX).
+ROOMY_FACTOR = 2.15        # presentation preset body rows
+HEADER_ROOMY_FACTOR = 1.3  # a roomy pivot's header rows
+SPACIOUS_FACTOR = 2.5      # theme cell spacing medium / large, or an org theme known only by name (unmeasured)
 
 
 def roomy_tables(look):
-    """True when a reference look renders table rows taller than the spreadsheet default: its preset is
-    ``presentation``, its theme sets ``tableStyles.cellSpacing`` to medium / large, or its theme is only a name
-    (an org theme whose spacing we cannot know). Without a look the default sizing applies."""
-    if not look:        # the default look uses the presentation preset, whose rows render ~2.4x taller
-        return bool(SURFACES["default_table_preset"])
-    if look.get("tablePreset") == "presentation" and SURFACES["look_table_preset"]:   # only if it is emitted
-        return True
+    """The body-row factor of a table under ``look``: ``False`` for the spreadsheet default, ``ROOMY_FACTOR`` for
+    the presentation preset, ``SPACIOUS_FACTOR`` when the theme sets ``tableStyles.cellSpacing`` to medium / large
+    or is only a name (an org theme whose spacing we cannot know). Without a look the default presentation preset
+    applies. The result is truthy when rows are taller than the spreadsheet default."""
+    if not look:        # the default look uses the presentation preset
+        return ROOMY_FACTOR if SURFACES["default_table_preset"] else False
     theme = look.get("theme") or {}
     spacing = (((theme.get("overrides") or {}).get("tableStyles")) or {}).get("cellSpacing")
     if spacing in ("medium", "large"):
-        return True
-    return bool(theme.get("name")) and not theme.get("overrides")
+        return SPACIOUS_FACTOR
+    if look.get("tablePreset") == "presentation" and SURFACES["look_table_preset"]:   # only if it is emitted
+        return ROOMY_FACTOR
+    return SPACIOUS_FACTOR if theme.get("name") and not theme.get("overrides") else False
 
 
 def table_height(n_rows, extra_header_rows=0, roomy=False):
     """Grid rows for a table / pivot: sized for its data rows, at most ``MAX_VISIBLE_ROWS`` of them (the rest
-    scroll), one row of slack. ``extra_header_rows`` and the chrome come on top. ``roomy``: the body rows render ~2.5x
-    taller (presentation preset), so the row allowance is too; header rows count only 1.5x."""
-    factor = ROOMY_FACTOR if roomy else 1
+    scroll), one row of slack. ``extra_header_rows`` and the chrome come on top. ``roomy``: ``True`` (the
+    presentation preset) or a body-row factor from ``roomy_tables``; its header rows count ``HEADER_ROOMY_FACTOR``."""
+    factor = (ROOMY_FACTOR if roomy is True else roomy) or 1
     visible = min(max(n_rows, 1), MAX_VISIBLE_ROWS)
-    header_factor = HEADER_ROOMY_FACTOR if roomy else 1
+    header_factor = HEADER_ROOMY_FACTOR if factor > 1 else 1
     pixels = CHROME_PX + ROW_PX * factor * visible + ROW_PX * header_factor * extra_header_rows
     return max(MIN_TABLE_ROWS, math.ceil(pixels / GRID_ROW_PX) + 1)
 

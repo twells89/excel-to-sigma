@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -478,10 +479,10 @@ class TestComposition(Base):
         many = ps.table_height(200, extra_header_rows=fp.PIVOT_HEADER_ROWS, roomy=True)
         self.assertEqual(many, ps.table_height(ps.MAX_VISIBLE_ROWS, extra_header_rows=fp.PIVOT_HEADER_ROWS, roomy=True))
         self.assertGreater(ps.table_height(rows, extra_header_rows=3, roomy=True), ps.table_height(rows, 3))
-        # live measurement: body rows ~48 px, pivot header rows ~30 px (not 2.5x a row)
+        # live measurement (CSS px): body rows 42, pivot header rows ~25 (see TestRowHeightMaths)
         pixels = lambda n, header: (ps.table_height(n, extra_header_rows=header, roomy=True) - 1) * ps.GRID_ROW_PX
-        self.assertLess(pixels(14, 3), ps.CHROME_PX + 14 * 48 + 3 * 50)
-        self.assertGreaterEqual(pixels(14, 3), ps.CHROME_PX + 14 * ps.ROW_PX * ps.ROOMY_FACTOR + 3 * 30)
+        self.assertGreaterEqual(pixels(14, 3), ps.CHROME_PX + 14 * 42 + 3 * 25)
+        self.assertLess(pixels(14, 3), ps.CHROME_PX + 14 * 42 + 3 * 25 + 2 * ps.GRID_ROW_PX)   # at most a row of slack
         self.assertEqual(ps.table_height(14, extra_header_rows=3, roomy=False), 22)    # the spreadsheet preset is unchanged
         gl = next(p for p in layout_pages(self.spec(plan)["layout"])["detail"] if p[0] == "glTable")
         self.assertEqual(gl[4] - gl[3], ps.table_height(len(plan["actuals"]), roomy=True))
@@ -690,6 +691,67 @@ class TestValuesAreUntouched(Base):
         for source in (SAAS, RETAIL):
             plan, _ = draft_plan(source, intent="what-if", connection="c", folder="f")
             self.assertEqual(plan["parityTargets"], GOLDEN["02-saas" if source == SAAS else "03-retail"]["parityTargets"])
+
+
+# ================================================================== 8. row-height pixel maths
+class TestRowHeightMaths(Base):
+    """Live measurement of the presentation preset at pixelWidth 1400 (screenshots come back 1600 px wide, so
+    divide by 1.143): body rows 48 px in the image = 42 CSS px, pivot header rows ~25 CSS px, grid row 23 px."""
+    BODY_PX, HEADER_PX = 42, 25
+
+    def test_the_constants_pin_the_measurement(self):
+        self.assertEqual(ps.ROOMY_FACTOR, 2.15)               # 42 px / ROW_PX 20 = 2.1, rounded up
+        self.assertEqual(ps.HEADER_ROOMY_FACTOR, 1.3)         # 25 px / 20 = 1.25, rounded up
+        self.assertGreaterEqual(ps.ROW_PX * ps.ROOMY_FACTOR, self.BODY_PX)
+        self.assertGreaterEqual(ps.ROW_PX * ps.HEADER_ROOMY_FACTOR, self.HEADER_PX)
+        self.assertEqual(ps.SPACIOUS_FACTOR, 2.5)             # medium / large cell spacing, unmeasured
+
+    def test_the_presentation_preset_is_tighter_than_spacious_themes(self):
+        presentation = {"tablePreset": "presentation"}
+        self.assertEqual(ps.roomy_tables(None), ps.ROOMY_FACTOR)
+        self.assertEqual(ps.roomy_tables(presentation), ps.ROOMY_FACTOR)
+        for spacing in ("medium", "large"):
+            theme = {"overrides": {"tableStyles": {"cellSpacing": spacing}}}
+            self.assertEqual(ps.roomy_tables({**presentation, "theme": theme}), ps.SPACIOUS_FACTOR, spacing)
+            self.assertEqual(ps.roomy_tables({"theme": theme}), ps.SPACIOUS_FACTOR, spacing)
+        small = {"overrides": {"tableStyles": {"cellSpacing": "small"}}}
+        self.assertEqual(ps.roomy_tables({**presentation, "theme": small}), ps.ROOMY_FACTOR)
+        self.assertEqual(ps.roomy_tables({"theme": {"name": "org-theme-id"}}), ps.SPACIOUS_FACTOR)   # unknown
+        self.assertFalse(ps.roomy_tables({"tablePreset": None, "theme": small}))
+
+    def test_every_visible_row_fits_by_the_measured_pixels(self):
+        for factor, body, header in ((ps.ROOMY_FACTOR, self.BODY_PX, self.HEADER_PX),
+                                     (ps.SPACIOUS_FACTOR, ps.ROW_PX * ps.SPACIOUS_FACTOR,
+                                      ps.ROW_PX * ps.HEADER_ROOMY_FACTOR)):
+            for rows in range(1, 16):
+                for extra in (0, 1, 3):
+                    height = ps.table_height(rows, extra_header_rows=extra, roomy=factor)
+                    self.assertGreaterEqual((height - 1) * ps.GRID_ROW_PX,
+                                            ps.CHROME_PX + rows * body + extra * header, (factor, rows, extra))
+        self.assertEqual(ps.table_height(5, roomy=True), ps.table_height(5, roomy=ps.ROOMY_FACTOR))
+
+    def test_no_table_or_pivot_of_any_fixture_is_cut_off(self):
+        from test_table_report_presentation import SOURCES, draft, wb_spec
+        calls = []
+        real = ps.table_height
+
+        def record(rows, extra_header_rows=0, roomy=False):
+            height = real(rows, extra_header_rows, roomy)
+            calls.append((rows, extra_header_rows, roomy, height))
+            return height
+        with mock.patch.object(ps, "table_height", record):
+            for source in SOURCES.values():
+                wb_spec(draft(source)[0])
+            for source in (SAAS, RETAIL):
+                plan, _ = draft_plan(source, intent="what-if", connection="c", folder="f")
+                self.spec(plan)
+        self.assertGreater(len(calls), 10)
+        for rows, extra, roomy, height in calls:
+            body = self.BODY_PX if roomy == ps.ROOMY_FACTOR else ps.ROW_PX * (roomy or 1)
+            head = self.HEADER_PX if roomy == ps.ROOMY_FACTOR else ps.ROW_PX * (ps.HEADER_ROOMY_FACTOR if roomy else 1)
+            visible = min(max(rows, 1), ps.MAX_VISIBLE_ROWS)
+            self.assertGreaterEqual((height - 1) * ps.GRID_ROW_PX, ps.CHROME_PX + visible * body + extra * head,
+                                    (rows, extra, roomy))
 
 
 if __name__ == "__main__":

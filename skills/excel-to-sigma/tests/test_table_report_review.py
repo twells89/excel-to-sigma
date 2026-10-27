@@ -422,7 +422,7 @@ class TestRoomyTables(unittest.TestCase):
     def test_the_row_allowance_scales_for_roomy_looks_only(self):
         self.assertGreater(ps.table_height(6, roomy=True), ps.table_height(6))
         pixels = lambda rows, roomy: (ps.table_height(rows, roomy=roomy) - 1) * ps.GRID_ROW_PX   # noqa: E731
-        self.assertGreaterEqual(pixels(6, True) - ps.CHROME_PX, 2.3 * 6 * ps.ROW_PX)               # ~2.5x rows
+        self.assertGreaterEqual(pixels(6, True) - ps.CHROME_PX, 2.1 * 6 * ps.ROW_PX)               # ~2.15x rows
         self.assertGreaterEqual(pixels(15, True), ps.CHROME_PX + 15 * ps.ROW_PX * ps.ROOMY_FACTOR)   # all 15 fit
         self.assertEqual(ps.table_height(6, roomy=False), ps.table_height(6))
 
