@@ -418,8 +418,13 @@ class TestRoomyTables(unittest.TestCase):
         self.assertGreaterEqual(pixels(20, True), ps.CHROME_PX + 20 * ps.ROW_PX * ps.ROOMY_FACTOR)
         self.assertEqual(ps.table_height(6, roomy=False), ps.table_height(6))
 
-    def test_default_sizing_is_unchanged_without_a_look(self):
-        self.assertEqual(self.heights(), (11, 16))     # the stage table takes its donut's 16 rows
+    def test_the_default_look_is_sized_roomy_because_it_uses_the_presentation_preset(self):
+        self.assertEqual(self.heights(), (ps.table_height(4, roomy=True),
+                                          max(ps.table_height(6, roomy=True), ps.CHART_ROWS)))
+        self.assertGreater(self.heights()[0], 11)
+        self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
+        ps.SURFACES["default_table_preset"] = False
+        self.assertEqual(self.heights(), (11, 16))     # the old sizing: the stage table takes its donut's 16 rows
 
     def test_a_presentation_preset_or_roomy_cell_spacing_sizes_tables_roomy(self):
         roomy = self.heights(with_source(SPEC_C))                 # preset presentation + cellSpacing medium
@@ -439,6 +444,70 @@ class TestRoomyTables(unittest.TestCase):
 
     def test_a_theme_with_overrides_but_no_table_spacing_keeps_the_default(self):
         self.assertEqual(self.heights(with_source(SPEC_B)), (11, 16))
+
+
+class TestDefaultTablePreset(unittest.TestCase):
+    def tables(self, spec):
+        report = {i for node in layout_tree(spec) for i in [node[0]] + [c[0] for c in node[5]]}
+        return [e for e in spec["contents"]["elements"] if e["kind"] in ("table", "pivot-table")
+                and e["id"] in report]
+
+    def test_every_table_and_pivot_on_the_report_page_gets_the_presentation_preset(self):
+        for number, path in SOURCES.items():
+            plan, _ = draft(path)
+            spec = wb_spec(plan)
+            shown = self.tables(spec)
+            self.assertTrue(shown, number)
+            for el in shown:
+                self.assertEqual(el["tableStyle"]["preset"], "presentation", (number, el["id"]))
+        kinds = {e["kind"] for e in self.tables(wb_spec(draft(SOURCES["07"])[0]))}
+        self.assertEqual(kinds, {"table", "pivot-table"})                      # pivots take the preset too
+
+    def test_it_merges_with_the_excel_header_style(self):
+        plan, _ = draft(SOURCES["04"])
+        header = element(wb_spec(plan), "f_s_h2_fy26_weighted_forecast")["tableStyle"]
+        self.assertEqual(header, {"preset": "presentation", "textStyles": {
+            "header": {"backgroundColor": "#DDE7F5", "fontWeight": "bold"}}})
+        pivot = element(wb_spec(draft(SOURCES["07"])[0]), "pv_monthly_cost")["tableStyle"]
+        self.assertEqual(pivot["preset"], "presentation")
+        self.assertIn("columnHeader", pivot["textStyles"])
+
+    def test_a_table_without_a_source_header_style_still_gets_the_preset(self):
+        self.assertEqual(ps.table_style(None), {"preset": "presentation"})
+        self.assertEqual(ps.table_style({"fill": "#DDE7F5", "bold": True}, "table")["preset"], "presentation")
+
+    def test_the_hidden_model_and_input_pages_are_left_alone(self):
+        spec = wb_spec(draft(SOURCES["04"])[0])
+        shown = {e["id"] for e in self.tables(spec)}
+        for el in spec["contents"]["elements"]:
+            if el["id"] not in shown:
+                self.assertNotIn("tableStyle", el, el["id"])
+
+    def test_under_a_look_the_references_preset_wins_and_none_means_none(self):
+        spec = wb_spec(draft(SOURCES["04"], look=with_source(SPEC_C))[0])
+        self.assertEqual(element(spec, "f_s_h2_fy26_weighted_forecast")["tableStyle"]["preset"], "presentation")
+        custom = copy.deepcopy(SPEC_C)
+        for e in custom["document"]["elements"]:
+            if "tableStyle" in e:
+                e["tableStyle"]["preset"] = "spreadsheet"
+        spec = wb_spec(draft(SOURCES["04"], look=with_source(custom))[0])
+        self.assertEqual(element(spec, "f_s_h2_fy26_weighted_forecast")["tableStyle"]["preset"], "spreadsheet")
+        for reference in (SPEC_A, SPEC_B):                                    # no preset in the reference
+            spec = wb_spec(draft(SOURCES["04"], look=with_source(reference))[0])
+            for el in self.tables(spec):
+                self.assertNotIn("preset", el.get("tableStyle", {}), el["id"])
+
+    def test_the_toggle_turns_it_off_and_restores_the_old_sizing(self):
+        self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
+        ps.SURFACES["default_table_preset"] = False
+        plan, _ = draft(SOURCES["04"])
+        spec = wb_spec(plan)
+        for el in self.tables(spec):
+            self.assertNotIn("preset", el.get("tableStyle", {}))
+        self.assertFalse(ps.roomy_tables(None))
+
+    def test_the_scaled_cap_applies_to_the_default_look_too(self):
+        self.assertEqual(ps.table_height(500, roomy=True), int(ps.MAX_TABLE_ROWS * ps.ROOMY_FACTOR))
 
 
 class TestTextCardWithoutKpiType(unittest.TestCase):

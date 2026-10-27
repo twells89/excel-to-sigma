@@ -315,7 +315,7 @@ The Report page keeps the source's presentation: Excel number formats become exp
 formats on every numeric column (never an inherited `%`), summary rows keep the sheet's order, the
 header fill / bold and the title cell carry over, source charts that read verified frame cells are
 emitted as native charts, and a header band + KPI cards (totals and a ratio of totals) lead the page;
-KPI totals and chart points are re-verified against the source cells before a spec is written
+every Report-page table / pivot uses the presentation table preset (and is sized for its taller rows); KPI totals and chart points are re-verified against the source cells before a spec is written
 (`refs/table-report-recipes.md`, Presentation).
 To match an existing Sigma workbook's look (theme, card styles, KPI type, text type, table preset), run
 `scripts/style-reference.py <workbookId or URL> --out look.json` (one read-only GET) and draft with

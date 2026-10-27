@@ -39,6 +39,7 @@ SURFACES = {
     "order_group_sort": True,      # hidden `Min(<order If>)` calculation first in calculations + groupings[].sort
                                    # (grouping sort is accepted live though the offline OpenAPI omits it)
     "chart_hidden_column": True,   # chart columns[].hidden (sort-only order column)
+    "default_table_preset": True,  # tableStyle.preset "presentation" on every Report-page table / pivot (no look)
     "look_table_preset": True,     # tableStyle.preset from a reference look, beside textStyles (to confirm live)
     "chart_label_angle": True,     # bar-chart xAxis.format.labels.labelAngle: 0 (12 categories or fewer)
     "chart_list_filter": True,     # chart filters[{kind: list, mode: include}] on the category column
@@ -305,7 +306,10 @@ def table_style(header, kind="table", look=None):
     """
     if look is not None:      # the reference's theme styles the headers; only the source's bold survives
         header = {"bold": True} if header and header.get("bold") else None
-    preset = (look or {}).get("tablePreset") if SURFACES["look_table_preset"] else None
+    if look is None:
+        preset = "presentation" if SURFACES["default_table_preset"] else None    # the default look
+    else:                      # the reference's preset wins; none in the reference means none (its grid stays)
+        preset = look.get("tablePreset") if SURFACES["look_table_preset"] else None
     out = {"preset": preset} if preset else {}
     if not header or not SURFACES["table_text_styles"]:
         return out or None
@@ -370,8 +374,8 @@ def roomy_tables(look):
     """True when a reference look renders table rows taller than the spreadsheet default: its preset is
     ``presentation``, its theme sets ``tableStyles.cellSpacing`` to medium / large, or its theme is only a name
     (an org theme whose spacing we cannot know). Without a look the default sizing applies."""
-    if not look:
-        return False
+    if not look:        # the default look uses the presentation preset, whose rows render ~2.4x taller
+        return bool(SURFACES["default_table_preset"])
     if look.get("tablePreset") == "presentation":
         return True
     theme = look.get("theme") or {}

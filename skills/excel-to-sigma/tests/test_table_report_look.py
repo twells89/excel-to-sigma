@@ -303,8 +303,6 @@ class TestApplyLook(unittest.TestCase):
         presentation_only = {"style", "name", "value", "body", "tableStyle", "color", "legend"}
         base = {e["id"]: e for e in self.base["contents"]["elements"]}
         for key, spec in self.specs.items():
-            if key == "b":            # a reference with roomy tables (a, c) lengthens them; b keeps the default sizing
-                self.assertEqual(spec["contents"]["layout"], self.base["contents"]["layout"], key)
             self.assertEqual(arrangement(spec), arrangement(self.base), key)
             now = {e["id"]: e for e in spec["contents"]["elements"]}
             self.assertEqual(set(now), set(base), key)

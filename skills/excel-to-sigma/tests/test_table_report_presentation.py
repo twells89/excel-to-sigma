@@ -258,7 +258,8 @@ class TestPipelinePresentation(unittest.TestCase):
         self.assertEqual(self.frame["headerStyle"], {"fill": "#DDE7F5", "bold": True})
         for element_id in ("f_s_h2_fy26_weighted_forecast", "f_s_open_deals_by_stage"):
             self.assertEqual(element(self.spec, element_id)["tableStyle"],
-                             {"textStyles": {"header": {"backgroundColor": "#DDE7F5", "fontWeight": "bold"}}})
+                             {"preset": "presentation",
+                              "textStyles": {"header": {"backgroundColor": "#DDE7F5", "fontWeight": "bold"}}})
 
     def test_the_header_band_carries_the_source_title_not_the_plan_name(self):
         self.assertEqual(self.pres["title"], "H2 FY26 Weighted Forecast")
@@ -503,9 +504,9 @@ class TestPipelinePresentation(unittest.TestCase):
         self.assertEqual((bar[0], bar[1]), (1, 25))                                  # the hero spans the row
         self.assertEqual((stages[0], stages[1], donut[0], donut[1]), (1, 15, 15, 25))   # table | its chart
         self.assertEqual(stages[2:], donut[2:])                                      # same grid rows
-        self.assertEqual(stages[3] - stages[2], ps.CHART_ROWS)       # the taller of table (13) and chart (16)
+        self.assertEqual(stages[3] - stages[2], max(ps.CHART_ROWS, ps.table_height(6, roomy=True)))  # the taller
         self.assertEqual((summary[0], summary[1]), (1, 25))
-        self.assertLessEqual(summary[3] - summary[2], 12)            # 4 rows, not the old 20-row card
+        self.assertEqual(summary[3] - summary[2], ps.table_height(4, roomy=True))   # 4 rows, not the old 20-row card
         order = [p[0] for p in placements(self.spec)]
         self.assertEqual(order[:5], ["trHeaderBand", "kpi_total_weighted", "kpi_commit", "kpi_quota",
                                      "kpi_coverage"])
@@ -777,14 +778,14 @@ class TestRowOrderAndHeaders(SyntheticCase):
     def test_no_source_style_means_no_table_style(self):
         _, plan, _ = self.drafted()
         spec = wb_spec(plan)
-        self.assertNotIn("tableStyle", element(spec, "f_s_revenue_by_region"))
+        self.assertEqual(element(spec, "f_s_revenue_by_region")["tableStyle"], {"preset": "presentation"})
 
     def test_pivot_headers_use_the_column_header_style(self):
         style = ps.table_style({"fill": "#DDE7F5", "bold": True, "color": "#1F3864"}, "pivot-table")
         self.assertEqual(style["textStyles"]["columnHeader"],
                          {"backgroundColor": "#DDE7F5", "color": "#1F3864", "fontWeight": "bold"})
         self.assertEqual(style["textStyles"]["header"], style["textStyles"]["columnHeader"])
-        self.assertIsNone(ps.table_style(None))
+        self.assertEqual(ps.table_style(None), {"preset": "presentation"})      # the preset alone
         self.assertEqual(set(ps.table_style({"fill": "#DDE7F5"})["textStyles"]), {"header"})
 
 
@@ -950,6 +951,7 @@ class TestPageComposition(SyntheticCase):
     def test_surfaces_can_be_switched_off_and_the_builder_simply_omits_the_field(self):
         self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
         ps.SURFACES.update(table_text_styles=False, conditional_single=False, order_group_sort=False,
+                           default_table_preset=False,
                            chart_hidden_column=False)
         _, plan, _ = self.drafted(header_style=True, formats={"Summary": {"D4:D6": "#,##0;[Red](#,##0)"}},
                                   charts=stacked_columns)
