@@ -2,10 +2,35 @@ name: test
 
 on:
   push:
+    branches: [main]
   pull_request:
 
+# One run per ref. A newer push to a PR cancels the superseded run; main pushes always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  python:
+  # The unit suite split into shards that run in parallel (see .github/scripts/run_shard.py).
+  # Every test runs in exactly one shard; the `python` job below gates on all of them.
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: skills/excel-to-sigma/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Unit tests (shard ${{ matrix.shard }}/4)
+        run: python .github/scripts/run_shard.py skills/excel-to-sigma/tests ${{ matrix.shard }}/4
+
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,13 +38,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: skills/excel-to-sigma/requirements.txt
       - run: pip install -r requirements.txt
       - name: Plugin and standalone skill packaging
         run: python -m unittest discover -s tests -v
       - name: Compile scripts
         run: python -m compileall -q skills/excel-to-sigma/scripts skills/excel-to-sigma/tests
-      - name: Unit tests
-        run: python -m unittest discover -s skills/excel-to-sigma/tests -v
       - name: Workbook audit smoke
         working-directory: skills/excel-to-sigma/scripts
         run: |
@@ -28,3 +52,14 @@ jobs:
       - name: Live Sigma OpenAPI drift audit
         working-directory: skills/excel-to-sigma/scripts
         run: python audit-openapi.py --out /tmp/sigma-openapi-audit.json
+
+  # Keeps the long-standing `test / python` check name stable for branch protection.
+  python:
+    needs: [unit, checks]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All shards and checks passed
+        run: |
+          echo "unit=${{ needs.unit.result }} checks=${{ needs.checks.result }}"
+          test "${{ needs.unit.result }}" = success && test "${{ needs.checks.result }}" = success
