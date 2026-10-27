@@ -138,12 +138,12 @@ accent, `kpis[]` and `charts[]`.
 | `[Red]` negative section | `conditionalFormats: [{"type": "single", "columnIds": [...], "condition": "<", "value": 0, "style": {"color": "#EF4444"}}]` on the table / pivot |
 | General / unknown code | an explicit plain number (`,.Nf`, N from the values) so Sigma never inherits `%` from an operand (`Amount * Probability`) |
 | a code with no exact equivalent (fractions, `[h]`, scaling commas, conditions, accounting zero dash) | the closest plain format + review issue `NUMBER_FORMAT_APPROXIMATED` listing the codes and cells |
-| summary / keyed row order | a hidden `Source Order` calculation (`If([Key] = "a", 1, If(...))`) + element `sort`; pivot `rowsBy[0].sort = {by, aggregation: min}`; chart `xAxis.sort` by it. Expansion pivots keep ascending key order (table row order has no Sigma column) |
+| summary / keyed row order | a hidden BASE-level `Source Order` row formula (`If([Key] = "a", 1, If(...))`) placed first in `groupings[].groupBy` (`[Source Order, Key]`; groups sort by their keys). Element `sort` only reaches the base level (live dry-run: "Sort column not in level"), so it is not used. Pivot `rowsBy[0].sort = {by, aggregation: min}`; chart `xAxis.sort` by an order column of its own. Expansion pivots keep ascending key order (table row order has no Sigma column) |
 | header fill / bold / font color | `tableStyle.textStyles.header` (pivots also `columnHeader`) |
 | sheet title cell | header band title (text element tinted with the accent) |
-| bar / column (clustered, stacked, 100%), line, doughnut, pie whose categories are a grid's row labels (or verified axis cells) and whose series read one verified column each | `bar-chart` (`stacking: none/stacked/normalized`, `orientation: horizontal` for bars), `line-chart`, `donut-chart` / `pie-chart`, sourced from the frame's element at its grouping (`source: {kind: table, elementId, groupingId}`), series `Sum([Frame/Column])`, title / series order / category order from the source. Colors: `settings.theme.overrides.categoricalScheme` (the only spec path for multi-series and donut colors) with the accent first; a single series takes `color: {by: single}` |
+| bar / column (clustered, stacked, 100%), line, doughnut, pie whose categories are a grid's row labels (or verified axis cells) and whose series read one verified column each | `bar-chart` (`stacking: none/stacked/normalized`, `orientation: horizontal` for bars), `line-chart`, `donut-chart` / `pie-chart` sourced from the frame's SOURCE element (a grouped table's calculations and keys cannot be referenced by name, even with `groupingId`): x = the key column, each series = the frame's own formula at chart level (`Coalesce(SumIf([tblPipeline/Weighted Amount], <window>), 0)`; a lookup of the key becomes `Max(Lookup(..))`), a `list` filter on the key when the data has keys the grid does not list; title / series order / category order from the source. Colors: `settings.theme.overrides.categoricalScheme` (the only spec path for multi-series and donut colors) with the accent first; a single series takes `color: {by: single}` |
 | anything else (subset of rows, scatter / area / combo, values outside a verified frame) | listed in `unmappedCharts` with the reason (`CHARTS_PRESENT` stays a review item) |
-| KPI row | `kpi-chart` per additive column the source totals or that is named Total / Commit / Quota-like (never a period column, an average or a count of a filter) plus a ratio of two of them over the **totals** (`IFERROR(a/b, 0)` -> `If(IsNull(den) or den = 0, 0, Sum(a) / Sum(den))`); 2-4 equal peer cards, the first in the accent |
+| KPI row | per additive column the source totals or that is named Total / Commit / Quota-like (never a period column, an average or a count of a filter) plus a ratio of two of them over the **totals**: the frame column is re-emitted as signed leaf terms over its source rows (`Coalesce(SumIf(..), 0)` per aggregate; a typed-input / lookup column is `Sum([Inputs/Quota])` of its table), restricted to the grid's labels when the data has other keys. One source -> a `kpi-chart`; terms from several tables (Coverage = pipeline / quota inputs) -> a card container + text with `{{ratio \| fmt}}` (`SURFACES["kpi_text_card"]`, off drops such KPIs). `IFERROR(a/b, 0)` -> `If(IsNull(den) or den = 0, 0, num / den)`; 2-4 equal peer cards, the first in the accent |
 
 Page order: header band, KPI row (`1/7 .. 19/25`, 7 rows), hero charts (`1/17` + `17/25`, 16 rows; a lone chart
 full width), divider + quiet `DETAIL` label, then the tables sized to their row count (`table_height`; a table with
@@ -152,9 +152,10 @@ pivots follow. Anti-patterns avoided (styling.md checklist): focal point, no aut
 band, one accent (not sprayed), no nested cards (KPIs carry their own card style), quiet labels instead of
 competing headings, no wide-table squeeze or empty card space, no navy slideware band.
 
-Unproven live (dry-run before relying on them): `source.groupingId` as a chart / KPI source (the chart and KPI
-formulas `Sum([Frame/Column])` assume the grouped rows), the d3 `(` sign, element `sort` on a grouped table by a
-hidden calculation, `hidden` on a chart sort column, `tableStyle.textStyles.header` vs `columnHeader` on pivots.
+Unproven live (dry-run before relying on them): the d3 `(` sign, a hidden column as a group key, `hidden` on a
+chart sort column and a `list` filter on a chart, the text-card `{{ .. | fmt}}` interpolation of a cross-element
+ratio, `tableStyle.textStyles.header` vs `columnHeader` on pivots. Emitted KPI / series formulas are evaluated
+offline over the plan's base rows (`tests/sigma_formula_eval.py`) and must equal the oracle's frame cells.
 
 ## Charts
 

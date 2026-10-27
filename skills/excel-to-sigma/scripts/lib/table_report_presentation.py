@@ -165,21 +165,19 @@ def _total_kpi(plan, frame, column, info):
     cells = _cells_of(plan, frame["id"], name) or []
     why = "the source totals this column" if info["totalCell"] else "additive column named like a headline total"
     return {"id": _kpi_id(name), "label": name, "kind": "total", "frame": frame["id"], "column": name,
-            "formula": f"Sum([{title}/{name}])", "format": _kpi_format(column),
+            "format": _kpi_format(column),
             "expected": _sum_cached(cells), "reason": why,
             "evidence": {"cells": [c[0] for c in cells], "totalCell": info["totalCell"]}}
 
 
 def _ratio_kpi(plan, frame, ratio):
     column, num, den = ratio
-    title = frame["title"]
-    a, b = f"Sum([{title}/{num}])", f"Sum([{title}/{den}])"
     num_cells = _cells_of(plan, frame["id"], num) or []
     den_cells = _cells_of(plan, frame["id"], den) or []
     denominator = _sum_cached(den_cells)
     return {"id": _kpi_id(column["name"]), "label": column["name"], "kind": "ratio", "frame": frame["id"],
             "column": column["name"], "num": num, "den": den,
-            "formula": f"If(IsNull({b}) or {b} = 0, 0, {a} / {b})", "format": _kpi_format(column),
+            "format": _kpi_format(column),
             "expected": 0 if denominator == 0 else _sum_cached(num_cells) / denominator,
             "reason": f"{column['name']} = {num} / {den}, taken over the totals (not the sum of the row ratios)",
             "evidence": {"cells": [c[0] for c in num_cells] + [c[0] for c in den_cells], "totalCell": None}}
@@ -194,7 +192,9 @@ def check_kpis(plan, model, tolerance=None):
     """``(lines, problems)``: every KPI re-derived from the oracle's frame rows against the source cells."""
     lines, problems = [], []
     for kpi in (plan.get("presentation") or {}).get("kpis", []):
-        rows = model.frame_rows(kpi["frame"])
+        frame = _frame(plan, kpi["frame"])
+        rows = [r for r in model.frame_rows(kpi["frame"]) if frame["kind"] != "summary"
+                or r[frame["by"]] in frame["labels"]]          # the grid's rows, not extra keys in the data
         if kpi["kind"] == "total":
             got = sum(_num(row[kpi["column"]]) for row in rows)
         else:
@@ -443,8 +443,88 @@ def propose(plan, wf, source_path, model, sheet_title=None):
                     "main": frame["id"] if frame else None, "kpis": propose_kpis(plan), "charts": charts,
                     # rows each grouped / ledger table shows (extra group keys included): sizes its card
                     "rows": {f["id"]: len(model.frame_rows(f["id"])) for f in plan["frames"]
-                             if f["kind"] in ("summary", "ledger") and not f.get("hidden")}}
+                             if f["kind"] in ("summary", "ledger") and not f.get("hidden")},
+                    # frames whose source has keys the grid does not list: KPIs / charts keep to the labels
+                    "restrict": {f["id"]: list(f["labels"]) for f in plan["frames"]
+                                 if f["kind"] == "summary" and not f.get("hidden")
+                                 and len(model.frame_rows(f["id"])) > len(f["labels"])}}
+    unmapped += _keep_expressible(plan, presentation)
     return presentation, unmapped
+
+
+def _keep_expressible(plan, presentation):
+    """Drop the KPIs / charts the builder cannot emit from the frame's source columns; return the notes."""
+    probe = dict(plan, presentation=presentation)
+    parts = trm.build_parts(probe, "<dm>", trm.local_dm_elements(probe))
+    frames = parts["frames"]
+    notes, charts = [], []
+    kpis = [k for k in presentation["kpis"] if kpi_terms(k, frames) is not None]
+    presentation["kpis"] = kpis if len(kpis) >= MIN_KPIS else []
+    for chart in presentation["charts"]:
+        why = chart_gap(chart, frames)
+        if why:
+            notes.append(f"{chart['title']} ({chart['kind']}) on {chart['sheet']!r}: not emitted ({why}) - "
+                         "rebuild from the presentation plan (refs/presentation-migration.md)")
+        else:
+            charts.append(chart)
+    presentation["charts"] = charts
+    return notes
+
+
+def chart_gap(chart, frames):
+    """Why a mapped chart cannot be emitted from its frame's source columns (``None`` when it can)."""
+    feed = (frames.get(chart["frame"]) or {}).get("feed")
+    if not feed:
+        return "its frame has no source-level feed"
+    missing = [s["column"] for s in chart["series"] if not feed["series"].get(s["column"])]
+    if missing:
+        return f"{', '.join(missing)} cannot be computed from the frame's source columns"
+    if chart["categoryKind"] == "summary" and not feed.get("key"):
+        return "the frame has no key column"
+    return None
+
+
+# ---------------------------------------------------------------- KPI formulas from source columns
+def _combine(terms):
+    """Signed sum of leaf-term formulas as one Sigma expression."""
+    if len(terms) == 1:
+        return terms[0]["formula"] if terms[0]["sign"] > 0 else f"(-({terms[0]['formula']}))"
+    text = ""
+    for number, term in enumerate(terms):
+        sign = "-" if term["sign"] < 0 else "+"
+        text += (f"-({term['formula']})" if sign == "-" else f"({term['formula']})") if number == 0 \
+            else f" {sign} ({term['formula']})"
+    return f"({text})"
+
+
+def kpi_terms(kpi, frames):
+    """``(numerator terms, denominator terms | None)`` of a KPI, emitted from the frame's source columns, or
+    ``None`` when it cannot be (or when it spans several sources and text cards are switched off)."""
+    feed = (frames.get(kpi["frame"]) or {}).get("feed")
+    if not feed:
+        return None
+    if kpi["kind"] == "total":
+        pair = (feed["terms"].get(kpi["column"]), None)
+        ok = bool(pair[0])
+    else:
+        pair = (feed["terms"].get(kpi["num"]), feed["terms"].get(kpi["den"]))
+        ok = bool(pair[0]) and bool(pair[1])
+    if not ok:
+        return None
+    sources = {t["element"] for side in pair if side for t in side}
+    if len(sources) > 1 and not ps.SURFACES["kpi_text_card"]:
+        return None
+    return pair
+
+
+def kpi_formula(pair):
+    """The KPI's value as one Sigma formula over its terms (a ratio is over the totals, 0 for a blank / zero
+    denominator)."""
+    top, bottom = pair
+    if bottom is None:
+        return _combine(top)
+    num, den = _combine(top), _combine(bottom)
+    return f"If(IsNull({den}) or {den} = 0, 0, {num} / {den})"
 
 
 # ---------------------------------------------------------------- Report page composition
@@ -455,33 +535,42 @@ def _frame_format(plan, frame_id, column):
 
 
 def _chart_elements(plan, chart, meta, accent):
-    """One Sigma chart element for a mapped chart (``source`` = the frame's element at its grouping)."""
+    """One Sigma chart element for a mapped chart, computed from the frame's SOURCE columns.
+
+    The chart groups by the key column of the frame's source and aggregates each series with the frame's own
+    formula (``Coalesce(SumIf([src/Amount], <window>), 0)``); a grouped table's grouping-level calculations
+    are not addressable from another element.
+    """
+    feed = meta["feed"]
     frame = _frame(plan, chart["frame"])
-    title = meta["title"]
-    cid = f"{chart['id']}"
-    source = {"kind": "table", "elementId": meta["element"]}
-    if meta.get("grouping") and ps.SURFACES["grouping_source"]:
-        source["groupingId"] = meta["grouping"]
+    cid, label = chart["id"], feed["label"]
+    source = {"kind": "table", "elementId": feed["element"]}
     x_id = f"{cid}_x"
-    x_column = {"id": x_id, "name": chart["categoryColumn"], "formula": f"[{title}/{chart['categoryColumn']}]"}
+    if chart["categoryKind"] == "summary":
+        x_column = {"id": x_id, "name": chart["categoryColumn"], "formula": feed["key"]}
+    else:
+        x_column = {"id": x_id, "name": chart["categoryColumn"],
+                    "formula": f"[{label}/{chart['categoryColumn']}]"}
     cat_format = _frame_format(plan, chart["frame"], chart["categoryColumn"])
     if cat_format and cat_format.get("kind") == "datetime":
         x_column["format"] = cat_format
     columns = [x_column]
     sort = {"direction": "ascending"}
-    if chart["categoryKind"] == "summary" and trm.order_labels(frame) is not None:
-        o_column = {"id": f"{cid}_o", "name": trm.ORDER_NAME, "formula": f"[{title}/{trm.ORDER_NAME}]"}
+    labels = trm.order_labels(frame)
+    if chart["categoryKind"] == "summary" and labels is not None:
+        o_column = {"id": f"{cid}_o", "name": trm.ORDER_NAME,
+                    "formula": trm.order_formula(feed["key"], labels, feed.get("keyType", "text"))}
         if ps.SURFACES["chart_hidden_column"]:
             o_column["hidden"] = True
         columns.append(o_column)
         sort = {"by": o_column["id"], "direction": "ascending", "aggregation": "min"}
-    y_ids, used = [], {x_column["name"]}
+    y_ids, used = [], {x_column["name"], trm.ORDER_NAME}
     for number, series in enumerate(chart["series"], 1):
         name, bump = series["title"], 2
         while name in used:
             name, bump = f"{series['title']} ({bump})", bump + 1
         used.add(name)
-        y = {"id": f"{cid}_y{number}", "name": name, "formula": f"Sum([{title}/{series['column']}])"}
+        y = {"id": f"{cid}_y{number}", "name": name, "formula": feed["series"][series["column"]]}
         fmt = _frame_format(plan, chart["frame"], series["column"])
         if fmt:
             y["format"] = fmt
@@ -491,6 +580,10 @@ def _chart_elements(plan, chart, meta, accent):
     style = ps.chart_card()
     if style:
         element["style"] = style
+    restrict = (plan.get("presentation") or {}).get("restrict", {}).get(chart["frame"])
+    if restrict and chart["categoryKind"] == "summary" and ps.SURFACES["chart_list_filter"]:
+        element["filters"] = [{"id": f"{cid}_f", "columnId": x_id, "kind": "list", "mode": "include",
+                               "values": list(restrict)}]
     if chart["kind"] in ("donut", "pie"):
         element["kind"] = f"{chart['kind']}-chart"
         element["value"] = {"columnId": y_ids[0]}
@@ -543,20 +636,33 @@ def compose_report(plan, parts):
                        [(header["id"], 1, ps.PAGE_COLS + 1, 1, 1 + ps.HEADER_ROWS)]))
     cursor = 1 + ps.HEADER_ROWS
     frames = parts.get("frames", {})
-    kpis = [k for k in pres.get("kpis", []) if k["frame"] in frames][:ps.PAGE_COLS // 6]
-    if kpis:
-        width = ps.PAGE_COLS // len(kpis)
+    cards = []
+    for kpi in pres.get("kpis", []):
+        pair = kpi_terms(kpi, frames)
+        if pair is not None:
+            cards.append((kpi, pair))
+    cards = cards[:ps.PAGE_COLS // 6]
+    kpis = [k for k, _ in cards]
+    if cards:
+        width = ps.PAGE_COLS // len(cards)
         top = cursor
-        for number, kpi in enumerate(kpis):
-            meta = frames[kpi["frame"]]
-            source = {"kind": "table", "elementId": meta["element"]}
-            if meta.get("grouping") and ps.SURFACES["grouping_source"]:
-                source["groupingId"] = meta["grouping"]
-            element = ps.kpi_card(kpi["id"], kpi["label"].upper(), source, kpi["formula"], kpi.get("format"),
-                                  accent["hex"], primary=number == 0)
-            end = place(element, 1 + number * width, 1 + (number + 1) * width, ps.KPI_ROWS, row=top)
+        for number, (kpi, pair) in enumerate(cards):
+            formula = kpi_formula(pair)
+            sources = sorted({t["element"] for side in pair if side for t in side})
+            c0, c1 = 1 + number * width, 1 + (number + 1) * width
+            if len(sources) == 1:
+                element = ps.kpi_card(kpi["id"], kpi["label"].upper(), {"kind": "table", "elementId": sources[0]},
+                                      formula, kpi.get("format"), accent["hex"], primary=number == 0)
+                end = place(element, c0, c1, ps.KPI_ROWS, row=top)
+            else:      # a kpi-chart has one source: a card whose text interpolates the cross-element formula
+                card, text = ps.kpi_text_card(kpi["id"], kpi["label"].upper(), formula, kpi.get("format"),
+                                              accent["hex"], primary=number == 0)
+                elements.extend([card, text])
+                placements.append((card["id"], c0, c1, top, top + ps.KPI_ROWS,
+                                   [(text["id"], 1, ps.PAGE_COLS + 1, 1, 1 + ps.KPI_ROWS)]))
+                end = top + ps.KPI_ROWS
         cursor = end
-    charts = [c for c in pres.get("charts", []) if c["frame"] in frames]
+    charts = [c for c in pres.get("charts", []) if c["frame"] in frames and not chart_gap(c, frames)]
     if charts:
         hero = next((c for c in charts if c["kind"] not in ("donut", "pie")), charts[0])
         ordered = [hero] + [c for c in charts if c is not hero]

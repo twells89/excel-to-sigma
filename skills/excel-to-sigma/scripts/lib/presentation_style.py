@@ -36,8 +36,11 @@ SURFACES = {
     "table_text_styles": True,     # table/pivot .tableStyle.textStyles.{header, columnHeader}
     "conditional_single": True,    # table/pivot .conditionalFormats[{type: single, condition: <, value, style}]
     "divider": True,               # divider element                                               (verified)
-    "grouping_source": True,       # source {kind: table, elementId, groupingId}                   (OpenAPI only)
+    "order_group_key": True,       # hidden base-level `Source Order` column FIRST in groupings[].groupBy
     "chart_hidden_column": True,   # chart columns[].hidden (sort-only order column)
+    "chart_list_filter": True,     # chart filters[{kind: list, mode: include}] on the category column
+    "kpi_text_card": True,         # container card + text with {{Sum([A/x]) / Sum([B/y]) | fmt}} for a KPI that
+                                   # spans several source elements (a kpi-chart has ONE source)
 }
 
 # ---------------------------------------------------------------- palette (styling.rb DEFAULT_ROLES)
@@ -178,6 +181,19 @@ def kpi_card(element_id, label, source, formula, fmt, accent_hex, primary=False)
     if SURFACES["kpi_card_style"]:
         element["style"] = card_style()
     return element
+
+
+def kpi_text_card(element_id, label, formula, fmt, accent_hex, primary=False):
+    """A KPI whose formula spans several source elements: a card container holding a text element that
+    interpolates the formula (``{{ast | d3 format}}``; cross-element aggregates are verified in text bodies).
+    Returns ``(container, text)``; the container carries the id of the KPI."""
+    color = accent_hex if primary else ROLES["muted"]
+    spec = (fmt or {}).get("formatString")
+    value = f"{{{{{formula} | {spec}}}}}" if spec else f"{{{{{formula}}}}}"
+    text = {"id": f"{element_id}_t", "kind": "text", "verticalAlign": "center",
+            "body": f'<span style="color: {color}">**{_markup(label)}**</span>\n# {value}'}
+    container = {"id": element_id, "kind": "container", "style": card_style()}
+    return container, text
 
 
 def table_style(header, kind="table"):

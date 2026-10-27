@@ -247,8 +247,10 @@ class TestSummaryGrid(Workdir):
         self.assertEqual(formulas["Avg Rev"], "Avg([tblOrders/Revenue])")
         self.assertEqual(formulas["Attain"], "If(IsNull([Target]) or [Target] = 0, 0, ([Total] / [Target]))")
         group = element["groupings"][0]
-        self.assertEqual(group["groupBy"], [element["columns"][0]["id"]])
-        self.assertEqual(len(group["calculations"]), 8)   # + the hidden source-order calculation
+        self.assertEqual(group["groupBy"][-1], element["columns"][0]["id"])     # the key; source order leads it
+        self.assertEqual(len(group["calculations"]), 7)   # the hidden source-order column is a group KEY, not one
+        self.assertEqual(len(group["groupBy"]), 2)
+        self.assertNotIn("sort", element)                 # element sort reaches the base level only
 
     def test_a_total_row_is_verified_against_the_frame_but_not_emitted(self):
         path, plan, info = self.drafted(fx.build_orders, "totals", totals="sum")
@@ -441,7 +443,8 @@ class TestKeyedGrid(Workdir):
         self.assertEqual(formulas["Low"], "Coalesce(Min([Projected balance]), 0)")
         self.assertEqual(formulas["Short?"], 'If(([Low] < 20), "LOW", "")')
         group = element["groupings"][0]
-        self.assertEqual(len(group["calculations"]), 3)  # the summary + the hidden source order ride on it
+        self.assertEqual(len(group["calculations"]), 2)  # the summary rides on the keyed grouping
+        self.assertEqual(len(group["groupBy"]), 2)      # hidden base-level source order + the key
         self.assertEqual(element["sort"][0]["direction"], "ascending")
         self.assertNotIn("Balance Summary", [e.get("name") for e in parts["visible"]])
         self.assertTrue(any(e["kind"] == "pivot-table" for e in parts["visible"]))

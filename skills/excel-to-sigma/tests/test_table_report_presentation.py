@@ -96,6 +96,47 @@ def order_positions(formula):
     return [(m.group(1), int(m.group(2))) for m in re.finditer(r'= "([^"]+)", (\d+),', formula)]
 
 
+class Emitted:
+    """Evaluate the EMITTED KPI / chart formulas (Sigma NULL logic) over the plan's base rows."""
+
+    def __init__(self, plan):
+        from sigma_formula_eval import Ctx, EmittedModel, Evaluator, parse
+        self.plan, self.Ctx, self.parse = plan, Ctx, parse
+        self.model = EmittedModel(plan)
+        self.eval = Evaluator(self.model._lookup)
+        self.frames = self.model.parts["frames"]
+
+    def rows(self, element_id):
+        return self.model.source_rows({"source": {"kind": "table", "elementId": element_id}})
+
+    def _ctx(self, rows):
+        return self.Ctx(lambda ref: None, rows, lambda src: self.Ctx(self.model._ref(src, {})))
+
+    def aggregate(self, element_id, formula):
+        """The formula over every row of the element (a KPI)."""
+        return self.eval.ev(self.parse(formula), self._ctx(self.rows(element_id)))
+
+    def grouped(self, element_id, key_formula, formula):
+        """``{key: value}``: the formula per group of the key column (a chart series)."""
+        groups = {}
+        for src in self.rows(element_id):
+            key = self.eval.ev(self.parse(key_formula), self.Ctx(self.model._ref(src, {})))
+            groups.setdefault(key, []).append(src)
+        return {key: self.eval.ev(self.parse(formula), self._ctx(rows)) for key, rows in groups.items()}
+
+    def kpi(self, kpi):
+        """The KPI's value from its emitted terms (each term over its own source element)."""
+        pair = pres.kpi_terms(kpi, self.frames)
+
+        def side(terms):
+            return sum(t["sign"] * (self.aggregate(t["element"], t["formula"]) or 0) for t in terms)
+        top = side(pair[0])
+        if pair[1] is None:
+            return top
+        bottom = side(pair[1])
+        return 0 if bottom == 0 else top / bottom
+
+
 def number_columns(plan):
     for table in plan["tables"]:
         for column in table["columns"]:
@@ -171,11 +212,15 @@ class TestPipelinePresentation(unittest.TestCase):
     def test_summary_rows_keep_the_sheet_order(self):
         summary = element(self.spec, "f_s_h2_fy26_weighted_forecast")
         order = next(c for c in summary["columns"] if c["name"] == "Source Order")
+        key = next(c for c in summary["columns"] if c["name"] == "Owner")
         self.assertTrue(order["hidden"])
         self.assertEqual(order_positions(order["formula"]),
                          [("Jordan Lee", 1), ("Sam Ortiz", 2), ("Priya Nair", 3), ("Alex Kim", 4)])
-        self.assertEqual(summary["sort"], [{"columnId": order["id"], "direction": "ascending"}])
-        self.assertIn(order["id"], summary["groupings"][0]["calculations"])
+        self.assertIn("[tblPipeline/Owner]", order["formula"])          # a base-level row formula
+        grouping = summary["groupings"][0]
+        self.assertEqual(grouping["groupBy"], [order["id"], key["id"]])  # groups sort by their keys: order first
+        self.assertNotIn(order["id"], grouping["calculations"])
+        self.assertNotIn("sort", summary)       # element sort reaches the base level only (live dry-run)
         stages = element(self.spec, "f_s_open_deals_by_stage")
         stage_order = next(c for c in stages["columns"] if c["name"] == "Source Order")
         self.assertEqual([label for label, _ in order_positions(stage_order["formula"])],
@@ -236,25 +281,54 @@ class TestPipelinePresentation(unittest.TestCase):
         self.assertEqual(donut["categories"], ["Prospect", "Discovery", "Proposal", "Negotiation",
                                                "Closed Won", "Closed Lost"])
 
-    def test_chart_elements_read_the_frame_element_at_its_grouping(self):
+    def test_chart_elements_compute_from_the_frame_s_source_columns(self):
         bar = element(self.spec, "ch_weighted_pipeline_by_owner_month")
         self.assertEqual(bar["kind"], "bar-chart")
-        self.assertEqual(bar["source"], {"kind": "table", "elementId": "f_s_h2_fy26_weighted_forecast",
-                                         "groupingId": "f_s_h2_fy26_weighted_forecast_by"})
+        # base-level columns of the frame's SOURCE (a grouped table's calculations / keys are not addressable)
+        self.assertEqual(bar["source"], {"kind": "table", "elementId": "w_tblpipeline"})
         self.assertEqual(bar["stacking"], "stacked")
         names = {c["id"]: c for c in bar["columns"]}
         self.assertEqual([names[i]["name"] for i in bar["yAxis"]["columnIds"]],
                          ["Jul-26", "Aug-26", "Sep-26", "Oct-26", "Nov-26", "Dec-26"])
         self.assertEqual(names[bar["yAxis"]["columnIds"][0]]["formula"],
-                         "Sum([H2 FY26 Weighted Forecast/Jul-26])")
+                         'Coalesce(SumIf([tblPipeline/Weighted Amount], (([tblPipeline/Close Date] >= '
+                         'Date("2026-07-01")) and ([tblPipeline/Close Date] <= Date("2026-07-31")))), 0)')
+        self.assertEqual(names[bar["xAxis"]["columnId"]]["formula"], "[tblPipeline/Owner]")
         order = names[bar["xAxis"]["sort"]["by"]]
         self.assertEqual((order["name"], order["hidden"], bar["xAxis"]["sort"]["aggregation"]),
                          ("Source Order", True, "min"))
+        self.assertEqual(order_positions(order["formula"])[0], ("Jordan Lee", 1))
+        self.assertNotIn("filters", bar)                            # the frame lists every key in the data
         donut = element(self.spec, "ch_pipeline_by_stage")
         self.assertEqual(donut["kind"], "donut-chart")
-        self.assertEqual(donut["source"]["groupingId"], "f_s_open_deals_by_stage_by")
-        self.assertEqual(donut["value"]["columnId"], "ch_pipeline_by_stage_y1")
+        self.assertEqual(donut["source"], {"kind": "table", "elementId": "w_tblpipeline"})
+        self.assertEqual({c["id"]: c["formula"] for c in donut["columns"]}[donut["value"]["columnId"]],
+                         "Coalesce(Sum([tblPipeline/Amount]), 0)")
         self.assertEqual(donut["color"]["sort"]["direction"], "ascending")
+
+    def test_no_kpi_or_chart_references_a_grouped_tables_calculations_or_keys(self):
+        grouped = {e["name"]: e for e in self.spec["contents"]["elements"] if e.get("groupings")}
+        for el in self.spec["contents"]["elements"]:
+            if el["kind"] not in ("kpi-chart", "bar-chart", "donut-chart", "text"):
+                continue
+            text = " ".join([c.get("formula", "") for c in el.get("columns", [])] + [el.get("body", "")])
+            for name in grouped:
+                self.assertNotIn(f"[{name}/", text, el["id"])
+            self.assertNotIn("groupingId", json.dumps(el))
+
+    def test_emitted_chart_series_equal_the_oracle_frame_cells(self):
+        emitted, model = Emitted(self.plan), trm.compute(self.plan)
+        for chart in self.pres["charts"]:
+            el = element(self.spec, chart["id"])
+            names = {c["id"]: c for c in el["columns"]}
+            key = names[el["xAxis"]["columnId"] if "xAxis" in el else el["color"]["columnId"]]["formula"]
+            y_ids = el["yAxis"]["columnIds"] if "yAxis" in el else [el["value"]["columnId"]]
+            for y_id, series in zip(y_ids, chart["series"]):
+                got = emitted.grouped(el["source"]["elementId"], key, names[y_id]["formula"])
+                for sel, want in zip(series["sels"], series["values"]):
+                    self.assertAlmostEqual(got[sel[0]], want, places=6, msg=(chart["title"], series["title"], sel))
+                    self.assertAlmostEqual(got[sel[0]], model.cell(chart["frame"], series["column"],
+                                                                   series["kind"], sel), places=6)
 
     def test_chart_colours_come_from_the_workbook_theme_palette(self):
         scheme = self.spec["contents"]["settings"]["theme"]["overrides"]["categoricalScheme"]
@@ -283,14 +357,12 @@ class TestPipelinePresentation(unittest.TestCase):
                          [("Total Weighted", "total"), ("Commit", "total"), ("Quota", "total"),
                           ("Coverage", "ratio")])
         total = kpis[0]
-        self.assertEqual(total["formula"], "Sum([H2 FY26 Weighted Forecast/Total Weighted])")
         self.assertEqual(total["format"], {"kind": "number", "formatString": "(,.0f"})
         self.assertEqual(total["evidence"]["cells"], ["Forecast!H4", "Forecast!H5", "Forecast!H6", "Forecast!H7"])
         ratio = kpis[3]
         self.assertEqual((ratio["num"], ratio["den"]), ("Total Weighted", "Quota"))
-        self.assertIn("Sum([H2 FY26 Weighted Forecast/Total Weighted]) / Sum([H2 FY26 Weighted Forecast/Quota])",
-                      ratio["formula"])
         self.assertEqual(ratio["format"]["formatString"], ".1%")
+        self.assertNotIn("formula", total)          # emitted from the frame's source columns at build time
 
     def test_kpi_values_equal_the_frame_totals(self):
         model = trm.compute(self.plan)
@@ -309,15 +381,76 @@ class TestPipelinePresentation(unittest.TestCase):
         broken["presentation"]["kpis"][1]["expected"] += 1
         self.assertEqual(len(pres.check_kpis(broken, model)[1]), 1)
 
-    def test_kpi_elements_are_peer_cards_over_the_grouped_frame(self):
-        cards = [element(self.spec, k["id"]) for k in self.pres["kpis"]]
-        self.assertEqual([c["kind"] for c in cards], ["kpi-chart"] * 4)
-        self.assertEqual(cards[0]["name"], {"text": "TOTAL WEIGHTED", "color": self.pres["accent"]["hex"]})
-        self.assertEqual(cards[1]["name"]["color"], ps.ROLES["muted"])       # one accent, not sprayed
-        self.assertEqual(cards[0]["source"]["groupingId"], "f_s_h2_fy26_weighted_forecast_by")
-        self.assertEqual(cards[0]["style"], ps.card_style())
+    def test_emitted_kpi_values_equal_the_oracle_frame_totals(self):
+        emitted, model = Emitted(self.plan), trm.compute(self.plan)
+        rows = model.frame_rows(self.frame["id"])
+        want = {"Total Weighted": sum(r["Total Weighted"] for r in rows), "Commit": sum(r["Commit"] for r in rows),
+                "Quota": sum(r["Quota"] for r in rows)}
+        want["Coverage"] = want["Total Weighted"] / want["Quota"]
+        for kpi in self.pres["kpis"]:
+            self.assertAlmostEqual(emitted.kpi(kpi), want[kpi["label"]], places=6, msg=kpi["label"])
+            self.assertAlmostEqual(emitted.kpi(kpi), kpi["expected"], places=6)
+
+    def test_keys_in_the_data_that_the_grid_does_not_list_are_left_out_of_kpis_and_charts(self):
+        plan = copy.deepcopy(self.plan)
+        pipeline = next(t for t in plan["tables"] if t["name"] == "tblPipeline")
+        pipeline["rows"].append(["OPP-9999", "Account Z", "Zed Lee", "Proposal", "2026-08-15", 50000])
+        next(t for t in plan["tables"] if t["name"].endswith("Inputs"))["rows"].append(["Zed Lee", 500000])
+        frame = next(f for f in plan["frames"] if f["title"] == "H2 FY26 Weighted Forecast")
+        model = trm.compute(plan)
+        self.assertEqual(len(model.frame_rows(frame["id"])), 5)               # the grouped table shows Zed too
+        plan["presentation"]["restrict"] = {frame["id"]: frame["labels"]}
+        spec = wb_spec(plan)
+        chart = element(spec, "ch_weighted_pipeline_by_owner_month")
+        self.assertEqual(chart["filters"], [{"id": "ch_weighted_pipeline_by_owner_month_f",
+                                             "columnId": chart["xAxis"]["columnId"], "kind": "list",
+                                             "mode": "include", "values": frame["labels"]}])
+        self.assertEqual(pres.check_kpis(plan, model)[1], [])                 # KPIs sum the grid's rows only
+        emitted = Emitted(plan)
+        rows = [r for r in model.frame_rows(frame["id"]) if r["Owner"] in frame["labels"]]
+        total = next(k for k in plan["presentation"]["kpis"] if k["label"] == "Total Weighted")
+        self.assertAlmostEqual(emitted.kpi(total), sum(r["Total Weighted"] for r in rows), places=6)
+        self.assertIn('[tblPipeline/Owner] = "Jordan Lee"', element(spec, total["id"])["columns"][0]["formula"])
+        self.assertIn('SumIf([H2 FY26 Weighted Forecast Inputs/Quota], (([H2 FY26 Weighted Forecast Inputs/Owner]',
+                      element(spec, "kpi_quota")["columns"][0]["formula"])
+        for kpi in plan["presentation"]["kpis"]:
+            self.assertAlmostEqual(emitted.kpi(kpi), kpi["expected"], places=6, msg=kpi["label"])
+        plan["presentation"]["restrict"] = {}
+        self.assertNotAlmostEqual(Emitted(plan).kpi(total), total["expected"])   # unrestricted: includes Zed
+
+    def test_kpi_elements_are_peer_cards_computed_from_base_columns(self):
+        spec = self.spec
+        total, commit, quota = (element(spec, i) for i in ("kpi_total_weighted", "kpi_commit", "kpi_quota"))
+        for card in (total, commit, quota):
+            self.assertEqual(card["kind"], "kpi-chart")
+            self.assertEqual(card["style"], ps.card_style())
+        self.assertEqual(total["source"], {"kind": "table", "elementId": "w_tblpipeline"})
+        self.assertIn("SumIf([tblPipeline/Weighted Amount]", total["columns"][0]["formula"])
+        self.assertEqual(quota["source"], {"kind": "table", "elementId": "w_h2_fy26_weighted_forecast_inputs"})
+        self.assertEqual(quota["columns"][0]["formula"],
+                         "Coalesce(Sum([H2 FY26 Weighted Forecast Inputs/Quota]), 0)")
+        self.assertEqual(total["name"], {"text": "TOTAL WEIGHTED", "color": self.pres["accent"]["hex"]})
+        self.assertEqual(commit["name"]["color"], ps.ROLES["muted"])          # one accent, not sprayed
+
+    def test_a_kpi_that_spans_two_sources_is_a_text_card_with_a_cross_element_formula(self):
+        card, text = element(self.spec, "kpi_coverage"), element(self.spec, "kpi_coverage_t")
+        self.assertEqual((card["kind"], card["style"]), ("container", ps.card_style()))
+        self.assertEqual(text["kind"], "text")
+        self.assertIn("[tblPipeline/Weighted Amount]", text["body"])            # numerator: the pipeline
+        self.assertIn("[H2 FY26 Weighted Forecast Inputs/Quota]", text["body"])  # denominator: the inputs
+        self.assertIn("| .1%}}", text["body"])
+        self.assertIn("= 0, 0,", text["body"])                                   # a zero denominator reads 0
+        tree = {n[0]: n for n in layout_tree(self.spec)}
+        self.assertEqual([c[0] for c in tree["kpi_coverage"][5]], ["kpi_coverage_t"])
         spans = {p[0]: (p[2] - p[1], p[4] - p[3]) for p in placements(self.spec)}
-        self.assertEqual({spans[c["id"]] for c in cards}, {(6, ps.KPI_ROWS)})   # equal peers
+        self.assertEqual({spans[i] for i in ("kpi_total_weighted", "kpi_commit", "kpi_quota", "kpi_coverage")},
+                         {(6, ps.KPI_ROWS)})                                     # still equal peers
+
+    def test_with_text_cards_switched_off_a_two_source_kpi_is_dropped_not_guessed(self):
+        self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
+        ps.SURFACES["kpi_text_card"] = False
+        plan, info = draft(PIPELINE)
+        self.assertEqual([k["label"] for k in plan["presentation"]["kpis"]], ["Total Weighted", "Commit", "Quota"])
 
     def test_report_layout_references_every_element_once_without_overlap(self):
         report = placements(self.spec)
@@ -418,6 +551,24 @@ class TestBroaderEightLayouts(unittest.TestCase):
         plan08, _ = draft(SOURCES["08"])
         self.assertEqual(plan08["presentation"]["kpis"], [])       # min / text / conditional columns: none additive
         self.assertEqual(plan08["unmappedCharts"], [])
+
+    def test_emitted_kpis_and_series_agree_with_the_oracle_on_the_headcount_plan(self):
+        plan, _ = draft(SOURCES["07"])
+        emitted, model = Emitted(plan), trm.compute(plan)
+        frame = next(f for f in plan["frames"] if f["kind"] == "summary")
+        rows = model.frame_rows(frame["id"])
+        for kpi in plan["presentation"]["kpis"]:
+            self.assertAlmostEqual(emitted.kpi(kpi), kpi["expected"], places=6, msg=kpi["label"])
+        spec = wb_spec(plan)
+        self.assertEqual(element(spec, "kpi_fy26_plan")["kind"], "kpi-chart")       # one source: the expansion
+        self.assertEqual(element(spec, "kpi_fy26_budget")["source"]["elementId"], "w_tbldeptbudget")
+        self.assertEqual(element(spec, "kpi_variance")["kind"], "container")        # budget table - expansion
+        chart = element(spec, plan["presentation"]["charts"][0]["id"])
+        names = {c["id"]: c for c in chart["columns"]}
+        got = emitted.grouped(chart["source"]["elementId"], names[chart["xAxis"]["columnId"]]["formula"],
+                              names[chart["yAxis"]["columnIds"][0]]["formula"])
+        for row in rows:
+            self.assertAlmostEqual(got[row["Department"]], row["FY26 Plan"], places=6)
 
     def test_the_summary_leads_the_page_over_the_expansion_pivot(self):
         plan, _ = draft(SOURCES["07"])
@@ -546,7 +697,8 @@ class TestRowOrderAndHeaders(SyntheticCase):
         summary = element(spec, "f_s_revenue_by_region")
         order = next(c for c in summary["columns"] if c["name"] == "Source Order")
         self.assertEqual(order_positions(order["formula"]), [("East", 1), ("West", 2), ("North", 3)])
-        self.assertEqual(summary["sort"][0]["columnId"], order["id"])
+        self.assertEqual(summary["groupings"][0]["groupBy"][0], order["id"])
+        self.assertNotIn("sort", summary)
 
     def test_header_fill_bold_and_the_title_cell_come_from_the_source(self):
         _, plan, _ = self.drafted(header_style=True)
@@ -633,18 +785,21 @@ class TestChartMapping(SyntheticCase):
         self.assertIn("rebuild from the presentation plan", listed["Scatter"])
         self.assertEqual(len(info["unmappedCharts"]), 3)
 
-    def test_chart_ids_are_unique_and_every_chart_reads_an_existing_column(self):
+    def test_every_chart_reads_existing_columns_of_its_source_element(self):
         _, plan, _ = self.charts(stacked_columns, clustered_bars, doughnut)
         spec = wb_spec(plan)
         elements = {e["id"]: e for e in spec["contents"]["elements"]}
         for chart in plan["presentation"]["charts"]:
             el = elements[chart["id"]]
             source = elements[el["source"]["elementId"]]
-            self.assertIn(el["source"]["groupingId"], {g["id"] for g in source["groupings"]})
+            self.assertNotIn("groupingId", el["source"])
+            by_name = {e["name"]: e for e in elements.values() if isinstance(e.get("name"), str)}
             for column in el["columns"]:
                 for ref, col in re.findall(r"\[([^\[\]/]+)/([^\[\]]+)\]", column["formula"]):
-                    self.assertEqual(ref, source["name"])
-                    self.assertIn(col, {c["name"] for c in source["columns"]})
+                    self.assertIn(ref, by_name)             # the source, or a table a Lookup reads
+                    self.assertIn(col, {c["name"] for c in by_name[ref]["columns"]})
+                    if "Lookup" not in column["formula"]:
+                        self.assertEqual(ref, source["name"])
 
 
 class TestKpiProposals(SyntheticCase):
@@ -662,9 +817,10 @@ class TestKpiProposals(SyntheticCase):
     def test_a_ratio_of_totals_differs_from_the_mean_of_ratios_and_a_zero_denominator_is_zero(self):
         _, plan, _ = self.drafted()
         ratio = plan["presentation"]["kpis"][2]
-        self.assertIn("If(IsNull(Sum(", ratio["formula"])
-        self.assertIn("= 0, 0,", ratio["formula"])
         self.assertIn("not the sum of the row ratios", ratio["reason"])
+        formula = element(wb_spec(plan), "kpi_attain_t")["body"]
+        self.assertIn("If(IsNull(", formula)
+        self.assertIn("= 0, 0,", formula)
 
     def test_period_columns_averages_and_counts_are_not_kpis(self):
         _, plan, _ = self.drafted()
@@ -729,14 +885,18 @@ class TestPageComposition(SyntheticCase):
 
     def test_surfaces_can_be_switched_off_and_the_builder_simply_omits_the_field(self):
         self.addCleanup(ps.SURFACES.update, dict(ps.SURFACES))
-        ps.SURFACES.update(table_text_styles=False, conditional_single=False, grouping_source=False)
+        ps.SURFACES.update(table_text_styles=False, conditional_single=False, order_group_key=False,
+                           chart_hidden_column=False)
         _, plan, _ = self.drafted(header_style=True, formats={"Summary": {"D4:D6": "#,##0;[Red](#,##0)"}},
                                   charts=stacked_columns)
         spec = wb_spec(plan)
         summary = element(spec, "f_s_revenue_by_region")
         self.assertNotIn("tableStyle", summary)
         self.assertNotIn("conditionalFormats", summary)
-        self.assertNotIn("groupingId", element(spec, "ch_revenue_by_region_and_month")["source"])
+        self.assertEqual(len(summary["groupings"][0]["groupBy"]), 1)            # no source-order key
+        self.assertNotIn("Source Order", [c["name"] for c in summary["columns"]])
+        chart = element(spec, "ch_revenue_by_region_and_month")
+        self.assertNotIn("hidden", next(c for c in chart["columns"] if c["name"] == "Source Order"))
 
     def test_presentation_validation_rejects_a_chart_with_a_short_series(self):
         _, plan, _ = self.drafted(charts=stacked_columns)
