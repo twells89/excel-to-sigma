@@ -384,6 +384,8 @@ def roomy_tables(look):
 def table_height(n_rows, extra_header_rows=0, roomy=False):
     """Grid rows for a table / pivot that shows ``n_rows`` data rows (sized to its rows, one row of slack).
     ``roomy``: the look's rows are ~2.5x taller, so the row allowance is too."""
-    pixels = CHROME_PX + ROW_PX * (ROOMY_FACTOR if roomy else 1) * (max(n_rows, 1) + extra_header_rows)
+    factor = ROOMY_FACTOR if roomy else 1
+    pixels = CHROME_PX + ROW_PX * factor * (max(n_rows, 1) + extra_header_rows)
     rows = math.ceil(pixels / GRID_ROW_PX) + 1
-    return max(MIN_TABLE_ROWS, min(MAX_TABLE_ROWS, rows))
+    max_rows = math.ceil(MAX_TABLE_ROWS * factor)
+    return max(MIN_TABLE_ROWS, min(max_rows, rows))

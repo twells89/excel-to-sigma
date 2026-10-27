@@ -414,6 +414,8 @@ class TestRoomyTables(unittest.TestCase):
         self.assertGreater(ps.table_height(6, roomy=True), ps.table_height(6))
         pixels = lambda rows, roomy: (ps.table_height(rows, roomy=roomy) - 1) * ps.GRID_ROW_PX   # noqa: E731
         self.assertGreaterEqual(pixels(6, True) - ps.CHROME_PX, 2.3 * 6 * ps.ROW_PX)               # ~2.5x rows
+        self.assertGreater(ps.table_height(20, roomy=True), ps.MAX_TABLE_ROWS)
+        self.assertGreaterEqual(pixels(20, True), ps.CHROME_PX + 20 * ps.ROW_PX * ps.ROOMY_FACTOR)
         self.assertEqual(ps.table_height(6, roomy=False), ps.table_height(6))
 
     def test_default_sizing_is_unchanged_without_a_look(self):
