@@ -352,11 +352,9 @@ def _category_format(plan, chart):
         return None, "mixed source category formats require render review"
     raw = source_formats.pop()
     kind = kinds.pop()
-    if kind == "date" and raw == "mmm-yy":
-        return ({"kind": "datetime", "formatString": "%b-%y"},
-                "monthly date label requires native render readback")
     if kind in {"date", "number", "currency", "percentage"}:
-        return copy.deepcopy(semantics[0]["emission"]), None
+        return (copy.deepcopy(semantics[0]["emission"]),
+                "monthly date label requires native render readback" if kind == "date" and raw == "mmm-yy" else None)
     return None, "source category style has no verified native mapping"
 
 

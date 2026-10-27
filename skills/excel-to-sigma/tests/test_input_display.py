@@ -504,3 +504,10 @@ class TestInputDisplay(unittest.TestCase):
         self.assertEqual(source_format_intent('0.0%;(0.0%);-','number')[0],{'pattern':'(.1%'})
         self.assertEqual(source_format_intent('0.00E+00','number')[1],'UNRESOLVED')
         self.assertIsNone(source_format_intent('0.00E+00','number')[0])
+        # the translator also resolves dates, `#` decimals and quoted currency; a pattern cannot carry a suffix
+        self.assertEqual(source_format_intent('mmm-yy','datetime'),({'pattern':'%b-%y'},'EXACT',None))
+        self.assertEqual(source_format_intent('#,##0.##','number'),({'pattern':',.2~f'},'EXACT',None))
+        self.assertEqual(source_format_intent('"$"#,##0','number'),({'pattern':'$,.0f'},'EXACT',None))
+        self.assertEqual(source_format_intent('0.0x','number')[1],'UNRESOLVED')
+        self.assertEqual(source_format_intent('General','number'),({'kind':'automatic'},'EXACT',None))
+        self.assertEqual(source_format_intent('0.0','datetime')[1],'UNRESOLVED')

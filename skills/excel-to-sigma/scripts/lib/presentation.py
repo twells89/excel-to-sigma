@@ -85,10 +85,14 @@ NS = {
 
 
 try:
-    from .input_display import currency_pattern, source_format_intent, build_input_display
+    from . import excel_formats as ef
+    from . import presentation_style as ps
+    from .input_display import source_format_intent, build_input_display
     from .source_validation import read_raw_validations, classify_blank, POLICY_VERSION, POLICY_HASH
 except ImportError:
-    from input_display import currency_pattern, source_format_intent, build_input_display
+    import excel_formats as ef
+    import presentation_style as ps
+    from input_display import source_format_intent, build_input_display
     from source_validation import read_raw_validations, classify_blank, POLICY_VERSION, POLICY_HASH
 
 
@@ -190,14 +194,16 @@ def _range_cells(reference):
 
 
 def _unit(format_code, title=""):
-    value = f"{format_code or ''} {title}".lower()
-    if "$" in value or "usd" in value:
+    """A chart series' unit: what its source format is (``excel_formats``), else what its title says."""
+    category = ef.translate(format_code).category
+    hint = str(title).lower()
+    if category == "currency" or "$" in hint or "usd" in hint:
         return "currency"
-    if "%" in value:
+    if category == "percent" or "%" in hint:
         return "percentage"
-    if "count" in value:
+    if "count" in hint:
         return "count"
-    if "eps" in value or "leverage" in value or "/ ebitda" in value:
+    if "eps" in hint or "leverage" in hint or "/ ebitda" in hint:
         return "ratio"
     return "number"
 
@@ -499,38 +505,41 @@ def _extract_conditional_formats(workbook):
     return sorted(result, key=lambda item: (item["sheet"], item["range"], item["priority"]))
 
 
-def _precision(number_format):
-    section = str(number_format or "").split(";")[0]
-    match = re.search(r"[0#],?([0#]+)?\.([0#]+)", section)
-    return len(match.group(2)) if match else 0
-
-
-def _semantic_formats(workbook):
+def _semantic_formats(workbook, cached=None):
+    """Per source cell: its Sigma format (``excel_formats``) and the semantic it implies. ``cached`` supplies the
+    values a General formula cell shows, so a plain number gets the decimals it needs."""
     result = {}
     for ws in workbook.worksheets:
+        cached_ws = cached[ws.title] if cached is not None and ws.title in cached.sheetnames else None
         for row in ws.iter_rows():
             for cell in row:
                 if cell.value is None:
                     continue
                 fmt = cell.number_format or "General"
-                if cell.is_date:
+                translation = ef.translate(fmt)
+                is_formula = isinstance(cell.value, str) and cell.value.startswith("=")
+                shown = cached_ws[cell.coordinate].value if is_formula and cached_ws is not None else cell.value
+                grain = None
+                if cell.is_date or (is_formula and translation.is_date):
                     semantic = "date"
-                    emission = {"kind": "datetime", "formatString": "%Y-%m-%d"}
-                    grain = "day" if getattr(cell.value, "hour", 0) == getattr(cell.value, "minute", 0) == getattr(cell.value, "second", 0) == 0 else "timestamp"
-                elif "%" in fmt:
-                    semantic, emission, grain = "percentage", {"kind": "number", "formatString": f".{_precision(fmt)}%"}, None
-                elif "$" in fmt:
-                    semantic, emission, grain = "currency", {"kind": "number", "formatString": currency_pattern(fmt, _precision(fmt)), "currencySymbol": "$"}, None
-                elif isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith("=")):
-                    semantic, emission, grain = "number", {"kind": "number", "formatString": f",.{_precision(fmt)}f"}, None
-                    if str(fmt).rstrip().lower().endswith("x"):
-                        emission["suffix"] = "x"
+                    emission = translation.format if translation.is_date else dict(ef.DEFAULT_DATE_FORMAT)
+                    grain = "day" if getattr(shown, "hour", 0) == getattr(shown, "minute", 0) == getattr(shown, "second", 0) == 0 else "timestamp"
+                elif translation.category in ("percent", "currency"):
+                    semantic = "percentage" if translation.is_percent else "currency"
+                    emission = ef.with_currency_symbol(translation.format)
+                elif isinstance(cell.value, (int, float)) or is_formula:
+                    semantic = "number"
+                    emission = ef.translate_for(fmt, kind="number", values=[shown])[0]
                 else:
                     continue
-                result[f"{ws.title}!{cell.coordinate}"] = {
-                    "sourceFormat": fmt, "semantic": semantic, "precision": _precision(fmt),
-                    "dateGrain": grain, "emission": emission,
-                }
+                precision = translation.precision
+                if precision is None:
+                    precision = ef.number_decimals([shown]) if emission.get("kind") == "number" else 0
+                entry = {"sourceFormat": fmt, "semantic": semantic, "precision": precision,
+                         "dateGrain": grain, "emission": emission}
+                if translation.negative_red and semantic != "date":
+                    entry["negativeRed"] = True
+                result[f"{ws.title}!{cell.coordinate}"] = entry
     return result
 
 
@@ -553,7 +562,7 @@ def extract_presentation(source_path):
         "charts": _extract_charts(source, formulas, cached),
         "validations": _extract_validations(formulas, source),
         "conditionalFormats": _extract_conditional_formats(formulas),
-        "semanticFormats": _semantic_formats(formulas),
+        "semanticFormats": _semantic_formats(formulas, cached),
         "formulaProvenance": formula_provenance,
     }
     result["extractionHash"] = _digest({key: value for key, value in result.items() if key != "extractionHash"})
@@ -1497,11 +1506,14 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
     # Build ordinary-table format requests from the source body cell. Physical
     # input display metadata is configured separately through the SDK below;
     # code-rep exports do not establish its persistence.
+    red_columns = defaultdict(list)
     for _source_field, target in (bindings.get("columns") or {}).items():
         semantic = plan["semanticFormats"].get(target.get("sourceCell"))
         if semantic:
             patches[target["elementId"]]["columnUpdates"].setdefault(target["columnId"], {}).setdefault(
                 "format", copy.deepcopy(semantic["emission"]))
+            if semantic.get("negativeRed"):
+                red_columns[target["elementId"]].append(target["columnId"])
 
     if workflow == "research" and not logical_fixture:
         feature = staging_gate["feature"]
@@ -1524,6 +1536,12 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
             for update in patches.get(element_id, {}).get("columnUpdates", {}).values():
                 update.pop("hidden", None)
                 update.pop("format", None)
+            red_columns.pop(element_id, None)
+    for element_id, column_ids in red_columns.items():
+        # Excel's [Red] negative section: a rule beneath every source rule (Sigma lets later rules win)
+        rule = ps.negative_red_rule(column_ids)
+        if rule:
+            patches[element_id]["conditionalFormats"].insert(0, rule)
     format_limitations = {}
     for source_cell, semantic in plan["semanticFormats"].items():
         if semantic["semantic"] != "currency":
@@ -1619,18 +1637,16 @@ def emit_presentation(plan, bindings, manifest=None, staging_receipt=None, *, lo
 
 
 def _series_format(series):
+    """A chart series' Sigma format: its source format through ``excel_formats``. Where only the chart title
+    gave the unit (a USD chart over General cells) the format is restyled to that unit."""
+    fmt = ef.translate_for(series.get("numberFormat") or "", kind="number",
+                           values=series.get("expectedValues") or [])[0]
     unit = series.get("unit")
-    precision = _precision(series.get("numberFormat") or "")
     if unit == "currency":
-        return {"kind": "number", "formatString": currency_pattern(series.get("numberFormat") or "", precision), "currencySymbol": "$"}
-    if unit == "percentage":
-        return {"kind": "number", "formatString": f".{precision}%"}
-    if unit == "count":
-        return {"kind": "number", "formatString": ",.0f"}
-    result = {"kind": "number", "formatString": f",.{precision}f"}
-    if str(series.get("numberFormat") or "").rstrip().lower().endswith("x"):
-        result["suffix"] = "x"
-    return result
+        fmt = ef.as_currency(fmt)
+    elif unit == "percentage":
+        fmt = ef.as_percent(fmt)
+    return ef.with_currency_symbol(fmt)
 
 
 def integrate_presentation(contents, artifact):

@@ -143,7 +143,7 @@ class TestPresentationExtraction(unittest.TestCase):
                        if element.get("name") == "EPS and leverage")
         columns = {column["name"]: column for column in emitted["columns"]}
         self.assertEqual(columns["EPS"]["format"]["formatString"], "($.2f")
-        self.assertEqual(columns["Net debt / EBITDA"]["format"]["formatString"], ",.1f")
+        self.assertEqual(columns["Net debt / EBITDA"]["format"]["formatString"], ".1f")     # `0.0x` has no grouping
         self.assertEqual(columns["Net debt / EBITDA"]["format"]["suffix"], "x")
 
     def test_extracts_source_precision_dates_and_all_formula_provenance(self):
@@ -172,6 +172,121 @@ class TestPresentationExtraction(unittest.TestCase):
         chart_cells = [cell for plan in self.plans.values() for chart in plan["charts"]
                        for series in chart["series"] for cell in series["sourceFormulaCells"]]
         self.assertTrue(chart_cells)
+
+
+class TestPresentationFormatTranslation(unittest.TestCase):
+    """Number formats reach Sigma only through ``excel_formats`` (the same translator the table-report builder uses)."""
+
+    @staticmethod
+    def semantic(cells, cached=None):
+        from openpyxl import Workbook
+        book = Workbook()
+        sheet = book.active
+        sheet.title = "S"
+        for index, (value, code) in enumerate(cells, 1):
+            sheet.cell(index, 1, value).number_format = code
+        return presentation._semantic_formats(book, cached)
+
+    def test_cell_formats_follow_the_translator(self):
+        got = self.semantic([(1234, "0"), (1234.5, "#,##0.0"), (0.5, "0%"), (-3, "#,##0;[Red](#,##0)"),
+                             (3, "€#,##0.00"), (2.5, "0.0x"), (12, "$#,##0_);($#,##0)")])
+        emissions = {cell: item["emission"] for cell, item in got.items()}
+        self.assertEqual(emissions["S!A1"], {"kind": "number", "formatString": ".0f"})        # no grouping the source lacks
+        self.assertEqual(emissions["S!A2"], {"kind": "number", "formatString": ",.1f"})
+        self.assertEqual(emissions["S!A3"], {"kind": "number", "formatString": ".0%"})
+        self.assertEqual(emissions["S!A4"], {"kind": "number", "formatString": "(,.0f"})
+        self.assertEqual(emissions["S!A5"], {"kind": "number", "formatString": ",.2f", "prefix": "€"})
+        self.assertEqual(emissions["S!A6"], {"kind": "number", "formatString": ".1f", "suffix": "x"})
+        self.assertEqual(emissions["S!A7"], {"kind": "number", "formatString": "($,.0f", "currencySymbol": "$"})
+        self.assertEqual({cell: item["semantic"] for cell, item in got.items()},
+                         {"S!A1": "number", "S!A2": "number", "S!A3": "percentage", "S!A4": "number",
+                          "S!A5": "currency", "S!A6": "number", "S!A7": "currency"})
+        self.assertEqual(got["S!A2"]["precision"], 1)
+        self.assertTrue(got["S!A4"]["negativeRed"])
+        self.assertNotIn("negativeRed", got["S!A1"])
+
+    def test_general_numbers_keep_the_decimals_they_hold(self):
+        got = self.semantic([(0.15, "General"), (7, "General"), ("=A1*2", "General")])
+        self.assertEqual(got["S!A1"]["emission"], {"kind": "number", "formatString": ",.2f"})
+        self.assertEqual(got["S!A2"]["emission"], {"kind": "number", "formatString": ",.0f"})
+        self.assertEqual(got["S!A3"]["emission"], {"kind": "number", "formatString": ",.0f"})
+        cached = {"S": {"A3": 0.3}}
+        class Cached:
+            sheetnames = ["S"]
+            def __getitem__(self, name):
+                return type("Sheet", (), {"__getitem__": lambda _, address: type("C", (), {"value": cached[name][address]})()})()
+        self.assertEqual(self.semantic([(0.15, "General"), (7, "General"), ("=A1*2", "General")], Cached())
+                         ["S!A3"]["emission"], {"kind": "number", "formatString": ",.1f"})
+
+    def test_dates_use_their_own_mask_including_on_formula_cells(self):
+        import datetime as dt
+        got = self.semantic([(dt.datetime(2026, 7, 31), "mmm-yy"), (dt.datetime(2026, 7, 31), "yyyy-mm-dd"),
+                             ("=A1+30", "mm/dd")])
+        self.assertEqual(got["S!A1"]["emission"], {"kind": "datetime", "formatString": "%b-%y"})
+        self.assertEqual(got["S!A2"]["emission"], {"kind": "datetime", "formatString": "%Y-%m-%d"})
+        self.assertEqual((got["S!A3"]["semantic"], got["S!A3"]["emission"]),
+                         ("date", {"kind": "datetime", "formatString": "%m/%d"}))
+        self.assertEqual(got["S!A2"]["dateGrain"], "day")
+
+    def test_text_cells_get_no_format(self):
+        self.assertEqual(self.semantic([("Revenue", "General"), ("n/a", "@")]), {})
+
+    def test_series_unit_comes_from_the_format_then_the_title(self):
+        unit = presentation._unit
+        self.assertEqual(unit("$#,##0"), "currency")
+        self.assertEqual(unit("€#,##0.00"), "currency")
+        self.assertEqual(unit("[$$-409]#,##0"), "currency")
+        self.assertEqual(unit("0.0%"), "percentage")
+        self.assertEqual(unit("General", "Revenue (USD m)"), "currency")
+        self.assertEqual(unit("General", "Margin %"), "percentage")
+        self.assertEqual(unit("General", "Order count"), "count")
+        self.assertEqual(unit("0.0x", "EPS and leverage"), "ratio")
+        self.assertEqual(unit("#,##0"), "number")
+        self.assertEqual(unit("mmm-yy"), "number")
+        self.assertEqual(unit(None), "number")
+
+    def test_series_formats(self):
+        def series(code, unit, values=()):
+            return {"numberFormat": code, "unit": unit, "expectedValues": list(values)}
+        fmt = presentation._series_format
+        self.assertEqual(fmt(series("$#,##0.0;($#,##0.0);-", "currency")),
+                         {"kind": "number", "formatString": "($,.1f", "currencySymbol": "$"})
+        self.assertEqual(fmt(series("€#,##0", "currency")), {"kind": "number", "formatString": ",.0f", "prefix": "€"})
+        self.assertEqual(fmt(series("0.0x", "ratio")), {"kind": "number", "formatString": ".1f", "suffix": "x"})
+        self.assertEqual(fmt(series("0.0%", "percentage")), {"kind": "number", "formatString": ".1%"})
+        self.assertEqual(fmt(series("General", "number", [1, 2])), {"kind": "number", "formatString": ",.0f"})
+        self.assertEqual(fmt(series(None, "number", [1.25, 2])), {"kind": "number", "formatString": ",.2f"})
+        # only the title says the unit: the format is restyled, not re-parsed
+        self.assertEqual(fmt(series("General", "currency", [10.5])),
+                         {"kind": "number", "formatString": "$,.1f", "currencySymbol": "$"})
+        self.assertEqual(fmt(series("General", "percentage", [0.25])), {"kind": "number", "formatString": ",.2%"})
+        self.assertEqual(fmt(series("#,##0", "count")), {"kind": "number", "formatString": ",.0f"})
+
+    def test_red_negatives_reach_the_table_as_a_conditional_rule_beneath_source_rules(self):
+        import shutil
+        from openpyxl import load_workbook as load
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "fixture-sales-pipeline.xlsx"
+            shutil.copy(FIXTURES / "fixture-sales-pipeline.xlsx", source)
+            book = load(source)
+            book["Pipeline"]["J2"].number_format = "#,##0;[Red](#,##0)"          # ACV
+            book.save(source)
+            plan = presentation.extract_presentation(source)
+            bindings = presentation.fixture_bindings(plan)
+            artifact = presentation.emit_presentation(plan, bindings, logical_fixture=True)
+            target = bindings["columns"]["Pipeline!ACV"]
+            self.assertEqual(plan["semanticFormats"]["Pipeline!J2"]["negativeRed"], True)
+            patch = artifact["elementPatches"][target["elementId"]]
+            self.assertEqual(patch["columnUpdates"][target["columnId"]]["format"],
+                             {"kind": "number", "formatString": "(,.0f"})
+            red = patch["conditionalFormats"][0]                      # later rules win in Sigma: source rules follow it
+            self.assertEqual((red["type"], red["condition"], red["value"], red["columnIds"]),
+                             ("single", "<", 0, [target["columnId"]]))
+            self.assertEqual(sum(1 for rule in patch["conditionalFormats"] if rule == red), 1)
+            # a column without [Red] gets no such rule
+            plain = bindings["columns"]["Pipeline!Probability"]
+            self.assertFalse(any(rule.get("condition") == "<" and plain["columnId"] in rule.get("columnIds", [])
+                                 for rule in artifact["elementPatches"][plain["elementId"]]["conditionalFormats"]))
 
 
 class TestPresentationEmission(unittest.TestCase):

@@ -311,7 +311,7 @@ class SourcePresentationTests(unittest.TestCase):
         self.assertEqual(series["numberFormat"], "#,##0;[Red](#,##0)")
         artifact = emit_preview(retail, synthetic_bindings(retail))
         chart = next(item for item in artifact["elements"] if item["kind"] == "bar-chart")
-        self.assertEqual(chart["columns"][1]["format"]["formatString"], ",.0f")
+        self.assertEqual(chart["columns"][1]["format"]["formatString"], "(,.0f")     # accounting negatives
         self.assertTrue(any(item["kind"] == "chart-format" and item["sourceId"] == "chart-1"
                             for item in artifact["unresolved"]))
         demand = self.plans[4]
@@ -323,6 +323,19 @@ class SourcePresentationTests(unittest.TestCase):
                      if item["kind"] == "line-chart")
         self.assertEqual(dated["columns"][0]["format"],
                          {"kind": "datetime", "formatString": "%b-%y"})
+
+    def test_chart_formats_use_the_shared_translator_for_dates_and_accounting_negatives(self):
+        def chart(index, kind):
+            plan = self.plans[index]
+            return next(item for item in emit_preview(plan, synthetic_bindings(plan))["elements"]
+                        if item["kind"] == kind)
+        cash = chart(5, "line-chart")                       # 13-week cash flow: mm/dd date categories
+        self.assertEqual(cash["columns"][0]["format"], {"kind": "datetime", "formatString": "%m/%d"})
+        pipeline = chart(3, "bar-chart")                    # `#,##0;[Red](#,##0)` series
+        self.assertEqual(pipeline["columns"][1]["format"], {"kind": "number", "formatString": "(,.0f"})
+        plan = self.plans[3]
+        self.assertTrue(any(item["kind"] == "chart-format" and item["fidelity"] == "PARTIAL"
+                            for item in emit_preview(plan, synthetic_bindings(plan))["unresolved"]))
 
     def test_missing_point_or_literal_target_cannot_be_presented_as_live_coverage(self):
         plan = self.plans[0]

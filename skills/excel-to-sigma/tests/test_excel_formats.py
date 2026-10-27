@@ -154,5 +154,70 @@ class TestTranslateFor(unittest.TestCase):
         self.assertFalse(ef.is_percent_format(None))
 
 
+class TestPresentationHelpers(unittest.TestCase):
+    """What the post-build presentation paths need on top of ``translate``."""
+
+    def test_precision_and_section_count_describe_the_emitted_number_format(self):
+        for code, precision, sections in (("0", 0, 1), ("#,##0.00", 2, 1), ("0.0%", 1, 1), ("0.0x", 1, 1),
+                                          ("$#,##0.0;($#,##0.0);-", 1, 3), ("#,##0;[Red](#,##0)", 0, 2),
+                                          ("0.00E+00", 2, 1), ("#,##0.0,", 0, 1)):
+            with self.subTest(code=code):
+                result = ef.translate(code)
+                self.assertEqual((result.precision, result.sections), (precision, sections))
+        for code in ("General", "@", "yyyy-mm-dd", "# ?/?"):
+            self.assertIsNone(ef.translate(code).precision, code)
+
+    def test_accounting_builtins_carry_their_places(self):
+        from openpyxl.styles.numbers import BUILTIN_FORMATS
+        self.assertEqual([ef.translate(BUILTIN_FORMATS[i]).precision for i in (41, 42, 43, 44)], [0, 0, 2, 2])
+
+    def test_currency_symbol_metadata_pairs_with_the_d3_marker(self):
+        self.assertEqual(ef.with_currency_symbol(num("($,.2f")), num("($,.2f", currencySymbol="$"))
+        self.assertEqual(ef.with_currency_symbol(num(",.0f")), num(",.0f"))                    # no marker, no symbol
+        self.assertEqual(ef.with_currency_symbol(num(",.0f", prefix="€")), num(",.0f", prefix="€"))
+        self.assertIsNone(ef.with_currency_symbol(None))
+        source = num("$,.0f")
+        ef.with_currency_symbol(source)
+        self.assertEqual(source, num("$,.0f"))                                                 # input is not mutated
+
+    def test_currency_and_percent_units_restyle_a_format_without_parsing_excel(self):
+        self.assertEqual(ef.as_currency(num(",.1f")), num("$,.1f"))
+        self.assertEqual(ef.as_currency(num("(,.1f")), num("($,.1f"))
+        self.assertEqual(ef.as_currency(num("$,.0f")), num("$,.0f"))
+        self.assertEqual(ef.as_currency(num(",.0f", prefix="€")), num(",.0f", prefix="€"))     # already a currency
+        self.assertEqual(ef.as_percent(num(",.1f")), num(",.1%"))
+        self.assertEqual(ef.as_percent(num(".0%")), num(".0%"))
+        self.assertEqual(ef.as_percent(num(".2e")), num(".2e"))                                # only f formats scale
+
+    def test_sdk_pattern_is_a_bare_pattern_with_an_honest_fidelity(self):
+        cases = [
+            ("0", "number", (".0f", "EXACT")), ("#,##0.0", "number", (",.1f", "EXACT")),
+            ("$#,##0", "number", ("$,.0f", "EXACT")), ('"$"#,##0.00', "number", ("$,.2f", "EXACT")),
+            ("0.0%", "number", (".1%", "EXACT")), ("#,##0.##", "number", (",.2~f", "EXACT")),
+            ("0.0%;(0.0%);-", "number", ("(.1%", "PARTIAL")), ("$#,##0.0;($#,##0.0);-", "number", ("($,.1f", "PARTIAL")),
+            ("#,##0;[Red](#,##0)", "number", ("(,.0f", "PARTIAL")),
+            ("yyyy-mm-dd", "datetime", ("%Y-%m-%d", "EXACT")), ("mmm-yy", "datetime", ("%b-%y", "EXACT")),
+            ("yyyy-mm-dd hh:mm:ss", "datetime", ("%Y-%m-%d %H:%M:%S", "EXACT")),
+        ]
+        for code, kind, (pattern, fidelity) in cases:
+            with self.subTest(code=code):
+                got, got_fidelity, reason = ef.sdk_pattern(code, kind)
+                self.assertEqual((got, got_fidelity), (pattern, fidelity))
+                self.assertEqual(reason is None, fidelity == "EXACT")
+
+    def test_sdk_pattern_leaves_what_a_bare_pattern_cannot_carry_unresolved(self):
+        for code, kind in (("0.00E+00", "number"), ("0.0x", "number"), ('0 "units"', "number"), ("€#,##0", "number"),
+                           ("000", "number"), ("#,##0,", "number"), ("# ?/?", "number"), ("yyyy-mm-dd", "number"),
+                           ("0.0", "datetime"), ("[h]:mm", "datetime")):
+            with self.subTest(code=code, kind=kind):
+                pattern, fidelity, reason = ef.sdk_pattern(code, kind)
+                self.assertEqual((pattern, fidelity), (None, "UNRESOLVED"))
+                self.assertTrue(reason)
+
+    def test_sdk_pattern_general_and_text_need_no_pattern(self):
+        for code in ("General", "@", None):
+            self.assertEqual(ef.sdk_pattern(code, "number"), (None, "EXACT", None))
+
+
 if __name__ == "__main__":
     unittest.main()

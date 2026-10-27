@@ -83,7 +83,10 @@ and source formula parity remain separate runtime acceptance checks.
 The emitter uses the existing guarded bar/line chart, table, text, page,
 validation, and conditional-format shapes. It places source-titled charts on an
 overview page and provides edit and detail pages. Source formats drive chart
-value and date-category formats where a bounded mapping exists. Partial
+value and date-category formats through the shared translator
+`scripts/lib/excel_formats.py` (see "Number formats" in
+`refs/presentation-migration.md`); the generic path has no format parser of its
+own, and a chart category on a date mask gets that mask (`mm/dd` -> `%m/%d`). Partial
 accounting/negative styles, monthly date labels, and unknown formats remain
 explicit in `unresolved` until visual readback. A whole-number validation is
 emitted as a finite value list only where the extractor has an exact supported

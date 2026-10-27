@@ -40,7 +40,6 @@ from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E40
 from lib.input_sync import include_research_line_input_literals, sigma_input_type  # noqa: E402
 
 OUTDIR = "/tmp/research-build"
-NUM = {"kind": "number", "formatString": "#,##0.0"}
 
 
 def q(s):
