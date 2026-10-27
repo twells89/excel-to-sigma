@@ -668,8 +668,12 @@ def compose_report(plan, parts):
     charts = [c for c in pres.get("charts", []) if c["frame"] in frames and not chart_gap(c, frames)]
     detail = parts["visible"]
     by_id = {m["id"]: m for m in parts.get("visibleMeta", [])}
+
+    def bound(meta, frame_id):
+        return meta.get("frame") == frame_id or frame_id in meta.get("bindings", ())
+
     main = pres.get("main")
-    detail = sorted(detail, key=lambda e: 0 if by_id.get(e["id"], {}).get("frame") == main else 1)
+    detail = sorted(detail, key=lambda e: 0 if bound(by_id.get(e["id"], {}), main) else 1)
     hero = next((c for c in charts if c["kind"] not in ("donut", "pie")), charts[0] if charts else None)
     # a supporting chart whose categories are a grid's row labels sits beside that grid's table
     beside = {}
@@ -677,7 +681,7 @@ def compose_report(plan, parts):
         if chart is hero or chart["categoryKind"] != "summary":
             continue
         table = next((e for e in detail if e["kind"] == "table" and e["id"] not in beside
-                      and by_id.get(e["id"], {}).get("frame") == chart["frame"]
+                      and bound(by_id.get(e["id"], {}), chart["frame"])
                       and by_id[e["id"]]["role"] == "grouped"), None)
         if table is not None:
             beside[table["id"]] = chart
@@ -689,9 +693,10 @@ def compose_report(plan, parts):
         for index in range(0, len(loose), 2):
             row = loose[index:index + 2]
             splits = [(1, 25)] if len(row) == 1 else [(1, 13), (13, 25)]
+            top = end
             for chart, (c0, c1) in zip(row, splits):
                 end = place(_chart_elements(plan, chart, frames[chart["frame"]], accent), c0, c1, ps.CHART_ROWS,
-                            row=end)
+                            row=top)
         cursor = end
     if detail and (kpis or charts):
         cursor = place(ps.divider("trDivider"), 1, ps.PAGE_COLS + 1, ps.DIVIDER_ROWS)
@@ -700,7 +705,9 @@ def compose_report(plan, parts):
     for element in detail:
         meta = by_id.get(element["id"], {"frame": None, "role": "table", "rows": 8})
         frame = _frame(plan, meta["frame"]) if meta["frame"] else {}
-        _style_table(element, frame, negative.get(meta["frame"], set()))
+        negative_names = set().union(*(negative.get(frame_id, set())
+                                       for frame_id in [meta["frame"]] + meta.get("bindings", [])))
+        _style_table(element, frame, negative_names)
         wide = len(_visible_columns(element)) > 4 or element["kind"] == "pivot-table"
         rows = meta["rows"]
         if meta["role"] in ("grouped", "ledger"):
