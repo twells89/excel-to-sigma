@@ -62,7 +62,7 @@ def check_spec_refs(test, spec):
     elements = spec["contents"]["elements"]
     ids = [e["id"] for e in elements]
     test.assertEqual(len(ids), len(set(ids)), "duplicate element ids")
-    names = {e["name"]: e for e in elements if e.get("name")}
+    names = {e["name"]: e for e in elements if isinstance(e.get("name"), str)}
     layout = spec["contents"]["layout"]
     for element_id in re.findall(r'elementId="([^"]+)"', layout):
         test.assertIn(element_id, ids, f"layout references unknown element {element_id}")
@@ -248,7 +248,10 @@ class TestSummaryGrid(Workdir):
         self.assertEqual(formulas["Attain"], "If(IsNull([Target]) or [Target] = 0, 0, ([Total] / [Target]))")
         group = element["groupings"][0]
         self.assertEqual(group["groupBy"], [element["columns"][0]["id"]])
-        self.assertEqual(len(group["calculations"]), 7)
+        self.assertEqual(len(group["calculations"]), 8)   # + the hidden source-order calculation (first)
+        self.assertEqual(len(group["groupBy"]), 1)
+        self.assertEqual(group["sort"], [{"columnId": group["calculations"][0], "direction": "ascending"}])
+        self.assertNotIn("sort", element)                 # element sort reaches the base level only
 
     def test_a_total_row_is_verified_against_the_frame_but_not_emitted(self):
         path, plan, info = self.drafted(fx.build_orders, "totals", totals="sum")
@@ -280,6 +283,8 @@ class TestSummaryGrid(Workdir):
         parts = trm.build_parts(self.plan, "<dm>", trm.local_dm_elements(self.plan))
         element = next(e for e in parts["visible"] if e["name"] == self.frame["title"])
         for column in element["columns"][1:]:
+            if column.get("hidden"):          # the hidden source-order calculation: Min(If(..)) over the key
+                continue
             formula = column["formula"]
             if re.search(r"\b(Sum|Count|Min|Max)(If)?\(", formula) and "Avg" not in formula:
                 bare = re.sub(r"Coalesce\((?:Sum|Count|Min|Max)(?:If)?\(.*?\), 0\)", "", formula)
@@ -441,7 +446,8 @@ class TestKeyedGrid(Workdir):
         self.assertEqual(formulas["Low"], "Coalesce(Min([Projected balance]), 0)")
         self.assertEqual(formulas["Short?"], 'If(([Low] < 20), "LOW", "")')
         group = element["groupings"][0]
-        self.assertEqual(len(group["calculations"]), 2)  # the summary rides on the keyed grouping
+        self.assertEqual(len(group["calculations"]), 3)  # the summary + the hidden group-level source order
+        self.assertEqual(len(group["groupBy"]), 1)
         self.assertEqual(element["sort"][0]["direction"], "ascending")
         self.assertNotIn("Balance Summary", [e.get("name") for e in parts["visible"]])
         self.assertTrue(any(e["kind"] == "pivot-table" for e in parts["visible"]))

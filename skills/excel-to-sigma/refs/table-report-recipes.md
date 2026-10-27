@@ -74,7 +74,7 @@ the workbook to be one of those verified cells. Any unrecognised formula, any mi
 formula cell outside a recognised grid raises `PlanDraftError` naming `Sheet!Cell` - nothing is
 coerced and cached values are never frozen into the plan as a conversion.
 
-Blanks follow Excel, not SQL: an operand that can be blank (a blank cell in the data, or a lookup into one) is emitted as `Coalesce(x, 0)` / `Coalesce(x, "")` where Excel reads it as 0 / "", aggregate criteria use Excel's criteria rules (a blank matches only `<>`), and a formula cell that would be a blank is `0`. `tests/sigma_formula_eval.py` evaluates the EMITTED formulas with SQL NULL logic and compares every verified cell with Excel's cached value.
+Blanks follow Excel, not SQL: an operand that can be blank (a blank cell in the data, or a lookup into one) is emitted as `Coalesce(x, 0)` / `Coalesce(x, "")` where Excel reads it as 0 / "", aggregate criteria use Excel's criteria rules (a blank matches only `<>`), and a formula cell that would be a blank is `0`. `scripts/lib/sigma_formula_eval.py` evaluates the EMITTED formulas with SQL NULL logic and compares every verified cell with Excel's cached value.
 
 `build-table-report.py` re-runs the same check from the plan alone (`checks[]` hold the cached
 values) and then prints headline parity per summary frame and numeric column; a mismatch exits 1
@@ -122,7 +122,80 @@ column (the one-row total), columns that reference columns defined later in the 
 the running balance (`RUNNING_BALANCE_PARTITION_REVIEW`) and the data-driven rows
 (`GROUPED_ROWS_FROM_DATA`, `EXTRA_GROUP_KEYS`).
 
+## Presentation (the Report page)
+
+Presentation never changes a value; every figure below is re-derived from the verified cells before a spec is
+written (`build-table-report.py` prints `KPI PASS` / `CHART PASS` lines and exits 1 on any difference).
+Styling is ported from the sigma-skills `sigma-workbooks` skill (commit 95e67b7: `styling.md` Recipes 1-6,
+`styling.rb`) in `lib/presentation_style.py`; the recipes never override the source - source formats, row
+order and header fills win. Plan field `presentation` (`lib/table_report_presentation.py`) holds the title,
+accent, `kpis[]` and `charts[]`.
+
+| Source | Sigma |
+|---|---|
+| cell `number_format` (`lib/excel_formats.py`) | column `format`: `{"kind": "number", "formatString": <d3>, prefix?, suffix?}` / `{"kind": "datetime", "formatString": <strftime>}`. `#,##0` -> `,.0f`, `$#,##0.00` -> `$,.2f`, `0.0%` -> `.1%`, `€#,##0` -> `,.0f` + `prefix`, `yyyy-mm-dd` -> `%Y-%m-%d`, `mmm-yy` -> `%b-%y`. Never an Excel mask (`$#,##0` is a 400) |
+| `(...)` negative section | the d3 `(` sign: `#,##0;(#,##0)` -> `(,.0f` (**unconfirmed live**; `translate(native_parens=False)` falls back to a minus sign) |
+| `[Red]` negative section | `conditionalFormats: [{"type": "single", "columnIds": [...], "condition": "<", "value": 0, "style": {"color": "#EF4444"}}]` on the table / pivot |
+| General / unknown code | an explicit plain number (`,.Nf`, N from the values) so Sigma never inherits `%` from an operand (`Amount * Probability`) |
+| a code with no exact equivalent (fractions, `[h]`, scaling commas, conditions, accounting zero dash) | the closest plain format + review issue `NUMBER_FORMAT_APPROXIMATED` listing the codes and cells |
+| summary / keyed row order | a hidden grouping calculation `Source Order` = `Min(If([Key] = "a", 1, If(...)))`, FIRST in `groupings[].calculations`, plus a grouping-level `sort: [{columnId, direction: ascending}]` (accepted live though the offline OpenAPI omits it). A hidden group KEY is silently un-hidden by Sigma, and element `sort` only reaches the base level, so neither is used. The keyed frame keeps a hidden base-level order column for its pivot (`rowsBy[0].sort = {by, aggregation: min}`) and adds `Source Order (group)` = `Min([Source Order])` as its group calculation. Chart `xAxis.sort` uses an order column of its own. Expansion pivots keep ascending key order |
+| header fill / bold / font color | `tableStyle.textStyles.header` (pivots also `columnHeader`); under a look only the bold is kept (the theme styles headers) |
+| (default look) | every table and pivot the Report page shows gets `tableStyle.preset: "presentation"` (`SURFACES["default_table_preset"]`; the OpenAPI `pivot-table` `tableStyle` takes `preset` too), merged with the Excel header `textStyles`; the hidden Model / Inputs pages are left alone. Those rows render ~2.4x taller, so tables are sized with 2.5x the row allowance. Every table / pivot is sized for at most 15 data rows (`MAX_VISIBLE_ROWS`); longer ones scroll inside their card. Under a look the reference's preset wins; none in the reference means none |
+| sheet title cell | header band title (text element tinted with the accent) |
+| bar / column (clustered, stacked, 100%), line, doughnut, pie whose categories are a grid's row labels (or verified axis cells) and whose series read one verified column each | `bar-chart` (`stacking: none/stacked/normalized`, `orientation: horizontal` for bars), `line-chart`, `donut-chart` / `pie-chart` sourced from the frame's SOURCE element (a grouped table's calculations and keys cannot be referenced by name, even with `groupingId`): x = the key column, each series = the frame's own formula at chart level (`Coalesce(SumIf([tblPipeline/Weighted Amount], <window>), 0)`; a lookup of the key becomes `Max(Lookup(..))`), a `list` filter on the key when the data has keys the grid does not list; title / series order / category order from the source. Colors: `settings.theme.overrides.categoricalScheme` (the only spec path for multi-series and donut colors) with the accent first; a single series takes `color: {by: single}` |
+| anything else (subset of rows, scatter / area / combo, values outside a verified frame) | listed in `unmappedCharts` with the reason (`CHARTS_PRESENT` stays a review item) |
+| KPI row | per additive column the source totals or that is named Total / Commit / Quota-like (never a period column, an average or a count of a filter) plus a ratio of two of them over the **totals**: the frame column is re-emitted as signed leaf terms over its source rows (`Coalesce(SumIf(..), 0)` per aggregate; a typed-input / lookup column is `Sum([Inputs/Quota])` of its table), restricted to the grid's labels when the data has other keys. One source -> a `kpi-chart`; terms from several tables (Coverage = pipeline / quota inputs) -> a card container + text with `{{ratio \| fmt}}` (`SURFACES["kpi_text_card"]`, off drops such KPIs). `IFERROR(a/b, 0)` -> `If(IsNull(den) or den = 0, 0, num / den)`; 2-4 equal peer cards: muted 14 px title (`name {text, color #64748B, fontSize 14, fontWeight normal}`), bold 28 px value, no accent. A text card's body is `<span style="color: #64748B; font-size: 14px">LABEL</span>` + a BLANK line + `<span style="font-size: 28px">**{{expr \| fmt}}**</span>` (span styles may only use color, background-color, font-size, font-family) |
+
+Page order: header band, KPI row (`1/7 .. 19/25`, 7 rows), the hero chart full width (`1/25`, 16 rows; bar charts with 12 or fewer categories get `xAxis.format.labels.labelAngle: 0`), divider + quiet `DETAIL` label, then the tables sized to their row count (`table_height`). A supporting chart whose categories are a grid's row labels sits beside that grid's table (table `1/15`, chart `15/25`, same rows, the taller height); other supporting charts pair in the chart row. A narrow table takes `1/15`. The first summary grid leads; the expansion / keyed pivots follow. No input tables (read-only intent) means no Inputs page. Anti-patterns avoided (styling.md checklist): focal point, no automatic 50/50, no repeated KPI
+band, one accent (not sprayed), no nested cards (KPIs carry their own card style), quiet labels instead of
+competing headings, no wide-table squeeze or empty card space, no navy slideware band.
+
+Gate: `check_emitted` (and `build-table-report.py`, exit 1) evaluates the EMITTED KPI and chart formulas over the plan's
+base rows with `scripts/lib/sigma_formula_eval.py` and compares them with the oracle; the drafter drops a KPI / chart that
+fails or cannot be emitted from source columns (lookup tables with duplicate keys, a label holding `}}` / `|` in a
+text card, a ledger chart over some periods without the list filter) and records review issue
+`PRESENTATION_ELEMENT_DROPPED`. Lookup KPIs always sum only the rows keyed by the frame's labels. Scaling commas
+(`#,##0,"K"`) show the full number without the unit (`NUMBER_FORMAT_APPROXIMATED`); a grid longer than
+`MAX_ORDER_LABELS` (40) keeps Sigma's key order (`SOURCE_ORDER_OMITTED`). Running-sum frames (ledger, keyed) are
+`EMITTED UNVERIFIED`: the evaluator does not model them.
+
+Verified live in a dry-run + render: the grouping `sort` / hidden `Min` calculation, source-level KPI and chart
+formulas, the KPI name / value styling, the text-card body and `labelAngle`. Still unconfirmed: the d3 `(` sign,
+`hidden` on a chart sort column, a `list` filter on a chart, `tableStyle.textStyles.header` vs `columnHeader` on
+pivots. Emitted KPI / series formulas are evaluated offline over the plan's base rows
+(`scripts/lib/sigma_formula_eval.py`) and must equal the oracle's frame cells.
+
+## Matching the look of an org workbook (`--look`)
+
+"Make it look like Golden Orders": `scripts/style-reference.py <workbookId | URL> --out look.json [--sigma-profile P]`
+makes ONE read-only `GET /v2/workbooks/{id}/spec` and writes the look (`lib/reference_look.py`, `extract_look`; `--spec
+saved.json` reads a saved GET response with no network). `draft-table-report.py --look look.json` records it as
+`presentation.look` (with `source {workbookId, name}`); `build-table-report.py` applies it. Without `--look` the
+DEFAULT look applies (it is not frozen: it now includes the `presentation` table preset with its roomier sizing, the
+red rule's `backgroundColor: none` and the 15-visible-row table cap, so an older spec is not byte-identical).
+Workbook ids: a URL gives the segment after `/workbook/` (a UUID in it wins, else the text after its last `-`; the slug
+is rejected by the API); only elements on visible pages vote when the look is read; an unreadable shape is ignored
+rather than crashing; colours / sizes are validated before they reach a span style.
+
+| Copied from the reference | How it is applied |
+|---|---|
+| `settings.theme`, exactly (a named org theme stays a name) | `settings.theme` = that theme; no `categoricalScheme` or other override of ours on top, so charts / donuts take the theme's palette and no per-chart colour is written |
+| the most common `style` per kind (container, kpi-chart, chart, table) | that kind's card style, else no `style` at all (the theme decides); the header band container takes the reference's container style |
+| most common kpi `name` (`color`, `fontSize`, `fontWeight`) and `value` styling | kpi-charts and the text-card KPIs (spans with only color / font-size, bold via `**`); none -> theme default |
+| first text's span `font-size` / colour (or heading level), second text's span (subline), `theme.overrides.colors.text` | header band title / subline, quiet `DETAIL` label colour |
+| most common `tableStyle.preset`, and the theme itself | `tableStyle.preset` (`SURFACES["look_table_preset"]`); the reference's theme styles the table headers, so `textStyles.header` is just `{fontWeight: bold}` when the Excel header is bold (no Excel fill or font colour) |
+
+Not copied: the arrangement (header band, KPI row, hero chart, DETAIL, chart beside its table), and anything Excel
+decides: number formats, header bold, sheet row order, the title text (Excel's header FILL and font colour only
+apply to the default look; under a look the theme styles headers). None of our own colours
+(`#0F172A`, `#64748B`, `#F0F7FF`, `#E2E8F0`, the accent) is written when a look is applied; Excel's `[Red]` negatives stay
+(`style {color, backgroundColor: none}`: Sigma paints its default green highlight when the background is omitted). A look
+whose preset is `presentation`, whose theme sets `tableStyles.cellSpacing` medium / large, or that is only a named theme
+sizes tables with 2.5x the row allowance (those rows render ~2.4x taller); a text-card KPI under a look with no KPI type
+uses Sigma's own 18 px / 40 px bold type.
+
 ## Charts
 
-Source charts are listed as not mapped (`CHARTS_PRESENT` stays a review item); rebuild them from the
+Source charts that map (table above) are emitted as native Sigma charts and verified point by point;
+everything else is listed as not mapped (`CHARTS_PRESENT` stays a review item); rebuild those from the
 verified summary frames with `refs/presentation-migration.md`.

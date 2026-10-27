@@ -43,6 +43,13 @@ from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+try:
+    from . import excel_formats as ef
+    from . import presentation_style as ps
+except ImportError:  # direct import when scripts/lib itself is on sys.path
+    import excel_formats as ef
+    import presentation_style as ps
+
 PLAN_VERSION = 1
 ARCHETYPE = "table-report"
 PARAM_TABLE = "Parameters"
@@ -728,7 +735,7 @@ def parity_lines(plan, model, tolerance=None):
             lines.append(f"PARITY FAIL {target['label']}: plan={iso(got)!r} source={target['value']!r}")
         frame = (model.frames.get(target["frame"]) or {})
         fmt = next((c.get("format") for c in frame.get("columns", []) if c["name"] == target["column"]), None)
-        if isinstance(got, (int, float)) and not isinstance(got, bool) and fmt != "percent" \
+        if isinstance(got, (int, float)) and not isinstance(got, bool) and not ef.is_percent_format(fmt) \
                 and target.get("kind") != "ledger" and isinstance(target["value"], (int, float)):
             column = group["columns"].setdefault(target["column"], [0.0, 0.0])
             column[0] += got
@@ -780,7 +787,33 @@ def validate_plan(plan):
             validate_ir(column["expr"], f"{frame['title']}.{column['name']}")
         for caption in frame.get("captions", []):
             validate_ir(caption["expr"], f"{frame['title']} caption {caption.get('cell')}")
+    _validate_presentation(plan)
     return True
+
+
+def _validate_presentation(plan):
+    """The optional ``presentation`` block must point at real frames and carry whole series."""
+    pres = plan.get("presentation")
+    if not pres:
+        return
+    look = pres.get("look")
+    if look is not None and not (isinstance(look, dict) and look.get("version") == 1):
+        raise PlanError("presentation.look must be a version 1 look from style-reference.py")
+    frames = {f["id"]: f for f in plan.get("frames", [])}
+    for kpi in pres.get("kpis", []):
+        if kpi.get("frame") not in frames or kpi.get("kind") not in ("total", "ratio"):
+            raise PlanError(f"presentation KPI {kpi.get('label')!r} does not name a frame and a kind")
+        names = {c["name"] for c in frames[kpi["frame"]]["columns"]}
+        if not {kpi.get("column"), kpi.get("num"), kpi.get("den")} - {None} <= names:
+            raise PlanError(f"presentation KPI {kpi.get('label')!r} reads a column its frame does not have")
+    for chart in pres.get("charts", []):
+        if chart.get("frame") not in frames or chart.get("kind") not in ("bar", "line", "donut", "pie"):
+            raise PlanError(f"presentation chart {chart.get('title')!r} does not name a frame and a kind")
+        for series in chart["series"]:
+            if not (len(series["cells"]) == len(series["sels"]) == len(series["values"])
+                    == len(chart["categories"])):
+                raise PlanError(f"presentation chart {chart['title']!r}: series {series['title']!r} does not "
+                                "have one verified value per category")
 
 
 # ===================================================================== Sigma
@@ -825,8 +858,11 @@ class Emitter:
     """
 
     def __init__(self, col, key=None, period=None, prev=None, coltype=None, count_ref=None,
-                 agg_source=None, agg_col=None, blankable=None, tables=None):
+                 agg_source=None, agg_col=None, blankable=None, tables=None, wrap_lookup=False,
+                 utf8_strings=False):
         self.col, self.key_ref, self.period_ref, self.prev_ref = col, key, period, prev
+        self.wrap_lookup = wrap_lookup      # a lookup of the group key inside a chart series: Max(Lookup(..))
+        self.utf8_strings = utf8_strings    # chart / KPI feeds: labels as typed, not \\uXXXX escapes
         self.coltype, self.count_ref = coltype, count_ref
         self.agg_source = agg_source  # Emitter used inside aggregate filters (source columns)
         self.agg_col = agg_col        # name -> source column ref for aggregate values
@@ -930,7 +966,7 @@ class Emitter:
         if tag == "n":
             return sigma_number(node[1])
         if tag == "s":
-            return SIGMA_STRING(node[1])
+            return json.dumps(node[1], ensure_ascii=False) if self.utf8_strings else SIGMA_STRING(node[1])
         if tag == "b":
             return "True" if node[1] else "False"
         if tag == "d":
@@ -962,6 +998,8 @@ class Emitter:
             _, table, key, key_col, value_col, default = node
             key_text = self.emit(key)
             lookup = f"Lookup([{table}/{value_col}], {key_text}, [{table}/{key_col}])"
+            if self.wrap_lookup:
+                lookup = f"Max({lookup})"
             if default is None:
                 return lookup
             if self.may_null(node):
@@ -1126,7 +1164,9 @@ def param_table(plan):
     if not plan.get("params"):
         return None
     kinds = {p.get("kind", "number") for p in plan["params"]}
-    columns = [{"name": "Parameter", "type": "text"}, {"name": "Value", "type": "number"},
+    numbers = [p["value"] for p in plan["params"] if p.get("kind", "number") == "number"]
+    columns = [{"name": "Parameter", "type": "text"},
+               {"name": "Value", "type": "number", "format": ef.plain_number(ef.number_decimals(numbers))},
                {"name": "Cell", "type": "text"}]
     if "text" in kinds:      # a text parameter (a selected scenario) lives in its own typed column
         columns.append({"name": "Text Value", "type": "text"})
@@ -1282,6 +1322,10 @@ def seed_csvs(plan, out_dir):
 
 # ---- workbook
 def number_format(plan, kind):
+    """Sigma ``format`` object for a plan column ``format``: a full format object (current plans) or one of the
+    legacy kind names (``percent`` / ``currency`` / ``date``) older plans carry."""
+    if isinstance(kind, dict):
+        return dict(kind)
     if kind == "date":
         return {"kind": "datetime", "formatString": "%m/%d/%y"}
     if kind == "percent":
@@ -1291,8 +1335,15 @@ def number_format(plan, kind):
     return None
 
 
+FALLBACK_NUMBER = ef.plain_number(2)
+
+
 def _with_format(plan, column, definition):
+    """Attach the column's format. Every numeric column gets an explicit one (a plan without it falls back to a
+    plain number) so Sigma never inherits a ``%`` from an operand (``Amount * Probability``)."""
     fmt = number_format(plan, column.get("format"))
+    if fmt is None and column.get("type") == "number":
+        fmt = dict(FALLBACK_NUMBER)
     if fmt:
         definition["format"] = fmt
     return definition
@@ -1349,6 +1400,34 @@ def _calc_columns(plan, frame, fid, own, emitter):
     return out
 
 
+ORDER_NAME = "Source Order"
+MAX_ORDER_LABELS = 40      # a longer grid keeps Sigma's key order (nested If depth); see SOURCE_ORDER_OMITTED
+
+
+def order_labels(frame):
+    """The row labels whose source-sheet order a frame keeps (``None`` when there is nothing to order)."""
+    labels = frame.get("labels") or []
+    if frame["kind"] not in ("summary", "keyed") or frame.get("hidden") or not labels \
+            or len(labels) > MAX_ORDER_LABELS:
+        return None
+    return labels
+
+
+def order_formula(key_ref, labels, key_type="text"):
+    """Nested ``If`` giving each label its position in the source sheet (rows not listed sort last)."""
+    def literal(value):
+        if key_type == "datetime" or (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+                                      and key_type != "text"):
+            return f'Date("{value}")'
+        if key_type == "text" or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return json.dumps(str(value), ensure_ascii=False)      # UTF-8 as typed; a numeric label on a text key
+        return sigma_number(value)
+    text = str(len(labels) + 1)
+    for position in range(len(labels), 0, -1):
+        text = f"If({key_ref} = {literal(labels[position - 1])}, {position}, {text})"
+    return text
+
+
 def _summary_columns(plan, frame, fid, src_types, src_label, src_blank=None, info=None):
     """Group-level calculation columns of a summary frame (``src_label`` None = inside the source)."""
     by = frame["by"]
@@ -1361,6 +1440,150 @@ def _summary_columns(plan, frame, fid, src_types, src_label, src_blank=None, inf
     em = Emitter(col=lambda n: f"[{n}]", key=f"[{by}]", coltype=lambda n: own_types.get(n),
                  count_ref=ref(by), agg_source=src_em, agg_col=ref, tables=info)
     return _calc_columns(plan, frame, fid, {by}, em)
+
+
+# ---- chart / KPI feeds: the frame's values computed from the frame's SOURCE columns
+# Sigma resolves a KPI or chart formula only against base-level columns of its source: a grouped table's
+# grouping-level calculations and group keys cannot be referenced by name (live dry-run, even with
+# ``source.groupingId``). So every KPI value and chart series is re-emitted from the same IR the frame uses,
+# with the aggregates evaluated at chart / KPI level over the frame's source rows.
+def flatten_expr(node, cols):
+    """Inline references to other frame columns (``["c", name]``) so only source-level nodes remain."""
+    tag = node[0]
+    if tag == "c":
+        return flatten_expr(cols[node[1]]["expr"], cols) if node[1] in cols else node
+    if tag == "op":
+        return ["op", node[1], flatten_expr(node[2], cols), flatten_expr(node[3], cols)]
+    if tag == "neg":
+        return ["neg", flatten_expr(node[1], cols)]
+    if tag == "f":
+        return ["f", node[1]] + [flatten_expr(a, cols) for a in node[2:]]
+    if tag == "lk":
+        return ["lk", node[1], node[2], node[3], node[4], flatten_expr(node[5], cols) if node[5] else None]
+    return node
+
+
+def member_ir(by, labels, key_type="text"):
+    """IR: the row key is one of the frame's labels."""
+    def literal(value):
+        if key_type == "text" or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return ["d", value] if key_type == "datetime" else ["s", str(value)]
+        return ["n", value]
+    tests = [["op", "=", ["c", by], literal(v)] for v in labels]
+    return tests[0] if len(tests) == 1 else ["f", "OR"] + tests
+
+
+def restrict_aggs(node, member):
+    """Add ``member`` to the filter of every aggregate (rows outside the frame's label set drop out)."""
+    tag = node[0]
+    if tag == "agg":
+        flt = member if node[3] is None else ["f", "AND", node[3], member]
+        return ["agg", node[1], node[2], flt]
+    if tag == "op":
+        return ["op", node[1], restrict_aggs(node[2], member), restrict_aggs(node[3], member)]
+    if tag == "neg":
+        return ["neg", restrict_aggs(node[1], member)]
+    if tag == "f":
+        return ["f", node[1]] + [restrict_aggs(a, member) for a in node[2:]]
+    return node
+
+
+def leaf_terms(node, sign=1):
+    """``[(sign, leaf)]`` when a flattened expression is a signed sum of aggregates / lookups, else ``None``."""
+    tag = node[0]
+    if tag in ("agg", "lk"):
+        return [(sign, node)]
+    if tag == "neg":
+        return leaf_terms(node[1], -sign)
+    if tag == "op" and node[1] in ("+", "-"):
+        left = leaf_terms(node[2], sign)
+        right = leaf_terms(node[3], sign if node[1] == "+" else -sign)
+        return left + right if left is not None and right is not None else None
+    if tag == "f" and node[1] == "SUM":
+        parts = [leaf_terms(a, sign) for a in node[2:]]
+        return None if any(p is None for p in parts) else [t for p in parts for t in p]
+    return None
+
+
+def _frame_feed(plan, frame, src_id, src_label, src_types, src_blank, info, wrapper, restrict=None):
+    """Chart series and KPI terms of a summary frame, emitted from its source's base-level columns.
+
+    ``series[name]``: the frame column as a chart-level formula (the chart groups by the key column);
+    ``terms[name]``: the column as signed leaf terms ``{sign, element, label, formula}`` whose sum over ALL
+    source rows (restricted to the frame's labels when the data has other keys) is the column's frame total.
+    A lookup term always sums only the rows of the lookup table whose key is one of the frame's labels (that
+    table can list keys the source does not); ``why[name]`` says why a column has no terms.
+    """
+    by = frame["by"]
+    ref = lambda n: f"[{src_label}/{n}]"                                       # noqa: E731
+    src_em = Emitter(col=ref, key=ref(by), coltype=lambda n: src_types.get(n),
+                     blankable=lambda n: (src_blank or {}).get(n, False), tables=info, utf8_strings=True)
+
+    def no_group_column(name):
+        raise PlanError(f"{name!r} is a frame column, not a source column")
+    own_types = {c["name"]: c["type"] for c in frame["columns"]}
+    em = Emitter(col=no_group_column, key=ref(by), coltype=lambda n: own_types.get(n), count_ref=ref(by),
+                 agg_source=src_em, agg_col=ref, tables=info, wrap_lookup=True, utf8_strings=True)
+    plain = Emitter(col=no_group_column, key=ref(by), coltype=lambda n: own_types.get(n), count_ref=ref(by),
+                    agg_source=src_em, agg_col=ref, tables=info, utf8_strings=True)
+    cols = {c["name"]: c for c in frame["columns"]}
+    member = member_ir(by, restrict, src_types.get(by, "text")) if restrict else None
+    feed = {"element": src_id, "label": src_label, "key": ref(by), "keyType": src_types.get(by, "text"),
+            "series": {}, "terms": {}, "why": {}}
+    for column in frame["columns"]:
+        name = column["name"]
+        feed["series"][name] = feed["terms"][name] = None
+        if column["type"] != "number":
+            continue
+        flat = flatten_expr(column["expr"], cols)
+        try:
+            feed["series"][name] = em.column_formula(name, flat)
+        except (PlanError, KeyError):
+            feed["why"][name] = "not expressible from the frame's source columns"
+        leaves = leaf_terms(flat)
+        if not leaves:
+            feed["terms"][name] = None
+            feed["why"].setdefault(name, "not a signed sum of aggregates / lookups")
+            continue
+        terms = []
+        for sign, leaf in leaves:
+            if leaf[0] == "agg":
+                node = restrict_aggs(leaf, member) if member else leaf
+                terms.append({"sign": sign, "element": src_id, "label": src_label,
+                              "formula": plain.column_formula(name, node)})
+                continue
+            term, why = _lookup_term(plan, frame, leaf, sign, wrapper, info)
+            if term is None:
+                terms = None
+                feed["why"][name] = why
+                break
+            terms.append(term)
+        feed["terms"][name] = terms
+    return feed
+
+
+def _lookup_term(plan, frame, leaf, sign, wrapper, info):
+    """A per-label lookup's frame total: the lookup table's value column over the rows keyed by the frame's
+    labels. ``(term, None)`` or ``(None, reason)``; duplicate keys would double count, so they refuse."""
+    _, table, key, key_col, value_col, default = leaf
+    if key != ["key"] or default is not None or table not in wrapper:
+        return None, f"the lookup into {table} is not a plain per-label lookup"
+    data = plan_table(plan, table)
+    names = [c["name"] for c in literal_columns(data)]
+    key_type = next((c["type"] for c in data["columns"] if c["name"] == key_col), "text")
+    labels = frame["labels"]
+    if key_col in names:
+        index = names.index(key_col)
+        keys = [row[index] for row in data.get("rows") or []]
+        repeated = sorted({str(k) for k in keys if k in labels and keys.count(k) > 1})
+        if repeated:
+            return None, (f"{table}[{key_col}] has duplicate keys ({', '.join(repeated)}): summing the lookup "
+                          "would double count")
+    value = f"[{table}/{value_col}]"
+    cond = Emitter(col=lambda n, t=table: f"[{t}/{n}]", tables=info, utf8_strings=True).emit_crit(
+        member_ir(key_col, labels, key_type))
+    return {"sign": sign, "element": wrapper[table], "label": table,
+            "formula": f"Coalesce(SumIf({value}, {cond}), 0)"}, None
 
 
 def _frame_types(plan, frame, types):
@@ -1392,6 +1615,22 @@ def _table_info(plan, types):
     return info
 
 
+def plan_table(plan, name):
+    """A plan table (or the Parameters pseudo-table) by name."""
+    return next((t for t in all_tables(plan) if t["name"] == name), {"name": name, "columns": [], "rows": []})
+
+
+def distinct_count(plan, table_name, column):
+    """Number of distinct values of a literal column in a plan table (rows shown by a grouping on it)."""
+    table = plan_table(plan, table_name)
+    names = [c["name"] for c in literal_columns(table)]
+    rows = table.get("rows") or []
+    if column not in names:
+        return len(rows)
+    index = names.index(column)
+    return len({row[index] for row in rows})
+
+
 def build_parts(plan, dm_id, dm_elements):
     """Return ``{"inputs", "hidden", "visible"}`` element lists for the workbook pages.
 
@@ -1406,11 +1645,20 @@ def build_parts(plan, dm_id, dm_elements):
     blank = info["blank"]
     frame_blank = {}
     inputs, hidden, visible = [], [], []
+    visible_meta, frame_elements = [], {}
     wrapper = {}
     expansion_bases = {f["base"] for f in plan["frames"] if f["kind"] == "expansion"}
 
     def dm_source(key):
         return {"kind": "data-model", "dataModelId": dm_id, "elementId": dm_elements[key]}
+
+    def show(element, frame, role, rows, bindings=()):
+        """A Report-page element and what the composer needs to size / style it."""
+        visible.append(element)
+        meta = {"id": element["id"], "frame": frame["id"], "role": role, "rows": rows}
+        if bindings:
+            meta["bindings"] = list(bindings)
+        visible_meta.append(meta)
 
     for table in tables:
         name, element_id = table["name"], ids.get("w", table["name"])
@@ -1476,7 +1724,7 @@ def build_parts(plan, dm_id, dm_elements):
             for number, name in enumerate(needed):
                 if name == axis["name"]:
                     columns.append({"id": f"{fid}_a", "name": name, "formula": f"[Axis/{name}]",
-                                    "format": _date_format(axis["values"])})
+                                    "format": axis.get("format") or _date_format(axis["values"])})
                 else:
                     columns.append({"id": f"{fid}_b{number}", "name": name, "formula": f"[XJ/{name}]"})
             em = Emitter(col=lambda n: f"[{n}]", period=f"[{axis['name']}]",
@@ -1487,7 +1735,8 @@ def build_parts(plan, dm_id, dm_elements):
             hidden.append({"id": fid, "kind": "table", "name": frame["title"], "source": source,
                            "columns": columns})
             element_of[frame["id"]] = fid
-            visible.append(_pivot(plan, frame, fid, ids, frame.get("attrs", []), axis["name"], axis["values"]))
+            show(_pivot(plan, frame, fid, ids, frame.get("attrs", []), axis["name"], axis["values"]),
+                 frame, "pivot", len(plan_table(plan, base).get("rows") or []))
         elif kind == "keyed":
             table = frame["table"]
             needed = referenced_columns(frame, set(types[table]))
@@ -1504,6 +1753,14 @@ def build_parts(plan, dm_id, dm_elements):
             frame_blank[frame["id"]] = dict(blank[table], **em.own_blank)
             by_id = next(c["id"] for c in columns if c["name"] == frame["rowKey"])
             period_id = next(c["id"] for c in columns if c["name"] == frame["periodKey"])
+            order_id = None
+            labels = order_labels(frame)
+            if labels and ORDER_NAME not in own and ps.SURFACES["order_group_sort"]:   # hidden row-level order column
+                order_id = f"{fid}_ord"
+                columns.append({"id": order_id, "name": ORDER_NAME, "hidden": True,
+                                "formula": order_formula(f"[{frame['rowKey']}]", labels,
+                                                         frame_types.get(frame["rowKey"], "text"))})
+                own.add(ORDER_NAME)
             calc_ids = []
             for summary in merged.get(frame["id"], []):
                 extra = _summary_columns(plan, summary, f"{fid}_s", frame_types, None,
@@ -1516,17 +1773,46 @@ def build_parts(plan, dm_id, dm_elements):
                 columns += extra
                 calc_ids += [c["id"] for c in extra]
                 element_of[summary["id"]] = fid
+            grouping = {"id": f"{fid}_by_key", "groupBy": [by_id], "calculations": calc_ids}
+            if order_id and calc_ids:      # group-level order: Min of the hidden row-level order column
+                group_order = {"id": f"{fid}_ordg", "name": f"{ORDER_NAME} (group)", "hidden": True,
+                               "formula": f"Min([{ORDER_NAME}])"}
+                columns.append(group_order)
+                grouping["calculations"] = [group_order["id"]] + calc_ids
+                grouping["sort"] = [{"columnId": group_order["id"], "direction": "ascending"}]
             element = {"id": fid, "kind": "table", "name": frame["title"],
                        "source": {"kind": "table", "elementId": wrapper[table]}, "columns": columns,
                        "sort": [{"columnId": period_id, "direction": "ascending"}],
-                       "groupings": [{"id": f"{fid}_by_key", "groupBy": [by_id], "calculations": calc_ids}]}
-            (visible if calc_ids else hidden).append(element)
+                       "groupings": [grouping]}
+            key_rows = distinct_count(plan, table, frame["rowKey"])
+            if calc_ids:
+                show(element, frame, "grouped", key_rows,
+                     [summary["id"] for summary in merged.get(frame["id"], [])])
+            else:
+                hidden.append(element)
             element_of[frame["id"]] = fid
-            visible.append(_pivot(plan, frame, fid, ids, [frame["rowKey"]], frame["periodKey"], frame["periods"]))
+            frame_elements[frame["id"]] = {"element": fid, "grouping": f"{fid}_by_key" if calc_ids else None,
+                                           "title": frame["title"]}
+            for summary in merged.get(frame["id"], []):
+                restrict = (plan.get("presentation") or {}).get("restrict", {}).get(summary["id"])
+                frame_elements[summary["id"]] = {
+                    "element": fid, "grouping": f"{fid}_by_key", "title": frame["title"],
+                    "feed": _frame_feed(plan, summary, fid, frame["title"], frame_types,
+                                        frame_blank.get(frame["id"]), info, wrapper, restrict)}
+            show(_pivot(plan, frame, fid, ids, [frame["rowKey"]], frame["periodKey"], frame["periods"],
+                        order=order_id), frame, "pivot", key_rows)
         elif kind == "ledger":
             hidden_or_visible = _ledger_elements(plan, frame, fid, ids, wrapper, types, info)
-            visible.extend(hidden_or_visible)
+            spine_rows = len(plan_table(plan, frame["spine"]).get("rows") or [])
+            for number, element in enumerate(hidden_or_visible):
+                show(element, frame, "ledger" if number == 0 else "totals", spine_rows if number == 0 else 1)
             element_of[frame["id"]] = fid
+            frame_elements[frame["id"]] = {
+                "element": fid, "grouping": None, "title": frame["title"],
+                "feed": {"element": fid, "label": frame["title"], "key": None,
+                         "series": {c["name"]: f"Sum([{frame['title']}/{c['name']}])"
+                                    for c in frame["columns"] if c["type"] == "number"},
+                         "terms": {}}}
         else:
             source = frame["source"]
             if source["kind"] == "table":
@@ -1539,20 +1825,43 @@ def build_parts(plan, dm_id, dm_elements):
                 src_blank = frame_blank.get(parent["id"])
             key_col = {"id": f"{fid}_key", "name": frame["by"], "formula": f"[{src_label}/{frame['by']}]"}
             calcs = _summary_columns(plan, frame, fid, src_types, src_label, src_blank, info)
+            grouping = {"id": f"{fid}_by", "groupBy": [key_col["id"]], "calculations": [c["id"] for c in calcs]}
+            tail = []
+            labels = order_labels(frame)
+            if labels and ps.SURFACES["order_group_sort"] and ORDER_NAME not in {c["name"] for c in calcs} \
+                    and ORDER_NAME != frame["by"]:
+                # source order: a hidden grouping calculation ``Min(<row-level If over the key>)`` placed first,
+                # and a grouping-level sort on it (accepted live; the group-key ``hidden`` flag is dropped)
+                tail = [{"id": f"{fid}_ord", "name": ORDER_NAME, "hidden": True,
+                         "formula": "Min(" + order_formula(f"[{src_label}/{frame['by']}]", labels,
+                                                           src_types.get(frame["by"], "text")) + ")"}]
+                grouping["calculations"].insert(0, tail[0]["id"])
+                grouping["sort"] = [{"columnId": tail[0]["id"], "direction": "ascending"}]
             # hidden helper frames (ledger source aggregates) stay on the Model page
-            (hidden if frame.get("hidden") else visible).append({
+            element = {
                 "id": fid, "kind": "table", "name": frame["title"],
-                "source": {"kind": "table", "elementId": src_id}, "columns": [key_col] + calcs,
-                "groupings": [{"id": f"{fid}_by", "groupBy": [key_col["id"]],
-                               "calculations": [c["id"] for c in calcs]}]})
+                "source": {"kind": "table", "elementId": src_id}, "columns": [key_col] + calcs + tail,
+                "groupings": [grouping]}
+            if frame.get("hidden"):
+                hidden.append(element)
+            else:
+                show(element, frame, "grouped", len(frame.get("labels") or []))
+                feed_restrict = (plan.get("presentation") or {}).get("restrict", {}).get(frame["id"])
+                feed = _frame_feed(plan, frame, src_id, src_label, src_types, src_blank, info, wrapper,
+                                   feed_restrict)
             element_of[frame["id"]] = fid
-    return {"inputs": inputs, "hidden": hidden, "visible": visible}
+            frame_elements[frame["id"]] = {"element": fid, "grouping": f"{fid}_by", "title": frame["title"]}
+            if not frame.get("hidden"):
+                frame_elements[frame["id"]]["feed"] = feed
+    return {"inputs": inputs, "hidden": hidden, "visible": visible, "visibleMeta": visible_meta,
+            "frames": frame_elements}
 
 
 def _ledger_elements(plan, frame, fid, ids, wrapper, types, info=None):
     """Ledger frame -> the period table (one row per period) and its one-row total table."""
     spine, axis = frame["spine"], frame["axis"]
     own = {c["name"]: c for c in frame["columns"]}
+    spine_defs = {c["name"]: c for c in plan_table(plan, spine)["columns"]}
     here = dict(types[spine], **{name: c["type"] for name, c in own.items()})
     spine_blank = (info or {"blank": {}})["blank"].get(spine, {})
     # a number column's blank cells are emitted as 0 below, so only other spine columns stay blank-capable
@@ -1569,9 +1878,9 @@ def _ledger_elements(plan, frame, fid, ids, wrapper, types, info=None):
                                                           "formula": em.column_formula(name, own[name]["expr"])}))
         else:       # spine columns: the period key and the manual line items (a blank cell is 0)
             ref = f"[{spine}/{name}]"
-            columns.append({"id": f"{fid}_b{number}", "name": name,
-                            "formula": ref if name == axis or here.get(name) != "number"
-                            else f"Coalesce({ref}, 0)"})
+            columns.append(_with_format(plan, spine_defs.get(name, {}), {
+                "id": f"{fid}_b{number}", "name": name,
+                "formula": ref if name == axis or here.get(name) != "number" else f"Coalesce({ref}, 0)"}))
     axis_id = next(c["id"] for c in columns if c["name"] == axis)
     elements = [{"id": fid, "kind": "table", "name": frame["title"],
                  "source": {"kind": "table", "elementId": wrapper[spine]}, "columns": columns,
@@ -1584,8 +1893,9 @@ def _ledger_elements(plan, frame, fid, ids, wrapper, types, info=None):
         calcs = [{"id": f"{tid}_t{number}", "name": name, "formula": f"Sum([{frame['title']}/{name}])"}
                  for number, name in enumerate(totals, 1)]
         for calc in calcs:
-            if own.get(calc["name"]):
-                _with_format(plan, own[calc["name"]], calc)
+            source = own.get(calc["name"]) or spine_defs.get(calc["name"])
+            if source:
+                _with_format(plan, source, calc)
         elements.append({"id": tid, "kind": "table", "name": f"{frame['title']} - {label}",
                          "source": {"kind": "table", "elementId": fid}, "columns": [key] + calcs,
                          "groupings": [{"id": f"{tid}_by", "groupBy": [key["id"]],
@@ -1593,17 +1903,22 @@ def _ledger_elements(plan, frame, fid, ids, wrapper, types, info=None):
     return elements
 
 
-def _pivot(plan, frame, fid, ids, rows, axis_col, axis_values):
-    """Matrix view: rows x period, Sum(measure), with row totals."""
+def _pivot(plan, frame, fid, ids, rows, axis_col, axis_values, order=None):
+    """Matrix view: rows x period, Sum(measure), with row totals. ``order`` (a hidden source-order column of
+    the frame element) keeps the first row dimension in the source sheet's order."""
     pid, title = ids.get("pv", frame["title"]), frame["title"]
     columns, row_by = [], []
     for number, name in enumerate(rows):
         cid = f"{pid}_r{number}"
         columns.append({"id": cid, "name": name, "formula": f"[{title}/{name}]"})
         row_by.append({"columnId": cid, "sort": {"direction": "ascending"}})
+    if order and row_by:
+        columns.append({"id": f"{pid}_o", "name": ORDER_NAME, "formula": f"[{title}/{ORDER_NAME}]"})
+        row_by[0]["sort"] = {"direction": "ascending", "by": f"{pid}_o", "aggregation": "min"}
     axis_id, value_id, measure = f"{pid}_x", f"{pid}_v", frame["measure"]
+    axis_format = (frame.get("axis") or {}).get("format") or frame.get("periodFormat")
     columns.append({"id": axis_id, "name": axis_col, "formula": f"[{title}/{axis_col}]",
-                    "format": _date_format(axis_values)})
+                    "format": dict(axis_format) if axis_format else _date_format(axis_values)})
     source_column = next((c for c in frame["columns"] if c["name"] == measure), {})
     columns.append(_with_format(plan, source_column, {"id": value_id, "name": measure,
                                                       "formula": f"Sum([{title}/{measure}])"}))
@@ -1614,14 +1929,26 @@ def _pivot(plan, frame, fid, ids, rows, axis_col, axis_values):
 
 
 def layout_xml(pages):
-    """Dense grid layout: [(page id, [(element id, col_start, col_end, row_start, row_end)])]."""
+    """Dense grid layout: [(page id, [(element id, col_start, col_end, row_start, row_end[, children])])].
+
+    A placement with ``children`` (the same tuples, rows relative to the container's own grid) is a
+    ``<Container>`` holding them.
+    """
     blocks = []
     for page_id, placements in pages:
         lines = [f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" '
                  f'id="{page_id}">']
-        for element_id, c0, c1, r0, r1 in placements:
-            lines.append(f'  <Element elementId="{element_id}" gridColumn="{c0} / {c1}" '
-                         f'gridRow="{r0} / {r1}"/>')
+        for element_id, c0, c1, r0, r1, *rest in placements:
+            if not rest:
+                lines.append(f'  <Element elementId="{element_id}" gridColumn="{c0} / {c1}" '
+                             f'gridRow="{r0} / {r1}"/>')
+                continue
+            lines.append(f'  <Container elementId="{element_id}" type="grid" gridColumn="{c0} / {c1}" '
+                         f'gridRow="{r0} / {r1}" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">')
+            for child, cc0, cc1, cr0, cr1 in rest[0]:
+                lines.append(f'    <Element elementId="{child}" gridColumn="{cc0} / {cc1}" '
+                             f'gridRow="{cr0} / {cr1}"/>')
+            lines.append("  </Container>")
         lines.append("</Page>")
         blocks.append("\n".join(lines))
     return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)
@@ -1629,26 +1956,22 @@ def layout_xml(pages):
 
 def build_wb_spec(plan, dm_id, dm_elements):
     """Nested workbook draft (``workbook_wire.wire_workbook`` flattens it): Report, Inputs, hidden Model."""
+    try:
+        from . import table_report_presentation as presentation
+    except ImportError:  # direct import when scripts/lib itself is on sys.path
+        import table_report_presentation as presentation
     parts = build_parts(plan, dm_id, dm_elements)
-    header = {"id": "trHeader", "kind": "text",
-              "body": f"# {plan['name']}\nRebuilt from formal tables; every summary value was verified "
-                      "against the source workbook before this build.",
-              "style": {"backgroundColor": "#F8FAFC", "color": "#0F172A", "borderRadius": "round"}}
-    pages = [{"id": "report", "name": "Report", "elements": [header] + parts["visible"]},
-             {"id": "inputs", "name": "Inputs", "elements": parts["inputs"]},
-             {"id": "model", "name": "Model (sources)", "visibility": "hidden", "elements": parts["hidden"]}]
-    report, cursor = [("trHeader", 1, 25, 1, 4)], 4
-    for element in parts["visible"]:
-        height = 20 if element["kind"] in ("pivot-table", "table") else 14
-        report.append((element["id"], 1, 25, cursor, cursor + height))
-        cursor += height
-    inputs, cursor = [], 1
-    for element in parts["inputs"]:
-        inputs.append((element["id"], 1, 25, cursor, cursor + 14))
-        cursor += 14
-    model, cursor = [], 1
-    for element in parts["hidden"]:
-        model.append((element["id"], 1, 25, cursor, cursor + 12))
-        cursor += 12
-    return {"name": plan["name"], "schemaVersion": 1, "kind": "workbook", "folderId": plan["folderId"],
-            "pages": pages, "layout": layout_xml([("report", report), ("inputs", inputs), ("model", model)])}
+    page = presentation.compose_report(plan, parts)
+    pages = [{"id": "report", "name": "Report", "elements": page["elements"]}]
+    layout_pages = [("report", page["placements"])]
+    if parts["inputs"]:      # no input tables (read-only intent): no empty Inputs page
+        pages.append({"id": "inputs", "name": "Inputs", "elements": parts["inputs"]})
+        layout_pages.append(("inputs", [(e["id"], 1, 25, 1 + 14 * n, 15 + 14 * n)
+                                        for n, e in enumerate(parts["inputs"])]))
+    pages.append({"id": "model", "name": "Model (sources)", "visibility": "hidden", "elements": parts["hidden"]})
+    layout_pages.append(("model", [(e["id"], 1, 25, 1 + 12 * n, 13 + 12 * n) for n, e in enumerate(parts["hidden"])]))
+    spec = {"name": plan["name"], "schemaVersion": 1, "kind": "workbook", "folderId": plan["folderId"],
+            "pages": pages, "layout": layout_xml(layout_pages)}
+    if page.get("settings"):
+        spec["settings"] = page["settings"]
+    return spec

@@ -31,13 +31,17 @@ from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
 
 try:
+    from . import excel_formats as ef
     from . import table_report_model as trm
+    from . import table_report_presentation as pres
     from .excel_expression import (Binary, Boolean, ColumnRange, ExpressionError, Function,
                                    Group, Number, Percent, Range, Reference, StructuredReference, Text,
                                    Unary, parse_expression)
     from .migration_gate import source_sha256
 except ImportError:  # direct import when scripts/lib itself is on sys.path
+    import excel_formats as ef
     import table_report_model as trm
+    import table_report_presentation as pres
     from excel_expression import (Binary, Boolean, ColumnRange, ExpressionError, Function,
                                   Group, Number, Percent, Range, Reference, StructuredReference, Text,
                                   Unary, parse_expression)
@@ -78,13 +82,22 @@ def _rc(ref):
     return int(match.group(2)), column_index_from_string(match.group(1))
 
 
-def _fmt_kind(cell):
-    fmt = cell.number_format or ""
-    if "%" in fmt:
-        return "percent"
-    if any(sym in fmt for sym in "$€£¥"):
-        return "currency"
-    return None
+def _style_of(cell):
+    """The source cell's header look (fill / bold / font color) for the Sigma table header style, or ``None``."""
+    out = {}
+    fill = cell.fill
+    if fill is not None and fill.fill_type == "solid":
+        rgb = fill.fgColor.rgb if isinstance(fill.fgColor.rgb, str) else None
+        if rgb and re.fullmatch(r"[0-9A-Fa-f]{6,8}", rgb) and rgb[-6:].upper() != "FFFFFF":
+            out["fill"] = "#" + rgb[-6:].upper()
+    font = cell.font
+    if font is not None and font.b:
+        out["bold"] = True
+    if font is not None and font.color is not None:
+        rgb = font.color.rgb if isinstance(font.color.rgb, str) else None
+        if rgb and re.fullmatch(r"[0-9A-Fa-f]{6,8}", rgb) and rgb[-6:].upper() not in ("000000", "FFFFFF"):
+            out["color"] = "#" + rgb[-6:].upper()
+    return out or None
 
 
 def _title(text):
@@ -138,9 +151,9 @@ def _wildcard_free(value, where, what):
 
 # ---------------------------------------------------------------- workbook model
 class Col:
-    def __init__(self, name, kind, cells, formulas, cached, fmt):
+    def __init__(self, name, kind, cells, formulas, cached, code):
         self.name, self.kind = name, kind            # kind: literal | calculated
-        self.cells, self.formulas, self.cached, self.fmt = cells, formulas, cached, fmt
+        self.cells, self.formulas, self.cached, self.code = cells, formulas, cached, code
         self.type = None
 
 
@@ -233,8 +246,8 @@ def load_tables(wf, wv):
                     if value is not None and not isinstance(value, (str, int, float, bool, datetime, date)):
                         raise PlanDraftError(f"{coord}: unsupported cell content {type(value).__name__}")
                 cached = [wv[ws.title].cell(r, col).value for r in data_rows]
-                fmt = _fmt_kind(ws.cell(data_rows[0], col)) if data_rows else None
-                columns.append(Col(names[index], kind, cells, raw, cached, fmt))
+                code = ws.cell(data_rows[0], col).number_format if data_rows else None
+                columns.append(Col(names[index], kind, cells, raw, cached, code))
             tabs[table.name] = Tab(table.name, ws, min_col, min_row, max_row, columns)
             tabs[table.name].data_rows = data_rows
             tabs[table.name].ref = table.ref
@@ -314,6 +327,28 @@ class Registry:
         self.param_names = {}
         self.synthetic = OrderedDict()   # table name -> plan table dict
         self.added_columns = []          # (table, column) calculated columns the drafter synthesised
+        self.format_notes = OrderedDict()  # Excel number_format code -> {reasons, where}
+
+    def format_entry(self, code, kind, values, where):
+        """Plan column fields (``format``, ``negativeRed``) for source cells that use ``code``.
+
+        A numeric column always gets an explicit format (General / unknown -> a plain number with the decimals
+        the values need) so Sigma never inherits a ``%`` from an operand; a code that is not translated exactly
+        is recorded for the ``NUMBER_FORMAT_APPROXIMATED`` review issue, never dropped silently."""
+        if kind not in ("number", "datetime"):
+            return {}
+        fmt, red, reasons, _ = ef.translate_for(code, kind=kind, values=list(values))
+        if reasons:
+            note = self.format_notes.setdefault(str(code), {"reasons": [], "where": []})
+            for reason in reasons:
+                if reason not in note["reasons"]:
+                    note["reasons"].append(reason)
+            if where not in note["where"]:
+                note["where"].append(where)
+        out = {"format": fmt} if fmt else {}
+        if red:
+            out["negativeRed"] = True
+        return out
 
     def param(self, sheet, address, where, allow=("number",)):
         """Name of the parameter for a literal cell. ``allow`` widens the kinds a context accepts
@@ -1123,6 +1158,17 @@ class Drafter:
     def cached(self, block, row, col):
         return self.wv[block.sheet].cell(row, col).value
 
+    @staticmethod
+    def look(block):
+        """Presentation facts read off the source grid: its title cell and header look."""
+        out = {}
+        style = _style_of(block.ws.cell(block.hr, block.lc))
+        if style:
+            out["headerStyle"] = style
+        if block.title:
+            out["sheetTitle"] = block.title
+        return out
+
     def col_type(self, block, col, expr):
         cells = [_addr(block.sheet, r, col) for r in block.rows]
         cached = [self.cached(block, r, col) for r in block.rows]
@@ -1211,14 +1257,18 @@ class Drafter:
         title = self.unique_title(_title(block.sheet))
         frame_id = f"x_{trm.slug(title)}"
         measure_type = "number"
-        fmt = _fmt_kind(block.ws.cell(block.first_row, first_col))
+        where = _addr(block.sheet, block.first_row, first_col)
+        fmt = self.reg.format_entry(block.ws.cell(block.first_row, first_col).number_format, "number",
+                                    [self.cached(block, r, first_col) for r in block.rows], where)
         self.frames.append({
             "id": frame_id, "kind": "expansion", "title": title, "sheet": block.sheet,
             "base": base.name, "attrs": ([row_key] if row_key else []) + [attr[c] for c in sorted(attr)],
             "measure": measure_name,
-            "axis": {"name": axis_name, "type": "datetime", "values": [p.isoformat() for p in periods]},
-            "columns": [{"name": measure_name, "type": measure_type, "expr": measure_ir,
-                         **({"format": fmt} if fmt else {})}]})
+            "axis": {"name": axis_name, "type": "datetime", "values": [p.isoformat() for p in periods],
+                     **self.reg.format_entry(block.ws.cell(block.hr, matrix[0]).number_format, "datetime", [],
+                                             _addr(block.sheet, block.hr, matrix[0]))},
+            "columns": [{"name": measure_name, "type": measure_type, "expr": measure_ir, **fmt}],
+            **self.look(block)})
         grid_cols = {}
         for col, base_col in attr.items():
             grid_cols[col] = {"role": "attr", "name": base_col}
@@ -1415,9 +1465,10 @@ class Drafter:
                 raise PlanDraftError(f"{_addr(block.sheet, block.first_row, first_col)}: first period formula "
                                      "differs from the others")
             columns.append({"name": measure, "type": "number", "expr": irs[0]})
-        fmt = _fmt_kind(block.ws.cell(block.first_row, first_col))
-        if fmt:
-            columns[-1]["format"] = fmt
+        columns[-1].update(self.reg.format_entry(
+            block.ws.cell(block.first_row, first_col).number_format, "number",
+            [self.cached(block, r, c) for c in matrix_cols for r in block.rows],
+            _addr(block.sheet, block.first_row, first_col)))
         # the grid must be exactly the table's (row key, period key) pairs
         pairs = {}
         for i, row in enumerate(table.data_rows):
@@ -1439,7 +1490,11 @@ class Drafter:
         frame_id = f"k_{trm.slug(title)}"
         keyed = {"id": frame_id, "kind": "keyed", "title": title, "sheet": block.sheet,
                  "table": table.name, "rowKey": row_key, "periodKey": period_key, "measure": measure,
-                 "periods": [p.isoformat() for p in periods], "columns": columns}
+                 "periods": [p.isoformat() for p in periods], "labels": [trm.iso(v) for v in labels],
+                 "periodFormat": self.reg.format_entry(block.ws.cell(block.hr, first_col).number_format,
+                                                       "datetime", [], _addr(block.sheet, block.hr, first_col)
+                                                       ).get("format"),
+                 "columns": columns, **self.look(block)}
         self.frames.append(keyed)
         cells = []
         for col, period in zip(matrix_cols, periods):
@@ -1524,8 +1579,8 @@ class Drafter:
                 kind = _infer_type([(_addr(block.sheet, r, col), v) for r, v in zip(block.rows, values)],
                                    block.sheet, header_names[col]) or "number"
                 lit_columns.append({"name": header_names[col], "type": kind,
-                                    **({"format": _fmt_kind(block.ws.cell(block.first_row, col))}
-                                       if _fmt_kind(block.ws.cell(block.first_row, col)) else {})})
+                                    **self.reg.format_entry(block.ws.cell(block.first_row, col).number_format,
+                                                            kind, values, _addr(block.sheet, block.first_row, col))})
                 for row_values, v in zip(lit_rows, values):
                     row_values.append(trm.iso(v) if isinstance(v, (date, datetime)) else v)
             self.reg.synthetic[lit_name] = {
@@ -1535,21 +1590,23 @@ class Drafter:
                 "note": f"Typed values from {block.sheet} (not a formula) - editable inputs keyed by {by}."}
         for col in self.order_columns(cols, deps):
             name = header_names[col]
-            fmt = _fmt_kind(block.ws.cell(block.first_row, col))
             if kinds[col] == "literal":
                 expr = ["lk", lit_name, ["key"], by, name, None]
                 ctype = next(c["type"] for c in lit_columns if c["name"] == name)
             else:
                 expr = columns[col]
                 ctype = self.col_type(block, col, expr)
-            entry = {"name": name, "type": ctype, "expr": expr}
-            if fmt:
-                entry["format"] = fmt
+            entry = {"name": name, "type": ctype, "expr": expr,
+                     **self.reg.format_entry(block.ws.cell(block.first_row, col).number_format, ctype,
+                                             [self.cached(block, r, col) for r in block.rows],
+                                             _addr(block.sheet, block.first_row, col))}
             frame_cols.append(entry)
         frame = {"id": frame_id, "kind": "summary", "title": title, "sheet": block.sheet,
                  "source": {"kind": source_kind, "name": source_name}, "by": by,
                  "labels": [trm.iso(v) if isinstance(v, (date, datetime)) else v for v in labels],
-                 "columns": frame_cols}
+                 "columns": frame_cols, **self.look(block),
+                 "sourceCells": {"labels": [_addr(block.sheet, r, block.lc) for r in block.rows],
+                                 "headers": {header_names[c]: _addr(block.sheet, block.hr, c) for c in cols}}}
         self.frames.append(frame)
         for col in cols:
             name = header_names[col]
@@ -1685,49 +1742,6 @@ class KeyedCtx(Ctx):
         return ["c", value_col]
 
 
-# ---------------------------------------------------------------- charts
-def _range_cells(ref):
-    """Addresses of a chart range such as ``'Forecast'!$B$4:$B$7`` -> ("Forecast", ["B4", ...])."""
-    from openpyxl.utils import range_boundaries
-    found = re.fullmatch(r"(?:'((?:[^']|'')+)'|([^!]+))!(\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?)", ref or "")
-    if not found:
-        return None
-    sheet = (found.group(1) or found.group(2)).replace("''", "'")
-    c1, r1, c2, r2 = range_boundaries(found.group(3).replace("$", ""))
-    return sheet, [f"{get_column_letter(c)}{r}" for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)]
-
-
-def list_charts(wf, checks=()):
-    """Source charts are not emitted; say which verified frame column each series reads."""
-    owner = {}
-    for group in checks:
-        for cell in group["cells"]:
-            owner[cell[0]] = (group["frame"], group["column"])
-    out = []
-    for ws in wf.worksheets:
-        for chart in getattr(ws, "_charts", []):
-            title = None
-            try:
-                title = "".join(run.t for p in chart.title.tx.rich.p for run in (p.r or [])).strip() or None
-            except AttributeError:
-                pass
-            kind = type(chart).__name__ + (" stacked" if getattr(chart, "grouping", None) == "stacked" else "")
-            reads = []
-            for series in chart.series:
-                ref = series.val.numRef.f if series.val is not None and series.val.numRef is not None else None
-                cells = _range_cells(ref)
-                if not cells:
-                    continue
-                frames = {owner.get(f"{cells[0]}!{c}") for c in cells[1]}
-                if len(frames) == 1 and None not in frames:
-                    frame, column = next(iter(frames))
-                    reads.append(f"{frame}.{column}")
-            detail = f"; series read verified {', '.join(dict.fromkeys(reads))}" if reads else ""
-            out.append(f"{title or type(chart).__name__} ({kind}) on {ws.title!r}{detail}: not emitted - "
-                       "rebuild from the presentation plan (refs/presentation-migration.md)")
-    return out
-
-
 # ---------------------------------------------------------------- text-case hazards
 def _frame_tables(frame, frames):
     """Names of the plan tables whose columns a frame's expressions read."""
@@ -1809,9 +1823,22 @@ def reject_case_hazards(plan, tabs):
                 collisions(name, frame["rowKey"], "Excel merges them into one row, a Sigma grouped table keeps two")
 
 
+def finalize_formats(plan, model):
+    """Give every numeric column the drafter could not read a format for (synthetic columns) a plain number
+    with the decimals its computed values need, so no numeric column is left to inherit a format."""
+    def fill(columns, rows):
+        for column in columns:
+            if column.get("type") == "number" and "format" not in column:
+                column["format"] = ef.plain_number(ef.number_decimals(row.get(column["name"]) for row in rows))
+    for table in plan["tables"]:
+        fill(table["columns"], model.table_rows(table["name"]))
+    for frame in plan["frames"]:
+        fill(frame["columns"], model.frame_rows(frame["id"]))
+
+
 # ---------------------------------------------------------------- entry point
 def draft_table_report(source, *, intent, connection, folder, name=None, currency_format="$,.0f",
-                       pct_format=".1%", tolerance=None):
+                       pct_format=".1%", tolerance=None, look=None):
     """Return ``(plan, summary)``; raise ``PlanDraftError`` on any shape or value it cannot prove."""
     if intent not in INTENTS:
         raise PlanDraftError(f"intent must be one of {', '.join(INTENTS)}")
@@ -1861,8 +1888,10 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
         literal = [c for c in tab.columns if c.kind == "literal"]
         for column in tab.columns:
             entry = {"name": column.name, "type": column.type}
-            if column.fmt:
-                entry["format"] = column.fmt
+            if not getattr(column, "synthetic", False):   # a synthetic column has no source cells: formatted later
+                entry.update(reg.format_entry(column.code, column.type, col_values(tab, column.name),
+                                              column.cells[0] if column.cells else f"{tab.ws.title}!{tab.name}"
+                                                                                   f"[{column.name}]"))
             if column.kind == "calculated":
                 entry["expr"] = column.expr
                 if getattr(column, "synthetic", False):
@@ -1896,6 +1925,22 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
                                     in enumerate(zip(column.cells, column.cached))])
 
     issues = list(drafter.issues)
+    if reg.format_notes:
+        issues.append({
+            "code": "NUMBER_FORMAT_APPROXIMATED", "severity": "review", "route": "number-format-review",
+            "message": "These Excel number formats have no exact Sigma format; the closest d3 / strftime format "
+                       "(or a plain number) was used. Confirm the display, not the values.",
+            "evidence": [f"{code}: {'; '.join(note['reasons'])} (at {', '.join(note['where'][:3])})"
+                         for code, note in reg.format_notes.items()]})
+    too_long = [f"{f['title']}: {len(f['labels'])} rows" for f in drafter.frames
+                if f["kind"] in ("summary", "keyed") and not f.get("hidden")
+                and len(f.get("labels") or []) > trm.MAX_ORDER_LABELS]
+    if too_long:
+        issues.append({
+            "code": "SOURCE_ORDER_OMITTED", "severity": "review", "route": "source-order-review",
+            "message": f"These grids have more than {trm.MAX_ORDER_LABELS} rows, too many for a source-order "
+                       "formula; Sigma's key order is used instead of the sheet's row order.",
+            "evidence": too_long})
     if any(f["kind"] == "summary" and not f.get("helper") for f in drafter.frames):
         issues.append({
             "code": "GROUPED_ROWS_FROM_DATA", "severity": "review", "route": "grouped-rows-from-data-review",
@@ -1904,7 +1949,6 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
                        "Excel row label was verified to exist in the data.",
             "evidence": [f["title"] for f in drafter.frames
                          if f["kind"] == "summary" and not f.get("helper")]})
-    unmapped = list_charts(wf, drafter.checks)
 
     plan = {
         "archetype": trm.ARCHETYPE, "planVersion": trm.PLAN_VERSION,
@@ -1915,7 +1959,7 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
         "parametersEditable": editable_default,
         "params": params, "tables": plan_tables, "frames": drafter.frames,
         "checks": drafter.checks, "parityTargets": drafter.targets,
-        "unmappedCharts": unmapped,
+        "unmappedCharts": [],
         "askUser": [
             "Which tables do people edit? Editable tables become empty input tables seeded afterwards "
             "(plan table.editable; the default is every table the formulas read, so a typed value can "
@@ -1937,6 +1981,23 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
         more = f"\n  ... and {len(problems) - 10} more" if len(problems) > 10 else ""
         raise PlanDraftError("drafted plan does not reproduce the workbook's cached values "
                              f"({len(problems)} mismatch(es) of {checked} cells):\n  {shown}{more}")
+    finalize_formats(plan, model)
+    presentation, unmapped = pres.propose(plan, wf, src, model)
+    if look:                # a reference workbook's look (style-reference.py): applied at build time
+        presentation["look"] = look
+    plan["presentation"], plan["unmappedCharts"] = presentation, unmapped
+    notes = presentation.pop("notes", [])
+    if notes:
+        issues.append({
+            "code": "PRESENTATION_ELEMENT_DROPPED", "severity": "review", "route": "presentation-review",
+            "message": "These KPIs / charts could not be emitted from the frame's source columns (or their "
+                       "emitted formulas did not match the verified values), so they are left out of the "
+                       "Report page; values are unaffected.",
+            "evidence": [n["message"] for n in notes]})
+    lines, problems = pres.check_presentation(plan, model, tolerance)
+    if problems:
+        raise PlanDraftError("the drafted presentation does not reproduce the verified cells "
+                             f"({len(problems)} mismatch(es)):\n  " + "\n  ".join(problems[:10]))
     try:
         from . import table_report_ledger as ledger
     except ImportError:
@@ -1963,6 +2024,8 @@ def draft_table_report(source, *, intent, connection, folder, name=None, currenc
         "editable": [t["name"] for t in plan_tables if t["editable"]],
         "readOnly": [t["name"] for t in plan_tables if not t["editable"]],
         "reviewIssues": [i["code"] for i in issues], "unmappedCharts": unmapped,
+        "mappedCharts": [f"{c['title']} ({c['kind']}) -> {c['frame']}" for c in presentation["charts"]],
+        "kpis": [k["label"] for k in presentation["kpis"]],
         "parityTargets": len(plan["parityTargets"]),
     }
     return plan, summary
