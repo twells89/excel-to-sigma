@@ -1,0 +1,718 @@
+{
+ "02-saas": {
+  "dmSha256": "4f9ea9c55ac5a7c45bb35c1085a4eb1113f879ecee1090c1fb7b9e9255e8a061",
+  "elements": {
+   "actuals": {
+    "formulas": [
+     "[Custom SQL/Section]",
+     "[Custom SQL/Section Order]",
+     "[Custom SQL/Line Item]",
+     "[Custom SQL/Line Order]",
+     "[Custom SQL/Month]",
+     "[Custom SQL/Month Num]",
+     "[Custom SQL/Month End]",
+     "[Custom SQL/Amount]",
+     "\"Actual\""
+    ],
+    "kind": "table"
+   },
+   "assumpTable": {
+    "formulas": [
+     "[Custom SQL/Driver]",
+     "[Custom SQL/Monthly Rate]",
+     "[Custom SQL/Basis]"
+    ],
+    "kind": "table"
+   },
+   "forecast": {
+    "formulas": [
+     "[FJ/Section]",
+     "[FJ/Section Order]",
+     "[FJ/Line Item]",
+     "[FJ/Line Order]",
+     "[FJ/Month]",
+     "[FJ/Month Num]",
+     "[FJ/Month End]",
+     "[FJ/N]",
+     "[FJ/Kind]",
+     "[FJ/June Base]",
+     "Coalesce([Rates/Rate], [FJ/Default Rate])",
+     "Coalesce([Manual/Amount], [FJ/Manual Value])",
+     "If([Kind] = \"manual\", [Eff Manual], [Kind] = \"flat\", [June Base], [June Base] * (1 + [Eff Rate]) ^ [N])",
+     "\"Forecast\""
+    ],
+    "kind": "table"
+   },
+   "glTable": {
+    "formulas": [
+     "[Custom SQL/Txn Date]",
+     "[Custom SQL/Month]",
+     "[Custom SQL/Line Item]",
+     "[Custom SQL/Department]",
+     "[Custom SQL/Vendor]",
+     "[Custom SQL/Amount]"
+    ],
+    "kind": "table"
+   },
+   "kpiEbitda": {
+    "formulas": [
+     "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])"
+    ],
+    "kind": "kpi-chart"
+   },
+   "kpiGM": {
+    "formulas": [
+     "(Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt])) / Sum([PnL Combined/Revenue Amt])"
+    ],
+    "kind": "kpi-chart"
+   },
+   "kpiNI": {
+    "formulas": [
+     "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])"
+    ],
+    "kind": "kpi-chart"
+   },
+   "kpiRev": {
+    "formulas": [
+     "Sum([PnL Combined/Revenue Amt])"
+    ],
+    "kind": "kpi-chart"
+   },
+   "manualInput": {
+    "formulas": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    "kind": "input-table"
+   },
+   "monthlyTrend": {
+    "formulas": [
+     "DateTrunc(\"month\", [PnL Combined/Month End])",
+     "Sum([PnL Combined/Revenue Amt])",
+     "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])",
+     "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])"
+    ],
+    "kind": "line-chart"
+   },
+   "pnlCombined": {
+    "formulas": [
+     "[Union of 2 Sources/Section]",
+     "[Union of 2 Sources/Section Order]",
+     "[Union of 2 Sources/Line Item]",
+     "[Union of 2 Sources/Line Order]",
+     "[Union of 2 Sources/Month]",
+     "[Union of 2 Sources/Month Num]",
+     "[Union of 2 Sources/Month End]",
+     "[Union of 2 Sources/Amount]",
+     "[Union of 2 Sources/Period]",
+     "If([Union of 2 Sources/Section] = \"Revenue\", [Union of 2 Sources/Amount], 0)",
+     "If([Union of 2 Sources/Section] = \"Cost of Revenue\", [Union of 2 Sources/Amount], 0)",
+     "If([Union of 2 Sources/Section] = \"Operating Expenses\", [Union of 2 Sources/Amount], 0)",
+     "If([Union of 2 Sources/Section] = \"Below the Line\", [Union of 2 Sources/Amount], 0)"
+    ],
+    "kind": "table"
+   },
+   "pnlHeader": {
+    "formulas": [],
+    "kind": "text"
+   },
+   "pnlPivot": {
+    "formulas": [
+     "[PnL Combined/Section]",
+     "[PnL Combined/Section Order]",
+     "[PnL Combined/Line Item]",
+     "[PnL Combined/Line Order]",
+     "[PnL Combined/Period]",
+     "[PnL Combined/Month End]",
+     "Sum([PnL Combined/Amount])"
+    ],
+    "kind": "pivot-table"
+   },
+   "rateInput": {
+    "formulas": [
+     null,
+     null,
+     null
+    ],
+    "kind": "input-table"
+   },
+   "sourceChart1": {
+    "formulas": [
+     "DateTrunc(\"month\", [PnL Combined/Month End])",
+     "Sum([PnL Combined/Revenue Amt])",
+     "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])",
+     "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])",
+     "[PnL Combined/Month End]"
+    ],
+    "kind": "line-chart"
+   },
+   "spineWrap": {
+    "formulas": [
+     "[Custom SQL/Section]",
+     "[Custom SQL/Section Order]",
+     "[Custom SQL/Line Item]",
+     "[Custom SQL/Line Order]",
+     "[Custom SQL/Month]",
+     "[Custom SQL/Month Num]",
+     "[Custom SQL/Month End]",
+     "[Custom SQL/N]",
+     "[Custom SQL/Kind]",
+     "[Custom SQL/Default Rate]",
+     "[Custom SQL/Manual Value]",
+     "[Custom SQL/June Base]"
+    ],
+    "kind": "table"
+   }
+  },
+  "parity": {
+   "EBITDA": 346283.06111157127,
+   "Gross Margin %": 0.8116236576532759,
+   "Gross Profit": 5830816.893637633,
+   "Net Income": 125031.06111157127,
+   "Revenue": 7184138.656698136,
+   "Total Below the Line": 221252.0,
+   "Total Cost of Revenue": 1353321.7630605022,
+   "Total Operating Expenses": 5484533.832526062
+  },
+  "parityTargets": {
+   "EBITDA": 346283.06111157127,
+   "Gross Profit": 5830816.893637633,
+   "Net Income": 125031.06111157127,
+   "Revenue": 7184138.656698136
+  }
+ },
+ "03-retail": {
+  "dmSha256": "3f32e683332ec0fb1379c6467082e650357398a34d59e2d7e0dc72ae65bc4d9d",
+  "elements": {
+   "actuals": {
+    "formulas": [
+     "[Custom SQL/Section]",
+     "[Custom SQL/Section Order]",
+     "[Custom SQL/Line Item]",
+     "[Custom SQL/Line Order]",
+     "[Custom SQL/Month]",
+     "[Custom SQL/Month Num]",
+     "[Custom SQL/Month End]",
+     "[Custom SQL/Amount]",
+     "\"Actual\""
+    ],
+    "kind": "table"
+   },
+   "assumpTable": {
+    "formulas": [
+     "[Custom SQL/Driver]",
+     "[Custom SQL/Rate]",
+     "[Custom SQL/Basis]"
+    ],
+    "kind": "table"
+   },
+   "forecast": {
+    "formulas": [
+     "[Forecast Base/Section]",
+     "[Forecast Base/Section Order]",
+     "[Forecast Base/Line Item]",
+     "[Forecast Base/Line Order]",
+     "[Forecast Base/Month]",
+     "[Forecast Base/Month Num]",
+     "[Forecast Base/Month End]",
+     "If([Forecast Base/Kind] = \"pct\", [Forecast Base/Eff Rate] * If([Forecast Base/Of Section] = \"Net Sales\" and [Forecast Base/Month Num] = 5, SumIf([Forecast Base Ref/Amount], [Forecast Base Ref/Section] = \"Net Sales\" and [Forecast Base Ref/Month Num] = 5), [Forecast Base/Of Section] = \"Net Sales\" and [Forecast Base/Month Num] = 6, SumIf([Forecast Base Ref/Amount], [Forecast Base Ref/Section] = \"Net Sales\" and [Forecast Base Ref/Month Num] = 6), 0), [Forecast Base/Amount])",
+     "\"Forecast\""
+    ],
+    "kind": "table"
+   },
+   "forecastCalc": {
+    "formulas": [
+     "[FJ/Section]",
+     "[FJ/Section Order]",
+     "[FJ/Line Item]",
+     "[FJ/Line Order]",
+     "[FJ/Month]",
+     "[FJ/Month Num]",
+     "[FJ/Month End]",
+     "[FJ/N]",
+     "[FJ/Kind]",
+     "[FJ/June Base]",
+     "[FJ/Of Section]",
+     "Coalesce([Rates/Rate], [FJ/Default Rate])",
+     "Coalesce([Manual/Amount], [FJ/Manual Value])",
+     "If([Kind] = \"manual\", [Eff Manual], [Kind] = \"flat\", [June Base], [Kind] = \"pct\", 0, [June Base] * (1 + [Eff Rate]) ^ [N])",
+     "\"Forecast\""
+    ],
+    "kind": "table"
+   },
+   "forecastRef": {
+    "formulas": [
+     "[Forecast Base/Section]",
+     "[Forecast Base/Month Num]",
+     "[Forecast Base/Amount]"
+    ],
+    "kind": "table"
+   },
+   "glTable": {
+    "formulas": [
+     "[Custom SQL/Txn Date]",
+     "[Custom SQL/Month]",
+     "[Custom SQL/Line Item]",
+     "[Custom SQL/Department]",
+     "[Custom SQL/Vendor]",
+     "[Custom SQL/Amount]"
+    ],
+    "kind": "table"
+   },
+   "kpiEbitda": {
+    "formulas": [
+     "SumIf([PnL Combined/Net Sales Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6) - SumIf([PnL Combined/SG&A Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6)"
+    ],
+    "kind": "kpi-chart"
+   },
+   "kpiGM": {
+    "formulas": [
+     "(SumIf([PnL Combined/Net Sales Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6)) / SumIf([PnL Combined/Net Sales Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6)"
+    ],
+    "kind": "kpi-chart"
+   },
+   "kpiNI": {
+    "formulas": [
+     "SumIf([PnL Combined/Net Sales Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6) - SumIf([PnL Combined/SG&A Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6) - SumIf([PnL Combined/Other Income Expense Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6)"
+    ],
+    "kind": "kpi-chart"
+   },
+   "kpiRev": {
+    "formulas": [
+     "SumIf([PnL Combined/Net Sales Amt], [PnL Combined/Month Num] >= 3 and [PnL Combined/Month Num] <= 6)"
+    ],
+    "kind": "kpi-chart"
+   },
+   "manualInput": {
+    "formulas": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    "kind": "input-table"
+   },
+   "monthlyTrend": {
+    "formulas": [
+     "[PnL Combined/Month]",
+     "[PnL Combined/Month Num]",
+     "Sum([PnL Combined/Net Sales Amt])",
+     "Sum([PnL Combined/Net Sales Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/SG&A Amt])",
+     "Sum([PnL Combined/Net Sales Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/SG&A Amt]) - Sum([PnL Combined/Other Income Expense Amt])"
+    ],
+    "kind": "line-chart"
+   },
+   "pnlCombined": {
+    "formulas": [
+     "[Union of 2 Sources/Section]",
+     "[Union of 2 Sources/Section Order]",
+     "[Union of 2 Sources/Line Item]",
+     "[Union of 2 Sources/Line Order]",
+     "[Union of 2 Sources/Month]",
+     "[Union of 2 Sources/Month Num]",
+     "[Union of 2 Sources/Month End]",
+     "[Union of 2 Sources/Amount]",
+     "[Union of 2 Sources/Period]",
+     "If([Union of 2 Sources/Section] = \"Net Sales\", [Union of 2 Sources/Amount], 0)",
+     "If([Union of 2 Sources/Section] = \"COGS\", [Union of 2 Sources/Amount], 0)",
+     "If([Union of 2 Sources/Section] = \"SG&A\", [Union of 2 Sources/Amount], 0)",
+     "If([Union of 2 Sources/Section] = \"Other Income/Expense\", [Union of 2 Sources/Amount], 0)"
+    ],
+    "kind": "table"
+   },
+   "pnlHeader": {
+    "formulas": [],
+    "kind": "text"
+   },
+   "pnlPivot": {
+    "formulas": [
+     "[PnL Combined/Section]",
+     "[PnL Combined/Section Order]",
+     "[PnL Combined/Line Item]",
+     "[PnL Combined/Line Order]",
+     "[PnL Combined/Period]",
+     "[PnL Combined/Month]",
+     "[PnL Combined/Month Num]",
+     "Sum([PnL Combined/Amount])"
+    ],
+    "kind": "pivot-table"
+   },
+   "rateInput": {
+    "formulas": [
+     null,
+     null,
+     null
+    ],
+    "kind": "input-table"
+   },
+   "sourceChart1": {
+    "formulas": [
+     "[PnL Combined/Month]",
+     "Sum([PnL Combined/Net Sales Amt])",
+     "[PnL Combined/Month Num]"
+    ],
+    "kind": "bar-chart"
+   },
+   "spineWrap": {
+    "formulas": [
+     "[Custom SQL/Section]",
+     "[Custom SQL/Section Order]",
+     "[Custom SQL/Line Item]",
+     "[Custom SQL/Line Order]",
+     "[Custom SQL/Month]",
+     "[Custom SQL/Month Num]",
+     "[Custom SQL/Month End]",
+     "[Custom SQL/N]",
+     "[Custom SQL/Kind]",
+     "[Custom SQL/Default Rate]",
+     "[Custom SQL/Manual Value]",
+     "[Custom SQL/June Base]",
+     "[Custom SQL/Of Section]"
+    ],
+    "kind": "table"
+   }
+  },
+  "parity": {
+   "Gross Margin": 5346047.766672801,
+   "Operating Profit": 1377182.3566968013,
+   "Pre-tax Income": 1218182.3566968013,
+   "Total COGS": 9055995.8601272,
+   "Total Net Sales": 14402043.6268,
+   "Total Other Income/Expense": 159000.0,
+   "Total SG&A": 3968865.409976
+  },
+  "parityTargets": {
+   "Gross Margin": 5346047.7666728,
+   "Operating Profit": 1377182.3566968003,
+   "Pre-tax Income": 1218182.3566968003,
+   "Total COGS": 9055995.860127201,
+   "Total Net Sales": 14402043.6268,
+   "Total Other Income/Expense": 159000.0,
+   "Total SG&A": 3968865.409976
+  }
+ },
+ "legacy": {
+  "builders-plan": {
+   "snapshot": {
+    "dmSha256": "3cbea8baa8aab39b232a645bac7d9a05972d2210dbdecfbad215abccff9cb99b",
+    "elements": {
+     "actuals": {
+      "formulas": [
+       "[Custom SQL/Section]",
+       "[Custom SQL/Section Order]",
+       "[Custom SQL/Line Item]",
+       "[Custom SQL/Line Order]",
+       "[Custom SQL/Month]",
+       "[Custom SQL/Month Num]",
+       "[Custom SQL/Month End]",
+       "[Custom SQL/Amount]",
+       "\"Actual\""
+      ],
+      "kind": "table"
+     },
+     "assumpTable": {
+      "formulas": [
+       "[Custom SQL/Driver]",
+       "[Custom SQL/Monthly Rate]",
+       "[Custom SQL/Basis]"
+      ],
+      "kind": "table"
+     },
+     "forecast": {
+      "formulas": [
+       "[Forecast Spine/Section]",
+       "[Forecast Spine/Section Order]",
+       "[Forecast Spine/Line Item]",
+       "[Forecast Spine/Line Order]",
+       "[Forecast Spine/Month]",
+       "[Forecast Spine/Month Num]",
+       "[Forecast Spine/Month End]",
+       "If([Forecast Spine/Kind] = \"manual\", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = \"flat\", [Forecast Spine/June Base], [Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])",
+       "\"Forecast\""
+      ],
+      "kind": "table"
+     },
+     "glTable": {
+      "formulas": [
+       "[Custom SQL/Txn Date]",
+       "[Custom SQL/Month]",
+       "[Custom SQL/Line Item]",
+       "[Custom SQL/Department]",
+       "[Custom SQL/Vendor]",
+       "[Custom SQL/Amount]"
+      ],
+      "kind": "table"
+     },
+     "kpiEbitda": {
+      "formulas": [
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "kpiGM": {
+      "formulas": [
+       "(Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt])) / Sum([PnL Combined/Revenue Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "kpiNI": {
+      "formulas": [
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "kpiRev": {
+      "formulas": [
+       "Sum([PnL Combined/Revenue Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "monthlyTrend": {
+      "formulas": [
+       "DateTrunc(\"month\", [PnL Combined/Month End])",
+       "Sum([PnL Combined/Revenue Amt])",
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])",
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])"
+      ],
+      "kind": "line-chart"
+     },
+     "pnlCombined": {
+      "formulas": [
+       "[Union of 2 Sources/Section]",
+       "[Union of 2 Sources/Section Order]",
+       "[Union of 2 Sources/Line Item]",
+       "[Union of 2 Sources/Line Order]",
+       "[Union of 2 Sources/Month]",
+       "[Union of 2 Sources/Month Num]",
+       "[Union of 2 Sources/Month End]",
+       "[Union of 2 Sources/Amount]",
+       "[Union of 2 Sources/Period]",
+       "If([Union of 2 Sources/Section] = \"Revenue\", [Union of 2 Sources/Amount], 0)",
+       "If([Union of 2 Sources/Section] = \"Cost of Revenue\", [Union of 2 Sources/Amount], 0)",
+       "If([Union of 2 Sources/Section] = \"Operating Expenses\", [Union of 2 Sources/Amount], 0)",
+       "If([Union of 2 Sources/Section] = \"Below the Line\", [Union of 2 Sources/Amount], 0)"
+      ],
+      "kind": "table"
+     },
+     "pnlHeader": {
+      "formulas": [],
+      "kind": "text"
+     },
+     "pnlPivot": {
+      "formulas": [
+       "[PnL Combined/Section]",
+       "[PnL Combined/Section Order]",
+       "[PnL Combined/Line Item]",
+       "[PnL Combined/Line Order]",
+       "[PnL Combined/Period]",
+       "[PnL Combined/Month End]",
+       "Sum([PnL Combined/Amount])"
+      ],
+      "kind": "pivot-table"
+     },
+     "spineWrap": {
+      "formulas": [
+       "[Custom SQL/Section]",
+       "[Custom SQL/Section Order]",
+       "[Custom SQL/Line Item]",
+       "[Custom SQL/Line Order]",
+       "[Custom SQL/Month]",
+       "[Custom SQL/Month Num]",
+       "[Custom SQL/Month End]",
+       "[Custom SQL/N]",
+       "[Custom SQL/Kind]",
+       "[Custom SQL/Default Rate]",
+       "[Custom SQL/Manual Value]",
+       "[Custom SQL/June Base]"
+      ],
+      "kind": "table"
+     }
+    },
+    "parity": {
+     "EBITDA": 210.0,
+     "Gross Profit": 210.0,
+     "Net Income": 210.0,
+     "Revenue": 210.0
+    },
+    "parityTargets": null
+   },
+   "wbSpecSha256": "ce0040bf18561e5decb84ecbfa61987dac6e3217152e083dd22f376d5949dcab"
+  },
+  "sample-model-plan": {
+   "snapshot": {
+    "dmSha256": "c32917e6fe3b0a37d9e4847d13c72ac42ffe074673de6f259436e50d4aff4fae",
+    "elements": {
+     "actuals": {
+      "formulas": [
+       "[Custom SQL/Section]",
+       "[Custom SQL/Section Order]",
+       "[Custom SQL/Line Item]",
+       "[Custom SQL/Line Order]",
+       "[Custom SQL/Month]",
+       "[Custom SQL/Month Num]",
+       "[Custom SQL/Month End]",
+       "[Custom SQL/Amount]",
+       "\"Actual\""
+      ],
+      "kind": "table"
+     },
+     "assumpTable": {
+      "formulas": [
+       "[Custom SQL/Driver]",
+       "[Custom SQL/Monthly Rate]",
+       "[Custom SQL/Basis]"
+      ],
+      "kind": "table"
+     },
+     "forecast": {
+      "formulas": [
+       "[FJ/Section]",
+       "[FJ/Section Order]",
+       "[FJ/Line Item]",
+       "[FJ/Line Order]",
+       "[FJ/Month]",
+       "[FJ/Month Num]",
+       "[FJ/Month End]",
+       "[FJ/N]",
+       "[FJ/Kind]",
+       "[FJ/June Base]",
+       "Coalesce([Rates/Rate], [FJ/Default Rate])",
+       "Coalesce([Manual/Amount], [FJ/Manual Value])",
+       "If([Kind] = \"manual\", [Eff Manual], [Kind] = \"flat\", [June Base], [June Base] * (1 + [Eff Rate]) ^ [N])",
+       "\"Forecast\""
+      ],
+      "kind": "table"
+     },
+     "glTable": {
+      "formulas": [
+       "[Custom SQL/Txn Date]",
+       "[Custom SQL/Month]",
+       "[Custom SQL/Line Item]",
+       "[Custom SQL/Department]",
+       "[Custom SQL/Vendor]",
+       "[Custom SQL/Amount]"
+      ],
+      "kind": "table"
+     },
+     "kpiEbitda": {
+      "formulas": [
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "kpiGM": {
+      "formulas": [
+       "(Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt])) / Sum([PnL Combined/Revenue Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "kpiNI": {
+      "formulas": [
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "kpiRev": {
+      "formulas": [
+       "Sum([PnL Combined/Revenue Amt])"
+      ],
+      "kind": "kpi-chart"
+     },
+     "manualInput": {
+      "formulas": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      "kind": "input-table"
+     },
+     "monthlyTrend": {
+      "formulas": [
+       "DateTrunc(\"month\", [PnL Combined/Month End])",
+       "Sum([PnL Combined/Revenue Amt])",
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])",
+       "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt]) - Sum([PnL Combined/Below Amt])"
+      ],
+      "kind": "line-chart"
+     },
+     "pnlCombined": {
+      "formulas": [
+       "[Union of 2 Sources/Section]",
+       "[Union of 2 Sources/Section Order]",
+       "[Union of 2 Sources/Line Item]",
+       "[Union of 2 Sources/Line Order]",
+       "[Union of 2 Sources/Month]",
+       "[Union of 2 Sources/Month Num]",
+       "[Union of 2 Sources/Month End]",
+       "[Union of 2 Sources/Amount]",
+       "[Union of 2 Sources/Period]",
+       "If([Union of 2 Sources/Section] = \"Revenue\", [Union of 2 Sources/Amount], 0)",
+       "If([Union of 2 Sources/Section] = \"Cost of Revenue\", [Union of 2 Sources/Amount], 0)",
+       "If([Union of 2 Sources/Section] = \"Operating Expenses\", [Union of 2 Sources/Amount], 0)",
+       "If([Union of 2 Sources/Section] = \"Below the Line\", [Union of 2 Sources/Amount], 0)"
+      ],
+      "kind": "table"
+     },
+     "pnlHeader": {
+      "formulas": [],
+      "kind": "text"
+     },
+     "pnlPivot": {
+      "formulas": [
+       "[PnL Combined/Section]",
+       "[PnL Combined/Section Order]",
+       "[PnL Combined/Line Item]",
+       "[PnL Combined/Line Order]",
+       "[PnL Combined/Period]",
+       "[PnL Combined/Month End]",
+       "Sum([PnL Combined/Amount])"
+      ],
+      "kind": "pivot-table"
+     },
+     "rateInput": {
+      "formulas": [
+       null,
+       null,
+       null
+      ],
+      "kind": "input-table"
+     },
+     "spineWrap": {
+      "formulas": [
+       "[Custom SQL/Section]",
+       "[Custom SQL/Section Order]",
+       "[Custom SQL/Line Item]",
+       "[Custom SQL/Line Order]",
+       "[Custom SQL/Month]",
+       "[Custom SQL/Month Num]",
+       "[Custom SQL/Month End]",
+       "[Custom SQL/N]",
+       "[Custom SQL/Kind]",
+       "[Custom SQL/Default Rate]",
+       "[Custom SQL/Manual Value]",
+       "[Custom SQL/June Base]"
+      ],
+      "kind": "table"
+     }
+    },
+    "parity": {
+     "EBITDA": 62327.16413641535,
+     "Gross Profit": 5388318.566845865,
+     "Net Income": -135372.83586358465,
+     "Revenue": 6961218.476956987
+    },
+    "parityTargets": null
+   },
+   "wbSpecSha256": "df44c6b6356f447bac7fe65b9988f5b2304fa940a33b41ab5002710e119941bf"
+  }
+ }
+}

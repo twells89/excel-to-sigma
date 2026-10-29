@@ -9,7 +9,7 @@ line, total and derived row for every month or quarter from the drafted plan and
 it with the workbook's cached values; and writes a source-bound plan JSON. Any shape it
 does not recognise fails with the offending cell instead of being coerced.
 
-usage: draft-forecast-plan.py <xlsx> --intent what-if --connection <id> --folder <id> --out plan.json
+usage: draft-forecast-plan.py <xlsx> --intent what-if --connection <id> --folder <id> --out plan.json [--look look.json]
 Next:  build-forecast-model.py plan.json  (dry run), then  ... --post --review-dispositions review.json
 """
 import argparse
@@ -33,6 +33,8 @@ def parse_args(argv=None):
     parser.add_argument("--sheet", help="report sheet (default: most SUMIFS/driver-growth cells)")
     parser.add_argument("--currency-format", default="$,.0f")
     parser.add_argument("--pct-format", default=".1%")
+    parser.add_argument("--look", help="look.json from style-reference.py: the workbook takes that workbook's theme, "
+                                       "card styles and KPI type (Excel's formats, titles and order still win)")
     parser.add_argument("--tolerance", type=float, default=None,
                         help="absolute tolerance when re-deriving cached values (default: float noise "
                              "only, max(1e-6, 1e-9 * |cached value|))")
@@ -42,11 +44,12 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    look = json.loads(Path(args.look).read_text(encoding="utf-8")) if args.look else None
     try:
         plan, info = draft_plan(
             args.workbook, intent=args.intent, connection=args.connection, folder=args.folder,
             name=args.name, sheet=args.sheet, currency_format=args.currency_format,
-            pct_format=args.pct_format, tolerance=args.tolerance)
+            pct_format=args.pct_format, tolerance=args.tolerance, look=look)
     except PlanDraftError as error:
         print(f"DRAFT FAILED: {error}", file=sys.stderr)
         return 1
@@ -76,6 +79,14 @@ def main(argv=None):
         print("  columns not carried (outside the periods and FY total): " + ", ".join(info["ignoredColumns"]))
     print(f"  verified: {info['verifiedCells']} line / total / derived-row cells and every GL "
           f"{unit[:-1]} sum match the workbook's cached values")
+    shown = info["presentation"]
+    print(f"  presentation: title {shown['title']!r}; money {shown['money']}; "
+          f"{shown['percent'] or 'no percent row (--pct-format)'}")
+    for note in shown["notes"]:
+        print(f"  note: {note}")
+    if look:
+        print(f"  look: the workbook takes the look of {(look.get('source') or {}).get('name') or args.look} "
+              "(theme, card styles, KPI type); Excel's formats, titles and order still win")
     for chart in info["charts"]:
         print(f"  source chart mapped + values verified: {chart}")
     for chart in info["unmappedCharts"]:

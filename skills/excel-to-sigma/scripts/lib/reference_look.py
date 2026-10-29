@@ -30,6 +30,13 @@ UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-
 HEX = re.compile(r"#[0-9a-fA-F]{3,8}")
 
 
+def problem(look):
+    """Why ``look`` is not a usable reference look (``None`` when it is, or when there is none)."""
+    if look is None or (isinstance(look, dict) and look.get("version") == LOOK_VERSION):
+        return None
+    return "presentation.look must be a version 1 look from style-reference.py"
+
+
 def workbook_id(text):
     """The id ``GET /v2/workbooks/{id}/spec`` accepts, from a bare id / UUID or a workbook URL.
 

@@ -57,6 +57,12 @@ def quiet_parity(plan, computed, tolerance=None):
         return BUILD.check_parity(plan, computed, tolerance)
 
 
+def card_name(element):
+    """A KPI card's title text, case-folded: the card carries a styled ``name`` object with an uppercase label."""
+    name = element["name"]
+    return (name["text"] if isinstance(name, dict) else name).casefold()
+
+
 def label_rows(ws):
     return {ws.cell(r, 1).value: r for r in range(1, ws.max_row + 1) if ws.cell(r, 1).value}
 
@@ -99,16 +105,16 @@ def check_emitted(test, plan):
     kpis = [el for page in spec["pages"] for el in page["elements"] if el["kind"] == "kpi-chart"]
     test.assertGreaterEqual(len(kpis), 3)
     for kpi in kpis:
-        name, value = kpi["name"], emitted.evaluate(kpi["columns"][0]["formula"], rows)
+        name, value = card_name(kpi), emitted.evaluate(kpi["columns"][0]["formula"], rows)
         if name.endswith("%"):
             first = next(iter(amount))
             expected = fy_values[first] / ev.section_total(first_positive, idx)
         else:
-            key = max((k for k in fy_values if name.endswith(k)), key=len)
+            key = max((k for k in fy_values if name.endswith(k.casefold())), key=len)
             expected = fy_values[key]
         test.assertAlmostEqual(value, expected, places=6, msg=f"KPI {name!r}")
-    trend = next(el for page in spec["pages"] for el in page["elements"] if el["id"] == "monthlyTrend")
-    for column in trend["columns"]:
+    trend = next((el for page in spec["pages"] for el in page["elements"] if el["id"] == "monthlyTrend"), None)
+    for column in (trend["columns"] if trend else []):
         if column["name"] in ("Month", "Period", "Period Order") or column["id"] in ("t_month", "t_ord"):
             continue
         for i, period in enumerate(ev.periods):
@@ -117,6 +123,27 @@ def check_emitted(test, plan):
             series = ev.derived[column["name"]] if column["name"] in amount else ev.totals[column["name"]]
             test.assertAlmostEqual(value or 0.0, series[i], places=6,
                                    msg=f"trend {column['name']!r} in {period['label']}")
+
+    # 3. the mapped source charts: each series over every period equals the oracle's row total
+    def metric_series(name):
+        for label, values in ev.derived.items():
+            if calc.TARGET_LABELS.get(label.lower(), label) == name:
+                return values
+        for sec, label in ev.total_labels.items():
+            if label and calc.TARGET_LABELS.get(label.lower(), label) == name:
+                return ev.totals[sec]
+        return ev.totals.get(name)
+    for chart in (el for page in spec["pages"] for el in page["elements"] if el["id"].startswith("sourceChart")):
+        if chart.get("filters") and any(f["startDate"] > ev.periods[0]["end"][:8] + "01" or f["endDate"] < ev.periods[-1]["end"]
+                                        for f in chart["filters"] if f["kind"] == "date-range"):
+            continue            # a chart over part of the horizon
+        for column in chart["columns"]:
+            if "_y" not in column["id"]:
+                continue
+            series = metric_series(column["name"])
+            test.assertIsNotNone(series, f"source chart series {column['name']!r}")
+            test.assertAlmostEqual(emitted.evaluate(column["formula"], rows) or 0.0, sum(series), places=6,
+                                   msg=f"source chart {chart['id']} series {column['name']!r}")
     return ev, spec
 
 
@@ -205,10 +232,10 @@ class TestLineLevelTerms(Base):
         self.contribution_workbook()
         plan, _ = self.draft()
         spec = BUILD.build_wb_spec(plan, "dm", ELS)
-        cards = {el["id"]: el["name"] for page in spec["pages"] for el in page["elements"]
+        cards = {el["id"]: card_name(el) for page in spec["pages"] for el in page["elements"]
                  if el["kind"] == "kpi-chart"}
-        self.assertEqual(cards, {"kpiRev": "Total Revenue", "kpiEbitda": "EBITDA",
-                                 "kpiNI": "Net Income", "kpiGM": "Gross Margin %"})
+        self.assertEqual(cards, {"kpiRev": "total revenue", "kpiEbitda": "ebitda",
+                                 "kpiNI": "net income", "kpiGM": "gross margin %"})
 
     def test_line_names_the_formulas_cannot_carry_are_rejected_naming_the_cell(self):
         lines = [list(line) for line in fixture.DEFAULT_LINES]
@@ -319,10 +346,10 @@ class TestFalseRejections(Base):
         self.helper_total_workbook()
         plan, _ = self.draft()
         spec = BUILD.build_wb_spec(plan, "dm", ELS)
-        cards = {el["id"]: el["name"] for page in spec["pages"] for el in page["elements"]
+        cards = {el["id"]: card_name(el) for page in spec["pages"] for el in page["elements"]
                  if el["kind"] == "kpi-chart"}
-        self.assertEqual(cards["kpiNI"], "Profit")        # reads every section
-        self.assertEqual(cards["kpiEbitda"], "Total Costs")
+        self.assertEqual(cards["kpiNI"], "profit")        # reads every section
+        self.assertEqual(cards["kpiEbitda"], "total costs")
 
     def test_opposite_signs_across_bottom_line_rows_are_still_ambiguous(self):
         derived = [{"label": "A", "kind": "amount", "coefficients": {"S": 1}, "expr": ["sec", "S"]},
@@ -390,8 +417,8 @@ class TestKpiRoles(unittest.TestCase):
             with self.subTest(source=source.name):
                 plan, _ = draft_plan(source, intent="what-if", connection="c", folder="f")
                 spec = BUILD.build_wb_spec(plan, "dm", ELS)
-                self.assertEqual([el["name"] for page in spec["pages"] for el in page["elements"]
-                                  if el["kind"] == "kpi-chart"], expected)
+                self.assertEqual([card_name(el) for page in spec["pages"] for el in page["elements"]
+                                  if el["kind"] == "kpi-chart"], [name.casefold() for name in expected])
                 check_emitted(self, plan)
 
 

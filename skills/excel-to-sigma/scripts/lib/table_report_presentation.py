@@ -820,10 +820,7 @@ def _chart_elements(plan, chart, meta, accent):
         element["lineAreaStyle"] = {"interpolation": "monotone"}
     else:
         element["kind"] = "bar-chart"
-        if len(chart["categories"]) <= 12 and ps.SURFACES["chart_label_angle"]:      # flat category labels
-            axis_format = element["xAxis"].get("format") or {}
-            element["xAxis"]["format"] = {**axis_format, "labels": {**(axis_format.get("labels") or {}),
-                                                                    "labelAngle": 0}}
+        ps.flat_labels(element["xAxis"], len(chart["categories"]))      # flat category labels
         element["yAxis"] = {"columnIds": y_ids, "format": {"marks": "grid"}}
         element["stacking"] = chart["stacking"]
         if chart["orientation"] == "horizontal":
@@ -948,21 +945,7 @@ def compose_report(plan, parts):
 
 
 def _style_table(element, frame, negative_names, look=None):
-    """Card chrome, source header style and Excel's red negatives on a Report-page table / pivot.
-
-    With a reference ``look`` the card is the reference's table style (none when it has none) and the reference's
-    table preset joins Excel's header fill / bold in ``tableStyle``."""
-    if look is not None:
-        element.pop("style", None)
-        card = ps.look_style(look, "table")
-        if card:
-            element["style"] = card
-    else:
-        element["style"] = ps.card_style()
-    style = ps.table_style(frame.get("headerStyle"), element["kind"], look)
-    if style:
-        element["tableStyle"] = style
+    """Card chrome, source header style and Excel's red negatives on a Report-page table / pivot (shared:
+    ``presentation_style.style_table``)."""
     ids = [c["id"] for c in element.get("columns", []) if c.get("name") in negative_names]
-    rule = ps.negative_red_rule(ids)
-    if rule:
-        element["conditionalFormats"] = [rule]
+    ps.style_table(element, frame.get("headerStyle"), ids, look)
