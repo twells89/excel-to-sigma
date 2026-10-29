@@ -638,6 +638,16 @@ def _evaluate_capture(matrix,capture):
 
 def append_evidence(ledger,matrix,capture):
     validate_ledger(matrix,ledger)
+    return _append_validated(ledger,matrix,capture)
+
+
+def _append_validated(ledger,matrix,capture):
+    """Chain one capture onto a ledger the caller has already validated.
+
+    append_evidence is the only production entry point and re-validates the whole
+    chain first; this split exists so a test can build a long ledger linearly and
+    validate it once, with the same record construction.
+    """
     if any(r['capture']['evidenceId']==capture.get('evidenceId') for r in ledger):raise AcceptanceError('duplicate evidence/replay refused')
     result=_evaluate_capture(matrix,capture)
     entry={**result,'sequence':len(ledger),'previousHash':ledger[-1]['recordHash'] if ledger else None,

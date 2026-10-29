@@ -70,7 +70,7 @@ class PromotionTests(unittest.TestCase):
         changed=copy.deepcopy(candidate);changed['elements'][1]['body']='overwrite foreign'
         with self.assertRaises(ValueError):p.prepare_promotion(backup,current,changed,{**review,'candidateHash':p._digest(changed)},acceptance)
     def test_full_mandatory_evidence_unlocks_exact_original_candidate_and_dryrun_only(self):
-        from acceptance import build_acceptance_matrix,seal_matrix,append_evidence
+        from acceptance import build_acceptance_matrix,seal_matrix,_append_validated
         from test_acceptance import AcceptanceTests
         p,current,rows,sdk,scope=self.fixture()
         manifests,targets,receipts=AcceptanceTests().bound_matrix_inputs()
@@ -110,7 +110,11 @@ class PromotionTests(unittest.TestCase):
             if case.get('persistence'):
                 capture['persistence']={'before':[{'ID':'row','Key':'a','Value':1}],'changed':[{'ID':'row','Key':'a','Value':2}],'reopened':[{'ID':'row','Key':'a','Value':2}],'restored':[{'ID':'row','Key':'a','Value':1}],
                     'rowIdColumn':'ID','keyColumns':['Key'],'allowedChanges':[{'key':{'Key':'a'},'column':'Value','value':2}],'reopenEvidenceId':'unit','restoreEvidenceId':'unit'}
-            ledger=append_evidence(ledger,m,capture)
+            # append_evidence re-validates the whole chain on every call (quadratic across
+            # a ~100-case ledger); chain linearly here. prepare_promotion below validates the
+            # whole ledger (build_workflow_reports -> validate_ledger), as every consumer does.
+            # test_incremental_chain_matches_append_evidence pins that this is the same ledger.
+            ledger=_append_validated(ledger,m,capture)
         scope={**scope,'sourceHash':manifests['sales']['sourceHash'],'planHash':manifests['sales']['planHash']}
         backup=p.build_promotion_backup(scope,current,rows,sdk,{})
         candidate=copy.deepcopy(current['contents']);candidate['elements'].append({'id':'new','kind':'text','body':'Ready'})
@@ -126,6 +130,25 @@ class PromotionTests(unittest.TestCase):
         with self.assertRaises(ValueError):p.prepare_promotion(backup,{**current,'documentVersion':8},candidate,review,acceptance)
         foreign=copy.deepcopy(candidate);foreign['elements'][1]['body']='replace foreign'
         with self.assertRaises(ValueError):p.prepare_promotion(backup,current,foreign,{**review,'candidateHash':p._digest(foreign)},{**acceptance,'finalReview':{**final,'candidateHash':p._digest(foreign)}})
+
+    def test_incremental_chain_matches_append_evidence(self):
+        # Full per-append validation on a small ledger: the production entry point and the
+        # linear helper the long-ledger test uses must build byte-identical chains.
+        from acceptance import seal_matrix,append_evidence,validate_ledger,_append_validated,AcceptanceError
+        ids=['one','two','three']
+        matrix=seal_matrix({'version':1,'workflows':{'sales':{'sourceHash':'a'*64,'planHash':'b'*64,'documentId':'stage','version':6,'url':'https://example.com/stage','sourceFormulaCount':170,'sourceStatus':'SUPPORTED'}},
+            'cases':[{'id':i,'workflow':'sales','mode':'query','count':1,'mandatory':True,'oracle':{'origin':'independent-oracle','reviewer':'independent','sourceHash':'a'*64,'checks':[{'key':'x','expected':1,'comparison':'exact'}]}} for i in ids]})
+        def capture(i):
+            return {'caseId':i,'sourceHash':'a'*64,'planHash':'b'*64,'documentId':'stage','version':6,'origin':'sigma-query','executionId':'run-'+i,'evidenceId':'proof-'+i,'references':['query'],
+                'receipt':{'status':'COMPLETED','executionId':'run-'+i,'documentId':'stage','version':6},'actual':[{'key':'x','value':1}]}
+        full=[];linear=[]
+        for i in ids:
+            full=append_evidence(full,matrix,capture(i));linear=_append_validated(linear,matrix,capture(i))
+        self.assertEqual(full,linear);self.assertTrue(validate_ledger(matrix,linear))
+        # The production path still rejects a tampered chain and a replayed evidence id.
+        tampered=copy.deepcopy(full);tampered[0]['capture']['actual'][0]['value']=2
+        with self.assertRaises(AcceptanceError):append_evidence(tampered,matrix,{**capture('one'),'evidenceId':'fresh'})
+        with self.assertRaises(AcceptanceError):append_evidence(full,matrix,capture('one'))
 
     def test_affected_data_models_require_full_backup_and_fresh_versioned_restore(self):
         p,current,rows,sdk,scope=self.fixture();scope['affectedDataModels']=['dm']
