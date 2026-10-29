@@ -167,7 +167,7 @@ Research runtime bindings should source the main and detail views from `calc`
 column ID. The main view is Year, Revenue (`c8`), EBITDA (`c18`), EPS (`c37`),
 and Net debt / EBITDA (`c57`). The detail view carries every populated FY-results
 metric as a separate column. Each column takes its format from the first
-formatted source period, preserving currency precision, percentages, and the
+formatted source period (through `excel_formats`), preserving currency precision, percentages, and the
 ratio `x` suffix. The emitter derives format exactness by comparing the complete
 main/detail column contract; it does not trust a caller boolean. A generated runtime template records all
 145 logical input IDs and source cells; replace its twelve post-extension column
@@ -203,6 +203,30 @@ omitted `allowBlank` is preserved as omission. Numeric zero membership is a
 declared-rule classification; edit/clear enforcement and the saved value remain
 unresolved until separately reviewed and captured.
 
+### Number formats
+
+Every Excel `number_format` becomes a Sigma `format` through one translator,
+`scripts/lib/excel_formats.py` (the same one the table-report builder uses; see
+`refs/table-report-recipes.md`). `presentation.py` and `input_display.py` keep no
+format parser of their own; they adapt the translation to what they emit:
+
+| Emitter | Adapter over `excel_formats` |
+|---|---|
+| `semanticFormats` per source cell (`_semantic_formats`) | `translate` for the cell's code; General / unknown codes get `translate_for`'s plain number with the decimals the cell (or, for a formula, its cached value) shows; `with_currency_symbol` adds `currencySymbol: "$"` beside a d3 `$` marker; a `[Red]` negative section sets `negativeRed` |
+| chart series (`_unit`, `_series_format`) | unit from the translated category (title words fill in for General cells); `as_currency` / `as_percent` restyle a format only when the title alone gave the unit |
+| input-table SDK display (`source_format_intent`) | `sdk_pattern`: a bare d3 / strftime pattern with `EXACT` / `PARTIAL` / `UNRESOLVED` fidelity |
+
+What the translation brings over the old per-cell guesses: accounting negatives
+(`(`), `[Red]`, `0.0x` and other quoted or suffixed text, euro/pound prefixes,
+no grouping the source does not have, real date masks (`mmm-yy`, `mm/dd`) on
+date cells and on formula cells with a date mask, and the decimals of a General
+number. `[Red]` has no number-format form: a table column whose body cell carries
+it gets a `single` conditional rule (`< 0`, red text) placed beneath the source
+rules (Sigma lets later rules win). Codes the translator cannot map exactly come
+back with reasons and stay in `formatLimitations` / `unresolved`. The input
+display patterns cannot carry a prefix or suffix, so those codes stay
+`UNRESOLVED` there.
+
 ### Physical input display configuration and readback
 
 The workbook code-rep exporter omits persisted input-column visibility and
@@ -210,7 +234,7 @@ formats. Their presence in a REST request, or absence in a later GET, is not
 input display evidence. Actual presentation artifacts remove those input-column
 REST fields, retain validation ranges, and expose `inputDisplay` with
 `PENDING_SDK_READBACK` status. Ordinary readonly currency formats use a raw d3
-`$` marker; `currencySymbol` metadata alone is insufficient to render currency.
+`$` marker (from `excel_formats`); `currencySymbol` metadata alone is insufficient to render currency.
 
 After the guarded REST PUT, capture the latest version/page/assigned IDs and
 bind/restage the approved manifest/receipt. Then emit the metadata-only SDK pass:

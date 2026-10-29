@@ -14,6 +14,12 @@ Negatives
 * ``[Red]`` has no number-format equivalent; ``Translation.negative_red`` is set and the builder emits a
   ``conditionalFormats`` rule (``type: single``, ``condition: "<"``, ``value: 0``, ``style.color``) on the
   columns that carry it (OpenAPI ``Table`` / ``pivot-table`` ``conditionalFormats``).
+
+Callers
+-------
+The table-report builder uses ``translate_for``. The post-build presentation paths (``presentation.py``,
+``source_presentation.py``, ``input_display.py``) use ``translate`` plus the helpers at the end of this module
+(``with_currency_symbol``, ``as_currency``, ``as_percent``, ``sdk_pattern``) and keep no format parser of their own.
 """
 from __future__ import annotations
 
@@ -31,6 +37,8 @@ class Translation:
     format: dict | None = None           # Sigma format object; None for General / text
     negative_red: bool = False
     approximated: list = field(default_factory=list)
+    precision: int | None = None         # decimals the emitted number format shows; None for dates / General / text
+    sections: int = 1                    # `;`-separated sections the Excel code had
 
     @property
     def is_percent(self):
@@ -322,7 +330,7 @@ def translate(code, *, native_parens=True):
         dollar, places = ACCOUNTING_BUILTINS[code]
         return Translation(code, "currency" if dollar else "number",
                            {"kind": "number", "formatString": f"({'$' if dollar else ''},.{places}f"}, False,
-                           ["the zero section is shown with the positive format"])
+                           ["the zero section is shown with the positive format"], places, 4)
     sections = _split_sections(code)
     pos_text, pos_lits, pos_colors, pos_symbol, pos_cond = _clean(sections[0])
     if pos_text.strip() == "@" and len(sections) == 1:
@@ -399,7 +407,7 @@ def translate(code, *, native_parens=True):
     if suffix:
         fmt["suffix"] = suffix
     category = "percent" if parsed["percent"] else "currency" if symbol else "number"
-    return Translation(code, category, fmt, negative_red, notes)
+    return Translation(code, category, fmt, negative_red, notes, precision, len(sections))
 
 
 def translate_for(code, *, kind, values=(), native_parens=True):
@@ -421,3 +429,63 @@ def translate_for(code, *, kind, values=(), native_parens=True):
         reasons = [] if result.category in ("general", "text") else (result.approximated or ["unsupported code"])
         return plain_number(number_decimals(values)), False, reasons, result
     return None, False, [], result
+
+
+# ---------------------------------------------------------------- post-build presentation helpers
+def with_currency_symbol(fmt):
+    """Copy of a Sigma number format with the ``currencySymbol`` metadata Sigma pairs with d3's ``$`` marker.
+    The marker is what renders the symbol; the metadata alone does not, so it is only added next to one."""
+    if not isinstance(fmt, dict):
+        return fmt
+    out = dict(fmt)
+    if fmt.get("kind") == "number" and "$" in str(fmt.get("formatString", "")):
+        out["currencySymbol"] = "$"
+    return out
+
+
+def as_currency(fmt):
+    """A number format shown as dollars: used where only the chart title says the series is currency. A format
+    that already carries a currency (the d3 ``$`` marker, a prefix or a suffix symbol) is left as it is."""
+    if not isinstance(fmt, dict) or fmt.get("kind") != "number":
+        return fmt
+    spec = str(fmt.get("formatString", ""))
+    if "$" in spec or any(c in CURRENCY_CHARS for c in str(fmt.get("prefix", "")) + str(fmt.get("suffix", ""))):
+        return dict(fmt)
+    sign = "(" if spec.startswith("(") else ""
+    return {**fmt, "formatString": f"{sign}${spec[len(sign):]}"}
+
+
+def as_percent(fmt):
+    """A fixed-point number format shown as a percentage (``,.1f`` -> ``,.1%``); other formats are unchanged."""
+    if not isinstance(fmt, dict) or fmt.get("kind") != "number":
+        return fmt
+    spec = str(fmt.get("formatString", ""))
+    return {**fmt, "formatString": spec[:-1] + "%"} if spec.endswith("f") else dict(fmt)
+
+
+PARTIAL_NOTES = ("the zero section is shown with the positive format",)
+
+
+def sdk_pattern(code, kind):
+    """``(pattern | None, fidelity, reason)`` for an input column: the bare d3 / strftime pattern Sigma's SDK
+    ``set_format_pattern`` takes, which has no prefix, suffix or currency field.
+
+    ``kind`` is ``number`` or ``datetime``. A ``None`` pattern with ``EXACT`` means Sigma's automatic format
+    (General / text). ``PARTIAL`` is a code whose sections the pattern can only follow in part (the zero dash,
+    ``[Red]``); ``UNRESOLVED`` is a code the pattern cannot carry, so no pattern is set."""
+    result = translate(code)
+    if result.category in ("general", "text"):
+        return None, "EXACT", None
+    if kind == "datetime":
+        if result.is_date and result.format and not result.approximated:
+            return result.format["formatString"], "EXACT", None
+        return None, "UNRESOLVED", "source date pattern has no verified exact SDK mapping"
+    fmt = result.format
+    if (not fmt or result.is_date or fmt.get("prefix") or fmt.get("suffix")
+            or any(note not in PARTIAL_NOTES for note in result.approximated)):
+        return None, "UNRESOLVED", "source numeric pattern has no verified exact SDK mapping"
+    if result.sections > 1 or result.negative_red or result.approximated:
+        return fmt["formatString"], "PARTIAL", (
+            "Excel accounting sections and zero-as-dash fidelity are unresolved; only supported "
+            "currency/grouping/precision/negative-parentheses semantics are configured")
+    return fmt["formatString"], "EXACT", None

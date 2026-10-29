@@ -18,8 +18,10 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
 try:
+    from . import excel_formats as ef
     from .input_sync import _digest
 except ImportError:
+    import excel_formats as ef
     from input_sync import _digest
 
 
@@ -73,7 +75,8 @@ def extract_sales_overview_scalars(source_path):
                 'numericDependencies': deps, 'name': name,
                 'logicalElementId': logical, 'logicalColumnId': value_id,
                 'kind': 'kpi-chart', 'pageId': 'sales-overview', 'frame': frame,
-                'formatPattern': '$,.0f', 'emptySum': 0, 'groupings': [],
+                'formatPattern': ef.translate(overview[address].number_format).format['formatString'],
+                'emptySum': 0, 'groupings': [],
                 'verification': 'UNRESOLVED'})
     except KeyError as error:
         raise ValueError('unsupported Sales scalar source structure') from error

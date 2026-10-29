@@ -11,8 +11,10 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
 try:
+    from . import excel_formats as ef
     from .input_sync import _approved_feature
 except ImportError:
+    import excel_formats as ef
     from input_sync import _approved_feature
 
 
@@ -21,31 +23,13 @@ def _hash(value):
 
 
 def source_format_intent(raw, column_type):
-    """Translate bounded Excel semantics to documented raw d3/strftime formats."""
+    """Translate bounded Excel semantics to documented raw d3/strftime formats (``excel_formats.sdk_pattern``)."""
     if column_type in {'text','boolean'} or raw in {'General','@'}:
         return {'kind':'automatic'},'EXACT',None
-    if column_type=='datetime':
-        pattern={'yyyy-mm-dd':'%Y-%m-%d','yyyy-mm-dd hh:mm:ss':'%Y-%m-%d %H:%M:%S'}.get(raw)
-        return (({'pattern':pattern},'EXACT',None) if pattern else
-                (None,'UNRESOLVED','source date pattern has no verified exact SDK mapping'))
-    sections=raw.split(';')
-    positive=sections[0]
-    if not re.fullmatch(r'\$?(?:#,##)?0(?:\.0+)?%?',positive):
-        return None,'UNRESOLVED','source numeric pattern has no verified exact SDK mapping'
-    decimals=len(positive.split('.')[1].rstrip('%')) if '.' in positive else 0
-    negative='(' if len(sections)>1 and '(' in sections[1] else ''
-    pattern=negative+('$' if '$' in positive else '')+(',' if ',' in positive else '')+f'.{decimals}'+('%' if positive.endswith('%') else 'f')
-    if len(sections)>1:
-        return {'pattern':pattern},'PARTIAL','Excel accounting sections and zero-as-dash fidelity are unresolved; only supported currency/grouping/precision/negative-parentheses semantics are configured'
-    return {'pattern':pattern},'EXACT',None
-
-
-def currency_pattern(raw, precision):
-    """Use a real d3 currency marker; currencySymbol metadata alone does not render it."""
-    intent,_,_=source_format_intent(raw,'number')
-    if intent and 'pattern' in intent and '$' in intent['pattern']:
-        return intent['pattern']
-    return f'$,.{precision}f'
+    pattern,fidelity,reason=ef.sdk_pattern(raw,column_type)
+    if pattern:
+        return {'pattern':pattern},fidelity,reason
+    return ({'kind':'automatic'} if fidelity=='EXACT' else None),fidelity,reason
 
 
 def _system_column_contract(target):

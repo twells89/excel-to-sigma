@@ -35,7 +35,6 @@ def _load(fn, name):
 INF = _load("infer-canonical-formulas.py", "inf")
 BRM = _load("build-research-model.py", "brm")
 
-NUM = {"kind": "number", "formatString": "#,##0.0"}
 DMP = "Custom SQL"
 RAW_LABEL = "Raw data"          # name of the per-sheet raw-data element (override with --raw-label)
 
