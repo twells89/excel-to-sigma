@@ -168,7 +168,7 @@ pivots. Emitted KPI / series formulas are evaluated offline over the plan's base
 ## Matching the look of an org workbook (`--look`)
 
 "Make it look like Golden Orders": `scripts/style-reference.py <workbookId | URL> --out look.json [--sigma-profile P]`
-makes ONE read-only `GET /v2/workbooks/{id}/spec` and writes the look (`lib/reference_look.py`, `extract_look`; `--spec
+makes ONE read-only `GET /v2/workbooks/{id}?includeContents=true` and writes the look (`lib/reference_look.py`, `extract_look`; `--spec
 saved.json` reads a saved GET response with no network). `draft-table-report.py --look look.json` records it as
 `presentation.look` (with `source {workbookId, name}`); `build-table-report.py` applies it. Without `--look` the
 DEFAULT look applies (it is not frozen: it now includes the `presentation` table preset with its roomier sizing, the

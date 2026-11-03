@@ -4,7 +4,7 @@
 usage: style-reference.py <workbookId | workbook URL> --out look.json [--sigma-profile P]
        style-reference.py --spec saved-get-response.json --out look.json     (offline: a saved GET response)
 
-Read-only: one ``GET /v2/workbooks/{id}/spec`` through ``lib/sigma_auth.api``; nothing is ever written to Sigma.
+Read-only: one ``GET /v2/workbooks/{id}?includeContents=true`` through ``lib/sigma_auth.api``; nothing is ever written to Sigma.
 The look keeps the theme, card styles, KPI type, text type and table preset only - not the arrangement.
 Pass it to ``draft-table-report.py --look look.json``; Excel's own number formats, row order and
 titles still win.
@@ -18,6 +18,7 @@ from pathlib import Path
 _LIB = Path(__file__).resolve().parent / "lib"
 if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
+import code_rep  # noqa: E402
 import sigma_auth  # noqa: E402
 from reference_look import extract_look, workbook_id  # noqa: E402
 
@@ -25,7 +26,7 @@ from reference_look import extract_look, workbook_id  # noqa: E402
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("workbook", nargs="?", help="workbook id or URL")
-    parser.add_argument("--spec", help="a saved GET /v2/workbooks/{id}/spec response (no network)")
+    parser.add_argument("--spec", help="a saved GET /v2/workbooks/{id}?includeContents=true response (no network)")
     parser.add_argument("--out", required=True, help="look JSON to write")
     sigma_auth.add_cli_args(parser)
     return parser.parse_args(argv)
@@ -39,7 +40,7 @@ def main(argv=None):
         wid = workbook_id(args.workbook)
         try:
             sigma_auth.apply_cli_args(args)
-            response = sigma_auth.api("GET", f"/v2/workbooks/{wid}/spec")
+            response = sigma_auth.api("GET", code_rep.read_path(wid))
         except urllib.error.HTTPError as error:
             print(f"style-reference: Sigma returned HTTP {error.code} for workbook {wid}", file=sys.stderr)
             return 1
