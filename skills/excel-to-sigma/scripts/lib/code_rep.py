@@ -12,6 +12,14 @@ Readers stay tolerant of ``contents``, ``document``, and old flat artifacts.
 This adapter is workbook-only. Data-model code representation is unchanged.
 """
 
+WORKBOOKS_PATH = "/v2/workbooks"
+
+
+def read_path(workbook_id):
+    """GET target that returns the workbook envelope plus its document under ``contents``."""
+    return f"{WORKBOOKS_PATH}/{workbook_id}?includeContents=true"
+
+
 # Workbook elements are flat document collections; `overlays` and `panels` live
 # beside them. `settings` (theme/navigation) and `agents` belong inside
 # `document` too. Omitting any of these sweeps it onto the metadata envelope,

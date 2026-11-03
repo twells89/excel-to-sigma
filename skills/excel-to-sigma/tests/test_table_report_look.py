@@ -143,7 +143,7 @@ class TestStyleReferenceCli(unittest.TestCase):
             out = Path(tmp) / "look.json"
             self.assertEqual(cli.main([f"https://x.example/workbook/FP-A-{SPEC_C['workbookId']}", "--out", str(out)]),
                              0)
-            api.assert_called_once_with("GET", f"/v2/workbooks/{SPEC_C['workbookId']}/spec")
+            api.assert_called_once_with("GET", f"/v2/workbooks/{SPEC_C['workbookId']}?includeContents=true")
             look = json.loads(out.read_text())
         self.assertEqual(look["theme"], THEME_C)
         self.assertEqual(look["source"], {"workbookId": SPEC_C["workbookId"], "name": "FP&A Overview"})

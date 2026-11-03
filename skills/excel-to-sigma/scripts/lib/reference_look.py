@@ -1,7 +1,7 @@
 """Extract the *look* of an existing Sigma workbook ("make it look like Golden Orders").
 
-``extract_look(spec_document)`` is a pure function over a workbook spec (a ``GET /v2/workbooks/{id}/spec``
-response, or its ``document`` / ``contents`` part). It keeps the look only - theme, card styles, KPI type, text
+``extract_look(spec_document)`` is a pure function over a workbook spec (a ``GET /v2/workbooks/{id}?includeContents=true``
+response, or its ``contents`` / ``document`` part). It keeps the look only - theme, card styles, KPI type, text
 type and the table preset - never the arrangement or any data. The table-report builder applies it when the plan
 carries ``presentation.look``; the Excel file's own decisions (number formats, header fill, row order, titles)
 still win.
@@ -31,7 +31,7 @@ HEX = re.compile(r"#[0-9a-fA-F]{3,8}")
 
 
 def workbook_id(text):
-    """The id ``GET /v2/workbooks/{id}/spec`` accepts, from a bare id / UUID or a workbook URL.
+    """The id ``GET /v2/workbooks/{id}`` accepts, from a bare id / UUID or a workbook URL.
 
     From a URL, the path segment right after ``/workbook/`` is used (nothing after it: ``/page/..``, ``?..``,
     ``#..``). A UUID inside it wins; otherwise the text after its last ``-`` (a ``Golden-Orders-<id>`` slug is
