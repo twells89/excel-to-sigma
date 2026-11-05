@@ -1,0 +1,44 @@
+[
+ {
+  "name": "RefreshActuals_Click",
+  "kind": "Sub",
+  "class": "EXTERNAL_DATA_REFRESH",
+  "status": "DATA_REVIEW"
+ },
+ {
+  "name": "SetScenario",
+  "kind": "Sub",
+  "class": "WHATIF_SCENARIO",
+  "status": "CONTROL"
+ },
+ {
+  "name": "RollForwardMonth_Click",
+  "kind": "Sub",
+  "class": "ACTION_WRITEBACK",
+  "status": "ACTION"
+ },
+ {
+  "name": "SnapshotVersion_Click",
+  "kind": "Sub",
+  "class": "ACTION_WRITEBACK",
+  "status": "ACTION"
+ },
+ {
+  "name": "SubmitForApproval_Click",
+  "kind": "Sub",
+  "class": "EXTERNAL_IO",
+  "status": "FLAG"
+ },
+ {
+  "name": "RecalcAll",
+  "kind": "Sub",
+  "class": "RECALC",
+  "status": "AUTO"
+ },
+ {
+  "name": "FormatReport",
+  "kind": "Sub",
+  "class": "FORMAT_COSMETIC",
+  "status": "PYTHON_REVIEW"
+ }
+]

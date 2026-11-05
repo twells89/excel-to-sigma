@@ -519,6 +519,18 @@ and formatting parity remain pending until actually tested.
 
 ---
 
+## Phase 6 — Enhance: recommend a Sigma Agent (`scripts/recommend-agent.py`)
+
+Last step, after parity. Read the macro inventory and `workflows.json`, say in plain
+language which macros were workflows people triggered by hand, and offer a Sigma
+workbook agent that runs them on request, with approval before every write. Only
+with a yes: `--merge-into <workbook-spec> --out <merged>`, dry-run validate, then
+create or update the workbook. A macro inventory with no action or scenario classes
+(only recalc / cosmetic) gets no agent and no write tools. See
+`refs/agent-enhance.md`.
+
+---
+
 ## What this skill does NOT do (yet)
 
 - One-shot `.xlsx` → finished migration. Phase 0–1 (discovery + formula
