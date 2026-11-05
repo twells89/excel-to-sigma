@@ -163,7 +163,79 @@ def evaluation(P):
         raise PlanError(str(error)) from None
 
 
-def build_dm_spec(P):
+# Landed-table column roles: DM output name -> accepted source headers (lower case).
+LANDED_ALIASES = {"Txn Date": ("posting date", "txn date", "date"), "Month": ("month",),
+                  "Line Item": ("line item",), "Amount": ("amount",),
+                  "Department": ("department", "region"), "Vendor": ("vendor", "product line")}
+
+
+def landed_actuals_source(landing, actuals_table, P):
+    """Resolve ``--actuals-table DB.SCHEMA.TABLE`` against landing.json.
+
+    Returns ``{"path": [DB, SCHEMA, TABLE], "columns": {output name: landed column name}}``;
+    column names come from landing.json (the same identifiers the landing step created).
+    """
+    parts = actuals_table.split(".")
+    if len(parts) != 3:
+        raise PlanError(f"--actuals-table must be DB.SCHEMA.TABLE, got {actuals_table!r}")
+    db, schema, table = (x.upper() for x in parts)
+    if (landing.get("database", "").upper(), landing.get("schema", "").upper()) != (db, schema):
+        raise PlanError(f"landing.json database/schema do not match {actuals_table}")
+    entry = next((t for t in landing["tables"] if t["snowflakeTable"].upper() == table), None)
+    if entry is None:
+        raise PlanError(f"{actuals_table} is not in landing.json")
+    by_header = {c["header"].strip().lower(): c["name"] for c in entry["columns"]}
+    columns = {}
+    for out, aliases in LANDED_ALIASES.items():
+        name = next((by_header[a] for a in aliases if a in by_header), None)
+        if name:
+            columns[out] = name
+    for required in ("Txn Date", "Month", "Line Item", "Amount"):
+        if required not in columns:
+            raise PlanError(f"landed table {actuals_table} has no column for {required!r} "
+                            f"(accepted headers: {', '.join(LANDED_ALIASES[required])})")
+    return {"path": [db, schema, table], "columns": columns}
+
+
+def _switch(key, mapping, default):
+    for k in mapping:
+        if '"' in str(k) or "\\" in str(k):
+            raise PlanError(f"value {k!r} contains a quote or backslash the Sigma formulas cannot carry")
+    body = ", ".join(f'"{k}", {v}' for k, v in mapping.items())
+    return f"Switch({key}, {body}, {default})"
+
+
+def landed_gl_detail(P, landed):
+    """glDetail as a warehouse-table source on the plan's connection (no inline VALUES).
+
+    Landed columns pass through; Month Num / Month End / Section / Section Order / Line Order,
+    which the landed table does not carry, are Switch / date formulas built from the plan.
+    """
+    periods, n_act, _ = plan_model(P)
+    views = calc.month_views(periods)[:n_act]
+    t = landed["path"][-1]; c = landed["columns"]
+    ref = lambda out: f"[{t}/{c[out]}]"
+    lines = {}
+    for r in P["actuals"]:
+        lines.setdefault(r["line"], r)
+    cols = [
+        ("Txn Date", ref("Txn Date")), ("Month", ref("Month")),
+        ("Month Num", _switch(ref("Month"), {m["month"]: m["num"] for m in views}, 0)),
+        ("Month End", f'DateAdd("day", -1, DateAdd("month", 1, DateTrunc("month", {ref("Txn Date")})))'),
+        ("Line Item", ref("Line Item")),
+        ("Section", _switch(ref("Line Item"), {k: f'"{v["section"]}"' for k, v in lines.items()}, '""')),
+        ("Section Order", _switch(ref("Line Item"), {k: v["secOrder"] for k, v in lines.items()}, 0)),
+        ("Line Order", _switch(ref("Line Item"), {k: v["lineOrder"] for k, v in lines.items()}, 0)),
+        ("Department", ref("Department") if "Department" in c else '""'),
+        ("Vendor", ref("Vendor") if "Vendor" in c else '""'),
+        ("Amount", ref("Amount")),
+    ]
+    return {"id": "glDetail", "kind": "table", "name": "GL Detail",
+            "source": {"kind": "warehouse-table", "connectionId": P["connectionId"], "path": landed["path"]},
+            "columns": [{"id": f"c{i}", "name": nm, "formula": f} for i, (nm, f) in enumerate(cols, 1)]}
+
+
+def build_dm_spec(P, landed=None):
     conn = P["connectionId"]
     periods, n_act, _ = plan_model(P)
     views = calc.month_views(periods)
@@ -181,7 +253,7 @@ def build_dm_spec(P):
     for row, r in zip(gl, P["actuals"]):
         row.insert(2, str(mnum[r['month']])); row.insert(3, sql_date(mend[r['month']]))
     gl_cols[2:2] = ["MONTH_NUM", "MONTH_END"]
-    glDetail = {"id": "glDetail", "kind": "table", "source": {"kind": "sql", "connectionId": conn, "statement": values_sql(gl, gl_cols)},
+    glDetail = landed_gl_detail(P, landed) if landed else {"id": "glDetail", "kind": "table", "source": {"kind": "sql", "connectionId": conn, "statement": values_sql(gl, gl_cols)},
                 "columns": dmcols([("TXN_DATE","Txn Date"),("MONTH","Month"),("MONTH_NUM","Month Num"),("MONTH_END","Month End"),("LINE_ITEM","Line Item"),("SECTION","Section"),("SEC_ORDER","Section Order"),("LINE_ORDER","Line Order"),("DEPARTMENT","Department"),("VENDOR","Vendor"),("AMOUNT","Amount")])}
     # assumptions
     arows = [[q(a), f"{b}", q(c)] for a, b, c in P["assumptions"]]
@@ -440,8 +512,9 @@ def amount_formula(row, table, sec_cols, fy_nums, fy=False):
     return out
 
 
-def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
+def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
+    GLP = "GL Detail" if landed else DMP  # a DM table element is referenced by its name
     U = "Union of 2 Sources"
     periods, n_act, sections = plan_model(P)
     grain_is_month = periods[0]["grain"] == "month"
@@ -466,10 +539,10 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
     elements = []
     # actuals wrap (live)
     actuals = {"id": "actuals", "kind": "table", "name": "Actuals", "source": dm("glDetail"),
-        "columns": [{"id":"a_sec","name":"Section","formula":f"[{DMP}/Section]"},{"id":"a_so","name":"Section Order","formula":f"[{DMP}/Section Order]"},
-                    {"id":"a_line","name":"Line Item","formula":f"[{DMP}/Line Item]"},{"id":"a_lo","name":"Line Order","formula":f"[{DMP}/Line Order]"},
-                    {"id":"a_m","name":"Month","formula":f"[{DMP}/Month]"},{"id":"a_mn","name":"Month Num","formula":f"[{DMP}/Month Num]"},
-                    {"id":"a_me","name":"Month End","formula":f"[{DMP}/Month End]"},{"id":"a_amt","name":"Amount","formula":f"[{DMP}/Amount]"},
+        "columns": [{"id":"a_sec","name":"Section","formula":f"[{GLP}/Section]"},{"id":"a_so","name":"Section Order","formula":f"[{GLP}/Section Order]"},
+                    {"id":"a_line","name":"Line Item","formula":f"[{GLP}/Line Item]"},{"id":"a_lo","name":"Line Order","formula":f"[{GLP}/Line Order]"},
+                    {"id":"a_m","name":"Month","formula":f"[{GLP}/Month]"},{"id":"a_mn","name":"Month Num","formula":f"[{GLP}/Month Num]"},
+                    {"id":"a_me","name":"Month End","formula":f"[{GLP}/Month End]"},{"id":"a_amt","name":"Amount","formula":f"[{GLP}/Amount]"},
                     {"id":"a_p","name":"Period","formula":'"Actual"'}]}
     spine_names = [("sec","Section"),("so","Section Order"),("line","Line Item"),("lo","Line Order"),("m","Month"),("mn","Month Num"),("me","Month End"),("n","N"),("k","Kind"),("dr","Default Rate"),("mv","Manual Value"),("jb","June Base")]
     if has_pct:
@@ -621,7 +694,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None):
         "axisTotals":[{"axisId":"grand-row-total","visibility":"hidden"}],
         "style":{"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}}
     glTable={"id":"glTable","kind":"table","name":"GL Transaction Detail (Actuals)","source":dm("glDetail"),
-        "columns":[{"id":"g1","name":"Txn Date","formula":f"[{DMP}/Txn Date]"},{"id":"g2","name":"Month","formula":f"[{DMP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{DMP}/Line Item]"},{"id":"g4","name":"Department","formula":f"[{DMP}/Department]"},{"id":"g5","name":"Vendor","formula":f"[{DMP}/Vendor]"},{"id":"g6","name":"Amount","formula":f"[{DMP}/Amount]","format":cur}]}
+        "columns":[{"id":"g1","name":"Txn Date","formula":f"[{GLP}/Txn Date]"},{"id":"g2","name":"Month","formula":f"[{GLP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{GLP}/Line Item]"},{"id":"g4","name":"Department","formula":f"[{GLP}/Department]"},{"id":"g5","name":"Vendor","formula":f"[{GLP}/Vendor]"},{"id":"g6","name":"Amount","formula":f"[{GLP}/Amount]","format":cur}]}
     assumpTable={"id":"assumpTable","kind":"table","name":"Forecast Assumptions","source":dm("assumptions"),
         "columns":[{"id":"d1","name":"Driver","formula":f"[{DMP}/Driver]"},{"id":"d2","name":rate_name,"formula":f"[{DMP}/{rate_name}]","format":PCT(P)},{"id":"d3","name":"Basis","formula":f"[{DMP}/Basis]"}]}
     # Source-workbook charts the drafter mapped and verified (plan.sourceCharts). Series are
@@ -693,6 +766,9 @@ def parse_args(argv=None):
     sigma_auth.add_cli_args(parser)
     parser.add_argument("--out-dir", default="/tmp/fcst-build",
                         help="where specs and seed CSVs are written (default: /tmp/fcst-build)")
+    parser.add_argument("--actuals-table", help="DB.SCHEMA.TABLE landed by land-in-snowflake.py; GL actuals "
+                        "become a warehouse-table source instead of inline VALUES (needs --landing)")
+    parser.add_argument("--landing", help="landing.json written by land-in-snowflake.py")
     parser.add_argument("--parity-tolerance", type=float, default=None,
                         help="absolute tolerance for plan.parityTargets (default: float noise only, "
                              "max(1e-6, 1e-9 * |source value|))")
@@ -723,6 +799,18 @@ def main(argv=None):
               + " — fine for a local build; resolve before --post.")
     do_post = args.post
     outdir = args.out_dir
+    landed = None
+    if bool(args.actuals_table) != bool(args.landing):
+        print("PLAN ERROR: --actuals-table and --landing go together", file=sys.stderr)
+        return 1
+    if args.actuals_table:
+        try:
+            with open(args.landing, encoding="utf-8") as stream:
+                landed = landed_actuals_source(json.load(stream), args.actuals_table, P)
+        except (PlanError, OSError, ValueError) as error:
+            print(f"PLAN ERROR: {error}", file=sys.stderr)
+            return 1
+        print("ACTUALS SOURCE: warehouse table " + ".".join(landed["path"]))
     # parity — a mismatch stops the run before any spec is written or posted
     try:
         par=parity(P)
@@ -736,20 +824,20 @@ def main(argv=None):
               file=sys.stderr)
         return 1
     try:   # a plan the workbook cannot express fails before anything is written or posted
-        build_wb_spec(P,"<dm-id>",{"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"})
+        build_wb_spec(P,"<dm-id>",{"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"},landed=landed)
     except PlanError as error:
         print(f"PLAN ERROR: {error}", file=sys.stderr)
         return 1
     os.makedirs(outdir, exist_ok=True)
     rate_csv,man_csv=seed_csvs(P,outdir)
     print(f"seed CSVs: {rate_csv}, {man_csv}")
-    dm_spec=build_dm_spec(P)
+    dm_spec=build_dm_spec(P,landed)
     with open(f"{outdir}/dm_spec.json", "w", encoding="utf-8") as stream:
         json.dump(dm_spec, stream, indent=1)
     if not do_post:
         # map ids from the local spec (ids as-authored) for a dry-run wb spec
         els={"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"}
-        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els))
+        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed))
         with open(f"{outdir}/wb_spec.json", "w", encoding="utf-8") as stream:
             json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
@@ -761,7 +849,7 @@ def main(argv=None):
     full=api(base,tok,"GET",f"/v2/dataModels/{dm_id}/spec")
     els=map_dm_elements(full)
     # Layout is the last write before the current contents API validates + creates.
-    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els))
+    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed))
     checked=api(base,tok,"POST","/v2/workbooks",workbook_wire.dry_run_request(wb_spec))
     workbook_wire.assert_dry_run_success(checked)
     wb=api(base,tok,"POST","/v2/workbooks",wb_spec)

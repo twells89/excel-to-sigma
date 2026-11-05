@@ -105,6 +105,40 @@ class TestWorkbookBuilders(unittest.TestCase):
         return FORECAST.build_wb_spec(
             forecast_plan(), "dm", {"glDetail": "gl", "spine": "sp", "assumptions": "as"})
 
+    def test_forecast_actuals_from_landed_table(self):
+        plan = forecast_plan()
+        landing = {"database": "CSA", "schema": "TJ", "tables": [{
+            "excelTable": "tblActuals", "snowflakeTable": "FPA_REH_ACTUALS", "rowCount": 1,
+            "columns": [{"header": h, "name": n, "type": "VARCHAR"} for h, n in (
+                ("Posting Date", "POSTING_DATE"), ("Month", "MONTH"), ("Line Item", "LINE_ITEM"),
+                ("Region", "REGION"), ("Product Line", "PRODUCT_LINE"), ("Amount", "AMOUNT"))]}]}
+        landed = FORECAST.landed_actuals_source(landing, "CSA.TJ.FPA_REH_ACTUALS", plan)
+        inline_dm = FORECAST.build_dm_spec(plan)
+        landed_dm = FORECAST.build_dm_spec(plan, landed)
+        inline_gl = next(e for e in inline_dm["pages"][0]["elements"] if e["id"] == "glDetail")
+        gl = next(e for e in landed_dm["pages"][0]["elements"] if e["id"] == "glDetail")
+        self.assertEqual(inline_gl["source"]["kind"], "sql")
+        self.assertEqual(gl["source"], {"kind": "warehouse-table", "connectionId": "connection",
+                                        "path": ["CSA", "TJ", "FPA_REH_ACTUALS"]})
+        self.assertNotIn("values", json.dumps(gl).lower())
+        formulas = {c["name"]: c["formula"] for c in gl["columns"]}
+        self.assertEqual(formulas["Amount"], "[FPA_REH_ACTUALS/AMOUNT]")
+        self.assertEqual(formulas["Department"], "[FPA_REH_ACTUALS/REGION]")
+        self.assertIn('"Jan-26", 1', formulas["Month Num"])
+        # the spine and assumptions stay inline; every DM column the workbook reads still exists
+        others = [e for e in landed_dm["pages"][0]["elements"] if e["id"] != "glDetail"]
+        self.assertTrue(all(e["source"]["kind"] == "sql" for e in others))
+        self.assertEqual({c["name"] for c in gl["columns"]}, {c["name"] for c in inline_gl["columns"]})
+        wb = FORECAST.build_wb_spec(plan, "dm", {"glDetail": "gl", "spine": "sp", "assumptions": "as"},
+                                    landed=landed)
+        self.assertIn("[GL Detail/Month Num]", json.dumps(wb))
+        actuals = next(e for e in all_dicts(wb) if e.get("id") == "actuals")
+        self.assertTrue(all(c["formula"].startswith("[GL Detail/") for c in actuals["columns"] if c["id"] != "a_p"))
+        # parity comes from the plan's actuals, so it is identical with or without the landed source
+        self.assertEqual(FORECAST.parity(plan), FORECAST.parity(forecast_plan()))
+        with self.assertRaises(FORECAST.PlanError):
+            FORECAST.landed_actuals_source(landing, "CSA.TJ.FPA_REH_PLAN", plan)
+
     def test_forecast_builder_emits_current_pivot_axes_without_forbidden_visibility(self):
         workbook = self.build_forecast_workbook()
 
