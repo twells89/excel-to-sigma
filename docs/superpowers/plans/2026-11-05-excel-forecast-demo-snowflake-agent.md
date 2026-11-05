@@ -23,7 +23,8 @@
 - Tests: `python -m unittest discover -s tests -v` from the skill dir (CI runs this). Export `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8`.
 - Subagent models: implementers **Sonnet**; mechanical copy/format **Haiku**; final whole-branch review **Opus**.
 - The competing product/post is never named or shown anywhere (code, docs, video).
-- Rehearsal targets: Sigma folder `Excel Demo — Rehearsal`, Snowflake schema `EXCEL_DEMO_REHEARSAL`. On-camera targets: folder `FP&A Forecast`, schema `FPA_FORECAST`. Database: whichever the `cb2f5180` connection reads (found in Task 1).
+- Snowflake landing (TJ's decision 2026-11-05): schema **`CSA.TJ`**, `snow` connection **`tj`**. Tables are prefixed: rehearsal `FPA_REH_<TABLE>`, on-camera `FPA_<TABLE>`. After creating each table, grant `SELECT` on that table to role **`SIGMA_ROLE`** (the `cb2f5180` connection's role; same per-table pattern every existing `CSA.TJ` table uses). No other grants, no schema creation, no future grants.
+- Sigma folders: rehearsal `Excel Demo — Rehearsal`, on-camera `FP&A Forecast`.
 
 ## Review Focus
 
@@ -42,7 +43,7 @@
 - [ ] **Step 1:** Repair `snow`: `brew reinstall snowflake-cli`. Verify: `snow --version` prints `3.16.0` without a traceback.
 - [ ] **Step 2:** `sigma -p "tj-wells-1989 (1)" api connections get --params connectionId=cb2f5180-641f-47bd-8efa-da9d590d855a` → record user/role/default database, warehouse, write schema.
 - [ ] **Step 3:** Find the `snow` connection that is the same Snowflake user/role (`snow connection list`, then `snow sql -c <name> -q "select current_user(), current_role(), current_database()"`). Expected: one of `tj`/`default` matches Step 2. If none matches or the role can't `CREATE SCHEMA` in that database, **stop and ask TJ**.
-- [ ] **Step 4:** Create `EXCEL_DEMO_REHEARSAL`, create a 1-row table, and confirm Sigma sees it: `sigma -p "tj-wells-1989 (1)" api connections` path lookup (or MCP `search` with `entityTypes:["table"]`, `filters.connectionId=cb2f5180…`). Drop the probe table.
+- [ ] **Step 4:** (done) Probe Sigma visibility: `sigma -p "tj-wells-1989 (1)" api connections` path lookup (or MCP `search` with `entityTypes:["table"]`, `filters.connectionId=cb2f5180…`). Drop the probe table.
 - [ ] **Step 5:** MCP: call `begin_session`; confirm the org URL is `tj-wells-1989`. If not, all Code Mode work uses the CLI/REST path and note it.
 - [ ] **Step 6:** `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`; run the full test suite once. Expected: green baseline (record count).
 
@@ -92,15 +93,15 @@ The `Forecast` tab must be the P&L-in-cells shape `lib/forecast_plan.py` accepts
 - Produces:
   - `snowflake_identifier(header: str) -> str` (UPPER_SNAKE, `[A-Z0-9_]`, leading digit prefixed `C_`; collisions → error naming both headers).
   - `infer_column_types(rows: list[dict], headers: list[str]) -> dict[str, str]` → `DATE` | `NUMBER(38,6)` | `VARCHAR`; Excel `datetime`/`date` and month-header serials → `DATE`.
-  - `landing_plan(source: Path, tables: list[str], database: str, schema: str) -> dict` → `{"tables":[{"excelTable","snowflakeTable","columns":[{"header","name","type"}],"rowCount","csv"}]}` (writes one CSV per table next to the plan).
-  - `snow_commands(plan: dict, connection: str, replace: bool) -> list[list[str]]` — argv lists: `CREATE SCHEMA IF NOT EXISTS`, `CREATE TABLE` (or `CREATE OR REPLACE TABLE` only when `replace`), `PUT file://… @%TABLE`, `COPY INTO`, then a `SELECT COUNT(*)` check.
-  - CLI: `land-in-snowflake.py <file> --tables tblActuals,tblPlan,tblRegions,tblProducts --database <DB> --schema <SCHEMA> --snow-connection <name> [--replace] [--execute] --out <workdir>/landing.json`. Default prints the plan + commands (dry run); `--execute` runs them, then verifies each row count equals `rowCount` and exits non-zero on mismatch. Existing table without `--replace` → exit 2 with message `table <FQN> exists; pass --replace to overwrite`.
+  - `landing_plan(source: Path, tables: list[str], database: str, schema: str, prefix: str) -> dict` (Snowflake table = prefix + identifier of the Excel table name minus `tbl`, e.g. `FPA_REH_ACTUALS`) → `{"tables":[{"excelTable","snowflakeTable","columns":[{"header","name","type"}],"rowCount","csv"}]}` (writes one CSV per table next to the plan).
+  - `snow_commands(plan: dict, connection: str, replace: bool, grant_role: str | None) -> list[list[str]]` — argv lists per table: `CREATE TABLE` (or `CREATE OR REPLACE TABLE` only when `replace`), `PUT file://… @%TABLE`, `COPY INTO`, `GRANT SELECT ON TABLE <FQN> TO ROLE <grant_role>` (only when given), then a `SELECT COUNT(*)` check. Never `CREATE SCHEMA`.
+  - CLI: `land-in-snowflake.py <file> --tables tblActuals,tblPlan,tblRegions,tblProducts --database <DB> --schema <SCHEMA> --table-prefix <PREFIX> --snow-connection <name> [--grant-select-to <ROLE>] [--replace] [--execute] --out <workdir>/landing.json`. Default prints the plan + commands (dry run); `--execute` runs them, then verifies each row count equals `rowCount` and exits non-zero on mismatch. Existing table without `--replace` → exit 2 with message `table <FQN> exists; pass --replace to overwrite`.
   - `build-forecast-model.py --actuals-table <DB.SCHEMA.TABLE> --landing <workdir>/landing.json`: GL actuals element becomes a warehouse-table source on the plan's connection (path from landing.json) instead of inline `VALUES`; column names come from landing.json. Without the flag, behavior is unchanged.
 - [ ] **Step 1: Failing tests** (`tests/test_snowflake_landing.py`): `test_identifier_normalizes` (`"Net Revenue ($)"`→`NET_REVENUE`, `"2026 Plan"`→`C_2026_PLAN`, collision raises); `test_month_column_lands_as_date` (datetime cells and an Excel serial `46023` with date format → `DATE`); `test_blank_actuals_become_null` (blank cell → empty CSV field, column stays `NUMBER`); `test_commands_refuse_existing_without_replace` (plan + `replace=False` → no `CREATE OR REPLACE`; CLI with a fake `snow` that reports the table exists → exit 2 and the message above); `test_row_count_mismatch_fails` (fake `snow` returns a wrong count → non-zero exit). Builder: `test_forecast_actuals_from_landed_table` — dry-run spec has no `VALUES` for actuals, references the landed table path, and local parity totals equal the inline-VALUES build.
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement. Fake `snow` in tests = a tiny script on `PATH` in a temp dir (pattern: see `tests/test_inventory_actions_cli.py` for CLI tests).
 - [ ] **Step 4:** Run → PASS; full suite green.
-- [ ] **Step 5: Live check** into `EXCEL_DEMO_REHEARSAL` with `--execute`; row counts match; Sigma sees the four tables on `cb2f5180`.
+- [ ] **Step 5: Live check** into `CSA.TJ` with `--table-prefix FPA_REH_ --grant-select-to SIGMA_ROLE --execute`; row counts match; after `sigma api connections sync` on each path, Sigma sees the four tables on `cb2f5180`. Add `test_grant_emitted_only_when_requested` to Step 1.
 - [ ] **Step 6:** Commit.
 
 ### Task 5: Macros → native workflows
@@ -150,7 +151,7 @@ Mapping (from the spec's calls): `SetScenario` → `Parameters.selected_scenario
 
 **Files:** `work/demo/rehearsal/` (run log, plan.json, landing.json, workflows.json, screenshots). Any builder/presentation fixes are tested commits.
 
-- [ ] **Step 1:** Run the skill exactly as on camera, from `migrate.py plan` through Phase 6, into `Excel Demo — Rehearsal` / `EXCEL_DEMO_REHEARSAL`. Save a full terminal transcript (`script -q work/demo/rehearsal/run.log`).
+- [ ] **Step 1:** Run the skill exactly as on camera, from `migrate.py plan` through Phase 6, into `Excel Demo — Rehearsal` / `CSA.TJ` prefix `FPA_REH_`. Save a full terminal transcript (`script -q work/demo/rehearsal/run.log`).
 - [ ] **Step 2:** Parity: the skill's local + live parity gates pass (forecast revenue, Gross Margin, EBITDA tie to Excel cached values).
 - [ ] **Step 3: Look and feel** per spec pages (Forecast / Assumptions / Versions & approvals; agent chat on Forecast). Use the `sigma-workbooks` skill and `scripts/build-presentation.py`/layout-last. Screenshot every page (MCP `screenshot`) and review against: finance planning app, light theme, brand-aligned, no `Unknown column`/`Invalid Query`, no empty surfaces.
 - [ ] **Step 4:** List every place the run showed a hack, a retry, an error, or a manual UI step. Each one is fixed or redesigned, then re-run Step 1. Exit criterion: a clean run with zero such items.
@@ -169,6 +170,6 @@ Scene list (≈3:30): `01-title` → `02-excel` (the `.xlsm`: tabs, buttons, `v7
 
 - [ ] **Step 1:** Draft `vo_script.json` + `TALK_TRACK.md` (lines carry the "bring the spreadsheet to the warehouse" point; never name the competitor). **TJ OKs the talk track.**
 - [ ] **Step 2:** Excel scene capture: `screencapture -v -l <windowId>` of the Excel window if Screen Recording permission already exists; otherwise TJ records 15 s himself.
-- [ ] **Step 3:** On-camera run into `FP&A Forecast` / `FPA_FORECAST` (fresh), transcript captured for `shellify`; Sigma scenes recorded with `rec.mjs` against the resulting workbook. Agent take retried until clean.
+- [ ] **Step 3:** On-camera run into `FP&A Forecast` / `CSA.TJ` prefix `FPA_` (fresh), transcript captured for `shellify`; Sigma scenes recorded with `rec.mjs` against the resulting workbook. Agent take retried until clean.
 - [ ] **Step 4:** `assemble.py` → `out/excel-to-sigma-preview-silent.mp4`, `out/excel-to-sigma-preview-guide.mp4` (scratch voice), and the final `TALK_TRACK.md` with times. Verify: duration 3:00–4:15, every lower-third on its scene, no frame shows the competitor, a credential, or an error.
 - [ ] **Step 5:** Hand TJ the three files.
