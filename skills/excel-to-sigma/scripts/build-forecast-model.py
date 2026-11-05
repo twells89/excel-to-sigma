@@ -169,6 +169,10 @@ LANDED_ALIASES = {"Txn Date": ("posting date", "txn date", "date"), "Month": ("m
                   "Department": ("department", "region"), "Vendor": ("vendor", "product line")}
 
 
+LANDED_TYPES = {"Txn Date": "DATE", "Month": "VARCHAR", "Line Item": "VARCHAR", "Amount": "NUMBER",
+                "Department": "VARCHAR", "Vendor": "VARCHAR"}
+
+
 def landed_actuals_source(landing, actuals_table, P):
     """Resolve ``--actuals-table DB.SCHEMA.TABLE`` against landing.json.
 
@@ -184,17 +188,41 @@ def landed_actuals_source(landing, actuals_table, P):
     entry = next((t for t in landing["tables"] if t["snowflakeTable"].upper() == table), None)
     if entry is None:
         raise PlanError(f"{actuals_table} is not in landing.json")
-    by_header = {c["header"].strip().lower(): c["name"] for c in entry["columns"]}
-    columns = {}
+    by_header = {c["header"].strip().lower(): c for c in entry["columns"]}
+    columns, labels = {}, {}
     for out, aliases in LANDED_ALIASES.items():
-        name = next((by_header[a] for a in aliases if a in by_header), None)
-        if name:
-            columns[out] = name
+        col = next((by_header[a] for a in aliases if a in by_header), None)
+        if col:
+            columns[out] = col["name"]
+            labels[out] = col["header"].strip() if out in ("Department", "Vendor") else out
+            expected = LANDED_TYPES[out]
+            actual = str(col.get("type", "")).upper()
+            if not actual.startswith(expected):
+                raise PlanError(f"landed column {col['name']} ({out}) must be {expected} but landing.json "
+                                f"says {actual or 'unknown'}; the model's Switch/Date formulas need it")
     for required in ("Txn Date", "Month", "Line Item", "Amount"):
         if required not in columns:
             raise PlanError(f"landed table {actuals_table} has no column for {required!r} "
                             f"(accepted headers: {', '.join(LANDED_ALIASES[required])})")
-    return {"path": [db, schema, table], "columns": columns}
+    landed = {"path": [db, schema, table], "columns": columns, "labels": labels}
+    _cross_check_landing(entry, columns, P, actuals_table)
+    return landed
+
+
+def _cross_check_landing(entry, columns, P, actuals_table):
+    """Landed CSV (blank Amount = 0) must carry the plan's row count and actuals total."""
+    path = entry.get("csv")
+    if not path or not os.path.exists(path):
+        return
+    total, rows = 0.0, 0
+    with open(path, encoding="utf-8", newline="") as stream:
+        for row in csv.DictReader(stream):
+            rows += 1
+            total += float(row[columns["Amount"]] or 0)
+    plan_total = sum(float(r["amt"]) for r in P["actuals"])
+    if abs(total - plan_total) > 0.005:
+        raise PlanError(f"landed {actuals_table} ({rows} rows, Amount {total:,.2f}) does not match the plan's "
+                        f"actuals total {plan_total:,.2f}; re-land or re-draft the plan")
 
 
 def _switch(key, mapping, default):
@@ -215,6 +243,7 @@ def landed_gl_detail(P, landed):
     views = calc.month_views(periods)[:n_act]
     t = landed["path"][-1]; c = landed["columns"]
     ref = lambda out: f"[{t}/{c[out]}]"
+    lab = lambda out: landed.get("labels", {}).get(out, out)  # user-visible name = source header
     lines = {}
     for r in P["actuals"]:
         lines.setdefault(r["line"], r)
@@ -226,8 +255,8 @@ def landed_gl_detail(P, landed):
         ("Section", _switch(ref("Line Item"), {k: f'"{v["section"]}"' for k, v in lines.items()}, '""')),
         ("Section Order", _switch(ref("Line Item"), {k: v["secOrder"] for k, v in lines.items()}, 0)),
         ("Line Order", _switch(ref("Line Item"), {k: v["lineOrder"] for k, v in lines.items()}, 0)),
-        ("Department", ref("Department") if "Department" in c else '""'),
-        ("Vendor", ref("Vendor") if "Vendor" in c else '""'),
+        (lab("Department"), ref("Department") if "Department" in c else '""'),
+        (lab("Vendor"), ref("Vendor") if "Vendor" in c else '""'),
         ("Amount", ref("Amount")),
     ]
     return {"id": "glDetail", "kind": "table", "name": "GL Detail",
@@ -291,7 +320,7 @@ def map_dm_elements(spec):
     out = {}
     for el in spec["pages"][0]["elements"]:
         names = {c["name"] for c in el["columns"]}
-        if "Vendor" in names: out["glDetail"] = el["id"]
+        if "Txn Date" in names: out["glDetail"] = el["id"]
         elif "Kind" in names: out["spine"] = el["id"]
         elif "Driver" in names: out["assumptions"] = el["id"]
     return out
@@ -515,6 +544,8 @@ def amount_formula(row, table, sec_cols, fy_nums, fy=False):
 def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     GLP = "GL Detail" if landed else DMP  # a DM table element is referenced by its name
+    DEPT = (landed or {}).get("labels", {}).get("Department", "Department")
+    VEND = (landed or {}).get("labels", {}).get("Vendor", "Vendor")
     U = "Union of 2 Sources"
     periods, n_act, sections = plan_model(P)
     grain_is_month = periods[0]["grain"] == "month"
@@ -694,7 +725,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None):
         "axisTotals":[{"axisId":"grand-row-total","visibility":"hidden"}],
         "style":{"backgroundColor":"#FFFFFF","borderColor":{"kind":"theme","ref":"colors-border"},"borderWidth":1,"borderRadius":"round"}}
     glTable={"id":"glTable","kind":"table","name":"GL Transaction Detail (Actuals)","source":dm("glDetail"),
-        "columns":[{"id":"g1","name":"Txn Date","formula":f"[{GLP}/Txn Date]"},{"id":"g2","name":"Month","formula":f"[{GLP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{GLP}/Line Item]"},{"id":"g4","name":"Department","formula":f"[{GLP}/Department]"},{"id":"g5","name":"Vendor","formula":f"[{GLP}/Vendor]"},{"id":"g6","name":"Amount","formula":f"[{GLP}/Amount]","format":cur}]}
+        "columns":[{"id":"g1","name":"Txn Date","formula":f"[{GLP}/Txn Date]"},{"id":"g2","name":"Month","formula":f"[{GLP}/Month]"},{"id":"g3","name":"Line Item","formula":f"[{GLP}/Line Item]"},{"id":"g4","name":DEPT,"formula":f"[{GLP}/{DEPT}]"},{"id":"g5","name":VEND,"formula":f"[{GLP}/{VEND}]"},{"id":"g6","name":"Amount","formula":f"[{GLP}/Amount]","format":cur}]}
     assumpTable={"id":"assumpTable","kind":"table","name":"Forecast Assumptions","source":dm("assumptions"),
         "columns":[{"id":"d1","name":"Driver","formula":f"[{DMP}/Driver]"},{"id":"d2","name":rate_name,"formula":f"[{DMP}/{rate_name}]","format":PCT(P)},{"id":"d3","name":"Basis","formula":f"[{DMP}/Basis]"}]}
     # Source-workbook charts the drafter mapped and verified (plan.sourceCharts). Series are
