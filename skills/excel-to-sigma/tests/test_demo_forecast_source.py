@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -66,27 +67,49 @@ class TestDemoForecastSource(unittest.TestCase):
     def test_macro_classes(self):
         done = subprocess.run([sys.executable, SCRIPTS / "macro-classify.py", "--json", BAS],
                               capture_output=True, text=True, check=True)
-        got = {r["name"]: r["class"] for r in json.loads(done.stdout)}
+        recs = {r["name"]: r for r in json.loads(done.stdout)}
+        got = {n: r["class"] for n, r in recs.items()}
         self.assertEqual(sorted(got), sorted([
             "RefreshActuals_Click", "SetScenario", "RollForwardMonth_Click", "SnapshotVersion_Click",
             "SubmitForApproval_Click", "RecalcAll", "FormatReport"]))
         self.assertEqual(got["RefreshActuals_Click"], "EXTERNAL_DATA_REFRESH")
         self.assertEqual(got["SetScenario"], "WHATIF_SCENARIO")
         self.assertEqual(got["SnapshotVersion_Click"], "ACTION_WRITEBACK")
-        self.assertEqual(got["SubmitForApproval_Click"], "ACTION_WRITEBACK")
+        # Late-bound Outlook (compiles with no references): EXTERNAL_IO outranks the writeback,
+        # but both the table write and the email are surfaced.
+        submit = recs["SubmitForApproval_Click"]
+        self.assertEqual(got["SubmitForApproval_Click"], "EXTERNAL_IO")
+        self.assertIn("(also: ACTION_WRITEBACK)", submit["signals"])
+        proc = submit["analysis"]["procedure"]
+        self.assertIn("email", [e["kind"] for e in proc["externalSideEffects"]])
+        self.assertIn("append", [w["kind"] for w in proc["writes"]])
         self.assertIn(got["RollForwardMonth_Click"], ("ACTION_WRITEBACK", "TRANSFORM_ROLLUP"))
         self.assertEqual(got["RecalcAll"], "RECALC")
         self.assertEqual(got["FormatReport"], "FORMAT_COSMETIC")
 
-    def test_submit_macro_carries_the_email(self):
-        # The analyzer only flags email for a late-bound CreateObject("Outlook.Application"), which
-        # would also outrank the writeback class. The demo macro uses early binding so it stays
-        # ACTION_WRITEBACK; the email is still visible in the source the audience sees.
+    def test_module_needs_no_vba_references(self):
         text = BAS.read_text(encoding="utf-8")
-        body = text[text.index("Sub SubmitForApproval_Click"):text.index("Sub RecalcAll")]
-        self.assertIn("Outlook.Application", body)
-        self.assertIn("cfo@", body)
+        self.assertNotIn("As Outlook.", text)
+        self.assertNotIn("New Outlook", text)
+        self.assertNotIn("olMailItem", text)
 
+    def test_variance_rows_point_at_matching_forecast_rows(self):
+        from openpyxl import load_workbook
+        wf, wv = load_workbook(self.src), load_workbook(self.src, data_only=True)
+        var, fc, fcv = wf["Variance"], wf["Forecast"], wv["Forecast"]
+        checked = 0
+        for row in range(4, var.max_row + 1):
+            label = var.cell(row, 1).value
+            if not label:
+                continue
+            ref = re.fullmatch(r"=Forecast!([A-Z]+)(\d+)", var.cell(row, 3).value)
+            self.assertIsNotNone(ref, var.cell(row, 3).value)
+            target = int(ref.group(2))
+            self.assertEqual(fc.cell(target, 1).value, label)
+            self.assertAlmostEqual(wv["Variance"].cell(row, 3).value,
+                                   fcv[f"{ref.group(1)}{target}"].value, places=4)
+            checked += 1
+        self.assertEqual(checked, 12)
 
 if __name__ == "__main__":
     unittest.main()

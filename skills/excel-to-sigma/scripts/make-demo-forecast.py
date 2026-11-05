@@ -255,6 +255,7 @@ def build_demo_workbook(out: Path, seed: int = 27) -> Path:
     fy_cols = f"{get_column_letter(2 + FY_FIRST)}{{r}}:{get_column_letter(25)}{{r}}"
 
     series: dict[str, list[float]] = {}
+    fc_row_of: dict[str, int] = {}
     row = HEADER_ROW + 1
     total_rows: dict[str, int] = {}
     total_vals: dict[str, list[float]] = {}
@@ -296,6 +297,7 @@ def build_demo_workbook(out: Path, seed: int = 27) -> Path:
             put(fc, f"{get_column_letter(fy_col)}{row}", f"=SUM({fy_cols.format(r=row)})",
                 sum(vals[FY_FIRST:]))
             series[label] = vals
+            fc_row_of[label] = row
             row += 1
         last = row - 1
         fc.cell(row, 1, f"Total {section}").font = Font(bold=True)
@@ -373,14 +375,6 @@ def build_demo_workbook(out: Path, seed: int = 27) -> Path:
         var[f"{col}3"] = head
         var[f"{col}3"].fill, var[f"{col}3"].font = HEAD_FILL, HEAD_FONT
     vrow = 4
-    fc_row_of = {}
-    r = HEADER_ROW + 1
-    for section in SECTIONS:
-        r += 1
-        for region, *_ in REGIONS:
-            fc_row_of[line_label(region, section)] = r
-            r += 1
-        r += 3
     for label, frow in fc_row_of.items():
         var[f"A{vrow}"] = label
         plan_val = plan_amounts[label]

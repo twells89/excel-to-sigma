@@ -114,7 +114,7 @@ End Sub
 ' "Submit for Approval" button: lock the forecast, log it, and mail the CFO
 Sub SubmitForApproval_Click()
     Dim fc As Worksheet, tbl As ListObject, newRow As ListRow
-    Dim olApp As Outlook.Application, olMail As Outlook.MailItem
+    Dim olApp As Object, olMail As Object
 
     Set fc = ThisWorkbook.Worksheets("Forecast")
     Set tbl = ThisWorkbook.Worksheets("Approvals").ListObjects("tblApprovals")
@@ -129,8 +129,8 @@ Sub SubmitForApproval_Click()
     newRow.Range(1, 4).Value = "Pending"
     newRow.Range(1, 5).Value = Now
 
-    Set olApp = New Outlook.Application
-    Set olMail = olApp.CreateItem(olMailItem)
+    Set olApp = CreateObject("Outlook.Application")
+    Set olMail = olApp.CreateItem(0)
     olMail.To = "cfo@vantora.example"
     olMail.Subject = "FY27 rolling forecast v7 - ready for approval"
     olMail.Body = "Hi," & vbCrLf & vbCrLf & _
