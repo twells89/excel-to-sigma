@@ -557,4 +557,162 @@ class TestNativeActions(unittest.TestCase):
                 intervals=sorted((e.y(),e.y()+e.height()) for e in host.items)
                 self.assertTrue(all(a[1]<=b[0] for a,b in zip(intervals,intervals[1:])),(shared,intervals))
 
+
+import importlib.util
+import unittest.mock
+import io
+import contextlib
+
+SCRIPTS=ROOT/'scripts'
+DEMO_BAS=SCRIPTS/'demo-forecast-macros.bas'
+
+
+def _load(filename,name):
+    spec=importlib.util.spec_from_file_location(name,SCRIPTS/filename)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
+def _walk(value):
+    if isinstance(value,dict):
+        yield value
+        for child in value.values():yield from _walk(child)
+    elif isinstance(value,list):
+        for child in value:yield from _walk(child)
+
+
+class TestDemoWorkflows(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import demo_workflows
+        cls.dw=demo_workflows
+        cls.build=_load('build-forecast-model.py','wf_forecast_builder')
+        cls.manifest=demo_workflows.build_workflow_manifest(DEMO_BAS)
+        cls.plan={'name':'Forecast fixture','intent':'what-if','connectionId':'conn-1','folderId':'folder',
+            'currencyFormat':'$,.0f','pctFormat':'.1%','fyLabel':'FY27',
+            'actualMonths':[{'month':'Jan-26','num':1,'end':'2026-01-31'}],
+            'forecastMonths':[{'month':'Feb-26','num':2,'end':'2026-02-28'}],
+            'lines':[{'line':'Revenue','section':'Revenue','secOrder':1,'lineOrder':1,'kind':'growth','rate':0.1,'juneBase':100.0}],
+            'assumptions':[['Revenue growth',0.1,'monthly']],
+            'actuals':[{'date':'2026-01-10','month':'Jan-26','line':'Revenue','section':'Revenue','secOrder':1,
+                'lineOrder':1,'dept':'Sales','vendor':'Customer','amt':100.0}]}
+        cls.els={'glDetail':'gl','spine':'sp','assumptions':'as'}
+
+    def spec(self,workflows=None):
+        return self.build.build_wb_spec(copy.deepcopy(self.plan),'dm',self.els,workflows=workflows)
+
+    def test_demo_manifest_routes(self):
+        flows={w['macro']:w for w in self.manifest['workflows']}
+        self.assertEqual(sorted(flows),['RollForwardMonth_Click','SetScenario','SnapshotVersion_Click','SubmitForApproval_Click'])
+        self.assertEqual({m:w['writes'] for m,w in flows.items()},{'RollForwardMonth_Click':True,
+            'SetScenario':False,'SnapshotVersion_Click':True,'SubmitForApproval_Click':True})
+        self.assertEqual(flows['RollForwardMonth_Click']['effect'],'update-rows')
+        self.assertEqual(flows['RollForwardMonth_Click']['target'],{'elementId':'parameters','columns':['Forecast Start Month']})
+        self.assertEqual(flows['SnapshotVersion_Click']['effect'],'insert-rows')
+        self.assertEqual(flows['SnapshotVersion_Click']['target']['elementId'],'versions')
+        self.assertEqual(flows['SubmitForApproval_Click']['effect'],'insert-rows')
+        self.assertEqual(flows['SubmitForApproval_Click']['class'],'EXTERNAL_IO')
+        self.assertEqual(flows['SubmitForApproval_Click']['target']['elementId'],'approvals')
+        self.assertEqual(flows['SetScenario']['effect'],'control')
+        self.assertEqual(flows['SetScenario']['target'],{'elementId':'parameters','columns':['Selected Scenario']})
+        for w in flows.values():
+            self.assertEqual(set(w)>={'macro','class','actionId','label','effect','target','writes'},True)
+        disp={d['macro']:d for d in self.manifest['dispositions']}
+        self.assertEqual({m for m in disp if m!='SubmitForApproval_Click'},{'RefreshActuals_Click','RecalcAll','FormatReport'})
+        self.assertEqual(disp['RefreshActuals_Click']['class'],'EXTERNAL_DATA_REFRESH')
+        self.assertEqual(disp['RecalcAll']['class'],'RECALC')
+        self.assertEqual(disp['FormatReport']['class'],'FORMAT_COSMETIC')
+        self.assertEqual(disp['SubmitForApproval_Click']['disposition'],'email-replaced-never-sent')
+        mapped={w['macro'] for w in self.manifest['workflows']}|set(disp)
+        self.assertEqual(len(mapped),7)
+
+    def test_submit_never_emails(self):
+        for w in self.manifest['workflows']:
+            self.assertIn(w['effect'],('update-rows','insert-rows','control'))
+            self.assertNotIn('call-api',json.dumps(w).lower())
+            self.assertNotIn('email',json.dumps(w['effect']).lower())
+        wf=self.dw.workflow_elements(self.manifest,'conn-1','FY27 forecast')
+        submit=next(b for b in wf['buttons'] if b['id']=='btnSubmit')
+        effects=[e for a in submit['actions'] for e in a['effects']]
+        self.assertEqual([e['effect'] for e in effects],['insert-rows'])
+        self.assertEqual(effects[0]['tableElementId'],'approvals')
+        self.assertNotIn('call-api',json.dumps(wf))
+        self.assertNotIn('send-email',json.dumps(wf))
+
+    def test_unrouted_macro_is_dispositioned_not_dropped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'m.bas'
+            p.write_text('Sub Mystery()\n    Dim x As Long\n    x = 1\nEnd Sub\n')
+            m=self.dw.build_workflow_manifest(p)
+        self.assertEqual(m['workflows'],[])
+        self.assertEqual(m['dispositions'][0]['macro'],'Mystery')
+
+    def test_without_workflows_unchanged(self):
+        base=self.spec(); again=self.spec(None)
+        self.assertEqual(base,again)
+        ids={e['id'] for e in _walk(base) if 'id' in e}
+        self.assertFalse(ids&{'parameters','versions','approvals','btnRoll','btnSnapshot','btnSubmit','approvalStatus'})
+
+    def test_workflows_added_to_workbook(self):
+        spec=self.spec(self.manifest)
+        by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
+        for tid,names in (('parameters',['Selected Scenario','Forecast Start Month']),
+                ('versions',['Version','Snapshot At','Scenario','Forecast Start Month','Saved By']),
+                ('approvals',['Request','Submitted By','Approver','Status','Submitted At'])):
+            t=by_id[tid]
+            self.assertEqual(t['kind'],'input-table')
+            self.assertEqual(t['source'],{'kind':'empty','connectionId':'conn-1'})
+            self.assertEqual([c['name'] for c in t['columns'] if 'type' in c],names)
+            self.assertFalse({c['id'] for c in t['columns']}&{'CREATED_BY','CREATED_AT'})
+        self.assertEqual(sorted(k for k in ('btnRoll','btnSnapshot','btnSubmit') if k in by_id),['btnRoll','btnSnapshot','btnSubmit'])
+        roll=by_id['btnRoll']['actions'][0]['effects'][0]
+        self.assertEqual(roll['effect'],'update-rows')
+        self.assertEqual(roll['whichRows'],{'type':'formula','formula':'true'})
+        self.assertEqual(roll['values']['pa_start']['formula'],'DateAdd("month", 1, Max([Parameters/Forecast Start Month]))')
+        approve=by_id['btnSubmit']['actions'][0]['effects'][0]
+        self.assertEqual(approve['values']['ap_status']['value']['value'],'Submitted')
+        self.assertIn('FY27',approve['values']['ap_req']['value']['value'])
+        self.assertEqual(by_id['approvalStatus']['source'],{'kind':'table','elementId':'approvals'})
+        wire=self.build.workbook_wire.wire_workbook(spec)
+        layout=wire['contents']['layout']
+        for eid in ('parameters','versions','approvals','btnRoll','btnSnapshot','btnSubmit','approvalStatus','pnlHeader'):
+            self.assertIn(f'elementId="{eid}"',layout)
+
+    def test_manual_commit_program_covers_every_input_table(self):
+        spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
+        program=self.dw.emit_manual_commit_program(spec)
+        tables=[e['id'] for e in spec['contents']['elements'] if e['kind']=='input-table']
+        self.assertGreaterEqual(len(tables),5)  # rate + manual inputs plus the three workflow tables
+        for tid in tables:
+            self.assertIn(f"get_element('{tid}')",program)
+        self.assertEqual(program.count("t.set_edit_mode('draft')"),len(tables))
+        self.assertEqual(program.count("t.set_edit_mode('published-all-users')"),len(tables))
+        self.assertEqual(program.count('isinstance(t, InputTable)'),len(tables))
+        self.assertIn("get_page('inputs').get_element('versions')",program)
+        self.assertIn("get_page('pnl').get_element('parameters')",program)
+        compile(program,'program','exec')
+
+    def test_cli_writes_program_dry_run(self):
+        build=self.build
+        with tempfile.TemporaryDirectory() as d:
+            plan=Path(d)/'plan.json';plan.write_text(json.dumps(self.plan))
+            wf=Path(d)/'workflows.json';wf.write_text(json.dumps(self.manifest))
+            out=Path(d)/'out';prog=Path(d)/'program.py'
+            args=[str(plan),'--out-dir',str(out),'--workflows',str(wf),'--emit-manual-commit-program',str(prog)]
+            gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate):
+                rc=build.main(args)
+            self.assertEqual(rc,0)
+            self.assertIn("set_edit_mode('published-all-users')",prog.read_text())
+            wired=json.loads((out/'wb_spec.json').read_text())
+            self.assertIn('btnRoll',{e['id'] for e in wired['contents']['elements']})
+            self.assertTrue((out/'parameters_seed.csv').exists())
+
+    def test_demo_manifest_cli(self):
+        mod=_load('macro-actions.py','wf_macro_actions')
+        with tempfile.TemporaryDirectory() as d:
+            out=Path(d)/'workflows.json'
+            self.assertEqual(mod.main(['demo-manifest',str(DEMO_BAS),'--out',str(out)]),0)
+            self.assertEqual(len(json.loads(out.read_text())['workflows']),4)
+
 if __name__=='__main__':unittest.main()

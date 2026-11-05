@@ -30,6 +30,7 @@ if str(_LIB) not in sys.path:
 import workbook_wire  # noqa: E402
 import sigma_auth  # noqa: E402
 from lib import forecast_calc as calc  # noqa: E402
+from lib import demo_workflows  # noqa: E402
 from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
 
 CUR = lambda p: {"kind": "number", "formatString": p["currencyFormat"]}
@@ -41,7 +42,7 @@ def q(s): return "'" + str(s).replace("'", "''") + "'"
 KPI_IDS = ("kpiRev", "kpiEbitda", "kpiNI", "kpiGM")
 
 
-def forecast_layout(editable, extra_model_ids=(), chart_ids=(), kpi_ids=KPI_IDS):
+def forecast_layout(editable, extra_model_ids=(), chart_ids=(), kpi_ids=KPI_IDS, workflow=None):
     """Dense four-page layout: overview, detail, editable inputs, hidden plumbing.
 
     Source-chart ids sit beside the monthly trend (first) and then full width below it.
@@ -55,9 +56,15 @@ def forecast_layout(editable, extra_model_ids=(), chart_ids=(), kpi_ids=KPI_IDS)
     width = 24 // len(kpi_ids)
     kpi_cells = [(element_id, 1 + i * width, 1 + (i + 1) * width, 4, 10)
                  for i, element_id in enumerate(kpi_ids)]
+    # With workflows the header row also carries the Parameters picker, the latest approval
+    # status and the three workflow buttons; Versions / Approvals sit under the inputs.
+    header_cells = ([("pnlHeader", 1, 6, 1, 4), ("parameters", 6, 11, 1, 4), ("approvalStatus", 11, 15, 1, 4),
+                     ("btnRoll", 15, 18, 1, 4), ("btnSnapshot", 18, 21, 1, 4), ("btnSubmit", 21, 25, 1, 4)]
+                    if workflow else [("pnlHeader", 1, 25, 1, 4)])
+    workflow_inputs = [("versions", 1, 25, 49, 61), ("approvals", 1, 25, 61, 73)] if workflow else []
     pages = [
         ("pnl", [
-            ("pnlHeader", 1, 25, 1, 4),
+            *header_cells,
             *kpi_cells,
             *charts,
             ("pnlPivot", 1, 25, pivot_row, pivot_row + 30),
@@ -66,6 +73,7 @@ def forecast_layout(editable, extra_model_ids=(), chart_ids=(), kpi_ids=KPI_IDS)
         ("inputs", [
             ("assumpTable", 1, 25, 1, 13),
             *([("rateInput", 1, 25, 13, 29), ("manualInput", 1, 25, 29, 49)] if editable else []),
+            *workflow_inputs,
         ]),
         ("model", [
             ("actuals", 1, 25, 1, 13),
@@ -541,7 +549,7 @@ def amount_formula(row, table, sec_cols, fy_nums, fy=False):
     return out
 
 
-def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None):
+def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     GLP = "GL Detail" if landed else DMP  # a DM table element is referenced by its name
     DEPT = (landed or {}).get("labels", {}).get("Department", "Department")
@@ -770,7 +778,12 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None):
             "legend": {"position": "bottom"},
             "style": {"backgroundColor": "#FFFFFF", "borderColor": {"kind": "theme", "ref": "colors-border"}, "borderWidth": 1, "borderRadius": "round"}}
         source_charts.append(chart)
-    main_els=[header]+kpis+[trend]+source_charts+[pivot]
+    wf = None
+    if workflows is not None:
+        wf = demo_workflows.workflow_elements(workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast")
+        # Header zone: title, Parameters (scenario picker + forecast start), latest status, buttons.
+        header["body"] = f"# {P['name']}\n{grain_adj} actuals and forecast"
+    main_els=[header]+([wf["tables"][0], wf["status"], *wf["buttons"]] if wf else [])+kpis+[trend]+source_charts+[pivot]
     detail_els=[glTable]
     input_els=[assumpTable]
     hidden_els=[actuals,spineWrap,*forecast_stages,pnlCombined]
@@ -780,13 +793,29 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None):
         hidden_els += extra
         extra_model_ids = [e["id"] for e in extra]
     if editable: input_els+=[rateInput,manualInput]
+    if wf: input_els+=wf["tables"][1:]
     pages=[{"id":"pnl","name":"P&L Overview","elements":main_els},
            {"id":"detail","name":"Detail","elements":detail_els},
            {"id":"inputs","name":"Inputs","elements":input_els},
            {"id":"model","name":"Model (sources)","visibility":"hidden","elements":hidden_els}]
     # Nested draft; wire_workbook flattens + wraps at the POST / dry-run boundary.
     return {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],
-            "pages":pages,"layout":forecast_layout(editable, extra_model_ids, [c["id"] for c in source_charts], [k["id"] for k in kpis])}
+            "pages":pages,"layout":forecast_layout(editable, extra_model_ids, [c["id"] for c in source_charts], [k["id"] for k in kpis], bool(wf))}
+
+def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
+    """Parameters seed CSV (one row) and the manual-commit Code Mode program, when asked for."""
+    if workflows is not None:
+        periods, n_act, _sections = plan_model(P)
+        first_forecast = periods[n_act]["end"][:8] + "01"
+        path = f"{outdir}/parameters_seed.csv"
+        with open(path, "w", encoding="utf-8", newline="") as stream:
+            csv.writer(stream).writerows([["Selected Scenario", "Forecast Start Month"], ["Base", first_forecast]])
+        print(f"seed CSV: {path}")
+    if program_path:
+        with open(program_path, "w", encoding="utf-8") as stream:
+            stream.write(demo_workflows.emit_manual_commit_program(wb_spec))
+        print(f"MANUAL-COMMIT PROGRAM: {program_path}")
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -800,6 +829,12 @@ def parse_args(argv=None):
     parser.add_argument("--actuals-table", help="DB.SCHEMA.TABLE landed by land-in-snowflake.py; GL actuals "
                         "become a warehouse-table source instead of inline VALUES (needs --landing)")
     parser.add_argument("--landing", help="landing.json written by land-in-snowflake.py")
+    parser.add_argument("--workflows", help="workflows.json from macro-actions.py demo-manifest: adds the "
+                        "Parameters / Versions / Approvals input tables, the Roll forward / Snapshot version / "
+                        "Submit for approval buttons and a latest-approval-status KPI")
+    parser.add_argument("--emit-manual-commit-program", metavar="OUT.py",
+                        help="write the post-create Code Mode program that enables manual commit on every "
+                             "input table (needed before backend actions / agent tools can write)")
     parser.add_argument("--parity-tolerance", type=float, default=None,
                         help="absolute tolerance for plan.parityTargets (default: float noise only, "
                              "max(1e-6, 1e-9 * |source value|))")
@@ -842,6 +877,16 @@ def main(argv=None):
             print(f"PLAN ERROR: {error}", file=sys.stderr)
             return 1
         print("ACTUALS SOURCE: warehouse table " + ".".join(landed["path"]))
+    workflows = None
+    if args.workflows:
+        try:
+            with open(args.workflows, encoding="utf-8") as stream:
+                workflows = json.load(stream)
+            demo_workflows.workflow_elements(workflows, P["connectionId"], "check")
+        except (OSError, ValueError, KeyError) as error:
+            print(f"PLAN ERROR: --workflows {error}", file=sys.stderr)
+            return 1
+        print("WORKFLOWS: " + ", ".join(w["actionId"] for w in workflows["workflows"]))
     # parity — a mismatch stops the run before any spec is written or posted
     try:
         par=parity(P)
@@ -855,7 +900,7 @@ def main(argv=None):
               file=sys.stderr)
         return 1
     try:   # a plan the workbook cannot express fails before anything is written or posted
-        build_wb_spec(P,"<dm-id>",{"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"},landed=landed)
+        build_wb_spec(P,"<dm-id>",{"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"},landed=landed,workflows=workflows)
     except PlanError as error:
         print(f"PLAN ERROR: {error}", file=sys.stderr)
         return 1
@@ -868,7 +913,8 @@ def main(argv=None):
     if not do_post:
         # map ids from the local spec (ids as-authored) for a dry-run wb spec
         els={"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"}
-        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed))
+        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed,workflows=workflows))
+        emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
         with open(f"{outdir}/wb_spec.json", "w", encoding="utf-8") as stream:
             json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
@@ -880,7 +926,8 @@ def main(argv=None):
     full=api(base,tok,"GET",f"/v2/dataModels/{dm_id}/spec")
     els=map_dm_elements(full)
     # Layout is the last write before the current contents API validates + creates.
-    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed))
+    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed,workflows=workflows))
+    emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
     checked=api(base,tok,"POST","/v2/workbooks",workbook_wire.dry_run_request(wb_spec))
     workbook_wire.assert_dry_run_success(checked)
     wb=api(base,tok,"POST","/v2/workbooks",wb_spec)
