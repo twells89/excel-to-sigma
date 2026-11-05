@@ -18,8 +18,10 @@ and says writes ask for approval first.
 ## Decision rule
 
 - Any `ACTION_WRITEBACK` / `EXTERNAL_IO` / `WHATIF_SCENARIO` macro that became a workflow ->
-  profile `act`; write workflows are tools with `requiresApproval: true`; the scenario
-  switch is a tool without approval (it sets a driver; it does not log or submit).
+  profile `act`; every tool changes the workbook, so every tool is `requiresApproval: true`
+  (including the scenario switch). A `set-driver` tool (edit one row of the Growth Rates
+  input table, `rateInput`, selected by `single-row` primaryKeys on `LINE_ITEM`, new `RATE`)
+  is added when that table exists; `column-match` cannot bind an agent input.
 - Only `RECALC` / `FORMAT_COSMETIC` / `EXTERNAL_DATA_REFRESH` -> no recommendation and no
   tools. The skill never invents a write tool.
 - No macros (plain `.xlsx`) -> no recommendation.

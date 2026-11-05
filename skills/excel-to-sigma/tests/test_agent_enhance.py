@@ -28,12 +28,12 @@ class AgentEnhanceTests(unittest.TestCase):
         self.assertTrue(rec["recommend"])
         self.assertEqual(rec["profile"], "act")
         tools = {t["actionId"]: t for t in rec["tools"]}
-        writes = ("roll-forward", "snapshot-version", "submit-approval")
-        self.assertEqual(set(tools), {*writes, "set-scenario"})
-        for a in writes:
+        writes = ("roll-forward", "snapshot-version", "submit-approval", "set-scenario", "set-driver")
+        self.assertEqual(set(tools), set(writes))
+        for a in writes:  # the spec: approval on every write
             self.assertIs(tools[a]["requiresApproval"], True)
-        self.assertIs(tools["set-scenario"]["requiresApproval"], False)
-        for phrase in ("roll forward", "snapshot", "submit for approval", "switch scenario", "approval first"):
+        for phrase in ("roll forward", "snapshot", "submit for approval", "switch scenario",
+                       "growth driver", "approval first"):
             self.assertIn(phrase, rec["pitch"])
         self.assertNotIn("email", rec["pitch"].replace("never sends email", ""))
 
@@ -60,7 +60,7 @@ class AgentEnhanceTests(unittest.TestCase):
         macros, wfs = demo()
         rec = ae.recommend_agent(macros, wfs)
         frag = ae.agent_document_fragment(rec, "FP&A forecast agent",
-                                          ["forecast", "parameters", "versions", "approvals"],
+                                          ["forecast", "parameters", "versions", "approvals", "rateInput"],
                                           figures={"revenue": "Sum([PnL Combined/Amount])"})
         self.assertEqual(frag["chatElement"], spike["chat"])
         agent = frag["agents"][0]
@@ -81,13 +81,26 @@ class AgentEnhanceTests(unittest.TestCase):
         self.assertEqual(set(got), set(want))
         self.assertEqual(got["whichRows"]["formula"].lower(), want["whichRows"]["formula"].lower())
         self.assertIs(tools["roll-forward"]["requiresApproval"], True)
-        self.assertNotIn("requiresApproval", tools["set-scenario"])
+        self.assertIs(tools["set-scenario"]["requiresApproval"], True)
         self.assertEqual(tools["set-scenario"]["steps"][0]["values"]["pa_scn"],
                          {"type": "agent-input", "inputName": "scenario"})
         for el in ("parameters", "versions", "approvals"):
             self.assertIn(f'@dataSource("{el}")', agent["instructions"])
         for tid in tools:
             self.assertIn(f'@tool("{tid}")', agent["instructions"])
+        drv = tools["set-driver"]
+        self.assertIs(drv["requiresApproval"], True)
+        step = drv["steps"][0]
+        self.assertEqual((step["effect"], step["tableElementId"]), ("update-rows", "rateInput"))
+        self.assertEqual(step["whichRows"], {"type": "single-row", "primaryKeys": {
+            "LINE_ITEM": {"type": "agent-input", "inputName": "line_item"}}})
+        self.assertEqual(step["values"], {"RATE": {"type": "agent-input", "inputName": "rate"}})
+        self.assertIn('@tool("set-driver")', agent["instructions"])
+        self.assertIn('@dataSource("rateInput")', agent["instructions"])
+        # without a growth-rate table in the workbook there is no driver tool
+        bare = ae.agent_document_fragment(rec, "n", ["parameters", "versions", "approvals"],
+                                          figures={"revenue": "1"})
+        self.assertNotIn("set-driver", [t["toolId"] for t in bare["agents"][0]["tools"]])
         # never name system columns bare
         for col in ("CREATED_BY", "CREATED_AT"):
             self.assertNotIn(col, json.dumps(frag))
@@ -108,6 +121,61 @@ class AgentEnhanceTests(unittest.TestCase):
         self.assertNotIn("agents", wb["contents"])  # input untouched
         with self.assertRaises(ValueError):
             ae.merge_fragment(merged, frag)
+
+    def _workbook(self):
+        import demo_workflows as dw
+        buttons = [{"id": bid, "kind": "button", "text": bid, "actions": [{"id": "a-" + aid, "trigger": "on-click",
+                    "effects": dw.action_effects(aid, "FY27 forecast", {"revenue": "Sum([PnL Combined/Amount])"})}]}
+                   for aid, bid in dw.BUTTON_IDS.items()]
+        ids = ["forecast", "parameters", "versions", "approvals", "rateInput"]
+        els = [{"id": i, "kind": "table"} for i in ids] + buttons
+        rows = "".join(f'  <Element elementId="{e["id"]}" gridColumn="1 / 25" gridRow="{1 + 4 * n} / {5 + 4 * n}"/>\n'
+                       for n, e in enumerate(els))
+        return {"name": "wb", "contents": {"schemaVersion": 1, "kind": "workbook",
+                "pages": [{"id": "pnl", "name": "P&L"}], "elements": els,
+                "layout": '<?xml version="1.0" encoding="utf-8"?>\n<Page type="grid" id="pnl">\n' + rows + "</Page>"}}
+
+    def test_button_effects_reused_by_agent_tools(self):
+        import demo_workflows as dw
+        macros, wfs = demo()
+        wb = self._workbook()
+        eff = ae.button_effects(wb)
+        self.assertEqual(set(eff), set(dw.BUTTON_IDS))
+        rec = ae.recommend_agent(macros, wfs)
+        frag = ae.agent_document_fragment(rec, "A", ["forecast", "parameters", "versions", "approvals", "rateInput"],
+                                          effects_by_action=eff)
+        tools = {t["toolId"]: t for t in frag["agents"][0]["tools"]}
+        for aid in dw.BUTTON_IDS:
+            self.assertEqual([{k: v for k, v in s.items() if k != "kind"} for s in tools[aid]["steps"]], eff[aid])
+
+    def test_cli_merge_into_and_emit(self):
+        import demo_workflows as dw
+        wb = self._workbook()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            src = tmp / "wb.json"
+            src.write_text(json.dumps(wb))
+            before = src.read_text()
+            base = [sys.executable, str(ROOT / "scripts" / "recommend-agent.py"),
+                    "--macros", str(FX / "demo-macros.json"), "--workflows", str(FX / "demo-workflows.json")]
+            subprocess.run(base + ["--merge-into", str(src), "--out", str(tmp / "merged.json")],
+                           capture_output=True, text=True, check=True)
+            self.assertEqual(src.read_text(), before)  # input untouched
+            merged = json.loads((tmp / "merged.json").read_text())["contents"]
+            agent = merged["agents"][0]
+            self.assertEqual(len(agent["tools"]), 5)
+            self.assertIn({"id": "chat", "kind": "chat", "agentId": agent["id"]}, merged["elements"])
+            self.assertIn('elementId="chat"', merged["layout"])
+            eff = ae.button_effects(wb)
+            roll = next(t for t in agent["tools"] if t["toolId"] == "roll-forward")
+            self.assertEqual(roll["steps"][0]["values"], eff["roll-forward"][0]["values"])
+            subprocess.run(base + ["--emit", str(tmp / "frag.json"), "--workbook", str(src)],
+                           capture_output=True, text=True, check=True)
+            frag = json.loads((tmp / "frag.json").read_text())
+            self.assertEqual(frag["chatElement"]["kind"], "chat")
+            self.assertEqual(len(frag["agents"][0]["tools"]), 5)
+            r = subprocess.run(base + ["--merge-into", str(src)], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)  # --out required
 
     def test_cli_prints_pitch(self):
         out = subprocess.run([sys.executable, str(ROOT / "scripts" / "recommend-agent.py"),

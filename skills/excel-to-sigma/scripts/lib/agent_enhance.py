@@ -16,9 +16,13 @@ import demo_workflows as dw
 ACTION_CLASSES = ("ACTION_WRITEBACK", "WHATIF_SCENARIO", "EXTERNAL_IO")
 SCENARIO_ID = "set-scenario"
 SCENARIO_INPUT = "scenario"
+DRIVER_ID = "set-driver"          # growth driver edit; not a macro workflow, offered with the act profile
+DRIVER_TABLE = "rateInput"        # build-forecast-model.py "Growth Rates (editable)" input table
+DRIVER_KEY_COL, DRIVER_VALUE_COL = "LINE_ITEM", "RATE"
 # Plain nouns for the on-camera sentence, keyed by actionId.
 SPOKEN = {"roll-forward": "roll forward a month", "snapshot-version": "snapshot a version",
-          "submit-approval": "submit for approval", SCENARIO_ID: "switch scenario"}
+          "submit-approval": "submit for approval", SCENARIO_ID: "switch scenario",
+          DRIVER_ID: "change a growth driver"}
 
 
 def _macro_list(macros):
@@ -34,7 +38,7 @@ def _join(items):
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def recommend_agent(macros, workflows):
+def recommend_agent(macros, workflows, drivers=True):
     macro_list = _macro_list(macros)
     wfs = [w for w in (workflows or []) if isinstance(w, dict)]
     none = {"recommend": False, "profile": None, "reasons": [], "tools": [], "pitch": ""}
@@ -47,8 +51,11 @@ def recommend_agent(macros, workflows):
         for w in wfs:
             if w.get("class") not in ACTION_CLASSES:
                 continue
-            tools.append({"actionId": w["actionId"], "label": w["label"],
-                          "requiresApproval": bool(w.get("writes"))})
+            # every tool changes the workbook (the scenario switch edits Parameters), so every one asks first
+            tools.append({"actionId": w["actionId"], "label": w["label"], "requiresApproval": True})
+        if drivers and tools:
+            tools.insert(1 if tools[0]["actionId"] == SCENARIO_ID else 0,
+                         {"actionId": DRIVER_ID, "label": "Set growth driver", "requiresApproval": True})
     total = len(macro_list)
     if not tools:
         classes = sorted({m.get("class", "?") for m in macro_list})
@@ -58,13 +65,15 @@ def recommend_agent(macros, workflows):
                 "pitch": ""}
     writes = [t for t in tools if t["requiresApproval"]]
     names = [SPOKEN.get(t["actionId"], t["label"].lower()) for t in tools]
-    reasons = [f"{len(tools)} of {total} macros were workflows people trigger by hand: "
-               + _join(t["label"] for t in tools) + "."]
+    flows = [t for t in tools if t["actionId"] != DRIVER_ID]  # driver edit is offered, not a macro
+    reasons = [f"{len(flows)} of {total} macros were workflows people trigger by hand: "
+               + _join(t["label"] for t in flows) + "."]
     if writes:
-        reasons.append(f"{len(writes)} of them write to the workbook, so each asks for approval before it runs.")
-    pitch = (f"{len(tools)} of your {total} macros were workflows people trigger by hand. "
+        reasons.append(f"{len(writes)} of them change the workbook, so each asks for approval before it runs.")
+    pitch = (f"{len(flows)} of your {total} macros were workflows people trigger by hand. "
              f"A Sigma Agent can run them on request: {_join(names)}. "
-             + (f"The {len(writes)} that write ask for your approval first. " if writes else "")
+             + ("Each one changes the workbook, so each asks for your approval first. " if len(writes) == len(tools)
+                else f"The {len(writes)} that write ask for your approval first. " if writes else "")
              + "It reads the forecast and the log tables to check what changed, and it never sends email.")
     return {"recommend": True, "profile": "act" if writes else "analyze", "reasons": reasons,
             "tools": tools, "pitch": pitch}
@@ -84,6 +93,9 @@ TOOL_DESCRIPTIONS = {
     "roll-forward": "Advances Forecast Start Month in Parameters by one month. Takes no inputs.",
     "snapshot-version": "Appends one Versions row freezing the current scenario, start month and headline figures. Takes no inputs.",
     "submit-approval": "Appends a Submitted row to Approvals for the current forecast. Takes no inputs. Does not send email.",
+    DRIVER_ID: "Changes the monthly growth Rate of one row in the Growth Rates table. Inputs line_item (text): "
+               "the exact Line Item, for example North America Revenue; rate (number): the new monthly rate as a "
+               "decimal, for example 0.008 for 0.8%. Read the current rate first and compute the new value.",
     SCENARIO_ID: "Sets the Selected Scenario in Parameters. Input scenario (text): the scenario name, for example Base, Upside or Downside.",
 }
 
@@ -93,6 +105,15 @@ def _scenario_effects():
              "whichRows": {"type": "formula", "formula": "true"},
              "values": {dw.COLUMN_IDS[(dw.PARAMETERS, "Selected Scenario")]:
                         {"type": "agent-input", "inputName": SCENARIO_INPUT}}}]
+
+
+def _driver_effects():
+    return [{"effect": "update-rows", "tableElementId": DRIVER_TABLE,
+             # single-row + primaryKeys on the input table's own column ids is the documented agent-tool
+             # row selector (column-match takes only a literal string value, so it cannot bind an agent input)
+             "whichRows": {"type": "single-row",
+                           "primaryKeys": {DRIVER_KEY_COL: {"type": "agent-input", "inputName": "line_item"}}},
+             "values": {DRIVER_VALUE_COL: {"type": "agent-input", "inputName": "rate"}}}]
 
 
 def _instructions(rec, name):
@@ -106,6 +127,9 @@ def _instructions(rec, name):
         lines.append('To save the current numbers as a version call @tool("snapshot-version").')
     if "submit-approval" in ids:
         lines.append('To submit the forecast for approval call @tool("submit-approval"). Never send email.')
+    if DRIVER_ID in ids:
+        lines.append('To change a growth driver call @tool("set-driver") with the Line Item and the new monthly '
+                     'rate; read @dataSource("rateInput") first and compute the new rate from the current one.')
     if SCENARIO_ID in ids:
         lines.append(f'To switch scenario call @tool("{SCENARIO_ID}") with the scenario name.')
     lines.append("Writes ask the user for approval first. After any write, approved or declined, re-query "
@@ -128,13 +152,19 @@ def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=
     tools = []
     for entry in rec["tools"]:
         action_id = entry["actionId"]
-        if action_id == SCENARIO_ID:
+        if action_id == DRIVER_ID:
+            if DRIVER_TABLE not in grounding_element_ids:
+                continue  # workbook has no growth-rate table; never emit a tool that targets nothing
+            effects = _driver_effects()
+        elif action_id == SCENARIO_ID:
             effects = _scenario_effects()
         elif action_id in effects_by_action:
             effects = effects_by_action[action_id]
         else:
             effects = dw.action_effects(action_id, request_label, figures)
         tools.append(_tool(entry, effects, entry["label"]))
+    if DRIVER_TABLE not in grounding_element_ids:
+        rec = {**rec, "tools": [t for t in rec["tools"] if t["actionId"] != DRIVER_ID]}
     agent = {"id": agent_id, "name": name, "instructions": _instructions(rec, name),
              "dataSources": [{"kind": "table", "elementId": e} for e in grounding_element_ids],
              "tools": tools}
