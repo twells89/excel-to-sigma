@@ -780,7 +780,16 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
         source_charts.append(chart)
     wf = None
     if workflows is not None:
-        wf = demo_workflows.workflow_elements(workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast")
+        # Snapshot freezes the KPI tiles' own formulas (revenue, first amount row, middle amount row).
+        figures = {"revenue": REV_FY}
+        by_label = {r["label"].lower(): r for r in rows}
+        gm = by_label.get("gross margin") or by_label.get("gross profit") or (rows[0] if len(rows) >= 2 else None)
+        ebitda = by_label.get("ebitda") or (rows[bottom] if len(rows) >= 2 else None)
+        if gm is not None:
+            figures["grossMargin"] = signed(gm, True)
+        if ebitda is not None:
+            figures["ebitda"] = signed(ebitda, True)
+        wf = demo_workflows.workflow_elements(workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast", figures)
         # Header zone: title, Parameters (scenario picker + forecast start), latest status, buttons.
         header["body"] = f"# {P['name']}\n{grain_adj} actuals and forecast"
     main_els=[header]+([wf["tables"][0], wf["status"], *wf["buttons"]] if wf else [])+kpis+[trend]+source_charts+[pivot]
@@ -803,17 +812,14 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
             "pages":pages,"layout":forecast_layout(editable, extra_model_ids, [c["id"] for c in source_charts], [k["id"] for k in kpis], bool(wf))}
 
 def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
-    """Parameters seed CSV (one row) and the manual-commit Code Mode program, when asked for."""
-    if workflows is not None:
-        periods, n_act, _sections = plan_model(P)
-        first_forecast = periods[n_act]["end"][:8] + "01"
-        path = f"{outdir}/parameters_seed.csv"
-        with open(path, "w", encoding="utf-8", newline="") as stream:
-            csv.writer(stream).writerows([["Selected Scenario", "Forecast Start Month"], ["Base", first_forecast]])
-        print(f"seed CSV: {path}")
+    """The manual-commit Code Mode program (plus the one-row Parameters seed), when asked for."""
     if program_path:
         with open(program_path, "w", encoding="utf-8") as stream:
-            stream.write(demo_workflows.emit_manual_commit_program(wb_spec))
+            seed = None
+            if workflows is not None:
+                periods, n_act, _sections = plan_model(P)
+                seed = {"scenario": "Base", "start": periods[n_act]["end"][:8] + "01"}
+            stream.write(demo_workflows.emit_manual_commit_program(wb_spec, seed))
         print(f"MANUAL-COMMIT PROGRAM: {program_path}")
 
 

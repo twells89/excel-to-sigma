@@ -32,9 +32,11 @@ EFFECTS = ("update-rows", "insert-rows", "control")
 TABLES = {
     PARAMETERS: ("Parameters", [("pa_scn", "Selected Scenario", "text"),
                                 ("pa_start", "Forecast Start Month", "datetime")]),
-    VERSIONS: ("Versions", [("ve_ver", "Version", "text"), ("ve_at", "Snapshot At", "datetime"),
-                            ("ve_scn", "Scenario", "text"), ("ve_start", "Forecast Start Month", "datetime"),
-                            ("ve_by", "Saved By", "text")]),
+    VERSIONS: ("Versions", [("ve_ver", "Version", "text"), ("ve_scn", "Scenario", "text"),
+                            ("ve_start", "Forecast Start Month", "datetime"),
+                            ("ve_rev", "FY Revenue", "number"), ("ve_gm", "FY Gross Margin", "number"),
+                            ("ve_ebitda", "FY EBITDA", "number"),
+                            ("ve_by", "Saved By", "text"), ("ve_at", "Saved At", "datetime")]),
     APPROVALS: ("Approvals", [("ap_req", "Request", "text"), ("ap_by", "Submitted By", "text"),
                               ("ap_to", "Approver", "text"), ("ap_status", "Status", "text"),
                               ("ap_at", "Submitted At", "datetime")]),
@@ -52,7 +54,8 @@ WORKFLOWS = {
     "set-scenario": ("Set scenario", "control", PARAMETERS, ["Selected Scenario"], False),
     "roll-forward": ("Roll forward one month", "update-rows", PARAMETERS, ["Forecast Start Month"], True),
     "snapshot-version": ("Snapshot version", "insert-rows", VERSIONS,
-                         ["Version", "Snapshot At", "Scenario", "Forecast Start Month", "Saved By"], True),
+                         ["Version", "Scenario", "Forecast Start Month", "FY Revenue", "FY Gross Margin",
+                          "FY EBITDA", "Saved By", "Saved At"], True),
     "submit-approval": ("Submit for approval", "insert-rows", APPROVALS,
                         ["Request", "Submitted By", "Approver", "Status", "Submitted At"], True),
 }
@@ -67,9 +70,10 @@ DISPOSITIONS = {
 NOTES = {
     "roll-forward": "Advances Parameters.Forecast Start Month by one month (update-rows, DateAdd). "
                     "Replaces the VBA that copied the first forecast month into the Actuals table.",
-    "snapshot-version": "Appends a Versions row (version label, time, scenario, forecast start month, user). "
-                        "The VBA also pasted the forecast grid as static values; the row logs the parameters "
-                        "in force instead, and the live Forecast stays reproducible from them.",
+    "snapshot-version": "Appends ONE Versions row freezing the headline numbers at click time (version label, "
+                        "scenario, forecast start month, FY revenue / gross margin / EBITDA taken from the same "
+                        "formulas the KPI tiles use, user, time). The VBA pasted the whole forecast grid as "
+                        "values; the full line x month grid is not reproduced.",
     "submit-approval": "Appends an Approvals row (status Submitted, user, time). The VBA also protected the "
                        "sheet and sent an Outlook email; neither is reproduced.",
     "set-scenario": "Parameters is a one-row input table (a control filters but cannot feed a formula "
@@ -125,6 +129,10 @@ def build_workflow_manifest(path):
     return {"version": 1, "workflows": workflows, "dispositions": dispositions}
 
 
+STATUS_FORMULA = ('Coalesce(Lookup([Approvals/Status], Max([Approvals/Submitted At]), '
+                  '[Approvals/Submitted At]), "Not submitted")')
+
+
 def _const(text):
     return {"type": "constant", "value": {"type": "text", "value": text}}
 
@@ -137,7 +145,7 @@ def _values(element, formulas):
     return {COLUMN_IDS[(element, name)]: value for name, value in formulas.items()}
 
 
-def action_effects(action_id, request_label):
+def action_effects(action_id, request_label, figures=None):
     """The effect list for one workflow (the working shapes from the Task 2 spike)."""
     if action_id == "roll-forward":
         return [{"effect": "update-rows", "tableElementId": PARAMETERS,
@@ -145,12 +153,17 @@ def action_effects(action_id, request_label):
                  "values": _values(PARAMETERS, {"Forecast Start Month": _formula(
                      'DateAdd("month", 1, Max([Parameters/Forecast Start Month]))')})}]
     if action_id == "snapshot-version":
-        return [{"effect": "insert-rows", "tableElementId": VERSIONS, "values": _values(VERSIONS, {
-            "Version": _formula('Concat("v", Text(Count([Versions/Snapshot At]) + 1))'),
-            "Snapshot At": _formula("Now()"),
+        if not figures:
+            raise WorkflowError("snapshot needs the KPI figure formulas (figures=)")
+        values = {
+            "Version": _formula('Concat("v", Text(Count([Versions/Saved At]) + 1))'),
             "Scenario": _formula("Max([Parameters/Selected Scenario])"),
             "Forecast Start Month": _formula("Max([Parameters/Forecast Start Month])"),
-            "Saved By": _formula("CurrentUserEmail()")})}]
+            "Saved By": _formula("CurrentUserEmail()"), "Saved At": _formula("Now()")}
+        names = {"revenue": "FY Revenue", "grossMargin": "FY Gross Margin", "ebitda": "FY EBITDA"}
+        for key, formula in figures.items():
+            values[names[key]] = _formula(formula)
+        return [{"effect": "insert-rows", "tableElementId": VERSIONS, "values": _values(VERSIONS, values)}]
     if action_id == "submit-approval":
         return [{"effect": "insert-rows", "tableElementId": APPROVALS, "values": _values(APPROVALS, {
             "Request": _const(request_label), "Submitted By": _formula("CurrentUserEmail()"),
@@ -158,16 +171,25 @@ def action_effects(action_id, request_label):
     raise WorkflowError(f"no button action for {action_id}")
 
 
-def input_table(element, connection_id, mode):
+def input_table(element, connection_id, mode, figures=None):
     name, cols = TABLES[element]
+    if element == VERSIONS and figures is not None:
+        keep = {"FY Revenue": "revenue", "FY Gross Margin": "grossMargin", "FY EBITDA": "ebitda"}
+        cols = [c for c in cols if c[1] not in keep or keep[c[1]] in figures]
     return {"id": element, "kind": "input-table", "name": name, "inputMode": mode,
             "source": {"kind": "empty", "connectionId": connection_id},
             "columns": [{"id": "ID", "name": "Row ID", "hidden": True},
                         *[{"id": cid, "type": typ, "name": nm} for cid, nm, typ in cols]]}
 
 
-def workflow_elements(manifest, connection_id, request_label):
-    """Workbook elements for a manifest: ``{tables, buttons, status}``."""
+def workflow_elements(manifest, connection_id, request_label, figures=None):
+    """Workbook elements for a manifest: ``{tables, buttons, status}``.
+
+    ``figures`` maps revenue / grossMargin / ebitda to the workbook's KPI formulas;
+    Snapshot freezes exactly those into its Versions row.
+    """
+    if figures is None and any(w["actionId"] == "snapshot-version" for w in manifest.get("workflows", [])):
+        figures = {"revenue": "Sum([PnL Combined/Amount])"}  # structural default (checks); builder passes real KPIs
     if not isinstance(manifest, dict) or manifest.get("version") != 1:
         raise WorkflowError("workflows manifest version 1 required")
     items = {w["actionId"]: w for w in manifest.get("workflows", [])}
@@ -175,7 +197,7 @@ def workflow_elements(manifest, connection_id, request_label):
         if w["effect"] not in EFFECTS:
             raise WorkflowError(f"unsupported workflow effect {w['effect']}")
     tables = [input_table(PARAMETERS, connection_id, "edit"),
-              input_table(VERSIONS, connection_id, "view"),
+              input_table(VERSIONS, connection_id, "view", figures),
               input_table(APPROVALS, connection_id, "view")]
     buttons = []
     for action_id, element_id in BUTTON_IDS.items():
@@ -185,15 +207,12 @@ def workflow_elements(manifest, connection_id, request_label):
         buttons.append({"id": element_id, "kind": "button", "text": w["label"],
             "appearance": "outline" if action_id == "submit-approval" else "filled",
             "actions": [{"id": "a-" + action_id, "trigger": "on-click",
-                         "effects": action_effects(action_id, request_label)}]})
-    status = {"id": STATUS_KPI, "kind": "kpi-chart", "name": "Approval status",
-        "source": {"kind": "table", "elementId": APPROVALS},
-        "columns": [{"id": "st_v", "formula":
-            'If(Count([Approvals/Submitted At]) = 0, "Not submitted", '
-            'If(CountIf([Approvals/Status] = "Approved") > 0, "Approved", "Submitted"))'}],
-        "value": {"columnId": "st_v"},
-        "style": {"backgroundColor": "#FFFFFF", "borderColor": {"kind": "theme", "ref": "colors-border"},
-                  "borderWidth": 1, "borderRadius": "round"}}
+                         "effects": action_effects(action_id, request_label, figures)}]})
+    # Latest status = Status of the Approvals row with the max Submitted At. A one-row table
+    # over Parameters holds the cross-table Lookup (the shape proven for the forecast lookup).
+    status = {"id": STATUS_KPI, "kind": "table", "name": "Latest approval status",
+        "source": {"kind": "table", "elementId": PARAMETERS},
+        "columns": [{"id": "st_v", "name": "Latest approval status", "formula": STATUS_FORMULA}]}
     return {"tables": tables, "buttons": buttons, "status": status}
 
 
@@ -209,7 +228,7 @@ def _input_tables(spec):
     return [(owners[t]["id"], t) for t in tables]
 
 
-def emit_manual_commit_program(spec):
+def emit_manual_commit_program(spec, seed=None):
     """Post-create Code Mode program text: re-set each input table's edit mode so the
     host publishes it with manual commit enabled."""
     tables = _input_tables(spec)
@@ -217,9 +236,26 @@ def emit_manual_commit_program(spec):
         raise WorkflowError("workbook has no input tables")
     lines = ["# Enable manual commit on every input table (required for backend actions / agent tools).",
              "# Run once through Sigma MCP Code Mode after the workbook is created.", ""]
+    if seed:
+        lines[1] += "\n# The Parameters seed at the end writes one row: run once on a fresh workbook (it cannot query first)."
     for page_id, element_id in tables:
         lines += [f"t = sigma.workbook.get_page('{page_id}').get_element('{element_id}')",
                   "if not isinstance(t, InputTable):",
                   f"    raise RuntimeError('{element_id} is not an InputTable')",
                   "t.set_edit_mode('draft')", "t.set_edit_mode('published-all-users')", ""]
+    if seed:
+        page = next((pg for pg, el in tables if el == PARAMETERS), None)
+        if page is None:
+            raise WorkflowError("seed requested but the workbook has no parameters input table")
+        lines += ["# Seed the single Parameters row (fresh workbook only).",
+                  f"t = sigma.workbook.get_page('{page}').get_element('{PARAMETERS}')",
+                  "if not isinstance(t, InputTable):",
+                  f"    raise RuntimeError('{PARAMETERS} is not an InputTable')",
+                  f"c_scn = t.get_column('{COLUMN_IDS[(PARAMETERS, 'Selected Scenario')]}')",
+                  "if not isinstance(c_scn, LiteralEditableColumn):",
+                  "    raise RuntimeError('Selected Scenario is not an editable column')",
+                  f"c_start = t.get_column('{COLUMN_IDS[(PARAMETERS, 'Forecast Start Month')]}')",
+                  "if not isinstance(c_start, LiteralEditableColumn):",
+                  "    raise RuntimeError('Forecast Start Month is not an editable column')",
+                  f"t.upsert_rows([{{c_scn: {seed['scenario']!r}, c_start: {seed['start']!r}}}])", ""]
     return "\n".join(lines)

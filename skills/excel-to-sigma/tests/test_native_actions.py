@@ -657,7 +657,7 @@ class TestDemoWorkflows(unittest.TestCase):
         spec=self.spec(self.manifest)
         by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
         for tid,names in (('parameters',['Selected Scenario','Forecast Start Month']),
-                ('versions',['Version','Snapshot At','Scenario','Forecast Start Month','Saved By']),
+                ('versions',['Version','Scenario','Forecast Start Month','FY Revenue','FY Gross Margin','FY EBITDA','Saved By','Saved At']),
                 ('approvals',['Request','Submitted By','Approver','Status','Submitted At'])):
             t=by_id[tid]
             self.assertEqual(t['kind'],'input-table')
@@ -672,11 +672,51 @@ class TestDemoWorkflows(unittest.TestCase):
         approve=by_id['btnSubmit']['actions'][0]['effects'][0]
         self.assertEqual(approve['values']['ap_status']['value']['value'],'Submitted')
         self.assertIn('FY27',approve['values']['ap_req']['value']['value'])
-        self.assertEqual(by_id['approvalStatus']['source'],{'kind':'table','elementId':'approvals'})
+        self.assertEqual(by_id['approvalStatus']['kind'],'table')
+        self.assertEqual(by_id['approvalStatus']['source'],{'kind':'table','elementId':'parameters'})
         wire=self.build.workbook_wire.wire_workbook(spec)
         layout=wire['contents']['layout']
         for eid in ('parameters','versions','approvals','btnRoll','btnSnapshot','btnSubmit','approvalStatus','pnlHeader'):
             self.assertIn(f'elementId="{eid}"',layout)
+
+    def test_snapshot_freezes_headline_figures_from_kpi_formulas(self):
+        spec=self.spec(self.manifest)
+        by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
+        eff=by_id['btnSnapshot']['actions'][0]['effects'][0]
+        self.assertEqual(eff['effect'],'insert-rows'); self.assertEqual(eff['tableElementId'],'versions')
+        cols={c['name']:c['id'] for c in by_id['versions']['columns'] if 'type' in c}
+        self.assertEqual(set(eff['values']),set(cols.values()))  # one row covers every Versions column
+        f=lambda name:eff['values'][cols[name]]['formula']
+        kpi=lambda eid:by_id[eid]['columns'][0]['formula']
+        tiles={kpi(k) for k in ('kpiRev','kpiEbitda','kpiNI')}
+        self.assertEqual(f('FY Revenue'),kpi('kpiRev'))
+        self.assertIn(f('FY EBITDA'),tiles)  # the EBITDA row's own KPI formula, not recomputed
+        self.assertTrue(kpi('kpiGM').startswith('('+f('FY Gross Margin')+')'))
+        self.assertNotEqual(f('FY EBITDA'),f('FY Gross Margin'))
+        self.assertEqual(f('Scenario'),'Max([Parameters/Selected Scenario])')
+        self.assertIn('CurrentUserEmail()',f('Saved By')); self.assertEqual(f('Saved At'),'Now()')
+
+    def test_latest_status_is_row_with_max_submitted_at(self):
+        spec=self.spec(self.manifest)
+        by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
+        self.assertEqual(by_id['approvalStatus']['columns'][0]['formula'],
+            'Coalesce(Lookup([Approvals/Status], Max([Approvals/Submitted At]), [Approvals/Submitted At]), "Not submitted")')
+
+    def test_manual_commit_program_final_mode_and_seed(self):
+        spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
+        seed={'scenario':'Base','start':'2026-02-01'}
+        program=self.dw.emit_manual_commit_program(spec,seed)
+        modes=[l.split("'")[1] for l in program.splitlines() if l.startswith('t.set_edit_mode(')]
+        self.assertEqual(modes.count('draft'),modes.count('published-all-users'))
+        self.assertEqual(set(modes),{'draft','published-all-users'})
+        pairs=[l for l in program.splitlines() if l.startswith('t.set_edit_mode(')]
+        self.assertTrue(all(pairs[i+1]=="t.set_edit_mode('published-all-users')" for i in range(0,len(pairs),2)))
+        self.assertIn("c_scn = t.get_column('pa_scn')",program)
+        self.assertIn("c_start = t.get_column('pa_start')",program)
+        self.assertIn("isinstance(c_scn, LiteralEditableColumn)",program)
+        self.assertIn("t.upsert_rows([{c_scn: 'Base', c_start: '2026-02-01'}])",program)
+        self.assertGreater(program.index('upsert_rows'),program.rindex("set_edit_mode('published-all-users')"))
+        compile(program,'program','exec')
 
     def test_manual_commit_program_covers_every_input_table(self):
         spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
@@ -706,7 +746,8 @@ class TestDemoWorkflows(unittest.TestCase):
             self.assertIn("set_edit_mode('published-all-users')",prog.read_text())
             wired=json.loads((out/'wb_spec.json').read_text())
             self.assertIn('btnRoll',{e['id'] for e in wired['contents']['elements']})
-            self.assertTrue((out/'parameters_seed.csv').exists())
+            self.assertIn("c_start: '2026-02-01'",prog.read_text())  # plan's first forecast month
+            self.assertFalse((out/'parameters_seed.csv').exists())
 
     def test_demo_manifest_cli(self):
         mod=_load('macro-actions.py','wf_macro_actions')
