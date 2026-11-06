@@ -3,7 +3,7 @@
 
 usage: migrate.py plan <file.xlsx|.xlsm> [--out-dir DIR]
 
-Writes migration-audit.json, discovery.json and (when the audit has review issues)
+Writes migration-audit.json, discovery.json, macros.json (forecast with macros) and (when the audit has review issues)
 review.template.json into DIR (default: the workbook's folder). Prints a JSON routing
 record: audit status and issues, archetype, the refs worth reading, the decisions to
 ask the user, the next commands, and the steps only the user can do in the Sigma UI.
@@ -62,6 +62,13 @@ ROUTES = {
             "# dry run: draft mode + local parity",
             "python scripts/build-forecast-model.py <workdir>/plan.json --post "
             "--review-dispositions <workdir>/review.json   # production: strict dispositions",
+            # Optional Phase 1b: land the source Tables in Snowflake, then build GL actuals on the
+            # landed table instead of inline VALUES (dry run by default; --execute needs the user's OK).
+            "python scripts/land-in-snowflake.py <file> --tables <tables> --database <db> --schema <schema> "
+            "--table-prefix <prefix> --snow-connection <snow-conn> --out <workdir>/landing.json   "
+            "# Phase 1b dry run (add --execute, --grant-select-to <role>, --sync-sigma-connection <conn>)",
+            "python scripts/build-forecast-model.py <workdir>/plan.json --actuals-table <db.schema.table> "
+            "--landing <workdir>/landing.json --out-dir <workdir>/build   # actuals from the landed table",
         ],
         "handoffs": ["Paste seed CSVs into the rate/manual input tables", "Publish the workbook"],
     },
@@ -141,6 +148,22 @@ ROUTES = {
 }
 
 
+# Phase 6 (Enhance): only when the source carries macros that became workflows.
+ENHANCE_COMMANDS = [
+    "python scripts/macro-actions.py demo-manifest <file>   # classify the macros into workflows.json "
+    "(never executes VBA)",
+    "python scripts/build-forecast-model.py <workdir>/plan.json --workflows <workdir>/workflows.json "
+    "--emit-manual-commit-program <workdir>/manual-commit.py --out-dir <workdir>/build   "
+    "# workflow buttons + the post-create Code Mode program that enables manual commit on every input table",
+    "python scripts/recommend-agent.py --macros <workdir>/macros.json --workflows <workdir>/workflows.json   "
+    "# Phase 6: recommendation only; add --merge-into <workbook-spec> --out <merged> after a yes",
+]
+ENHANCE_HANDOFFS = [
+    "Submit the manual-commit program through Sigma MCP Code Mode after the workbook is created "
+    "(backend actions and agent tools can only write input tables with manual commit enabled)",
+]
+
+
 def plan(args):
     source = Path(args.workbook).expanduser().resolve()
     if not source.is_file():
@@ -202,6 +225,8 @@ def plan(args):
             route_reason = f"{route_reason}; {note}" if route_reason else note
     route = ROUTES[kind]
     refs = list(route["refs"])
+    next_commands = list(route["next"])
+    handoffs = list(route["handoffs"])
 
     if not blocked and source.suffix.lower() in MACRO_SUFFIXES:
         try:
@@ -210,6 +235,11 @@ def plan(args):
             macros = {"error": str(error)}
             notes.append(f"macro-classify failed ({error}); resolve it before building.")
         refs.append("refs/macro-handling.md")
+        if kind == "forecast" and isinstance(macros, list) and macros:
+            refs.append("refs/agent-enhance.md")
+            (workdir / "macros.json").write_text(json.dumps(macros, indent=2) + "\n", encoding="utf-8")
+            next_commands += ENHANCE_COMMANDS
+            handoffs += ENHANCE_HANDOFFS
     if any(i.get("code") in PRESENTATION_CODES for i in audit.get("issues", [])):
         refs.append("refs/presentation-migration.md")
 
@@ -241,8 +271,8 @@ def plan(args):
         "readRefs": list(dict.fromkeys(refs)),
         "beforePost": ["refs/coverage-contract.md"],
         "askUser": route["decisions"],
-        "nextCommands": [fill(c) for c in route["next"]],
-        "userHandoffs": route["handoffs"],
+        "nextCommands": [fill(c) for c in next_commands],
+        "userHandoffs": handoffs,
         "reviewTemplate": str(workdir / "review.template.json") if review_template["issues"] else None,
         "notes": notes + [
             "Local builds (no --post) run in draft mode; pending review issues do not block them.",

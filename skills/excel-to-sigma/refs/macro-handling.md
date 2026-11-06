@@ -220,3 +220,11 @@ preservation and does not write a fresh timestamp.
 For explicitly reviewed guarded allocation/goal-seek/scalar procedure ports, see
 [custom-ports.md](custom-ports.md). This route binds new controlled source and
 independent goldens; it does not relax automatic native analysis or production gates.
+
+## Enhance: macros that became workflows
+
+Macros classified as `ACTION_WRITEBACK`, `EXTERNAL_IO` or `WHATIF_SCENARIO` become native
+workflow buttons (`macro-actions.py demo-manifest`, then `build-forecast-model.py --workflows`)
+and can be offered as a Sigma workbook agent in the trailing **Phase 6 - Enhance**
+(`scripts/recommend-agent.py`). See [agent-enhance.md](agent-enhance.md); write tools need
+manual commit on the input tables ([input-tables.md](input-tables.md)).

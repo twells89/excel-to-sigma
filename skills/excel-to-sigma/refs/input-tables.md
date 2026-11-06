@@ -264,6 +264,18 @@ Use **empty + CSV** (below) instead when you're seeding **starting values**
 dimension cross-product. Use **linked** when the grain is a dimension product and
 forecasters enter net-new measures.
 
+## Manual commit: required before actions or agents can write (live-proven)
+
+Backend actions (buttons) and workbook-agent tools can only write to input tables that have
+**manual commit** enabled. A REST `POST /v2/workbooks/spec` never enables it, so a freshly
+built workbook's write actions fail until it is set. Fix, once per input table, after the
+workbook exists, through Sigma MCP Code Mode: `set_edit_mode('draft')` then
+`set_edit_mode('published-all-users')`. `published-all-users` is data entry for everyone with
+workbook access. Spec `inputMode` maps to the SDK mode as: `edit` = `draft`,
+`explore` = `published-explore`, `view` = `published-all-users`.
+`build-forecast-model.py --emit-manual-commit-program OUT.py` writes this program (and seeds
+the single Parameters row when empty). Query the table afterward to confirm a button write lands.
+
 ## Seed rows through Sigma MCP Code Mode
 
 For an existing empty input table, first `describe` and `query` it, resolve its

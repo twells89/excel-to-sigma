@@ -183,9 +183,15 @@ From this skill directory, install its pinned dependencies:
 `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 
 ### Optional: `snow` CLI
-Used only to look up the **full path** of a Sigma-created warehouse view
-(`SIGMA_WRITE_DB.<schema>.<view>`) when the UI truncates it. SSO browser-auth;
-`snow sql -c default --format json -q "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME FROM <DB>.INFORMATION_SCHEMA.VIEWS WHERE TABLE_NAME ILIKE '<view>%'"`.
+Used by **Phase 1b** (`scripts/land-in-snowflake.py`) to land the workbook's Tables in
+Snowflake, and to look up the full path of a Sigma-created warehouse view
+(`SIGMA_WRITE_DB.<schema>.<view>`) when the UI truncates it. Sign in once with
+`snow connection add` / SSO browser auth, then name the connection with
+`--snow-connection <name>`. The landing script runs `snow sql` with an argv list (no shell),
+is a dry run by default, and issues only `CREATE TABLE`, the load, row-count verification and
+(when asked) `GRANT SELECT` on each landed table. It never creates schemas, views, stored
+procedures or future grants. View lookup:
+`snow sql -c <conn> --format json -q "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME FROM <DB>.INFORMATION_SCHEMA.VIEWS WHERE TABLE_NAME ILIKE '<view>%'"`.
 
 ---
 
@@ -380,6 +386,34 @@ For the fact Table, emit a **paste-ready CSV** with:
 
 Parse Excel date serials → ISO dates here.
 
+## Phase 1b — Land source tabs in Snowflake (`scripts/land-in-snowflake.py`)
+
+Optional, forecast path. Instead of inlining GL actuals as `VALUES`, land the workbook's
+Excel Tables in the warehouse so the model reads real tables.
+
+```bash
+.venv/bin/python scripts/land-in-snowflake.py book.xlsx --tables tblActuals,tblPlan \
+    --database <DB> --schema <SCHEMA> --table-prefix FPA_ --snow-connection <snow-conn> \
+    --out work/landing.json                      # dry run: prints the plan and SQL
+# with the user's OK (it creates tables):
+... --execute [--grant-select-to <ROLE>] [--replace] \
+    [--sync-sigma-connection <connectionId> --sigma-profile "<profile>"]
+.venv/bin/python scripts/build-forecast-model.py work/plan.json \
+    --actuals-table <DB>.<SCHEMA>.FPA_TBLACTUALS --landing work/landing.json --out-dir work/build
+```
+
+- Headers become stable UPPER_SNAKE identifiers (`Net Revenue ($)` -> `NET_REVENUE`); the
+  builder's column map reads the same names from `landing.json`.
+- Excel date cells and serial numbers land as `DATE`; blank cells land as `NULL`
+  (blank-as-zero parity per `refs/source-blank-validation.md`).
+- Re-running into a schema that already holds a table exits 2 unless `--replace` is passed;
+  it never appends a duplicate. `--execute` verifies each row count against the source and
+  exits non-zero on a mismatch.
+- `--grant-select-to <ROLE>` grants `SELECT` on each landed table and nothing else.
+  `--sync-sigma-connection` makes Sigma see the new table paths.
+- Needs no warehouse views and no stored procedures. Ask the user before `--execute`,
+  any grant, or a Sigma connection sync.
+
 ## Phase 2 — Build the read/output DM (against a seed) + reuse-check
 
 Before POSTing a new DM, check whether an existing Sigma data model already
@@ -463,6 +497,10 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | seed/update rows in an existing input table | ✅ Sigma MCP Code Mode `build_workbook` with `InputTable.upsert_rows()` / `update_rows()`; pre-query natural keys because inserts do not deduplicate them automatically |
 | **Publish** for UI edits | ⚠️ UI; MCP row writes persisted and were immediately queryable in the 2026-10-15 regression, while published-mode UI permissions remain untested |
 | **warehouse view** on the input table | ⚠️ UI only |
+| land workbook Tables in Snowflake (Phase 1b) | ✅ `scripts/land-in-snowflake.py` (`snow` CLI; dry run by default; `--execute`, row-count verified) + `--sync-sigma-connection` |
+| enable **manual commit** on input tables (needed for backend actions / agent tools to write) | ❌ REST spec POST never sets it; ✅ post-create MCP Code Mode `set_edit_mode('draft')` then `set_edit_mode('published-all-users')` per input table (`build-forecast-model.py --emit-manual-commit-program`) |
+| macros -> workflow buttons + approvals (`--workflows`) | ✅ `macro-actions.py demo-manifest` -> `workflows.json` -> `build-forecast-model.py --workflows` |
+| workbook **agent** (Phase 6 Enhance) | ✅ `scripts/recommend-agent.py` (`--merge-into`); `requiresApproval` is enforced in the chat UI, not over the REST/MCP run API |
 | DM **source-swap** to `FROM <view>` | ✅ API (DM spec PUT/POST) |
 | read/output DM + workbook build | ✅ API |
 | API/writeback/navigation/stored-procedure actions | ✅ code representation; runtime-test every effect |
@@ -529,6 +567,18 @@ create or update the workbook. A macro inventory with no action or scenario clas
 (only recalc / cosmetic) gets no agent and no write tools. See
 `refs/agent-enhance.md`.
 
+Prerequisites the agent depends on:
+- Build with `build-forecast-model.py --workflows workflows.json` so the Parameters /
+  Versions / Approvals input tables and workflow buttons exist.
+- **Manual commit.** Backend actions and agent tools can only write to input tables
+  that have manual commit enabled, and a REST spec POST never enables it. After the
+  workbook is created, submit the program from `--emit-manual-commit-program` through
+  Sigma MCP Code Mode (`set_edit_mode('draft')`, then `set_edit_mode('published-all-users')`
+  per input table). `published-all-users` is data entry for everyone with workbook access.
+- Agent SQL that touches input-table system columns (`CREATED_BY` ...) fails with
+  "Ambiguous column reference"; ground tools in the user columns. See
+  `refs/sigma-build-gotchas.md`.
+
 ---
 
 ## What this skill does NOT do (yet)
@@ -539,6 +589,9 @@ create or update the workbook. A macro inventory with no action or scenario clas
 - Power Query / ODBC / SharePoint-Online source pipelines are detected and
   routed, but not automatically recreated. Land them as governed warehouse or
   connector sources and verify refresh/data parity.
+- Run the agent's writes unattended: `requiresApproval` is enforced in the chat UI, not over
+  the REST/MCP run API, so approval-before-write holds only in the chat experience. It also
+  never executes VBA or sends email.
 - `.xlsm` / VBA / macros — **detected + classified + routed** (Phase 0b,
   `scripts/macro-classify.py` + `refs/macro-handling.md`); never blindly
   executed. Representable routes include Actions, Python, and stored procedures,

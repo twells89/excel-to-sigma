@@ -56,6 +56,44 @@ class TestRouter(unittest.TestCase):
         wb.save(path)
         return path
 
+    def test_forecast_route_offers_landing_and_enhance(self):
+        import shutil
+        from unittest import mock
+        xlsx = self.dir / "pnl.xlsx"
+        fixture.build_pnl(xlsx)
+        # Non-macro .xlsx: landing is offered, the Enhance step is not.
+        _, plain = self.plan(xlsx)
+        text = "\n".join(plain["nextCommands"])
+        self.assertIn("land-in-snowflake.py", text)
+        self.assertIn("--actuals-table", text)
+        self.assertIn("--landing", text)
+        self.assertNotIn("recommend-agent.py", text)
+        # Macro-enabled source: Enhance (Phase 6) is offered after the build.
+        xlsm = self.dir / "pnl.xlsm"
+        shutil.copy(xlsx, xlsm)
+        real = MIGRATE.run_json
+        macro = [{"module": "Module1", "procedure": "RollForward", "status": "AUTO",
+                  "classes": ["WHATIF_SCENARIO"]}]
+
+        def fake(*args):
+            if Path(args[0]).name == "macro-classify.py":
+                return macro
+            return real(*args)
+
+        with mock.patch.object(MIGRATE, "run_json", fake):
+            _, enabled = self.plan(xlsm)
+        cmds = enabled["nextCommands"]
+        text = "\n".join(cmds)
+        self.assertIn("land-in-snowflake.py", text)
+        self.assertIn("macro-actions.py demo-manifest", text)
+        self.assertIn("recommend-agent.py", text)
+        self.assertLess(next(i for i, c in enumerate(cmds) if "land-in-snowflake.py" in c),
+                        next(i for i, c in enumerate(cmds) if "recommend-agent.py" in c))
+        self.assertIn("refs/agent-enhance.md", enabled["readRefs"])
+        # Non-forecast archetypes never get the forecast-only landing/Enhance commands.
+        _, table = self.plan(self.table_workbook())
+        self.assertNotIn("recommend-agent.py", "\n".join(table["nextCommands"]))
+
     def test_forecast_archetype_routes_to_drafter_then_builder(self):
         path = self.dir / "pnl.xlsx"
         fixture.build_pnl(path)
