@@ -177,7 +177,8 @@ def action_effects(action_id, request_label, figures=None, scenario_control=None
         if not figures:
             raise WorkflowError("snapshot needs the KPI figure formulas (figures=)")
         values = {
-            "Version": _formula(f'Concat("v", Text({next_entry("Versions")}))'),
+            # Log Order is a number column: Text() of the bare sum renders "v8.0000000000000000000".
+            "Version": _formula(f'Concat("v", Text(Int({next_entry("Versions")})))'),
             "Scenario": ({"type": "control", "control": scenario_control} if scenario_control
                          else _formula("Max([Parameters/Selected Scenario])")),
             "Forecast Start Month": _formula(start),

@@ -211,6 +211,15 @@ class AgentEnhanceTests(unittest.TestCase):
         for aid in dw.BUTTON_IDS:
             self.assertEqual([{k: v for k, v in s.items() if k != "kind"} for s in tools[aid]["steps"]], eff[aid])
 
+    def test_agent_snapshot_tool_labels_version_as_integer(self):
+        macros, wfs = demo()
+        rec = ae.recommend_agent(macros, wfs)
+        frag = ae.agent_document_fragment(rec, "A", ["forecast", "parameters", "versions", "approvals", "rateInput"],
+                                          figures={"revenue": "Sum([PnL Combined/Amount])"})
+        snap = next(t for t in frag["agents"][0]["tools"] if t["toolId"] == "snapshot-version")
+        self.assertEqual(snap["steps"][0]["values"]["ve_ver"]["formula"],
+                         'Concat("v", Text(Int(Coalesce(Max([Versions/Log Order]), 0) + 1)))')
+
     def test_cli_merge_into_and_emit(self):
         import demo_workflows as dw
         wb = self._workbook()

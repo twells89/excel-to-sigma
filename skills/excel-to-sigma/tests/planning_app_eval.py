@@ -18,6 +18,7 @@ left-outer join keeps unmatched primary rows. An unsupported construct raises, n
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime, timedelta
 
@@ -489,6 +490,8 @@ class Model:
         if name == "Text":
             v = values[0]
             return None if v is None else str(int(v)) if float(v).is_integer() else str(v)
+        if name == "Int":   # round down to a whole number (Sigma's Int)
+            return None if values[0] is None else math.floor(values[0])
         if name == "Abs":
             return None if values[0] is None else abs(values[0])
         if name == "Round":

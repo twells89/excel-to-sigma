@@ -693,6 +693,8 @@ class TestDemoWorkflows(unittest.TestCase):
         self.assertEqual(set(eff['values']),set(cols.values())-{cols['Comment']})
         self.assertEqual(eff['values'][cols['Log Order']]['formula'],'Coalesce(Max([Versions/Log Order]), 0) + 1')
         f=lambda name:eff['values'][cols[name]]['formula']
+        # Log Order is a number column: Text() of the raw sum labels the version "v8.0000000000000000000"
+        self.assertEqual(f('Version'),'Concat("v", Text(Int(Coalesce(Max([Versions/Log Order]), 0) + 1)))')
         plain=self.spec()   # the plain dashboard's KPI tiles carry the same headline formulas
         tiles={e['id']:e['columns'][0]['formula'] for pg in plain['pages'] for e in pg['elements'] if e['kind']=='kpi-chart'}
         self.assertEqual(f('FY Revenue'),tiles['kpiRev'])
