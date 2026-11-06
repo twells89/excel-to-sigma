@@ -1289,7 +1289,9 @@ def main(argv=None):
     with open(f"{outdir}/posted-ids.json", "w", encoding="utf-8") as stream:
         json.dump({"dataModelId": dm_id, "dmElements": els, "workbookId": wb["workbookId"], "url": wb.get("url"),
                    "staging": bool(args.staging_approval)}, stream, indent=1)
-    print("NOTE: POST uses a stacked notebook-flow layout via code_rep; refine with wb-rep push if needed.")
+    if args.emit_manual_commit_program:
+        print(f"NEXT: run {args.emit_manual_commit_program} once on this workbook through Sigma MCP Code Mode "
+              "build_workbook (target existing) before anyone edits it or the agent writes.")
     return 0
 
 if __name__=="__main__":
