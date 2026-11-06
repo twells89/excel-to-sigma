@@ -46,11 +46,17 @@ _UNKNOWN = object()
 _MODULE = object()   # sigma / sigma.workbook
 
 
+# ``type X = ...`` aliases (3.12+) and ``X | Y`` unions (3.10+) are unwrapped only where the running
+# Python has them; the recorded signatures use plain ``Union`` aliases, which every version reads.
+_ALIAS_TYPES = tuple(t for t in (getattr(typing, "TypeAliasType", None),) if t is not None)
+_UNION_ORIGINS = tuple(t for t in (typing.Union, getattr(types, "UnionType", None)) if t is not None)
+
+
 def _union_members(annotation):
-    if isinstance(annotation, typing.TypeAliasType):
+    if _ALIAS_TYPES and isinstance(annotation, _ALIAS_TYPES):
         annotation = annotation.__value__
     origin = typing.get_origin(annotation)
-    if origin in (typing.Union, types.UnionType):
+    if origin in _UNION_ORIGINS:
         out = []
         for a in typing.get_args(annotation):
             out += _union_members(a)

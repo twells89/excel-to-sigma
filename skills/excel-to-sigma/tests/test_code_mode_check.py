@@ -62,6 +62,24 @@ class RecordedSignatureTests(unittest.TestCase):
         self.assertEqual(errs, [])
         self.assertGreaterEqual(calls, 20)
 
+    def test_checker_runs_on_python_without_type_alias_type(self):
+        # typing.TypeAliasType is Python 3.12+; the checker runs on every emit, so it must not need it.
+        # (types.UnionType, 3.10+, is read the same way; deleting it here would break typing itself.)
+        import importlib
+        import typing
+        saved = [(typing, "TypeAliasType", typing.TypeAliasType)] if hasattr(typing, "TypeAliasType") else []
+        try:
+            for mod, name, _value in saved:
+                delattr(mod, name)
+            module = importlib.reload(code_mode_check)
+            errs, calls = module.check_program(PROGRAM)
+            self.assertEqual(errs, [])
+            self.assertGreaterEqual(calls, 20)
+        finally:
+            for mod, name, value in saved:
+                setattr(mod, name, value)
+            importlib.reload(code_mode_check)
+
     def test_wrong_calls_are_rejected(self):
         cases = {
             ("s.set_autofit_columns(False)", "s.set_autofit_columns('hidden')"): "argument show",
