@@ -19,6 +19,11 @@ SCENARIO_INPUT = "scenario"
 DRIVER_ID = "set-driver"          # growth driver edit; not a macro workflow, offered with the act profile
 DRIVER_TABLE = "rateInput"        # build-forecast-model.py "Growth Rates (editable)" input table
 DRIVER_KEY_COL, DRIVER_VALUE_COL = "LINE_ITEM", "RATE"
+DRIVER_KEY_NAME = "Line item"     # the planning app's display name for LINE_ITEM (read from the workbook when given)
+# The set-driver tool's row picker: a hidden text control the tool fills with the agent's line item.
+DRIVER_CONTROL, DRIVER_CONTROL_ELEMENT = "DriverLineItem", "ctlDriverLineItem"
+# The agent's fiscal-year source: lib/forecast_app.py's monthly Actual / Forecast / Plan facts.
+AGENT_FACTS, PLAN_ELEMENT = "agentFacts", "planLines"
 AGENT_PANEL = "agentPanel"        # lib/forecast_app.py reserves this container for the chat
 SCENARIO_CONTROL = "Scenario"     # lib/forecast_app.py scenario switch controlId
 # Plain nouns for the on-camera sentence, keyed by actionId.
@@ -113,22 +118,41 @@ def _scenario_effects(scenario_control=None):
                         {"type": "agent-input", "inputName": SCENARIO_INPUT}}}]
 
 
-def _driver_effects():
-    return [{"effect": "update-rows", "tableElementId": DRIVER_TABLE,
-             # single-row + primaryKeys on the input table's own column ids is the documented agent-tool
-             # row selector (column-match takes only a literal string value, so it cannot bind an agent input)
-             "whichRows": {"type": "single-row",
-                           "primaryKeys": {DRIVER_KEY_COL: {"type": "agent-input", "inputName": "line_item"}}},
+def driver_control():
+    """The hidden text control set-driver selects its row through (no filter targets: it filters nothing)."""
+    return {"id": DRIVER_CONTROL_ELEMENT, "kind": "control", "controlId": DRIVER_CONTROL, "controlType": "text",
+            "name": "Driver line item", "mode": "equals"}
+
+
+def _driver_effects(key_name=DRIVER_KEY_NAME):
+    # An input table's only primary key is its system row ID: single-row primaryKeys on LINE_ITEM is refused
+    # live ("Primary key: ID not in update row definition"), column-match takes only a literal, and a row
+    # formula cannot read an agent input. So the tool puts the line item into a hidden text control, then
+    # updates the rows whose line item equals that control (a whichRows formula can read a control).
+    return [{"effect": "set-control-value", "control": DRIVER_CONTROL,
+             "value": {"type": "agent-input", "inputName": "line_item"}},
+            {"effect": "update-rows", "tableElementId": DRIVER_TABLE,
+             "whichRows": {"type": "formula", "formula": f"[{key_name}] = [{DRIVER_CONTROL}]"},
              "values": {DRIVER_VALUE_COL: {"type": "agent-input", "inputName": "rate"}}}]
 
 
-def _instructions(rec, name, scenario_control=None):
+def _instructions(rec, name, scenario_control=None, grounding=(), plan=False):
     ids = {t["actionId"] for t in rec["tools"]}
     lines = [f"You operate the {name} workbook that replaced a macro-driven Excel forecast. "
              'Read @dataSource("parameters"), @dataSource("versions") and @dataSource("approvals") '
              + ("to see the forecast start month, saved versions and approval requests; the Active Scenario "
                 'column of @dataSource("forecast") is the scenario the forecast is on.' if scenario_control else
                 "to see the current scenario, forecast start month, saved versions and approval requests.")]
+    if AGENT_FACTS in grounding:
+        # The forecast element holds only the forecast months: totalled, it is not a fiscal year.
+        lines.append(f'@dataSource("{AGENT_FACTS}") holds every month\'s amounts by Fiscal year, Period, Section, '
+                     "Line item and Region. A fiscal year's figure (for example its revenue) is the sum of its "
+                     "Actual and Forecast rows: the months already closed plus the months still forecast."
+                     + (" Its plan is the sum of its Plan rows; compare the two for any vs-plan question."
+                        if plan else "")
+                     + f' Answer fiscal-year{" and plan" if plan else ""} questions from @dataSource("{AGENT_FACTS}"). '
+                     '@dataSource("forecast") holds the forecast months only; never report its total as a '
+                     "fiscal-year figure.")
     if "roll-forward" in ids:
         lines.append('To roll the forecast forward one month call @tool("roll-forward").')
     if "snapshot-version" in ids:
@@ -152,8 +176,12 @@ GREETING = ("Hi, I'm the forecast agent. I can explain the numbers or run the fo
 
 
 def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=None, request_label="Forecast",
-                            figures=None, agent_id="fpa-agent", chat_id="chat", scenario_control=None):
-    """``{"agents": [agent], "chatElement": {...}}`` for a recommendation.
+                            figures=None, agent_id="fpa-agent", chat_id="chat", scenario_control=None,
+                            driver_key_name=DRIVER_KEY_NAME, plan=False):
+    """``{"agents": [agent], "chatElement": {...}, "controlElements": [...]}`` for a recommendation.
+
+    ``controlElements`` are the hidden controls the tools set (the set-driver row picker); ``merge_fragment``
+    places them on the workbook's hidden page. ``plan`` says the grounded facts carry Plan rows.
 
     ``effects_by_action`` (actionId -> effect list) lets the caller reuse the exact effects of the
     workbook's own buttons so button and agent tool can never drift; otherwise the effects come
@@ -168,7 +196,7 @@ def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=
         if action_id == DRIVER_ID:
             if DRIVER_TABLE not in grounding_element_ids:
                 continue  # workbook has no growth-rate table; never emit a tool that targets nothing
-            effects = _driver_effects()
+            effects = _driver_effects(driver_key_name)
         elif action_id == SCENARIO_ID:
             effects = _scenario_effects(scenario_control)
         elif action_id in effects_by_action:
@@ -179,13 +207,42 @@ def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=
     if DRIVER_TABLE not in grounding_element_ids:
         rec = {**rec, "tools": [t for t in rec["tools"] if t["actionId"] != DRIVER_ID]}
     actions = _join(SPOKEN.get(t["actionId"], t["label"].lower()) for t in rec["tools"])
-    example = ("how does revenue compare with plan?"
-               if any(t["actionId"] == SCENARIO_ID for t in rec["tools"]) else "summarise the forecast.")
-    agent = {"id": agent_id, "name": name, "instructions": _instructions(rec, name, scenario_control),
+    # Suggest the plan question only when the agent can read fiscal-year plan figures to answer it.
+    plan = bool(plan and AGENT_FACTS in grounding_element_ids)
+    example = "how does revenue compare with plan?" if plan else "summarise the forecast."
+    agent = {"id": agent_id, "name": name,
+             "instructions": _instructions(rec, name, scenario_control, grounding_element_ids, plan),
              "greeting": {"mode": "static", "message": GREETING.format(actions=actions, example=example)},
              "dataSources": [{"kind": "table", "elementId": e} for e in grounding_element_ids],
              "tools": tools}
-    return {"agents": [agent], "chatElement": {"id": chat_id, "kind": "chat", "agentId": agent_id}}
+    controls = [driver_control()] if any(t["toolId"] == DRIVER_ID for t in tools) else []
+    return {"agents": [agent], "chatElement": {"id": chat_id, "kind": "chat", "agentId": agent_id},
+            "controlElements": controls}
+
+
+def check_agent_steps(doc):
+    """Refuse agent tool steps the live API rejects, before anything is posted: a ``single-row`` selector
+    keyed on anything but the target input table's system row ID ("Primary key: ID not in update row
+    definition"), and a ``set-control-value`` on a control the workbook does not have."""
+    by_id = {e.get("id"): e for e in doc.get("elements", [])}
+    control_ids = {e.get("controlId") for e in doc.get("elements", []) if e.get("kind") == "control"}
+    for agent in doc.get("agents") or []:
+        for tool in agent.get("tools") or []:
+            for step in tool.get("steps") or []:
+                rows = step.get("whichRows") or {}
+                if rows.get("type") == "single-row":
+                    table = by_id.get(step.get("tableElementId")) or {}
+                    if table.get("kind") != "input-table":
+                        raise ValueError(f"tool {tool.get('toolId')}: single-row selector on "
+                                         f"{step.get('tableElementId')}, which is not an input table")
+                    keys = {c["id"] for c in table.get("columns", []) if c.get("id") == "ID" or "type" not in c}
+                    extra = sorted(set(rows.get("primaryKeys") or {}) - keys)
+                    if extra or not rows.get("primaryKeys"):
+                        raise ValueError(f"tool {tool.get('toolId')}: single-row primaryKeys {extra or '{}'} on "
+                                         f"{table['id']}; its only primary key is the system row ID")
+                if step.get("effect") == "set-control-value" and step.get("control") not in control_ids:
+                    raise ValueError(f"tool {tool.get('toolId')}: sets control {step.get('control')}, which the "
+                                     "workbook does not have")
 
 
 def button_effects(spec):
@@ -213,9 +270,18 @@ def merge_fragment(spec, fragment, chat_anchor="forecast", columns=(1, 25), rows
     doc["agents"] = fragment["agents"]
     chat = fragment["chatElement"]
     elements = doc.setdefault("elements", [])
-    if any(e.get("id") == chat["id"] for e in elements):
-        raise ValueError(f"workbook already has an element {chat['id']}")
+    for el in [chat, *fragment.get("controlElements", [])]:
+        if any(e.get("id") == el["id"] for e in elements):
+            raise ValueError(f"workbook already has an element {el['id']}")
     elements.append(chat)
+    for control in fragment.get("controlElements", []):
+        # tool plumbing: on the hidden page, never on a page people see
+        owners = code_rep.workbook_page_by_element(doc)
+        hidden = next((p for p in doc.get("pages", []) if p.get("visibility") == "hidden"), None)
+        page_id = (hidden or owners.get(DRIVER_TABLE) or doc["pages"][0])["id"]
+        elements.append(control)
+        doc["layout"] = _append_to_page(doc["layout"], page_id, control["id"], 2)
+    check_agent_steps(doc)
     layout = doc["layout"]
     # A planning-app workbook reserves an agent panel: the chat fills the panel below its header.
     panel = re.search(r'(<Container\b[^>]*\belementId="%s"[^>]*>)(.*?)(</Container>)' % re.escape(AGENT_PANEL),
@@ -231,18 +297,24 @@ def merge_fragment(spec, fragment, chat_anchor="forecast", columns=(1, 25), rows
         return out
     owners = code_rep.workbook_page_by_element(doc)
     page_id = (owners.get(chat_anchor) or doc["pages"][0])["id"]
+    doc["layout"] = _append_to_page(layout, page_id, chat["id"], rows, columns)
+    return out
+
+
+def _append_to_page(layout, page_id, element_id, rows, columns=(1, 25)):
+    """``layout`` with ``element_id`` in a new band below the last element of page ``page_id``."""
+    import re
     block = re.search(r'(<Page\b[^>]*\bid="%s"[^>]*>)(.*?)(</Page>)' % re.escape(page_id), layout, re.S)
     if not block:
         raise ValueError(f"page {page_id} not found in layout")
     ends = [int(m.group(1)) for m in re.finditer(r'gridRow="\d+ / (\d+)"', block.group(2))]
     start = max(ends, default=1)
-    line = (f'  <Element elementId="{chat["id"]}" gridColumn="{columns[0]} / {columns[1]}" '
+    line = (f'  <Element elementId="{element_id}" gridColumn="{columns[0]} / {columns[1]}" '
             f'gridRow="{start} / {start + rows}"/>\n')
-    doc["layout"] = layout[:block.end(2)] + line + layout[block.end(2):]
-    return out
+    return layout[:block.end(2)] + line + layout[block.end(2):]
 
 
-GROUNDING = ("forecast", "parameters", "versions", "approvals", "rateInput")
+GROUNDING = ("forecast", "parameters", "versions", "approvals", "rateInput", AGENT_FACTS)
 
 
 def recommend_for_workbook(macros, workflows, wb=None, name="FP&A forecast agent", fragment=True):
@@ -261,5 +333,9 @@ def recommend_for_workbook(macros, workflows, wb=None, name="FP&A forecast agent
     effects = button_effects(wb) if wb else None
     scenario = next((e.get("controlId") for e in elements
                      if e.get("kind") == "control" and e.get("controlId") == SCENARIO_CONTROL), None)
-    return rec, agent_document_fragment(rec, name, ids, effects_by_action=effects, scenario_control=scenario)
+    rate = next((e for e in elements if e.get("id") == DRIVER_TABLE), {})
+    key_name = next((c.get("name") for c in rate.get("columns", []) if c.get("id") == DRIVER_KEY_COL),
+                    None) or DRIVER_KEY_NAME
+    return rec, agent_document_fragment(rec, name, ids, effects_by_action=effects, scenario_control=scenario,
+                                        driver_key_name=key_name, plan=PLAN_ELEMENT in have)
 

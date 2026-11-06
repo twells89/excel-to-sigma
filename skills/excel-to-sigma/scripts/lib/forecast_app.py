@@ -243,7 +243,8 @@ def build(ctx):
                                  {"id": "sf_p", "name": "Period", "formula": "[SJ/Period]"},
                                  {"id": "sf_mn", "name": "Month Num", "formula": "[SJ/Month Num]"},
                                  {"id": "sf_v", "name": "Signed Amount", "formula": "[SJ/Amount] * [Metrics/Weight]"}]}
-    hidden += [ctx["boundary"], report_facts, metric_wrap, summary_facts, *wf["tables"], wf["status"]]
+    agent_facts = agent_facts_element(ctx, has_plan, has_prior)
+    hidden += [ctx["boundary"], report_facts, metric_wrap, summary_facts, agent_facts, *wf["tables"], wf["status"]]
 
     # ---------------------------------------------------------------- A. header band
     start = START_MONTH
@@ -463,6 +464,38 @@ def build(ctx):
     theme = {"theme": {"overrides": {"categoricalScheme": [PRIMARY, FORECAST_TINT, PLAN_GREY, "#14B8A6", "#F59E0B",
                                                            "#8B5CF6"]}}}
     return {"pages": pages, "layout": layout, "settings": theme}
+
+
+AGENT_FACTS_ID = "agentFacts"           # lib/agent_enhance.py AGENT_FACTS: the agent's fiscal-year source
+
+
+def agent_facts_element(ctx, has_plan, has_prior):
+    """The forecast agent's one fiscal-year source (hidden): every month's amount by Fiscal year, Period
+    (Actual / Forecast / Plan), Section, Line item and Region, read from ``Forecast Facts`` so it follows the
+    one boundary like the KPI cards. A fiscal year's figure is its Actual + Forecast rows (exactly the KPI
+    card's sum); its plan is its Plan rows. A closed month still awaiting actuals counts as Forecast (its
+    values are the forecast's). Without it the agent saw only the forecast window and called that total
+    the fiscal year, and had no plan to compare with."""
+    num = f"[{FACTS}/Month Num]"
+    windows = [(ctx["fy_nums"], ctx["fy_label"])] + ([(ctx["prior_nums"], ctx["prior_label"])] if has_prior else [])
+    branches = ", ".join(f'{num} >= {nums[0]} and {num} <= {nums[-1]}, "{esc(label)}"'
+                         for nums, label in windows if nums)
+    fiscal = (f"If({branches}, Null)" if branches
+              else f'Text(DatePart("year", [{FACTS}/Month End]))')
+    period = f'If([{FACTS}/Period] = "Plan", "Plan", [{FACTS}/Period] = "Actual", "Actual", "Forecast")'
+    columns = [{"id": "af_fy", "name": "Fiscal year", "formula": fiscal},
+               {"id": "af_m", "name": "Month", "formula": f'DateTrunc("month", [{FACTS}/Month End])',
+                "format": MONTH_FMT},
+               {"id": "af_p", "name": "Period", "formula": period},
+               {"id": "af_sec", "name": "Section", "formula": f"[{FACTS}/Section]"},
+               {"id": "af_line", "name": "Line item", "formula": f"[{FACTS}/Line Item]"},
+               {"id": "af_region", "name": "Region", "formula": f"[{FACTS}/Region]"},
+               {"id": "af_amt", "name": "Amount", "formula": f"[{FACTS}/Amount]", "format": CUR0}]
+    if ctx["scenario"]:
+        columns.append({"id": "af_scn", "name": "Active scenario",
+                        "formula": f'Coalesce([{SCENARIO_CONTROL}], "{esc(ctx["scenario"]["default"])}")'})
+    return {"id": AGENT_FACTS_ID, "kind": "table", "name": "Monthly P&L facts",
+            "source": {"kind": "table", "elementId": "reportFacts"}, "columns": columns}
 
 
 def _el(element_id, c0, c1, r0, r1, indent="  "):

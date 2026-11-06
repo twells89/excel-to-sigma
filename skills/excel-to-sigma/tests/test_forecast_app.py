@@ -578,6 +578,53 @@ class ForecastAppTests(unittest.TestCase):
         self.assertIn('elementId="chat"', panel)
         self.assertEqual(code_rep.workbook_page_by_element(merged)["chat"]["id"], "pgForecast")
 
+    def test_agent_reads_fiscal_year_facts_that_tie_to_the_kpis(self):
+        # Live: grounded only in the forecast window, the agent reported its total as "FY27 revenue" and said
+        # the workbook had no plan. It reads one clean monthly source: Actual + Forecast + Plan by fiscal year.
+        spec = self.spec()
+        self.assertEqual(self.owners(spec)["agentFacts"], "model")
+        facts = self.by_id(spec)["agentFacts"]
+        self.assertEqual([c["name"] for c in facts["columns"]],
+                         ["Fiscal year", "Month", "Period", "Section", "Line item", "Region", "Amount",
+                          "Active scenario"])
+        fy = re.sub(r"\s+total$", "", self.plan["fyLabel"], flags=re.I)
+        revenue = next(sec for sec in self.plan["sections"] if sec["sign"] > 0)["name"]
+        def fy_sum(rows, period):
+            return sum(r["Amount"] for r in rows if r["Fiscal year"] == fy and r["Section"] == revenue
+                       and (r["Period"] != "Plan" if period == "fc" else r["Period"] == "Plan"))
+        for start in (date(2027, 7, 1), date(2027, 8, 1)):     # before and after a roll forward
+            m = self.model(start, july=True)
+            rows = m.rows("agentFacts")
+            self.assertEqual({r["Period"] for r in rows}, {"Actual", "Forecast", "Plan"})
+            self.assertEqual({r["Fiscal year"] for r in rows if r["Period"] == "Plan"}, {fy})
+            self.assertAlmostEqual(fy_sum(rows, "fc"), self.kpis(m)["Revenue"], places=2, msg=str(start))
+            plan_rev = forecast_app.Facts(*[sorted({r["Month Num"] for r in m.rows("reportFacts")
+                                                    if r["Period"] == "Plan"})] * 2).row({revenue: 1}, "plan")
+            self.assertAlmostEqual(fy_sum(rows, "Plan"), m.scalar(plan_rev), places=2)
+            self.assertEqual({r["Active scenario"] for r in rows}, {"Base"})
+        pre = self.model(date(2027, 7, 1), july=True).rows("agentFacts")
+        self.assertAlmostEqual(fy_sum(pre, "fc"), self.plan["parityTargets"]["Revenue"], places=2)
+        self.assertGreater(fy_sum(pre, "fc"), sum(r["Amount"] for r in self.model(date(2027, 7, 1)).rows("forecast")
+                                                  if r["Section"] == revenue))   # more than the forecast window
+        # the agent is grounded in it, told how a fiscal year adds up, and offers the plan question
+        wired = self.build.workbook_wire.wire_workbook(spec)
+        macros = [{"name": w["macro"], "class": w["class"]} for w in self.manifest["workflows"]]
+        _, frag = ae.recommend_for_workbook(macros, self.manifest, wired)
+        agent = frag["agents"][0]
+        self.assertIn({"kind": "table", "elementId": "agentFacts"}, agent["dataSources"])
+        self.assertIn('@dataSource("agentFacts")', agent["instructions"])
+        self.assertIn("sum of its Actual and Forecast rows", agent["instructions"])
+        self.assertIn("plan is the sum of its Plan rows", agent["instructions"])
+        self.assertIn("never report its total as a fiscal-year figure", agent["instructions"])
+        self.assertIn("how does revenue compare with plan?", agent["greeting"]["message"])
+        # without a landed plan the agent is not invited to answer a plan question it cannot
+        bare = self.build.workbook_wire.wire_workbook(self.spec(plan_src=None))
+        _, frag = ae.recommend_for_workbook(macros, self.manifest, bare)
+        agent = frag["agents"][0]
+        self.assertNotIn("plan", agent["greeting"]["message"])
+        self.assertNotIn("Plan rows", agent["instructions"])
+        self.assertIn({"kind": "table", "elementId": "agentFacts"}, agent["dataSources"])
+
     # ---------------------------------------------------------------- design round 2
     def test_input_tables_hide_row_id_and_fit_columns_to_content(self):
         # A number column stretched across a wide input table renders its edit pencil far left and its

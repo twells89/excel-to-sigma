@@ -1,4 +1,5 @@
 """Phase 6 Enhance: agent recommendation and document fragment."""
+import copy
 import json
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import agent_enhance as ae  # noqa: E402
+import code_rep  # noqa: E402
 
 FX = ROOT / "tests" / "fixtures" / "agent-enhance"
 
@@ -91,11 +93,18 @@ class AgentEnhanceTests(unittest.TestCase):
             self.assertIn(f'@tool("{tid}")', agent["instructions"])
         drv = tools["set-driver"]
         self.assertIs(drv["requiresApproval"], True)
-        step = drv["steps"][0]
+        # An input table's only primary key is its system row ID (live: single-row on LINE_ITEM is refused,
+        # "Primary key: ID not in update row definition") and a row formula cannot read an agent input, so the
+        # tool puts the line item into a hidden text control and updates the rows whose line item equals it.
+        pick, step = drv["steps"]
+        self.assertEqual((pick["effect"], pick["control"]), ("set-control-value", ae.DRIVER_CONTROL))
+        self.assertEqual(pick["value"], {"type": "agent-input", "inputName": "line_item"})
         self.assertEqual((step["effect"], step["tableElementId"]), ("update-rows", "rateInput"))
-        self.assertEqual(step["whichRows"], {"type": "single-row", "primaryKeys": {
-            "LINE_ITEM": {"type": "agent-input", "inputName": "line_item"}}})
+        self.assertEqual(step["whichRows"], {"type": "formula",
+                                             "formula": f"[Line item] = [{ae.DRIVER_CONTROL}]"})
         self.assertEqual(step["values"], {"RATE": {"type": "agent-input", "inputName": "rate"}})
+        self.assertEqual(frag["controlElements"], [ae.driver_control()])
+        self.assertEqual(ae.driver_control()["controlType"], "text")
         self.assertIn('@tool("set-driver")', agent["instructions"])
         self.assertIn('@dataSource("rateInput")', agent["instructions"])
         # without a growth-rate table in the workbook there is no driver tool
@@ -122,6 +131,59 @@ class AgentEnhanceTests(unittest.TestCase):
         self.assertNotIn("agents", wb["contents"])  # input untouched
         with self.assertRaises(ValueError):
             ae.merge_fragment(merged, frag)
+
+    def _input_table_workbook(self):
+        """A planning-app shaped workbook: rateInput is a real input table (system ID first), the model page hidden."""
+        wb = self._workbook()
+        doc = wb["contents"]
+        rate = next(e for e in doc["elements"] if e["id"] == "rateInput")
+        rate.update({"kind": "input-table", "name": "Growth rates", "columns": [
+            {"id": "ID", "name": "Row ID", "hidden": True}, {"id": "LINE_ITEM", "type": "text", "name": "Line item"},
+            {"id": "RATE", "type": "number", "name": "Monthly growth rate"}]})
+        doc["pages"].append({"id": "model", "name": "Model (sources)", "visibility": "hidden"})
+        doc["elements"].append({"id": "helper", "kind": "table"})
+        doc["layout"] += ('\n<Page type="grid" id="model">\n'
+                          '  <Element elementId="helper" gridColumn="1 / 25" gridRow="1 / 13"/>\n</Page>')
+        return wb
+
+    def test_agent_row_selectors_key_only_on_the_input_table_primary_key(self):
+        macros, wfs = demo()
+        wb = self._input_table_workbook()
+        rec, frag = ae.recommend_for_workbook(macros, wfs, wb)
+        merged = ae.merge_fragment(wb, frag)
+        doc = merged["contents"]
+        for tool in doc["agents"][0]["tools"]:
+            for step in tool["steps"]:
+                rows = step.get("whichRows") or {}
+                if rows.get("type") == "single-row":   # only the system row ID is a primary key
+                    self.assertLessEqual(set(rows["primaryKeys"]), {"ID"}, tool["toolId"])
+                if step["effect"] == "set-control-value":
+                    self.assertIn(step["control"], {e.get("controlId") for e in doc["elements"]})
+        # the driver control is plumbing: on the hidden page, never on a visible one
+        self.assertEqual(code_rep.workbook_page_by_element(merged)["ctlDriverLineItem"]["id"], "model")
+        self.assertIn('<Element elementId="ctlDriverLineItem" gridColumn="1 / 25" gridRow="13 / 15"/>', doc["layout"])
+        # the selector names the column the workbook actually shows
+        drv = next(t for t in doc["agents"][0]["tools"] if t["toolId"] == "set-driver")
+        self.assertEqual(drv["steps"][1]["whichRows"]["formula"], "[Line item] = [DriverLineItem]")
+        plain = copy.deepcopy(wb)          # the plain forecast builder titles the column "Line Item"
+        next(e for e in plain["contents"]["elements"] if e["id"] == "rateInput")["columns"][1]["name"] = "Line Item"
+        _, frag2 = ae.recommend_for_workbook(macros, wfs, plain)
+        drv2 = next(t for t in frag2["agents"][0]["tools"] if t["toolId"] == "set-driver")
+        self.assertEqual(drv2["steps"][1]["whichRows"]["formula"], "[Line Item] = [DriverLineItem]")
+        # a tool keyed on a business column is refused before anything is posted
+        bad = copy.deepcopy(frag)
+        drv = next(t for t in bad["agents"][0]["tools"] if t["toolId"] == "set-driver")
+        drv["steps"] = [{"kind": "effect", "effect": "update-rows", "tableElementId": "rateInput",
+                         "whichRows": {"type": "single-row", "primaryKeys": {
+                             "LINE_ITEM": {"type": "agent-input", "inputName": "line_item"}}},
+                         "values": {"RATE": {"type": "agent-input", "inputName": "rate"}}}]
+        with self.assertRaisesRegex(ValueError, "LINE_ITEM"):
+            ae.merge_fragment(wb, bad)
+        # ... and so is a control step whose control the workbook does not have
+        bad = copy.deepcopy(frag)
+        bad["controlElements"] = []
+        with self.assertRaisesRegex(ValueError, "DriverLineItem"):
+            ae.merge_fragment(wb, bad)
 
     def _workbook(self):
         import demo_workflows as dw
