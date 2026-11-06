@@ -398,6 +398,7 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
         seeded = ([PARAMETERS] if seed else []) + [el for el, _c, _r in table_seeds]
         lines.append("# The seeds at the end write rows into " + ", ".join(seeded) + ": run once on a fresh "
                      "workbook (the writes do not query first and keys are not enforced).")
+        lines.append("# Every call above the seeds only sets formats, styles and edit modes, so it is safe to re-run.")
     lines.append("")
     display = input_column_display(spec)
     styles = input_table_style_lines(spec)
@@ -417,6 +418,9 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
         lines += [f"t.set_column_width(t.get_column({cid!r}), {px})"
                   for cid, px in ((column_widths or {}).get(element_id) or {}).items()]
         lines += ["t.set_edit_mode('draft')", "t.set_edit_mode('published-all-users')", ""]
+    # Author-only settings (series colours) precede every seed: everything above the seeds is safe
+    # to re-run; the seeds are the program's only non-repeatable writes, so they go last.
+    lines += _series_color_lines(spec, series_colors)
     if seed:
         page = pages.get(PARAMETERS)
         if page is None:
@@ -436,5 +440,10 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
                   + f"c_start: {seed['start']!r}}}])", ""]
     for element_id, columns, rows in table_seeds:
         lines += _table_seed_lines(pages[element_id], element_id, columns, rows)
-    lines += _series_color_lines(spec, series_colors)
-    return "\n".join(lines)
+    program = "\n".join(lines)
+    import code_mode_check
+    errors, _calls = code_mode_check.check_program(program)
+    if errors:
+        raise WorkflowError("setup program does not match the recorded Sigma SDK signatures "
+                            f"({code_mode_check.SDK.SOURCE}): " + "; ".join(errors))
+    return program

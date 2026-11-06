@@ -284,8 +284,12 @@ each, every table and column checked with `isinstance(..., InputTable)` /
   `--workflows`.
 
 Run it once via Sigma MCP Code Mode `build_workbook`, on a fresh workbook only: the writes do
-not query first and keys are not enforced, so a second run duplicates rows. Query the tables
-afterward to confirm the seeds and a button write land.
+not query first and keys are not enforced, so a second run duplicates rows. The seeds are the
+program's last statements; everything above them (formats, `table_style()` preset / grid lines /
+autofit, `set_column_width`, series colours, edit modes) only sets authoring state and is safe to
+re-run. The builder refuses to write a program whose calls do not bind against
+`scripts/lib/sdk_signatures.py` (the recorded Sigma MCP `sdk://sdk/sigma/*.py` stubs). Query the
+tables afterward to confirm the seeds and a button write land.
 
 ## Seed rows through Sigma MCP Code Mode
 

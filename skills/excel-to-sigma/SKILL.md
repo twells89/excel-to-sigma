@@ -592,7 +592,13 @@ Prerequisites the agent depends on:
   first forecast month; emitted only when the build had `--workflows`), and the Growth Rates
   and Manual Forecast input tables with the seed CSV rows (editable / what-if plans). Run it
   once, on a fresh workbook: the writes do not query first and keys are not enforced. No
-  seed CSV is pasted in the UI.
+  seed CSV is pasted in the UI. The seeds come last: every call above them (formats, table
+  style, column widths, series colours, edit modes) is safe to re-run. Before writing the
+  program the builder binds every call against the recorded SDK signatures
+  (`scripts/lib/sdk_signatures.py`, transcribed from the Sigma MCP server's
+  `sdk://sdk/sigma/*.py`; checked by `scripts/lib/code_mode_check.py`), so a wrong method,
+  arity or value (a grid-lines or edit-mode name) stops the build instead of the one-time run.
+  Refresh that file from `read_resource` when the SDK changes.
 - Agent SQL that touches input-table system columns (`CREATED_BY` ...) fails with
   "Ambiguous column reference"; ground tools in the user columns. See
   `refs/sigma-build-gotchas.md`.

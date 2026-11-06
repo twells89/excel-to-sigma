@@ -402,6 +402,41 @@ class ForecastAppTests(unittest.TestCase):
             self.assertRegex(block[:block.index("set_edit_mode('draft')")],
                              r"t\.set_column_width\(t\.get_column\('%s'\), \d+\)" % col)
 
+    def test_cli_setup_program_binds_against_the_recorded_sdk_and_seeds_last(self):
+        import ast
+        import contextlib
+        import io
+        import code_mode_check
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path, landing_path, wf_path = self._cli_files(tmp)
+            program_path = Path(tmp) / "setup.py"
+            argv = [str(plan_path), "--actuals-table", "CSA.TJ.FPA_X_ACTUALS", "--landing", str(landing_path),
+                    "--workflows", str(wf_path), "--emit-manual-commit-program", str(program_path),
+                    "--out-dir", str(Path(tmp) / "out")]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.build.main(argv), 0)
+            program = program_path.read_text()
+        errors, calls = code_mode_check.check_program(program)
+        self.assertEqual(errors, [])
+        self.assertGreater(calls, 50)
+        methods = [n.func.attr for n in ast.walk(ast.parse(program))
+                   if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        for used in ("table_style", "set_preset", "set_grid_lines", "set_autofit_columns", "set_column_width",
+                     "set_series_color", "upsert_rows"):
+            self.assertIn(used, methods)
+        # the seeds are the only writes that cannot be repeated: every style/format/mode call precedes them
+        lines = program.splitlines()
+        first_write = next(i for i, ln in enumerate(lines) if ".upsert_rows(" in ln)
+        for marker in ("set_series_color", "set_edit_mode", "set_column_width", "set_format_pattern", "set_preset"):
+            self.assertLess(max(i for i, ln in enumerate(lines) if marker in ln), first_write, marker)
+
+    def test_setup_program_with_a_wrong_sdk_call_is_refused_at_emit(self):
+        wired = self.build.workbook_wire.wire_workbook(self.spec())
+        el = next(e for e in code_rep.workbook_elements(code_rep.document(wired)) if e["id"] == "rateInput")
+        el["tableStyle"]["gridLines"] = "rows"      # not a TableGridLines value
+        with self.assertRaisesRegex(dw.WorkflowError, "recorded Sigma SDK signatures.*'rows' is not one of"):
+            dw.emit_manual_commit_program(wired, {"start": "2027-07-01"})
+
     def test_post_preflights_the_agent_merge_before_creating_anything(self):
         import contextlib
         import io
