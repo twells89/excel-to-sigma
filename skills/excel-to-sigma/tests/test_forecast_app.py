@@ -268,6 +268,129 @@ class ForecastAppTests(unittest.TestCase):
         self.assertIn('elementId="chat"', panel)
         self.assertEqual(code_rep.workbook_page_by_element(merged)["chat"]["id"], "pgForecast")
 
+    # ---------------------------------------------------------------- design round 2
+    def test_input_tables_hide_row_id_and_fit_columns_to_content(self):
+        # A number column stretched across a wide input table renders its edit pencil far left and its
+        # right-aligned name far right, which reads as an empty unlabelled column: autofit the columns.
+        b = self.by_id(self.spec())
+        for tid in ("rateInput", "manualInput"):
+            cols = {c["id"]: c for c in b[tid]["columns"]}
+            self.assertIs(cols["ID"].get("hidden"), True, tid)
+            self.assertNotIn("ID", b[tid]["order"])
+            style = b[tid]["tableStyle"]
+            self.assertEqual((style["preset"], style["gridLines"], style["autofitColumns"]),
+                             ("presentation", "horizontal", "shown"), tid)
+        # the setup program re-applies the style (preset first: switching preset resets the rest)
+        program = dw.emit_manual_commit_program(self.build.workbook_wire.wire_workbook(self.spec()),
+                                                {"start": "2027-07-01"})
+        block = program[program.index("get_element('rateInput')"):]
+        self.assertIn("s = t.table_style()", block)
+        self.assertLess(block.index("s.set_preset('presentation')"), block.index("s.set_grid_lines('horizontal')"))
+        self.assertIn("s.set_autofit_columns(True)", block)
+        compile(program, "program", "exec")
+        plain = self.build.build_wb_spec(copy.deepcopy(self.plan), "dm-1", self.els, landed=self.landed)
+        self.assertNotIn("tableStyle", next(e for pg in plain["pages"] for e in pg["elements"]
+                                            if e["id"] == "rateInput"))
+
+    def test_header_actions_are_one_compact_right_aligned_group(self):
+        spec = self.build.workbook_wire.wire_workbook(self.spec())
+        layout = spec["contents"]["layout"]
+        def cols(element_id):
+            m = re.search(r'elementId="%s"[^>]*gridColumn="(\d+) / (\d+)"' % element_id, layout)
+            return int(m.group(1)), int(m.group(2))
+        band = re.search(r'<Container elementId="hdrBand"[^>]*>(.*?)</Container>', layout, re.S).group(1)
+        self.assertNotIn("<Container", band)   # no nested container: the server's layout check misplaces it
+        self.assertEqual(re.findall(r'elementId="(btn\w+)"', band), ["btnRoll", "btnSnapshot", "btnSubmit"])
+        spans = [cols(b) for b in ("btnRoll", "btnSnapshot", "btnSubmit")]
+        self.assertEqual([s[0] for s in spans[1:]], [s[1] for s in spans[:-1]])   # adjacent, no empty cells
+        self.assertEqual(spans[-1][1], 25)                                         # primary flush right
+        self.assertLessEqual(spans[-1][1] - spans[0][0], 8)                        # compact: a third of the band
+        self.assertGreater(spans[-1][1] - spans[-1][0], spans[0][1] - spans[0][0])  # widest label gets most room
+        self.assertEqual(cols("hdrStatus")[0], cols("ctlScenario")[1])            # status next to the switch
+        self.assertLessEqual(cols("hdrStatus")[1], spans[0][0])
+        b = self.by_id(self.spec())
+        self.assertEqual({b[i]["align"] for i in ("btnRoll", "btnSnapshot", "btnSubmit")}, {"stretch"})
+
+    def test_pl_summary_variance_coloured_by_favourability(self):
+        s = self.by_id(self.spec())["plSummary"]
+        rules = {r["style"]["color"]: r for r in s["conditionalFormats"]}
+        self.assertEqual(set(rules), {forecast_app.GOOD, forecast_app.BAD})
+        for rule in rules.values():
+            self.assertEqual((rule["type"], rule["condition"], rule["columnIds"]), ("single", "formula", ["ps_vs"]))
+        bad = rules[forecast_app.BAD]["formula"]
+        # a cost line under plan is favourable: its variance sign is flipped before the test
+        self.assertEqual(bad, 'If([Line] = "Operating expenses", -1, 1) * [Vs plan] < 0')
+        self.assertEqual(rules[forecast_app.GOOD]["formula"], bad[:-3] + "> 0")
+        self.assertEqual(self.build.cost_lines(self.plan), ["Operating expenses"])
+
+    def test_plain_dm_leaves_a_landed_plan_table_out(self):
+        dm = self.build.build_dm_spec(self.plan, self.landed, self.plan_src)   # plan resolved, but no app
+        self.assertNotIn("planDetail", {e["id"] for e in dm["pages"][0]["elements"]})
+
+    def _cli_files(self, tmp, bad_plan=False):
+        tmp = Path(tmp)
+        plan_path = tmp / "plan.json"
+        plan_path.write_text(json.dumps(self.plan), encoding="utf-8")
+        landing = copy.deepcopy(self.landing)
+        if bad_plan:   # a plan month the forecast does not have: an app run must refuse it
+            bad = tmp / "bad-plan.csv"
+            bad.write_text("MONTH,LINE_ITEM,REGION,PLAN_AMOUNT\nJan-30,LATAM Opex,LATAM,1\n")
+            landing["tables"][1]["csv"] = str(bad)
+        landing_path = tmp / "landing.json"
+        landing_path.write_text(json.dumps(landing), encoding="utf-8")
+        wf_path = tmp / "workflows.json"
+        wf_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+        return plan_path, landing_path, wf_path
+
+    def test_plain_cli_run_never_reads_the_landed_plan_table(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path, landing_path, wf_path = self._cli_files(tmp, bad_plan=True)
+            base = [str(plan_path), "--actuals-table", "CSA.TJ.FPA_X_ACTUALS", "--landing", str(landing_path),
+                    "--out-dir", str(Path(tmp) / "out")]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.build.main(base), 0)
+            self.assertNotIn("PLAN SOURCE", out.getvalue())
+            dm = json.loads((Path(tmp) / "out" / "dm_spec.json").read_text())
+            self.assertNotIn("planDetail", {e["id"] for e in dm["pages"][0]["elements"]})
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(self.build.main(base + ["--workflows", str(wf_path)]), 1)
+            self.assertIn("plan table month 'Jan-30'", err.getvalue())
+
+    def test_post_preflights_the_agent_merge_before_creating_anything(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from migration_gate import gate_plan_staging_source
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path, landing_path, wf_path = self._cli_files(tmp)
+            _src, report = gate_plan_staging_source(self.plan, plan_path=str(plan_path))
+            approval = Path(tmp) / "approval.json"
+            approval.write_text(json.dumps({
+                "owner": "TJ Wells", "reviewer": "Claude (controller)", "folderId": self.plan["folderId"],
+                "sourceSha256": report["sourceSha256"],
+                "sourceReviewApproval": {"status": "approved_for_staging", "issues": report["issues"]}}))
+            macros = Path(tmp) / "macros.json"
+            macros.write_text(json.dumps([{"name": w["macro"], "class": w["class"]}
+                                          for w in self.manifest["workflows"]]))
+            argv = [str(plan_path), "--post", "--staging-approval", str(approval), "--actuals-table",
+                    "CSA.TJ.FPA_X_ACTUALS", "--landing", str(landing_path), "--workflows", str(wf_path),
+                    "--agent-macros", str(macros), "--out-dir", str(Path(tmp) / "out")]
+            err = io.StringIO()
+            with mock.patch.object(self.build, "api") as api, \
+                    mock.patch.object(self.build, "env", return_value={"SIGMA_BASE_URL": "https://x",
+                                                                       "SIGMA_API_TOKEN": "t",
+                                                                       "SIGMA_AUTH_METHOD": "test"}), \
+                    mock.patch.object(ae, "merge_fragment",
+                                      side_effect=ValueError("workbook already has an element chat")), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(self.build.main(argv), 1)
+            api.assert_not_called()
+            self.assertIn("AGENT ERROR", err.getvalue())
+
     # ---------------------------------------------------------------- staging
     def test_staging_approval_must_cover_exact_issues_folder_and_names(self):
         issue = {"code": "VBA_PROJECT", "severity": "review", "message": "m"}

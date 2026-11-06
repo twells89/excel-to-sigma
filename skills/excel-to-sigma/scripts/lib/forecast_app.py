@@ -113,6 +113,14 @@ class Facts:
         return out
 
 
+def variance_favourability(line, variance, cost_lines):
+    """A variance whose sign means good (+) / bad (-): flipped for lines where lower is better."""
+    if not cost_lines:
+        return variance
+    test = " or ".join(f'{line} = "{esc(name)}"' for name in cost_lines)
+    return f"If({test}, -1, 1) * {variance}"
+
+
 def text(element_id, body, align="center"):
     return {"id": element_id, "kind": "text", "body": body, "verticalAlign": align}
 
@@ -214,8 +222,9 @@ def build(ctx):
     for b in wf["buttons"]:
         action = next(a for a, eid in dw.BUTTON_IDS.items() if eid == b["id"])
         primary = action == "submit-approval"
+        # stretched to fill their cells in the action group, so the three read as one toolbar
         buttons.append({**b, "text": BUTTON_TEXT.get(action, b["text"]),
-                        "appearance": "filled" if primary else "outline", "size": "medium",
+                        "appearance": "filled" if primary else "outline", "size": "medium", "align": "stretch",
                         "borderRadius": "round", **({"fillColor": PRIMARY} if primary else {})})
     controls = []
     if ctx["scenario"]:
@@ -333,10 +342,12 @@ def build(ctx):
                "axisTotals": [{"axisId": "grand-row-total", "visibility": "hidden"}],
                "tableStyle": {"preset": "presentation"}, "style": dict(CARD)}
     if has_plan:
+        # Coloured by favourability, not sign: a cost line under plan is good news (green).
+        favourable = variance_favourability("[Line]", "[Vs plan]", ctx.get("cost_lines") or [])
         summary["conditionalFormats"] = [
-            {"type": "single", "columnIds": ["ps_vs"], "condition": "<", "value": 0,
+            {"type": "single", "columnIds": ["ps_vs"], "condition": "formula", "formula": f"{favourable} < 0",
              "style": {"color": BAD, "backgroundColor": "none"}},
-            {"type": "single", "columnIds": ["ps_vs"], "condition": ">", "value": 0,
+            {"type": "single", "columnIds": ["ps_vs"], "condition": "formula", "formula": f"{favourable} > 0",
              "style": {"color": GOOD, "backgroundColor": "none"}}]
     bottom.append(summary)
     elements += bottom
@@ -412,6 +423,10 @@ def _container(element_id, c0, c1, r0, r1, children):
 
 
 AGENT_PANEL = "agentPanel"
+# Header action group: adjacent cells of the band's grid, right-aligned, sized by label length, primary
+# last and flush with the band's right edge. (A container nested in the band is not used: the server's
+# layout check misplaces a container inside a container and moves elements.)
+ACTION_SPANS = {"btnRoll": (18, 20), "btnSnapshot": (20, 22), "btnSubmit": (22, 25)}
 # Series colours a workbook POST cannot carry (the spec has no per-series colour on a combo chart):
 # (elementId, series columnId, hex), applied by the setup program through Code Mode set_series_color.
 SERIES_COLORS = (("revTrend", "tr_plan", "#475569"),)
@@ -425,11 +440,12 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons):
                                  f'id="{page_id}">', *lines, "</Page>"]))
     # Forecast: header (rows 1-5), KPIs (5-12), trend + agent (12-34), region + summary (34-52)
     head = [("hdrTitle", 1, 8, 1, 5)]
+    status_at = 8
     if controls:
         head.append(("ctlScenario", 8, 13, 1, 5))
-    head.append(("hdrStatus", 13, 15, 1, 5))
-    spans = {"btnRoll": (15, 18), "btnSnapshot": (18, 21), "btnSubmit": (21, 25)}
-    head += [(b, *spans[b], 1, 5) for b in buttons]
+        status_at = 13
+    head.append(("hdrStatus", status_at, status_at + 3, 1, 5))   # the pill sits right after the switch
+    head += [(b, *ACTION_SPANS[b], 1, 5) for b in buttons]   # one right-aligned toolbar
     lines = [_container("hdrBand", 1, 25, 1, 5, head)]
     width = 24 // len(cards)
     for i, cid in enumerate(cards):

@@ -63,4 +63,5 @@ When the workbook has the planning app's scenario switch (a `segmented` control 
 from the forecast's `Active Scenario` column. The chat is placed inside the reserved
 `agentPanel` container on the Forecast page, under its header; the agent carries a static
 greeting naming what it can do. `build-forecast-model.py --agent-macros macros.json` merges the
-agent in the same run, before the workbook POST.
+agent in the same run, before the workbook POST; the merge is first run against the local spec,
+so one that cannot apply stops the run (`AGENT ERROR`) before the data model is created.

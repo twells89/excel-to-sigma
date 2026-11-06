@@ -260,6 +260,26 @@ def input_column_display(spec):
     return out
 
 
+def input_table_style_lines(spec):
+    """``{elementId: [program lines]}`` re-applying an input table's spec ``tableStyle`` through Code Mode
+    (``table_style()``): preset first, since switching preset resets grid lines and autofit."""
+    import code_rep
+    out = {}
+    for el in code_rep.workbook_elements(code_rep.document(spec)):
+        style = el.get("tableStyle") if el.get("kind") == "input-table" else None
+        if not style:
+            continue
+        lines = ["s = t.table_style()"]
+        if style.get("preset"):
+            lines.append(f"s.set_preset({style['preset']!r})")
+        if style.get("gridLines"):
+            lines.append(f"s.set_grid_lines({style['gridLines']!r})")
+        if style.get("autofitColumns"):
+            lines.append(f"s.set_autofit_columns({style['autofitColumns'] == 'shown'})")
+        out[el["id"]] = lines
+    return out
+
+
 MAX_SEED_ROWS = 2000  # rows per input table in one program's single upsert_rows batch
 
 
@@ -327,7 +347,7 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
             raise WorkflowError(f"{element_id} seed has {len(rows):,} rows; one program seeds at most "
                                 f"{MAX_SEED_ROWS:,} rows per table")
     lines = ["# Enable manual commit on every input table (required for backend actions / agent tools);",
-             "# first re-apply the typed columns' display formats / hidden flags a workbook POST drops.",
+             "# first re-apply the typed columns' display formats / hidden flags and the table style (a workbook POST may drop them).",
              "# Run once through Sigma MCP Code Mode after the workbook is created."]
     if seed or table_seeds:
         seeded = ([PARAMETERS] if seed else []) + [el for el, _c, _r in table_seeds]
@@ -335,6 +355,7 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
                      "workbook (the writes do not query first and keys are not enforced).")
     lines.append("")
     display = input_column_display(spec)
+    styles = input_table_style_lines(spec)
     for page_id, element_id in tables:
         lines += [f"t = sigma.workbook.get_page('{page_id}').get_element('{element_id}')",
                   "if not isinstance(t, InputTable):",
@@ -347,6 +368,7 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
                 lines.append(f"c.set_format_pattern({fmt!r})")
             if hidden:
                 lines.append("c.set_visible(False)")
+        lines += styles.get(element_id, [])
         lines += ["t.set_edit_mode('draft')", "t.set_edit_mode('published-all-users')", ""]
     if seed:
         page = pages.get(PARAMETERS)

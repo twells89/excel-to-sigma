@@ -598,10 +598,11 @@ Prerequisites the agent depends on:
   `refs/sigma-build-gotchas.md`.
 
 **One run, one POST.** `build-forecast-model.py ... --workflows work/workflows.json
---agent-macros work/macros.json --post` prints the same pitch and merges the agent into the
-workbook spec after the data model is posted (so it carries the real data-model id) and
-before the workbook dry-run and create; `build/wb_spec.posted.json` and `build/posted-ids.json`
-record what was posted. Only pass `--agent-macros` after the user said yes to the agent.
+--agent-macros work/macros.json --post` first runs the agent merge against the local spec (a merge
+that cannot apply stops the run with `AGENT ERROR` before anything is created), then posts the data
+model, merges the agent into the workbook spec that carries the real data-model id, and dry-runs
+and creates the workbook; `build/wb_spec.posted.json` and `build/posted-ids.json` record what was
+posted. Only pass `--agent-macros` after the user said yes to the agent.
 
 **Staging build while review is pending.** Production `--post` keeps the strict verified
 review-disposition gate. To build in an isolated staging folder while issues such as
@@ -632,15 +633,25 @@ summary joins — sits on the hidden `Model (sources)` page.
   formula handle, so the switch drives the forecast directly. Edited growth rates stay the base
   the spread applies to. Snapshot records the switch's value; the agent's set-scenario tool
   sets the control.
-- **Plan figures.** When `--landing` includes the plan table (`tblPlan`: Month, Line Item,
-  Region, Plan Amount), it joins the data model as `Plan Detail` (a warehouse table, with the
+- **Plan figures.** When a `--workflows` run's `--landing` includes the plan table (`tblPlan`:
+  Month, Line Item, Region, Plan Amount), it joins the data model as `Plan Detail` (a warehouse table, with the
   forecast's sections and month numbers attached by `Switch`); every month and line must be a
   forecast period / line or the build stops. The region chart and the plan comparisons appear
-  only when it is there.
+  only when it is there. A plain run (no `--workflows`) never reads the plan table. The P&L
+  summary colours `Vs plan` by favourability: a cost line (every section it adds is a cost
+  section, e.g. Operating expenses) under plan is green.
+- **Header actions.** Roll forward / Snapshot / Submit for approval are one right-aligned
+  toolbar: stretched buttons in adjacent cells of the header band, primary last and flush right
+  (no nested container — the server's layout check misplaces a container inside a container);
+  the status pill sits right after the scenario switch.
+- **Input tables** autofit their columns (`tableStyle.autofitColumns`, presentation preset,
+  horizontal lines) and hide the system `ID` column; a number column stretched across a wide
+  table otherwise shows its edit pencil far from its right-aligned name and reads as an empty
+  column.
 - **What the POST cannot carry** — input-table typed-column `format` / `hidden`, and a combo
   chart's per-series colour — the setup program re-applies through Code Mode
-  (`set_format_pattern`, `set_visible(False)`, `set_series_color`) before it switches the edit
-  modes.
+  (`set_format_pattern`, `set_visible(False)`, `set_series_color`; and the input tables'
+  `tableStyle` through `table_style()`) before it switches the edit modes.
 
 ---
 

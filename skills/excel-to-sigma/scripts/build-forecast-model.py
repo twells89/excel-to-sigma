@@ -447,7 +447,7 @@ def build_dm_spec(P, landed=None, plan_src=None, app=False):
              "columns": dmcols(spine_pairs)}
     return {"name": P["name"] + " — Model", "schemaVersion": 1, "folderId": P["folderId"],
             "pages": [{"id": "model", "name": "Model", "elements": [glDetail, assumptions, spine,
-                                                                     *([landed_plan_detail(P, plan_src)] if plan_src else []),
+                                                                     *([landed_plan_detail(P, plan_src)] if plan_src and app else []),
                                                                      *([metric_map_element(P)] if app else [])]}]}
 
 def dmcols(pairs):
@@ -701,6 +701,20 @@ def amount_formula(row, table, sec_cols, fy_nums, fy=False):
     return out
 
 
+# Planning-app input tables: columns fit their content, so a number column is not stretched across the
+# table (its edit pencil far left, its right-aligned name far right reads as an empty unlabelled column).
+APP_INPUT_STYLE = {"preset": "presentation", "gridLines": "horizontal", "autofitColumns": "shown"}
+
+
+def cost_lines(P):
+    """P&L summary labels where lower is better (every section they add is a cost section): their
+    variance to plan is favourable when negative."""
+    _periods, _n, sections = plan_model(P)
+    sign = {s["name"]: s["sign"] for s in sections}
+    return [forecast_app.sentence(label) for label, coeffs in summary_metrics(P)
+            if coeffs and all(sign.get(sec, 1) < 0 and w > 0 for sec, w in coeffs.items())]
+
+
 def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None, plan_src=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     GLP = "GL Detail" if landed else DMP  # a DM table element is referenced by its name
@@ -761,9 +775,9 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
         rate_title, manual_title = ("Growth rates", "Manual forecast") if app else ("Growth Rates (editable)", "Manual Forecast (editable)")
         rateInput = {"id":"rateInput","kind":"input-table","name":rate_title,"inputMode":"edit","source":{"kind":"empty","connectionId":conn},
             "columns":[{"id":"ID",**({"name":"Row ID","hidden":True} if app else {})},{"id":"LINE_ITEM","type":"text","name":RL},{"id":"RATE","type":"number","name":RR,"format":PCT(P)}],"order":["LINE_ITEM","RATE"],
-            **({"tableComponents":{"summaryBar":"hidden"}} if app else {})}
+            **({"tableComponents":{"summaryBar":"hidden"},"tableStyle":dict(APP_INPUT_STYLE)} if app else {})}
         manualInput = {"id":"manualInput","kind":"input-table","name":manual_title,"inputMode":"edit","source":{"kind":"empty","connectionId":conn},
-            **({"tableComponents":{"summaryBar":"hidden"}} if app else {}),
+            **({"tableComponents":{"summaryBar":"hidden"},"tableStyle":dict(APP_INPUT_STYLE)} if app else {}),
             "columns":[{"id":"ID",**({"name":"Row ID","hidden":True} if app else {})},{"id":"LINE_ITEM","type":"text","name":RL},{"id":"MONTH","type":"text","name":"Month"},
                        {"id":"MONTH_NUM","type":"number","name":"Month Num",**({"hidden":True} if app else {})},
                        {"id":"MONTH_END","type":"datetime","name":"Month End",**({"hidden":True} if app else {})},
@@ -1038,19 +1052,26 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
            "hidden": hidden, "pivot": pivot, "gl": gl, "assump": assump, "rate": rate, "manual": manual,
            "dm": dm, "plan": plan_src, "region_of": (plan_src or {}).get("regions") or {},
            "scenario": ({"names": P["scenarios"]["names"], "default": P["scenarios"]["default"]} if spreads else None),
-           "title": title, "company": company, "last_actual_num": periods[n_act - 1]["num"]}
+           "title": title, "company": company, "last_actual_num": periods[n_act - 1]["num"],
+           "cost_lines": cost_lines(P)}
     app = forecast_app.build(ctx)
     return {"name": P["name"], "schemaVersion": 1, "kind": "workbook", "folderId": P["folderId"],
             "pages": app["pages"], "layout": app["layout"], "settings": app["settings"]}
 
 
-def merge_agent(wb_spec, macros, workflows, name="FP&A forecast agent"):
+# What a failed agent recommendation / merge raises (duplicate chat element, layout without the
+# anchor page, malformed macros or workflows): reported as AGENT ERROR, never a traceback.
+AGENT_ERRORS = (ValueError, KeyError, TypeError, AttributeError)
+
+
+def merge_agent(wb_spec, macros, workflows, name="FP&A forecast agent", quiet=False):
     """Phase 6 in the same run: the recommended workbook agent + chat merged into the spec (unchanged
-    when no macros were given or no agent is recommended). Prints the on-camera pitch."""
+    when no macros were given or no agent is recommended). Prints the on-camera pitch unless quiet."""
     if macros is None:
         return wb_spec
     rec, fragment = agent_enhance.recommend_for_workbook(macros, workflows, wb_spec, name)
-    print("AGENT: " + (rec["pitch"] if rec["recommend"] else "no agent recommended"))
+    if not quiet:
+        print("AGENT: " + (rec["pitch"] if rec["recommend"] else "no agent recommended"))
     return agent_enhance.merge_fragment(wb_spec, fragment) if fragment else wb_spec
 
 
@@ -1212,7 +1233,8 @@ def main(argv=None):
             with open(args.landing, encoding="utf-8") as stream:
                 landing = json.load(stream)
             landed = landed_actuals_source(landing, args.actuals_table, P)
-            plan_src = landed_plan_source(landing, P)
+            # Only the planning app (--workflows) compares to plan; a plain run never reads the plan table.
+            plan_src = landed_plan_source(landing, P) if args.workflows else None
         except (PlanError, OSError, ValueError) as error:
             print(f"PLAN ERROR: {error}", file=sys.stderr)
             return 1
@@ -1242,9 +1264,14 @@ def main(argv=None):
               file=sys.stderr)
         return 1
     try:   # a plan the workbook cannot express fails before anything is written or posted
-        build_wb_spec(P,"<dm-id>",LOCAL_DM_IDS,landed=landed,workflows=workflows,plan_src=plan_src)
+        preflight = build_wb_spec(P,"<dm-id>",LOCAL_DM_IDS,landed=landed,workflows=workflows,plan_src=plan_src)
     except PlanError as error:
         print(f"PLAN ERROR: {error}", file=sys.stderr)
+        return 1
+    try:   # ... and so does a Phase 6 agent merge that cannot apply (same spec shape, local ids)
+        merge_agent(workbook_wire.wire_workbook(preflight), agent_macros, workflows, quiet=True)
+    except AGENT_ERRORS as error:
+        print(f"AGENT ERROR: {error} — nothing was written or posted", file=sys.stderr)
         return 1
     os.makedirs(outdir, exist_ok=True)
     rate_csv,man_csv=seed_csvs(P,outdir)
@@ -1261,7 +1288,11 @@ def main(argv=None):
         except demo_workflows.WorkflowError as error:
             print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
             return 1
-        wb_spec = merge_agent(wb_spec, agent_macros, workflows)
+        try:
+            wb_spec = merge_agent(wb_spec, agent_macros, workflows)
+        except AGENT_ERRORS as error:
+            print(f"AGENT ERROR: {error}", file=sys.stderr)
+            return 1
         with open(f"{outdir}/wb_spec.json", "w", encoding="utf-8") as stream:
             json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
@@ -1279,7 +1310,11 @@ def main(argv=None):
     except demo_workflows.WorkflowError as error:
         print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
         return 1
-    wb_spec = merge_agent(wb_spec, agent_macros, workflows)
+    try:   # preflighted above; a failure here still names the data model it leaves behind
+        wb_spec = merge_agent(wb_spec, agent_macros, workflows)
+    except AGENT_ERRORS as error:
+        print(f"AGENT ERROR: {error} — data model {dm_id} was created; no workbook was posted", file=sys.stderr)
+        return 1
     with open(f"{outdir}/wb_spec.posted.json", "w", encoding="utf-8") as stream:
         json.dump(wb_spec, stream, indent=1)
     checked=api(base,tok,"POST","/v2/workbooks",workbook_wire.dry_run_request(wb_spec))
