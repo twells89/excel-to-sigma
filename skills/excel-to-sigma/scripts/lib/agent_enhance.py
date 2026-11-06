@@ -1,11 +1,11 @@
 """Phase 6 -- Enhance: recommend a Sigma workbook agent from the macro inventory.
 
 ``recommend_agent`` reads the macro classes and the workflows the macros became
-(``workflows.json``) and decides whether a workbook agent is worth offering. Write
-workflows become approval-gated action tools; the scenario switch is a no-approval
-tool; recalculation/formatting macros never produce a tool. ``agent_document_fragment``
-emits the ``document.agents`` entry and the ``chat`` element in the shapes proven
-in the Task 2 spike. Nothing here contacts Sigma or sends email.
+(``workflows.json``) and decides whether a workbook agent is worth offering. Every
+workflow tool, the scenario switch included, changes the workbook and is
+approval-gated; recalculation/formatting macros never produce a tool.
+``agent_document_fragment`` emits the ``document.agents`` entry and the ``chat``
+element in live-proven shapes. Nothing here contacts Sigma or sends email.
 """
 from __future__ import annotations
 

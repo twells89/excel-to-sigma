@@ -399,8 +399,11 @@ Excel Tables in the warehouse so the model reads real tables.
 ... --execute [--grant-select-to <ROLE>] [--replace] \
     [--sync-sigma-connection <connectionId> --sigma-profile "<profile>"]
 .venv/bin/python scripts/build-forecast-model.py work/plan.json \
-    --actuals-table <DB>.<SCHEMA>.FPA_TBLACTUALS --landing work/landing.json --out-dir work/build
+    --actuals-table <DB>.<SCHEMA>.FPA_ACTUALS --landing work/landing.json --out-dir work/build
 ```
+
+- Table names drop a leading `tbl` and take the prefix: `--tables tblActuals --table-prefix FPA_`
+  lands `FPA_ACTUALS` (`landing.json` lists each `snowflakeTable`).
 
 - Headers become stable UPPER_SNAKE identifiers (`Net Revenue ($)` -> `NET_REVENUE`); the
   builder's column map reads the same names from `landing.json`.
@@ -498,7 +501,7 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | **Publish** for UI edits | ⚠️ UI; MCP row writes persisted and were immediately queryable in the 2026-10-15 regression, while published-mode UI permissions remain untested |
 | **warehouse view** on the input table | ⚠️ UI only |
 | land workbook Tables in Snowflake (Phase 1b) | ✅ `scripts/land-in-snowflake.py` (`snow` CLI; dry run by default; `--execute`, row-count verified) + `--sync-sigma-connection` |
-| enable **manual commit** on input tables (needed for backend actions / agent tools to write) | ❌ REST spec POST never sets it; ✅ post-create MCP Code Mode `set_edit_mode('draft')` then `set_edit_mode('published-all-users')` per input table (`build-forecast-model.py --emit-manual-commit-program`) |
+| enable **manual commit** on input tables (needed for backend actions / agent tools to write) | ❌ REST spec POST never sets it; ✅ post-create MCP Code Mode `set_edit_mode('draft')` then `set_edit_mode('published-all-users')` per input table (`build-forecast-model.py --emit-manual-commit-program`, which also seeds the forecast's rate / manual / Parameters tables) |
 | macros -> workflow buttons + approvals (`--workflows`) | ✅ `macro-actions.py demo-manifest` -> `workflows.json` -> `build-forecast-model.py --workflows` |
 | workbook **agent** (Phase 6 Enhance) | ✅ `scripts/recommend-agent.py` (`--merge-into`); `requiresApproval` is enforced in the chat UI, not over the REST/MCP run API |
 | DM **source-swap** to `FROM <view>` | ✅ API (DM spec PUT/POST) |
@@ -559,7 +562,15 @@ and formatting parity remain pending until actually tested.
 
 ## Phase 6 — Enhance: recommend a Sigma Agent (`scripts/recommend-agent.py`)
 
-Last step, after parity. Read the macro inventory and `workflows.json`, say in plain
+Last step, after parity. `migrate.py plan` writes the macro inventory to
+`<workdir>/macros.json`; classify the macros into workflows with
+
+```bash
+.venv/bin/python scripts/macro-actions.py demo-manifest book.xlsm --out work/workflows.json
+```
+
+(the positional is the `.xlsm` or a `.bas` macro module; VBA is only read, never run).
+Read the macro inventory and `workflows.json`, say in plain
 language which macros were workflows people triggered by hand, and offer a Sigma
 workbook agent that runs them on request, with approval before every write. Only
 with a yes: `--merge-into <workbook-spec> --out <merged>`, dry-run validate, then
@@ -568,15 +579,20 @@ create or update the workbook. A macro inventory with no action or scenario clas
 `refs/agent-enhance.md`.
 
 Prerequisites the agent depends on:
-- Build with `build-forecast-model.py --workflows workflows.json` so the Parameters /
-  Versions / Approvals input tables and workflow buttons exist.
+- Build with `build-forecast-model.py --workflows work/workflows.json
+  --emit-manual-commit-program work/manual-commit.py` so the Parameters / Versions /
+  Approvals input tables and workflow buttons exist.
 - **Manual commit.** Backend actions and agent tools can only write to input tables
   that have manual commit enabled, and a REST spec POST never enables it. After the
-  workbook is created, submit the program from `--emit-manual-commit-program` through
-  Sigma MCP Code Mode (`set_edit_mode('draft')`, then `set_edit_mode('published-all-users')`
-  per input table). `published-all-users` is data entry for everyone with workbook access.
-  The program also appends a one-row Parameters seed; run it once on a fresh workbook only,
-  it cannot check whether the row already exists.
+  workbook is created, run the setup program from `--emit-manual-commit-program` once via
+  Sigma MCP Code Mode `build_workbook` (`set_edit_mode('draft')`, then
+  `set_edit_mode('published-all-users')` per input table). `published-all-users` is data
+  entry for everyone with workbook access. After the mode switches the program seeds, with
+  one `InputTable.upsert_rows` batch per table: the single Parameters row (Base scenario,
+  first forecast month; emitted only when the build had `--workflows`), and the Growth Rates
+  and Manual Forecast input tables with the seed CSV rows (editable / what-if plans). Run it
+  once, on a fresh workbook: the writes do not query first and keys are not enforced. No
+  seed CSV is pasted in the UI.
 - Agent SQL that touches input-table system columns (`CREATED_BY` ...) fails with
   "Ambiguous column reference"; ground tools in the user columns. See
   `refs/sigma-build-gotchas.md`.

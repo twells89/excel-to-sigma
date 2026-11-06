@@ -88,8 +88,9 @@ class TestRouter(unittest.TestCase):
         text = "\n".join(result["nextCommands"])
         test.assertNotIn("recommend-agent.py", text)
         test.assertNotIn("demo-manifest", text)
-        test.assertNotIn("--emit-manual-commit-program", text)
+        test.assertNotIn("--workflows", text)
         test.assertNotIn("refs/agent-enhance.md", result["readRefs"])
+        test.assertFalse(any("--workflows" in h for h in result["userHandoffs"]))
 
     def test_forecast_route_offers_landing_and_enhance(self):
         try:
@@ -136,10 +137,12 @@ class TestRouter(unittest.TestCase):
         self.assertEqual([m["status"] for m in result["macros"]], ["AUTO"])
         self.enhance_absent(self, result)
         self.assertNotIn("land-in-snowflake.py", "\n".join(result["nextCommands"]))
+        self.assertNotIn("--emit-manual-commit-program", "\n".join(result["nextCommands"]))
         self.assertFalse((self.out / "macros.json").exists())
         # Non-forecast table workbooks never get the forecast-only landing/Enhance commands.
         _, table = self.plan(self.table_workbook())
         self.enhance_absent(self, table)
+        self.assertNotIn("--emit-manual-commit-program", "\n".join(table["nextCommands"]))
 
     def test_macro_classify_without_a_procedure_list_gets_no_enhance(self):
         from unittest import mock
@@ -163,6 +166,49 @@ class TestRouter(unittest.TestCase):
                 self.assertIn("land-in-snowflake.py", "\n".join(result["nextCommands"]))
                 self.assertFalse((self.out / "macros.json").exists())
         self.assertIn("macro-classify failed (olevba exploded)", " ".join(result["notes"]))
+
+    def test_forecast_route_seeds_through_the_setup_program_not_a_paste(self):
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path)
+        _, result = self.plan(path)
+        handoffs = result["userHandoffs"]
+        self.assertFalse(any("paste" in h.lower() for h in handoffs), handoffs)
+        program = str(self.out / "manual-commit.py")
+        post = next(c for c in result["nextCommands"] if "--post" in c)
+        self.assertIn("--emit-manual-commit-program " + program, post)
+        setup = [h for h in handoffs if "setup program" in h]
+        self.assertEqual(len(setup), 1, handoffs)
+        self.assertIn("Sigma MCP Code Mode build_workbook", setup[0])
+        self.assertIn(program, setup[0])
+        self.assertIn("once", setup[0])
+        self.assertIn("rate", setup[0])
+        self.assertNotIn("Parameters", setup[0])
+
+    def test_enhanced_forecast_has_one_setup_handoff_that_also_seeds_parameters(self):
+        try:
+            import oletools  # noqa: F401
+        except ImportError:
+            self.skipTest("oletools is not installed")
+        _, xlsm = self.macro_enabled_forecast()
+        _, result = self.plan(xlsm)
+        handoffs = result["userHandoffs"]
+        self.assertFalse(any("paste" in h.lower() for h in handoffs), handoffs)
+        setup = [h for h in handoffs if "setup program" in h]
+        self.assertEqual(len(setup), 1, handoffs)
+        self.assertIn("--workflows", setup[0])
+        self.assertIn("Parameters", setup[0])
+        self.assertIn("manual commit", setup[0])
+
+    def test_phase6_docs_name_the_demo_manifest_step_and_no_plan_tasks(self):
+        import re
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        phase6 = skill[skill.index("## Phase 6"):skill.index("## What this skill does NOT do")]
+        self.assertRegex(phase6, r"macro-actions\.py demo-manifest \S+ --out \S*workflows\.json")
+        self.assertNotIn("Paste seed", skill)
+        for name in ("agent-enhance.md", "input-tables.md", "forecast-recipes.md", "sigma-build-gotchas.md"):
+            text = (ROOT / "refs" / name).read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"\(Task \d+\)", text), name)
+        self.assertIsNone(re.search(r"\(Task \d+\)", phase6))
 
     def test_forecast_archetype_routes_to_drafter_then_builder(self):
         path = self.dir / "pnl.xlsx"

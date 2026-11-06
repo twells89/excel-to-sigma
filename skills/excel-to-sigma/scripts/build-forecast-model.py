@@ -7,7 +7,8 @@ JSON (drafted from xlsx-discover.py's model map + the intent answers) and emits:
   - a workbook (union[actuals, forecast] → KPIs, P&L pivot w/ Actual|Forecast cols,
     monthly summary, trend, GL detail, assumptions; editable rate+manual input tables
     when intent is editable/what-if)
-  - paste-ready seed CSVs for the editable tables
+  - seed CSVs for the editable tables (the same rows the --emit-manual-commit-program
+    setup program upserts through Sigma MCP Code Mode)
   - a LOCAL parity check (when the plan carries `parityTargets`, fails the run if the
     plan's recomputed total / derived rows differ from them: Revenue / Gross Profit /
     EBITDA / Net Income for the classic four-section plan, every total and profit row
@@ -427,19 +428,39 @@ def check_parity(P, computed, tolerance):
 RATE_KINDS = ("growth", "yoy", "pct_of_total")  # lines whose rate is an editable driver
 
 
+RATE_SEED_COLUMNS = ("LINE_ITEM", "RATE")
+MANUAL_SEED_COLUMNS = ("LINE_ITEM", "MONTH", "MONTH_NUM", "MONTH_END", "AMOUNT")
+
+
+def seed_rows(P):
+    """Starting rows for the editable ``rateInput`` and ``manualInput`` tables, one list per
+    row in ``RATE_SEED_COLUMNS`` / ``MANUAL_SEED_COLUMNS`` order (a blank month end is None).
+
+    The single source for both the seed CSVs and the setup program's upsert_rows seeds;
+    AMOUNT is the CSV's 2-decimal value."""
+    rate = [[ln["line"], ln["rate"]] for ln in P["lines"] if ln["kind"] in RATE_KINDS]
+    manual = []
+    manual_lines = [ln for ln in P["lines"] if ln["kind"] == "manual"]
+    if manual_lines:
+        periods, n_act = calc.plan_periods(P)
+        months = calc.month_views(periods)[n_act:]
+        for ln in manual_lines:
+            for i, m in enumerate(months):
+                manual.append([ln["line"], m["month"], m["num"], m["end"] or None,
+                               float(f"{ln['manual'][i]:.2f}")])
+    return rate, manual
+
+
 def seed_csvs(P, outdir):
     rate_p = os.path.join(outdir, "rate_seed.csv"); man_p = os.path.join(outdir, "manual_seed.csv")
+    rate, manual = seed_rows(P)
     with open(rate_p, "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["LINE_ITEM", "RATE"])
-        for ln in P["lines"]:
-            if ln["kind"] in RATE_KINDS: w.writerow([ln["line"], ln["rate"]])
+        w = csv.writer(f); w.writerow(RATE_SEED_COLUMNS)
+        w.writerows(rate)
     with open(man_p, "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["LINE_ITEM", "MONTH", "MONTH_NUM", "MONTH_END", "AMOUNT"])
-        for ln in P["lines"]:
-            if ln["kind"] == "manual":
-                periods, n_act = calc.plan_periods(P)
-                for i, m in enumerate(calc.month_views(periods)[n_act:]):
-                    w.writerow([ln["line"], m["month"], m["num"], m["end"] or "", f"{ln['manual'][i]:.2f}"])
+        w = csv.writer(f); w.writerow(MANUAL_SEED_COLUMNS)
+        for line, month, num, end, amount in manual:
+            w.writerow([line, month, num, end or "", f"{amount:.2f}"])
     return rate_p, man_p
 
 # ---------- workbook ----------
@@ -812,15 +833,25 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
             "pages":pages,"layout":forecast_layout(editable, extra_model_ids, [c["id"] for c in source_charts], [k["id"] for k in kpis], bool(wf))}
 
 def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
-    """The manual-commit Code Mode program (plus the one-row Parameters seed), when asked for."""
+    """The post-create setup program, when asked for: manual commit on every input table,
+    then the seeds. The one-row Parameters seed is emitted only with ``--workflows`` (that
+    table exists only then); the rate / manual input tables are seeded from ``seed_rows``
+    (the seed CSVs' rows) whenever the plan is editable or what-if."""
     if program_path:
+        seed = None
+        if workflows is not None:
+            periods, n_act, _sections = plan_model(P)
+            seed = {"scenario": "Base", "start": periods[n_act]["end"][:8] + "01"}
+        table_seeds = []
+        if P["intent"] in ("editable", "what-if"):
+            rate, manual = seed_rows(P)
+            table_seeds = [("rateInput", RATE_SEED_COLUMNS, rate), ("manualInput", MANUAL_SEED_COLUMNS, manual)]
+        program = demo_workflows.emit_manual_commit_program(wb_spec, seed, table_seeds)
         with open(program_path, "w", encoding="utf-8") as stream:
-            seed = None
-            if workflows is not None:
-                periods, n_act, _sections = plan_model(P)
-                seed = {"scenario": "Base", "start": periods[n_act]["end"][:8] + "01"}
-            stream.write(demo_workflows.emit_manual_commit_program(wb_spec, seed))
-        print(f"MANUAL-COMMIT PROGRAM: {program_path}")
+            stream.write(program)
+        seeded = (["parameters 1 row"] if seed else []) + [f"{el} {len(rows)} rows" for el, _c, rows in table_seeds if rows]
+        print(f"SETUP PROGRAM: {program_path} (manual commit on every input table"
+              + ("; seeds " + ", ".join(seeded) if seeded else "") + "; run once on the new workbook)")
 
 
 def parse_args(argv=None):
@@ -839,8 +870,10 @@ def parse_args(argv=None):
                         "Parameters / Versions / Approvals input tables, the Roll forward / Snapshot version / "
                         "Submit for approval buttons and a latest-approval-status KPI")
     parser.add_argument("--emit-manual-commit-program", metavar="OUT.py",
-                        help="write the post-create Code Mode program that enables manual commit on every "
-                             "input table (needed before backend actions / agent tools can write)")
+                        help="write the post-create Code Mode setup program: enables manual commit on every "
+                             "input table (needed before backend actions / agent tools can write), then seeds "
+                             "the rate / manual input tables from the seed CSV rows (editable / what-if plans) "
+                             "and, with --workflows, the one Parameters row; run it once on a fresh workbook")
     parser.add_argument("--parity-tolerance", type=float, default=None,
                         help="absolute tolerance for plan.parityTargets (default: float noise only, "
                              "max(1e-6, 1e-9 * |source value|))")
@@ -920,7 +953,11 @@ def main(argv=None):
         # map ids from the local spec (ids as-authored) for a dry-run wb spec
         els={"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"}
         wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed,workflows=workflows))
-        emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
+        try:
+            emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
+        except demo_workflows.WorkflowError as error:
+            print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
+            return 1
         with open(f"{outdir}/wb_spec.json", "w", encoding="utf-8") as stream:
             json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
@@ -933,7 +970,11 @@ def main(argv=None):
     els=map_dm_elements(full)
     # Layout is the last write before the current contents API validates + creates.
     wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed,workflows=workflows))
-    emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
+    try:
+        emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
+    except demo_workflows.WorkflowError as error:
+        print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
+        return 1
     checked=api(base,tok,"POST","/v2/workbooks",workbook_wire.dry_run_request(wb_spec))
     workbook_wire.assert_dry_run_success(checked)
     wb=api(base,tok,"POST","/v2/workbooks",wb_spec)

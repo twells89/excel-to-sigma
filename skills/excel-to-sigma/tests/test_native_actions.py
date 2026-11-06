@@ -562,6 +562,8 @@ import importlib.util
 import unittest.mock
 import io
 import contextlib
+import csv
+import types
 
 SCRIPTS=ROOT/'scripts'
 DEMO_BAS=SCRIPTS/'demo-forecast-macros.bas'
@@ -748,6 +750,81 @@ class TestDemoWorkflows(unittest.TestCase):
             self.assertIn('btnRoll',{e['id'] for e in wired['contents']['elements']})
             self.assertIn("c_start: '2026-02-01'",prog.read_text())  # plan's first forecast month
             self.assertFalse((out/'parameters_seed.csv').exists())
+
+    @staticmethod
+    def run_program(program):
+        """Execute the emitted program against a fake Code Mode host; return
+        ``{elementId: [[row dict keyed by column id], ...]}`` per upsert_rows call."""
+        class LiteralEditableColumn:
+            def __init__(self,cid):self.cid=cid
+        class InputTable:
+            def __init__(self,eid,calls):self.eid=eid;self.calls=calls
+            def get_column(self,cid):return LiteralEditableColumn(cid)
+            def set_edit_mode(self,mode):pass
+            def upsert_rows(self,rows):
+                self.calls.setdefault(self.eid,[]).append([{c.cid:v for c,v in r.items()} for r in rows])
+        calls={}
+        class Page:
+            def get_element(self,eid):return InputTable(eid,calls)
+        sigma=types.SimpleNamespace(workbook=types.SimpleNamespace(get_page=lambda pid:Page()))
+        exec(compile(program,'program','exec'),{'sigma':sigma,'InputTable':InputTable,
+                                                 'LiteralEditableColumn':LiteralEditableColumn})
+        return calls
+
+    def test_cli_program_seeds_rate_and_manual_tables_from_the_seed_csv_rows(self):
+        build=self.build
+        plan=json.loads((SCRIPTS/'sample-model-plan.json').read_text())
+        with tempfile.TemporaryDirectory() as d:
+            planp=Path(d)/'plan.json';planp.write_text(json.dumps(plan))
+            wf=Path(d)/'workflows.json';wf.write_text(json.dumps(self.manifest))
+            out=Path(d)/'out';prog=Path(d)/'program.py'
+            gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate):
+                rc=build.main([str(planp),'--out-dir',str(out),'--workflows',str(wf),'--emit-manual-commit-program',str(prog)])
+            self.assertEqual(rc,0)
+            program=prog.read_text()
+            with (out/'rate_seed.csv').open(newline='') as f:rate_csv=list(csv.DictReader(f))
+            with (out/'manual_seed.csv').open(newline='') as f:man_csv=list(csv.DictReader(f))
+        self.assertEqual((len(rate_csv),len(man_csv)),(5,24))
+        calls=self.run_program(program)
+        # one upsert per editable table, every seed row in that one batch
+        self.assertEqual({k:len(v) for k,v in calls.items()},{'parameters':1,'rateInput':1,'manualInput':1})
+        rate,manual=calls['rateInput'][0],calls['manualInput'][0]
+        self.assertEqual(len(rate),len(rate_csv)); self.assertEqual(len(manual),len(man_csv))
+        self.assertEqual([{'LINE_ITEM':r['LINE_ITEM'],'RATE':str(r['RATE'])} for r in rate],rate_csv)
+        self.assertEqual([{k:(f'{v:.2f}' if k=='AMOUNT' else str(v)) for k,v in r.items()} for r in manual],man_csv)
+        self.assertEqual(rate[0],{'LINE_ITEM':'Subscription Revenue','RATE':float(rate_csv[0]['RATE'])})
+        self.assertEqual(manual[0]['LINE_ITEM'],'Professional Services Rev')
+        self.assertEqual(manual[0]['AMOUNT'],70000.0)
+        self.assertIsInstance(manual[0]['MONTH_NUM'],int)
+        # typed checks guard every seeded table and column, and seeds follow every mode switch
+        for eid in ('rateInput','manualInput'):
+            self.assertIn(f"raise RuntimeError('{eid} is not an InputTable')",program)
+        self.assertIn("raise RuntimeError('rateInput.RATE is not an editable column')",program)
+        self.assertGreater(program.index('upsert_rows'),program.rindex("set_edit_mode('published-all-users')"))
+
+    def test_cli_program_without_workflows_seeds_only_rate_and_manual(self):
+        build=self.build
+        plan=json.loads((SCRIPTS/'sample-model-plan.json').read_text())
+        with tempfile.TemporaryDirectory() as d:
+            planp=Path(d)/'plan.json';planp.write_text(json.dumps(plan))
+            out=Path(d)/'out';prog=Path(d)/'program.py'
+            gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate):
+                rc=build.main([str(planp),'--out-dir',str(out),'--emit-manual-commit-program',str(prog)])
+            self.assertEqual(rc,0)
+            calls=self.run_program(prog.read_text())
+        self.assertEqual({k:len(v[0]) for k,v in calls.items()},{'rateInput':5,'manualInput':24})
+
+    def test_program_seed_rejects_more_than_2000_rows_and_unknown_tables(self):
+        spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
+        rows=[['L',i] for i in range(2001)]
+        with self.assertRaisesRegex(self.dw.WorkflowError,'2,000'):
+            self.dw.emit_manual_commit_program(spec,table_seeds=[('rateInput',['LINE_ITEM','RATE'],rows)])
+        with self.assertRaisesRegex(self.dw.WorkflowError,'nope'):
+            self.dw.emit_manual_commit_program(spec,table_seeds=[('nope',['A'],[['x']])])
+        program=self.dw.emit_manual_commit_program(spec,table_seeds=[('rateInput',['LINE_ITEM','RATE'],rows[:2000])])
+        self.assertEqual(len(self.run_program(program)['rateInput'][0]),2000)
 
     def test_demo_manifest_cli(self):
         mod=_load('macro-actions.py','wf_macro_actions')

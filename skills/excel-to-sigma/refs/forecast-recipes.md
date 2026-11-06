@@ -110,9 +110,10 @@ across pages fine.
 - **Input-table data-entry columns lose `name`/`format` on readback.** Any re-pull→push
   (or GET→PUT) drops them, which then breaks join keys (`Column reference not found:
   '[Line Item]'`). Re-add `name` (and `format`) on every input-table column before pushing.
-- **Input-table data load is UI-only** (paste/CSV + Publish); no REST endpoint yet.
-  Seed CSVs cover the editable rates (5 rows) + manual cells (24 rows); defaults keep
-  parity until seeded.
+- **Input-table rows have no REST endpoint.** `build-forecast-model.py
+  --emit-manual-commit-program` writes a setup program that seeds the editable rates (5 rows)
+  + manual cells (24 rows), the same rows as the seed CSVs, through Sigma MCP Code Mode
+  `InputTable.upsert_rows`; run it once on the new workbook. Defaults keep parity until seeded.
 - **Workbook controls are filter controls, not free parameters.** A `controlType:number`
   referenced in a calc formula is rejected (`Invalid kind: control`); a true parameter
   needs a data-model control + `parameters` binding. Use an **editable input table** for

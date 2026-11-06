@@ -6,6 +6,7 @@ until the user says yes.
 
 ```bash
 .venv/bin/python scripts/macro-classify.py --json book.xlsm > macros.json
+.venv/bin/python scripts/macro-actions.py demo-manifest book.xlsm --out workflows.json
 .venv/bin/python scripts/recommend-agent.py --macros macros.json --workflows workflows.json
 # on approval:
 .venv/bin/python scripts/recommend-agent.py --macros macros.json --workflows workflows.json \
@@ -41,7 +42,7 @@ does this reuse automatically.
   instructions or data sources; agent SQL on them fails with "Ambiguous column reference".
 - Agent writes only work on **manual-commit-enabled** input tables. A REST spec POST never
   sets that flag; run the post-create program from `build-forecast-model.py
-  --emit-manual-commit-program` (Task 5) once, before the agent's first write.
+  --workflows workflows.json --emit-manual-commit-program` once, before the agent's first write.
 - `requiresApproval` is a chat-UI behavior. It does not gate the REST `run_agent` call, so
   approval can only be demonstrated in the chat panel.
 - After any write, approved or declined, the agent must re-query the affected table and

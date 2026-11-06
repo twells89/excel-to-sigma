@@ -51,6 +51,12 @@ def archetype(discovery):
     return "unknown"
 
 
+# The forecast route's one post-create MCP step (replaces pasting seed CSVs in the UI).
+FORECAST_SETUP_HANDOFF = (
+    "Run the emitted setup program (<workdir>/manual-commit.py) once via Sigma MCP Code Mode build_workbook "
+    "on the new workbook: it enables manual commit on every input table and seeds the rate and manual "
+    "input tables with the seed CSV rows (fresh workbook only; the writes do not query first)")
+
 ROUTES = {
     "forecast": {
         "refs": ["refs/sigma-build-gotchas.md", "refs/model-taxonomy.md", "refs/forecast-recipes.md"],
@@ -61,7 +67,8 @@ ROUTES = {
             "python scripts/build-forecast-model.py <workdir>/plan.json --out-dir <workdir>/build   "
             "# dry run: draft mode + local parity",
             "python scripts/build-forecast-model.py <workdir>/plan.json --post "
-            "--review-dispositions <workdir>/review.json   # production: strict dispositions",
+            "--review-dispositions <workdir>/review.json --emit-manual-commit-program <workdir>/manual-commit.py   "
+            "# production: strict dispositions; also writes the post-create setup program",
             # Optional Phase 1b: land the source Tables in Snowflake, then build GL actuals on the
             # landed table instead of inline VALUES (dry run by default; --execute needs the user's OK).
             "python scripts/land-in-snowflake.py <file> --tables <tables> --database <db> --schema <schema> "
@@ -70,7 +77,7 @@ ROUTES = {
             "python scripts/build-forecast-model.py <workdir>/plan.json --actuals-table <db.schema.table> "
             "--landing <workdir>/landing.json --out-dir <workdir>/build   # actuals from the landed table",
         ],
-        "handoffs": ["Paste seed CSVs into the rate/manual input tables", "Publish the workbook"],
+        "handoffs": [FORECAST_SETUP_HANDOFF, "Publish the workbook"],
     },
     "research": {
         "refs": ["refs/sigma-build-gotchas.md", "refs/research-recipes.md", "refs/research-template-coa.md"],
@@ -158,10 +165,13 @@ ENHANCE_COMMANDS = [
     "python scripts/recommend-agent.py --macros <workdir>/macros.json --workflows <workdir>/workflows.json   "
     "# Phase 6: recommendation only; add --merge-into <workbook-spec> --out <merged> after a yes",
 ]
-ENHANCE_HANDOFFS = [
-    "Submit the manual-commit program through Sigma MCP Code Mode after the workbook is created "
-    "(backend actions and agent tools can only write input tables with manual commit enabled)",
-]
+# Replaces FORECAST_SETUP_HANDOFF: the --workflows build rewrites the same program with the
+# workflow tables added, and the program is run exactly once per workbook.
+ENHANCE_SETUP_HANDOFF = (
+    "Run the setup program from the --workflows build (<workdir>/manual-commit.py) once via Sigma MCP Code "
+    "Mode build_workbook on the new workbook, instead of the base build's: it enables manual commit on "
+    "every input table (backend actions and agent tools can only write input tables with manual commit "
+    "enabled) and seeds the Parameters row plus the rate and manual input tables (fresh workbook only)")
 
 
 def plan(args):
@@ -239,7 +249,7 @@ def plan(args):
             refs.append("refs/agent-enhance.md")
             (workdir / "macros.json").write_text(json.dumps(macros, indent=2) + "\n", encoding="utf-8")
             next_commands += ENHANCE_COMMANDS
-            handoffs += ENHANCE_HANDOFFS
+            handoffs = [ENHANCE_SETUP_HANDOFF if h == FORECAST_SETUP_HANDOFF else h for h in handoffs]
     if any(i.get("code") in PRESENTATION_CODES for i in audit.get("issues", [])):
         refs.append("refs/presentation-migration.md")
 
@@ -272,7 +282,7 @@ def plan(args):
         "beforePost": ["refs/coverage-contract.md"],
         "askUser": route["decisions"],
         "nextCommands": [fill(c) for c in next_commands],
-        "userHandoffs": handoffs,
+        "userHandoffs": [fill(h) for h in handoffs],
         "reviewTemplate": str(workdir / "review.template.json") if review_template["issues"] else None,
         "notes": notes + [
             "Local builds (no --post) run in draft mode; pending review issues do not block them.",

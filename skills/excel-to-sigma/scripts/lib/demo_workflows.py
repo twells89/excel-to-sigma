@@ -7,7 +7,8 @@ workbook elements: Parameters / Versions / Approvals input tables, three buttons
 and a latest-approval-status KPI. ``emit_manual_commit_program`` writes the
 post-create Code Mode program that enables manual commit on every input table
 (backend actions, e.g. a Sigma Agent tool, only write to such tables; a REST
-spec POST never sets the flag).
+spec POST never sets the flag) and seeds the Parameters row and any other
+editable tables it is given.
 
 Nothing here sends email: the Outlook step of the Submit macro is replaced by an
 Approvals row and recorded under ``dispositions``.
@@ -146,7 +147,7 @@ def _values(element, formulas):
 
 
 def action_effects(action_id, request_label, figures=None):
-    """The effect list for one workflow (the working shapes from the Task 2 spike)."""
+    """The effect list for one workflow (live-proven working shapes)."""
     if action_id == "roll-forward":
         return [{"effect": "update-rows", "tableElementId": PARAMETERS,
                  "whichRows": {"type": "formula", "formula": "true"},
@@ -228,23 +229,63 @@ def _input_tables(spec):
     return [(owners[t]["id"], t) for t in tables]
 
 
-def emit_manual_commit_program(spec, seed=None):
+MAX_SEED_ROWS = 2000  # rows per input table in one program's single upsert_rows batch
+
+
+def _table_seed_lines(page_id, element_id, columns, rows):
+    """One typed-checked ``upsert_rows`` call carrying every row; a ``None`` value is left unset."""
+    var = {cid: "c_" + re.sub(r"\W", "_", cid).lower() for cid in columns}
+    out = [f"# Seed {element_id}: {len(rows)} row(s), one batch (fresh workbook only).",
+           f"t = sigma.workbook.get_page('{page_id}').get_element('{element_id}')",
+           "if not isinstance(t, InputTable):",
+           f"    raise RuntimeError('{element_id} is not an InputTable')"]
+    for cid in columns:
+        out += [f"{var[cid]} = t.get_column('{cid}')",
+                f"if not isinstance({var[cid]}, LiteralEditableColumn):",
+                f"    raise RuntimeError('{element_id}.{cid} is not an editable column')"]
+    out.append("t.upsert_rows([")
+    for row in rows:
+        if len(row) != len(columns):
+            raise WorkflowError(f"{element_id} seed row {row!r} does not match columns {list(columns)}")
+        cells = ", ".join(f"{var[cid]}: {value!r}" for cid, value in zip(columns, row) if value is not None)
+        out.append(f"    {{{cells}}},")
+    return out + ["])", ""]
+
+
+def emit_manual_commit_program(spec, seed=None, table_seeds=()):
     """Post-create Code Mode program text: re-set each input table's edit mode so the
-    host publishes it with manual commit enabled."""
+    host publishes it with manual commit enabled, then seed rows.
+
+    ``seed`` (``{"scenario", "start"}``) writes the single Parameters row. ``table_seeds``
+    is ``[(elementId, [columnId, ...], rows)]``: each table gets one ``upsert_rows`` call
+    with all of its rows (at most ``MAX_SEED_ROWS``); a table with no rows is skipped.
+    upsert_rows neither queries first nor enforces keys, so the program is run once, on a
+    fresh workbook."""
     tables = _input_tables(spec)
     if not tables:
         raise WorkflowError("workbook has no input tables")
+    pages = {el: pg for pg, el in tables}
+    table_seeds = [(el, list(cols), list(rows)) for el, cols, rows in table_seeds if rows]
+    for element_id, _cols, rows in table_seeds:
+        if element_id not in pages:
+            raise WorkflowError(f"seed requested for {element_id}, which is not an input table of the workbook")
+        if len(rows) > MAX_SEED_ROWS:
+            raise WorkflowError(f"{element_id} seed has {len(rows):,} rows; one program seeds at most "
+                                f"{MAX_SEED_ROWS:,} rows per table")
     lines = ["# Enable manual commit on every input table (required for backend actions / agent tools).",
-             "# Run once through Sigma MCP Code Mode after the workbook is created.", ""]
-    if seed:
-        lines[1] += "\n# The Parameters seed at the end writes one row: run once on a fresh workbook (it cannot query first)."
+             "# Run once through Sigma MCP Code Mode after the workbook is created."]
+    if seed or table_seeds:
+        seeded = ([PARAMETERS] if seed else []) + [el for el, _c, _r in table_seeds]
+        lines.append("# The seeds at the end write rows into " + ", ".join(seeded) + ": run once on a fresh "
+                     "workbook (the writes do not query first and keys are not enforced).")
+    lines.append("")
     for page_id, element_id in tables:
         lines += [f"t = sigma.workbook.get_page('{page_id}').get_element('{element_id}')",
                   "if not isinstance(t, InputTable):",
                   f"    raise RuntimeError('{element_id} is not an InputTable')",
                   "t.set_edit_mode('draft')", "t.set_edit_mode('published-all-users')", ""]
     if seed:
-        page = next((pg for pg, el in tables if el == PARAMETERS), None)
+        page = pages.get(PARAMETERS)
         if page is None:
             raise WorkflowError("seed requested but the workbook has no parameters input table")
         lines += ["# Seed the single Parameters row (fresh workbook only).",
@@ -258,4 +299,6 @@ def emit_manual_commit_program(spec, seed=None):
                   "if not isinstance(c_start, LiteralEditableColumn):",
                   "    raise RuntimeError('Forecast Start Month is not an editable column')",
                   f"t.upsert_rows([{{c_scn: {seed['scenario']!r}, c_start: {seed['start']!r}}}])", ""]
+    for element_id, columns, rows in table_seeds:
+        lines += _table_seed_lines(pages[element_id], element_id, columns, rows)
     return "\n".join(lines)

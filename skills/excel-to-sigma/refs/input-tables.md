@@ -273,9 +273,19 @@ workbook exists, through Sigma MCP Code Mode: `set_edit_mode('draft')` then
 `set_edit_mode('published-all-users')`. `published-all-users` is data entry for everyone with
 workbook access. Spec `inputMode` maps to the SDK mode as: `edit` = `draft`,
 `explore` = `published-explore`, `view` = `published-all-users`.
-`build-forecast-model.py --emit-manual-commit-program OUT.py` writes this program (and appends a
-one-row Parameters seed: Base scenario, forecast start month; run it once on a fresh workbook
-only, it cannot check whether the row already exists). Query the table afterward to confirm a button write lands.
+`build-forecast-model.py --emit-manual-commit-program OUT.py` writes this program. After the
+mode switches it seeds, with one `InputTable.upsert_rows` batch per table (at most 2,000 rows
+each, every table and column checked with `isinstance(..., InputTable)` /
+`isinstance(..., LiteralEditableColumn)` first):
+- `rateInput` (`LINE_ITEM`, `RATE`) and `manualInput` (`LINE_ITEM`, `MONTH`, `MONTH_NUM`,
+  `MONTH_END`, `AMOUNT`) with exactly the rows of `rate_seed.csv` / `manual_seed.csv`, for an
+  editable or what-if plan;
+- the single Parameters row (Base scenario, first forecast month), only when the build had
+  `--workflows`.
+
+Run it once via Sigma MCP Code Mode `build_workbook`, on a fresh workbook only: the writes do
+not query first and keys are not enforced, so a second run duplicates rows. Query the tables
+afterward to confirm the seeds and a button write land.
 
 ## Seed rows through Sigma MCP Code Mode
 

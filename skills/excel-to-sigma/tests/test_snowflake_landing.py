@@ -185,5 +185,22 @@ class CliTests(unittest.TestCase):
             self.assertIn("row count mismatch", r.stderr)
 
 
+class DocConsistencyTests(unittest.TestCase):
+    def test_docs_name_the_table_the_landing_actually_creates(self):
+        # snowflake_table_name strips a leading "tbl": --tables tblActuals --table-prefix FPA_
+        # lands FPA_ACTUALS, so every --actuals-table example must name that table.
+        import re
+        landed = sl.snowflake_table_name("tblActuals", "FPA_")
+        self.assertEqual(landed, "FPA_ACTUALS")
+        docs = [ROOT / "SKILL.md", *sorted((ROOT / "refs").glob("*.md"))]
+        examples = [(p.name, m) for p in docs
+                    for m in re.findall(r"--actuals-table\s+\S*?\.(FPA_\w+)", p.read_text(encoding="utf-8"))]
+        self.assertTrue(examples)
+        for name, table in examples:
+            self.assertEqual(table, landed, name)
+        for p in docs:
+            self.assertNotIn("FPA_TBL", p.read_text(encoding="utf-8").upper(), p.name)
+
+
 if __name__ == "__main__":
     unittest.main()
