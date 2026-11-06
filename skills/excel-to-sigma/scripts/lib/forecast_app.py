@@ -9,7 +9,8 @@ finance team's planning app, so it is laid out like one (the approved design tar
   Assumptions         editable growth drivers and manual lines, with the forecast reacting beside them
   P&L detail          the monthly P&L pivot (Actual | Forecast) and the GL actuals behind it
   Versions & approvals read-only, newest-first views of the governed logs
-  Model (hidden)      every helper: wraps, union, Parameters / Versions / Approvals input tables, status
+  Model (hidden)      every helper: wraps, union, Parameters / Versions / Approvals input tables, status,
+                      and the one forecast boundary (``Forecast Boundary``) every surface reads
 
 Everything here is a pure function of the plan and the builder's own elements; nothing contacts Sigma.
 Every formula reads elements by their display name (``[Forecast Facts/Amount]``) like the rest of the
@@ -36,6 +37,13 @@ CARD = {"backgroundColor": CANVAS, "borderColor": HAIRLINE, "borderWidth": 1, "b
 SCENARIO_CONTROL = "Scenario"          # controlId: the forecast's Eff Rate reads [Scenario]
 FACTS, PLAN_LINES, SUMMARY, METRICS = "Forecast Facts", "Plan Lines", "Summary Facts", "Metric Map"
 COMBINED, STATUS = "PnL Combined", "Latest approval status"
+# The actual / forecast boundary, defined once (``boundary_element``) and read everywhere by these refs.
+BOUNDARY, BOUNDARY_ID = "Forecast Boundary", "boundary"
+START_MONTH = f"Max([{BOUNDARY}/Start Month])"
+START_KEY = f"Max([{BOUNDARY}/Start Key])"
+LAST_CLOSED = f"Max([{BOUNDARY}/Last Closed Month])"
+AWAITING = "Awaiting actuals"           # a closed month whose actuals have not landed: forecast values, flagged
+AMBER = "#B45309"
 BUTTON_TEXT = {"roll-forward": "Roll forward", "snapshot-version": "Snapshot",
                "submit-approval": "Submit for approval"}
 PAGES = (("pgForecast", "Forecast"), ("pgAssumptions", "Assumptions"), ("pgDetail", "P&L detail"),
@@ -89,6 +97,24 @@ def month_key(date_expr):
 
 def month_label(expr):
     return f'DateFormat({expr}, "%b-%y")'
+
+
+def boundary_element(connection_id, first_forecast):
+    """The planning app's one actual / forecast boundary: ``Parameters.Forecast Start Month``, or the
+    source's first forecast month (``first_forecast`` = ``(year, month)``) while the Parameters row is
+    not seeded. One row whatever Parameters holds (a one-row VALUES query anchors it), so every other
+    element reads it as ``Max([Forecast Boundary/<column>])`` and nothing repeats the fallback.
+    Columns: Start Month, Start Key (year * 12 + month, the comparison key), Last Closed Month."""
+    year, month = first_forecast
+    start = (f"Coalesce(Max([{dw.TABLES[dw.PARAMETERS][0]}/Forecast Start Month]), "
+             f"MakeDate({int(year)}, {int(month)}, 1))")
+    return {"id": BOUNDARY_ID, "kind": "table", "name": BOUNDARY,
+            "source": {"kind": "sql", "connectionId": connection_id,
+                       "statement": "select * from (values\n(1)\n) as t(BOUNDARY_ROW)"},
+            "columns": [{"id": "bd_start", "name": "Start Month", "formula": start, "format": MONTH_FMT},
+                        {"id": "bd_key", "name": "Start Key", "formula": month_key("[Start Month]")},
+                        {"id": "bd_last", "name": "Last Closed Month",
+                         "formula": 'DateAdd("month", -1, [Start Month])', "format": MONTH_FMT}]}
 
 
 class Facts:
@@ -193,10 +219,13 @@ def build(ctx):
     region_src = union_name if len(sources) > 1 else COMBINED
     report_facts["columns"].append({"id": "rf_region", "name": "Region",
                                     "formula": region_formula.replace("Union of 2 Sources", region_src)})
-    # Actual / Forecast by month against the one boundary (Parameters.Forecast Start Month), plan rows
-    # included, so a chart coloured by it gives every month one colour that moves at Roll forward.
+    # Actual / Forecast by month against the one boundary, plan rows included, so a chart coloured by it
+    # gives every month one colour that moves at Roll forward. A closed month whose actuals have not
+    # landed still shows its forecast values, so it keeps the forecast colour.
+    mk = month_key(f"[{region_src}/Month End]")
     report_facts["columns"].append({"id": "rf_phase", "name": "Phase", "formula": (
-        f'If({month_key(f"[{region_src}/Month End]")} < {ctx["start_key"]}, "Actual", "Forecast")')})
+        f'If({mk} >= {START_KEY}, "Forecast", '
+        f'IsNull(Lookup(Max([Actuals/Month Key]), {mk}, [Actuals/Month Key])), "Forecast", "Actual")')})
     metric_wrap = {"id": "metricWrap", "kind": "table", "name": METRICS, "source": ctx["dm"]("metricMap"),
                    "columns": [{"id": "mm_m", "name": "Metric", "formula": "[Custom SQL/Metric]"},
                                {"id": "mm_o", "name": "Metric Order", "formula": "[Custom SQL/Metric Order]"},
@@ -213,16 +242,20 @@ def build(ctx):
                                  {"id": "sf_p", "name": "Period", "formula": "[SJ/Period]"},
                                  {"id": "sf_mn", "name": "Month Num", "formula": "[SJ/Month Num]"},
                                  {"id": "sf_v", "name": "Signed Amount", "formula": "[SJ/Amount] * [Metrics/Weight]"}]}
-    hidden += [report_facts, metric_wrap, summary_facts, *wf["tables"], wf["status"]]
+    hidden += [ctx["boundary"], report_facts, metric_wrap, summary_facts, *wf["tables"], wf["status"]]
 
     # ---------------------------------------------------------------- A. header band
-    start = "Max([Parameters/Forecast Start Month])"
+    start = START_MONTH
     status = f"Max([{STATUS}/{STATUS}])"
+    # "actuals through" is the last month whose actuals landed; a closed month still waiting for them is
+    # flagged beside it (its figures stay the forecast's until the load arrives).
+    awaiting = (f'{{{{If(Max([Actuals/Month Key]) < {START_KEY} - 1, Concat(" · ", '
+                f'{month_label(LAST_CLOSED)}, " {AWAITING.lower()}"), "")}}}}')
     title = text("hdrTitle",
                  "## " + span(" V ", CANVAS, None, PRIMARY) + " " + esc(ctx["title"]) + "\n"
                  + span(esc(ctx["company"]) + " · actuals through "
-                        + f"{{{{{month_label(f'DateAdd(\"month\", -1, {start})')}}}}}" + " · live on Snowflake",
-                        MUTED, 13))
+                        + f"{{{{{month_label('Max([Actuals/Month End])')}}}}}", MUTED, 13)
+                 + span(awaiting, AMBER, 13) + span(" · live on Snowflake", MUTED, 13))
     pill = "".join(span(f'{{{{If({status} = "{name}", "  {name}  ", "")}}}}', fg, 14, bg)
                    for name, (bg, fg) in PILLS.items())
     status_text = text("hdrStatus", span("Status", MUTED, 12) + "\n\n" + pill)
@@ -385,26 +418,32 @@ def build(ctx):
     # ---------------------------------------------------------------- Versions & approvals page
     fmt = {"Forecast Start Month": MONTH_FMT, "FY Revenue": CUR_SI, "FY Gross Margin": CUR_SI, "FY EBITDA": CUR_SI,
            "Saved At": STAMP_FMT, "Submitted At": STAMP_FMT}
+    # newest first by entry order (dw.LOG_ORDER): migrated history keeps the source's dates
     label = {"Forecast Start Month": "Forecast start", "FY Revenue": f"{fy} revenue",
              "FY Gross Margin": "Gross margin", "FY EBITDA": "EBITDA"}
-    def log_view(view_id, table, names, sort_col, title):
+    def log_view(view_id, table, names, title):
         cols = [{"id": f"{view_id}_{i}", "name": label.get(n, sentence(n)), "formula": f"[{table['name']}/{n}]",
                  **({"format": fmt[n]} if n in fmt else {})}
                 for i, n in enumerate(names) if any(c["name"] == n for c in table["columns"])]
-        sort_id = next(c["id"] for c in cols if c["formula"].endswith(f"/{sort_col}]"))
+        cols.append({"id": f"{view_id}_order", "name": dw.LOG_ORDER, "formula": f"[{table['name']}/{dw.LOG_ORDER}]",
+                     "hidden": True})
         return {"id": view_id, "kind": "table", "name": title, "source": {"kind": "table", "elementId": table["id"]},
-                "columns": cols, "sort": [{"columnId": sort_id, "direction": "descending"}],
+                "columns": cols, "sort": [{"columnId": f"{view_id}_order", "direction": "descending"}],
                 "tableStyle": {"preset": "presentation"}, "tableComponents": {"summaryBar": "hidden"},
                 "style": dict(CARD)}
     versions_view = log_view("versionsView", wf["tables"][1],
                              ["Version", "Scenario", "Forecast Start Month", "FY Revenue", "FY Gross Margin",
-                              "FY EBITDA", "Saved By", "Saved At"], "Saved At", "Versions")
+                              "FY EBITDA", "Saved By", "Saved At", "Comment"], "Versions")
     approvals_view = log_view("approvalsView", wf["tables"][2],
-                              ["Status", "Request", "Submitted By", "Submitted At"], "Submitted At", "Approvals")
+                              ["Status", "Request", "Submitted By", "Submitted At", "Comment"], "Approvals")
+    history = ctx.get("history") or {}
+    origin = (f" The first {history.get(dw.VERSIONS, 0)} versions and {history.get(dw.APPROVALS, 0)} approvals "
+              "are the history migrated from the source workbook (it did not freeze the figures, so those cells "
+              "are blank)." if history else " Both logs start empty in a new workbook.")
     log_head = text("logHead", "## Versions & approvals\n" + span(
         "Snapshot freezes the headline numbers as a version; Submit for approval logs a request. Both are written "
         "by the buttons on the Forecast page (or by the forecast agent, after you approve), with who and when, "
-        "newest first. Both logs start empty in a new workbook.", MUTED, 13), "top")
+        "newest first." + origin, MUTED, 13), "top")
 
     pages = [{"id": "pgForecast", "name": "Forecast", "elements": elements},
              {"id": "pgAssumptions", "name": "Assumptions", "elements": asm_els},

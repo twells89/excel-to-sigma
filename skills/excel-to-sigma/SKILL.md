@@ -589,8 +589,11 @@ Prerequisites the agent depends on:
   `set_edit_mode('published-all-users')` per input table). `published-all-users` is data
   entry for everyone with workbook access. After the mode switches the program seeds, with
   one `InputTable.upsert_rows` batch per table: the single Parameters row (Base scenario,
-  first forecast month; emitted only when the build had `--workflows`), and the Growth Rates
-  and Manual Forecast input tables with the seed CSV rows (editable / what-if plans). Run it
+  first forecast month; emitted only when the build had `--workflows`), the Growth Rates
+  and Manual Forecast input tables with the seed CSV rows (editable / what-if plans), and —
+  with `--workflows`, when the source has them — the Versions / Approvals logs with the source
+  workbook's own `tblVersions` / `tblApprovals` rows (migrated history: version, scenario, who,
+  when, comment; the frozen FY figures the source never recorded stay blank). Run it
   once, on a fresh workbook: the writes do not query first and keys are not enforced. No
   seed CSV is pasted in the UI. The seeds come last: every call above them (formats, table
   style, column widths, series colours, edit modes) is safe to re-run. Before writing the
@@ -630,7 +633,9 @@ vs plan by region and a P&L summary), **Assumptions** (editable growth rates and
 with a live impact card), **P&L detail** (the FY's monthly P&L in $000s, actual | forecast, and
 the GL actuals) and **Versions & approvals** (newest-first read-only views of the logs). Every
 helper — Parameters / Versions / Approvals input tables, the status table, the union and
-summary joins — sits on the hidden `Model (sources)` page.
+summary joins, the one `Forecast Boundary` — sits on the hidden `Model (sources)` page.
+The logs keep a hidden `Log Order` (entry order): migrated rows carry the source's own dates,
+which can lie after today, so "newest first" and the latest-approval pill follow entry order.
 
 - **Scenario switch.** When the driver table has scenario columns beside the live rate
   (`Downside | Base | Upside`), the drafter writes `plan.scenarios`; the data-model spine
@@ -640,17 +645,24 @@ summary joins — sits on the hidden `Model (sources)` page.
   the spread applies to. Snapshot records the switch's value; the agent's set-scenario tool
   sets the control.
 - **Roll forward = a month just closed.** The actual / forecast split follows
-  `Parameters.Forecast Start Month` (the source's first forecast month until the setup program
-  seeds the row), not the static spine. The Actuals wrap keeps landed rows before it; the
-  forecast keeps spine rows from it on, and each growth / flat line re-seeds off the line's
-  landed actual in the month before the boundary (`Lookup(Sum([Actuals/Amount]), [Line Item],
-  ..., [Base Key], [Actuals/Month Key])`, N counted from there; its frozen forecast value while
-  that month's actuals have not landed). Manual lines keep their typed values; year-over-year
-  lines keep the source seeding. The trend colouring (`Forecast Facts/Phase`), KPIs, months-left
-  card, header subtitle and the P&L detail's Actual | Forecast groups all read that one boundary.
-  Before roll forward the FY figures tie to the source exactly (actual rows landed for a month the
-  source still forecasts are ignored). Roll forward after the month's actuals have landed in the
-  actuals table (the landed `Month Num` maps every period, so they keep their number).
+  `Parameters.Forecast Start Month`, defined ONCE as the hidden one-row `Forecast Boundary`
+  element (Start Month = the Parameters value, or the source's first forecast month until the
+  setup program seeds the row; Start Key; Last Closed Month). Every other element reads it as
+  `Max([Forecast Boundary/...])` — the Actuals wrap (landed rows before it), the forecast
+  (spine rows from it on), the trend colouring (`Forecast Facts/Phase`), header subtitle,
+  months-left card, P&L detail groups, and the Roll forward / Snapshot actions — so nothing
+  repeats `Max([Parameters/...])`. Each growth / flat line re-seeds off the line's landed
+  actual in the month before the boundary (`Lookup(Sum([Actuals/Amount]), [Line Item], ...,
+  [Base Key], [Actuals/Month Key])`, N counted from there). Manual lines keep their typed values;
+  year-over-year lines keep the source seeding. Before roll forward the FY figures tie to the
+  source exactly (actual rows landed for a month the source still forecasts are ignored).
+  **A closed month whose actuals have not landed keeps its forecast values** (`Landed` is NULL
+  → the row stays, Period `Awaiting actuals`, a third P&L detail group; the header shows
+  "Jul-27 awaiting actuals"; the chart keeps it in the forecast colour) — never blank or
+  dropped; the months after it re-forecast from that frozen value, so FY figures do not move
+  until the load arrives. The landed `Month Num` maps every period, so a late load keeps its
+  number. `tests/test_forecast_app.py` evaluates the emitted model over local rows
+  (`tests/planning_app_eval.py`): pre-roll parity, post-roll landed July, missing-actuals.
   A plain run (no `--workflows`) keeps the static split.
 - **Plan figures.** When a `--workflows` run's `--landing` includes the plan table (`tblPlan`:
   Month, Line Item, Region, Plan Amount), it joins the data model as `Plan Detail` (a warehouse table, with the

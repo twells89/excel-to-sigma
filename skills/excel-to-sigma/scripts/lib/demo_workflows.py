@@ -30,6 +30,10 @@ EFFECTS = ("update-rows", "insert-rows", "control")
 # System columns (CREATED_BY / CREATED_AT) are deliberately not declared: an agent
 # query that names them bare hits "Ambiguous column reference". ID is hidden and
 # renamed "Row ID" so no bare ``ID`` is exposed either.
+# ``Log Order`` (hidden) numbers the log rows in the order they were written: the migrated history
+# carries the source's own dates (which can lie after today), so "newest first" and the latest
+# approval status follow the entry order, not the clock.
+LOG_ORDER = "Log Order"
 TABLES = {
     PARAMETERS: ("Parameters", [("pa_scn", "Selected Scenario", "text"),
                                 ("pa_start", "Forecast Start Month", "datetime")]),
@@ -37,12 +41,17 @@ TABLES = {
                             ("ve_start", "Forecast Start Month", "datetime"),
                             ("ve_rev", "FY Revenue", "number"), ("ve_gm", "FY Gross Margin", "number"),
                             ("ve_ebitda", "FY EBITDA", "number"),
-                            ("ve_by", "Saved By", "text"), ("ve_at", "Saved At", "datetime")]),
+                            ("ve_by", "Saved By", "text"), ("ve_at", "Saved At", "datetime"),
+                            ("ve_note", "Comment", "text"), ("ve_seq", LOG_ORDER, "number")]),
     APPROVALS: ("Approvals", [("ap_req", "Request", "text"), ("ap_by", "Submitted By", "text"),
                               ("ap_to", "Approver", "text"), ("ap_status", "Status", "text"),
-                              ("ap_at", "Submitted At", "datetime")]),
+                              ("ap_at", "Submitted At", "datetime"), ("ap_note", "Comment", "text"),
+                              ("ap_seq", LOG_ORDER, "number")]),
 }
+HIDDEN_COLUMNS = {"ve_seq", "ap_seq"}
 COLUMN_IDS = {(el, name): cid for el, (_n, cols) in TABLES.items() for cid, name, _t in cols}
+# The forecast start month a workflow reads when the workbook defines no single boundary element.
+DEFAULT_START = "Max([Parameters/Forecast Start Month])"
 
 ROUTES = (
     # (name regex, classes allowed, workflow key)
@@ -132,8 +141,13 @@ def build_workflow_manifest(path):
     return {"version": 1, "workflows": workflows, "dispositions": dispositions}
 
 
-STATUS_FORMULA = ('Coalesce(Lookup([Approvals/Status], Max([Approvals/Submitted At]), '
-                  '[Approvals/Submitted At]), "Not submitted")')
+STATUS_FORMULA = (f'Coalesce(Lookup([Approvals/Status], Max([Approvals/{LOG_ORDER}]), '
+                  f'[Approvals/{LOG_ORDER}]), "Not submitted")')
+
+
+def next_entry(table):
+    """The next ``Log Order`` of a log table: one past the last entry (1 for an empty log)."""
+    return f"Coalesce(Max([{table}/{LOG_ORDER}]), 0) + 1"
 
 
 def _const(text):
@@ -148,25 +162,27 @@ def _values(element, formulas):
     return {COLUMN_IDS[(element, name)]: value for name, value in formulas.items()}
 
 
-def action_effects(action_id, request_label, figures=None, scenario_control=None):
+def action_effects(action_id, request_label, figures=None, scenario_control=None, start=DEFAULT_START):
     """The effect list for one workflow (live-proven working shapes).
 
     With ``scenario_control`` (the controlId of the workbook's scenario switch) Snapshot records the
-    control's current value; otherwise the Parameters row's Selected Scenario."""
+    control's current value; otherwise the Parameters row's Selected Scenario. ``start`` is the formula
+    of the current forecast start month (the planning app passes its one boundary element's)."""
     if action_id == "roll-forward":
         return [{"effect": "update-rows", "tableElementId": PARAMETERS,
                  "whichRows": {"type": "formula", "formula": "true"},
                  "values": _values(PARAMETERS, {"Forecast Start Month": _formula(
-                     'DateAdd("month", 1, Max([Parameters/Forecast Start Month]))')})}]
+                     f'DateAdd("month", 1, {start})')})}]
     if action_id == "snapshot-version":
         if not figures:
             raise WorkflowError("snapshot needs the KPI figure formulas (figures=)")
         values = {
-            "Version": _formula('Concat("v", Text(Count([Versions/Saved At]) + 1))'),
+            "Version": _formula(f'Concat("v", Text({next_entry("Versions")}))'),
             "Scenario": ({"type": "control", "control": scenario_control} if scenario_control
                          else _formula("Max([Parameters/Selected Scenario])")),
-            "Forecast Start Month": _formula("Max([Parameters/Forecast Start Month])"),
-            "Saved By": _formula("CurrentUserEmail()"), "Saved At": _formula("Now()")}
+            "Forecast Start Month": _formula(start),
+            "Saved By": _formula("CurrentUserEmail()"), "Saved At": _formula("Now()"),
+            LOG_ORDER: _formula(next_entry("Versions"))}
         names = {"revenue": "FY Revenue", "grossMargin": "FY Gross Margin", "ebitda": "FY EBITDA"}
         for key, formula in figures.items():
             values[names[key]] = _formula(formula)
@@ -174,7 +190,8 @@ def action_effects(action_id, request_label, figures=None, scenario_control=None
     if action_id == "submit-approval":
         return [{"effect": "insert-rows", "tableElementId": APPROVALS, "values": _values(APPROVALS, {
             "Request": _const(request_label), "Submitted By": _formula("CurrentUserEmail()"),
-            "Approver": _const("CFO"), "Status": _const("Submitted"), "Submitted At": _formula("Now()")})}]
+            "Approver": _const("CFO"), "Status": _const("Submitted"), "Submitted At": _formula("Now()"),
+            LOG_ORDER: _formula(next_entry("Approvals"))})}]
     raise WorkflowError(f"no button action for {action_id}")
 
 
@@ -188,18 +205,20 @@ def input_table(element, connection_id, mode, figures=None, scenario_control=Non
     return {"id": element, "kind": "input-table", "name": name, "inputMode": mode,
             "source": {"kind": "empty", "connectionId": connection_id},
             "columns": [{"id": "ID", "name": "Row ID", "hidden": True},
-                        *[{"id": cid, "type": typ, "name": nm} for cid, nm, typ in cols]]}
+                        *[{"id": cid, "type": typ, "name": nm, **({"hidden": True} if cid in HIDDEN_COLUMNS else {})}
+                          for cid, nm, typ in cols]]}
 
 
 def workflow_elements(manifest, connection_id, request_label, figures=None, scenario_control=None,
-                      no_status="Not submitted"):
+                      no_status="Not submitted", start=DEFAULT_START):
     """Workbook elements for a manifest: ``{tables, buttons, status}``.
 
     ``figures`` maps revenue / grossMargin / ebitda to the workbook's KPI formulas;
     Snapshot freezes exactly those into its Versions row. ``scenario_control`` is the controlId of
     a scenario switch that the forecast reads: Parameters then carries only the forecast start
     month and Snapshot records the switch's value. ``no_status`` is the status shown before any
-    request was submitted.
+    request was submitted. ``start`` is the forecast start month formula Roll forward advances and
+    Snapshot records.
     """
     if figures is None and any(w["actionId"] == "snapshot-version" for w in manifest.get("workflows", [])):
         figures = {"revenue": "Sum([PnL Combined/Amount])"}  # structural default (checks); builder passes real KPIs
@@ -220,14 +239,85 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
         buttons.append({"id": element_id, "kind": "button", "text": w["label"],
             "appearance": "outline" if action_id == "submit-approval" else "filled",
             "actions": [{"id": "a-" + action_id, "trigger": "on-click",
-                         "effects": action_effects(action_id, request_label, figures, scenario_control)}]})
-    # Latest status = Status of the Approvals row with the max Submitted At. A one-row table
+                         "effects": action_effects(action_id, request_label, figures, scenario_control,
+                                                   start)}]})
+    # Latest status = Status of the Approvals row with the last Log Order. A one-row table
     # over Parameters holds the cross-table Lookup (the shape proven for the forecast lookup).
     status = {"id": STATUS_KPI, "kind": "table", "name": "Latest approval status",
         "source": {"kind": "table", "elementId": PARAMETERS},
         "columns": [{"id": "st_v", "name": "Latest approval status",
                      "formula": STATUS_FORMULA.replace('"Not submitted"', '"' + no_status + '"')}]}
     return {"tables": tables, "buttons": buttons, "status": status}
+
+
+# Migrated history: the source workbook's version / approval log tables -> the Versions / Approvals
+# input tables (seeded once by the setup program). Workbook column -> accepted source headers.
+HISTORY_TABLES = {
+    VERSIONS: (("tblversions", "versions"),
+               {"Version": ("version",), "Scenario": ("scenario",), "Saved By": ("saved by", "author"),
+                "Saved At": ("saved at", "saved on", "date"), "Comment": ("comment", "comments", "notes")},
+               ("Version", "Saved At")),
+    APPROVALS: (("tblapprovals", "approvals"),
+                {"Request": ("request", "version"), "Submitted By": ("submitted by",),
+                 "Approver": ("approver",), "Status": ("status",),
+                 "Submitted At": ("submitted at", "submitted on", "date"),
+                 "Comment": ("comment", "comments", "notes")},
+                ("Status", "Submitted At")),
+}
+
+
+def _seed_value(value, typ):
+    from datetime import date, datetime
+    if value in (None, ""):
+        return None
+    if typ == "datetime":
+        if isinstance(value, datetime):
+            return value.date().isoformat() if value.time() == datetime.min.time() else value.isoformat(" ")
+        if isinstance(value, date):
+            return value.isoformat()
+        raise WorkflowError(f"history date {value!r} is not a date")
+    if typ == "number":
+        return float(value)
+    return str(value).strip()
+
+
+def source_history(path):
+    """``[(elementId, [columnId, ...], rows)]`` seeds for Versions / Approvals from the source workbook's own
+    version and approval log tables (``tblVersions`` / ``tblApprovals``), so the migrated workbook keeps its
+    history instead of starting with empty logs. Rows keep the source's order (by date, stable) and get
+    ``Log Order`` 1..n; a column the source does not record (the frozen FY figures) stays unset. A source
+    without such a table yields no seed; a table whose required columns cannot be found raises."""
+    from openpyxl import load_workbook
+    wb = load_workbook(path, data_only=True)    # read only: the source is never saved
+    found = {}
+    for ws in wb.worksheets:
+        for name, ref in ws.tables.items():
+            ref = ref if isinstance(ref, str) else ref.ref
+            found[name.lower()] = [[c.value for c in row] for row in ws[ref]]
+    out = []
+    for element, (names, aliases, required) in HISTORY_TABLES.items():
+        grid = next((found[n] for n in names if n in found), None)
+        if not grid:
+            continue
+        headers = [str(h or "").strip().lower() for h in grid[0]]
+        where = {}
+        for column, accepted in aliases.items():
+            at = next((headers.index(a) for a in accepted if a in headers), None)
+            if at is not None:
+                where[column] = at
+        missing = [c for c in required if c not in where]
+        if missing:
+            raise WorkflowError(f"source {element} table has no {', '.join(missing)} column "
+                                f"(headers: {', '.join(h for h in headers if h)})")
+        types = {nm: typ for _cid, nm, typ in TABLES[element][1]}
+        stamp = required[1]
+        body = [r for r in grid[1:] if any(v not in (None, "") for v in r)]
+        body = sorted(enumerate(body), key=lambda ir: (_seed_value(ir[1][where[stamp]], "datetime") or "", ir[0]))
+        columns = [COLUMN_IDS[(element, c)] for c in where] + [COLUMN_IDS[(element, LOG_ORDER)]]
+        rows = [[_seed_value(r[where[c]], types[c]) for c in where] + [i]
+                for i, (_at, r) in enumerate(body, 1)]
+        out.append((element, columns, rows))
+    return out
 
 
 def _input_tables(spec):

@@ -282,6 +282,10 @@ each, every table and column checked with `isinstance(..., InputTable)` /
   editable or what-if plan;
 - the single Parameters row (Base scenario, first forecast month), only when the build had
   `--workflows`.
+- with `--workflows`, the `versions` / `approvals` logs with the source workbook's own
+  `tblVersions` / `tblApprovals` rows (`demo_workflows.source_history`: version / request,
+  scenario, who, when, status, comment, plus `Log Order` 1..n), so the migrated workbook keeps
+  its history instead of empty logs; buttons continue the numbering (`Coalesce(Max([Log Order]), 0) + 1`).
 
 Run it once via Sigma MCP Code Mode `build_workbook`, on a fresh workbook only: the writes do
 not query first and keys are not enforced, so a second run duplicates rows. The seeds are the

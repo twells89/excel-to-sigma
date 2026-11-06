@@ -728,15 +728,16 @@ def month_key(date_expr):
 
 def forecast_boundary(P):
     """The planning app's actual / forecast boundary: Parameters.Forecast Start Month (the source's first
-    forecast month until the Parameters row is seeded). ``{"start_key", "last_key"}``: the boundary's month
-    key formula and the source's last actual month key (where the plan's June Base sits)."""
+    forecast month until the Parameters row is seeded), defined ONCE as the hidden ``Forecast Boundary``
+    element (forecast_app.boundary_element). ``{"element", "start_key", "last_key"}``: that element, the
+    formula every other element compares month keys with, and the source's last actual month key (where
+    the plan's June Base sits)."""
     periods, n_act, _ = plan_model(P)
     if periods[0]["grain"] != "month" or not periods[n_act].get("end") or not periods[n_act - 1].get("end"):
         raise PlanError("the planning-app layout needs dated periods (month grain)")
     first, last = periods[n_act]["end"], periods[n_act - 1]["end"]
-    start = (f"Coalesce(Max([{demo_workflows.TABLES[demo_workflows.PARAMETERS][0]}/Forecast Start Month]), "
-             f"MakeDate({int(first[:4])}, {int(first[5:7])}, 1))")
-    return {"start_key": month_key(start), "last_key": int(last[:4]) * 12 + int(last[5:7])}
+    return {"element": forecast_app.boundary_element(P["connectionId"], (int(first[:4]), int(first[5:7]))),
+            "start_key": forecast_app.START_KEY, "last_key": int(last[:4]) * 12 + int(last[5:7])}
 
 
 def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
@@ -744,12 +745,14 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
     actuals, months from it on are the driver forecast re-seeded off the last closed month.
 
     ``actuals`` keeps only rows before the boundary and gains the ``Month Key`` the forecast looks up;
-    ``stage1`` (the forecast's first element, columns read through ``prefix``) keeps only rows from the
-    boundary on: a growth / flat line seeds from the line's actual in the month before the boundary
-    (its frozen forecast value while that month's actuals have not landed), with N counted from there;
-    manual lines keep their typed values and year-over-year lines their source seeding.
+    ``stage1`` (the forecast's first element, columns read through ``prefix``) keeps the rows from the
+    boundary on, plus any closed month whose actuals have not landed for that line (``Landed`` is NULL):
+    that month keeps its forecast value, labelled Period ``Awaiting actuals``, never blank or dropped.
+    A growth / flat line seeds from the line's actual in the month before the boundary (its frozen
+    forecast value while that month's actuals have not landed), with N counted from there; manual lines
+    keep their typed values and year-over-year lines their source seeding.
     ``read_only_cols`` adds the Kind / June Base / Eff Rate / Eff Manual columns a read-only forecast
-    does not carry. Both elements keep their constant Period label (each holds one side of the split).
+    does not carry. The actuals keep their constant Period label.
     """
     S = bnd["start_key"]
     actuals["columns"] += [
@@ -765,7 +768,10 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
         {"id": "f_mk", "name": "Month Key", "formula": month_key(f"[{prefix}/Month End]")},
         {"id": "f_sk", "name": "Start Key", "formula": S},
         {"id": "f_bk", "name": "Base Key", "formula": "[Start Key] - 1"},
-        {"id": "f_win", "name": "Window", "formula": 'If([Month Key] >= [Start Key], "Forecast", "Actual")'},
+        {"id": "f_land", "name": "Landed",
+         "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Month Key], [Actuals/Month Key])"},
+        {"id": "f_win", "name": "Window", "formula": (f'If([Month Key] >= [Start Key], "Forecast", IsNull([Landed]), '
+                                                       f'"{forecast_app.AWAITING}", "Actual")')},
         {"id": "f_la", "name": "Last Actual",
          "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Base Key], [Actuals/Month Key])"},
         {"id": "f_seed", "name": "Seed",
@@ -779,7 +785,10 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
             c["formula"] = ('If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [Seed], '
                             + ('[Kind] = "pct", 0, ' if has_pct else "")
                             + '[Kind] = "yoy", [June Base] * (1 + [Eff Rate]) ^ [N], [Seed] * (1 + [Eff Rate]) ^ [N])')
-    stage1["filters"] = [{"id": "f_wf", "columnId": "f_win", "kind": "list", "mode": "include", "values": ["Forecast"]}]
+        if c["name"] == "Period":
+            c["formula"] = f'If([Window] = "{forecast_app.AWAITING}", "{forecast_app.AWAITING}", "Forecast")'
+    stage1["filters"] = [{"id": "f_wf", "columnId": "f_win", "kind": "list", "mode": "include",
+                          "values": ["Forecast", forecast_app.AWAITING]}]
 
 
 def actuals_prefix(actuals):
@@ -787,7 +796,7 @@ def actuals_prefix(actuals):
     return actuals["columns"][0]["formula"][1:].split("/", 1)[0]
 
 
-def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None, plan_src=None):
+def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None, plan_src=None, history=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     GLP = "GL Detail" if landed else DMP  # a DM table element is referenced by its name
     DEPT = (landed or {}).get("labels", {}).get("Department", "Department")
@@ -884,7 +893,8 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
             {"id": "f_jb", "name": "June Base", "formula": "[Forecast Spine/June Base]"},
             {"id": "f_er", "name": "Eff Rate", "formula": "[Forecast Spine/Default Rate]"},
             {"id": "f_em", "name": "Eff Manual", "formula": "[Forecast Spine/Manual Value]"}]
-        apply_boundary(actuals, forecast, "FJ" if editable else "Forecast Spine", forecast_boundary(P), has_pct, ro)
+        boundary = forecast_boundary(P)
+        apply_boundary(actuals, forecast, "FJ" if editable else "Forecast Spine", boundary, has_pct, ro)
     forecast_stages = [forecast]
     if has_pct:
         # Second pass without a join: a join to a grouped table also matches that table's
@@ -908,7 +918,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
                 {"id":"g_line","name":"Line Item","formula":f"[{stage1_name}/Line Item]"},{"id":"g_lo","name":"Line Order","formula":f"[{stage1_name}/Line Order]"},
                 {"id":"g_m","name":"Month","formula":f"[{stage1_name}/Month]"},{"id":"g_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},{"id":"g_me","name":"Month End","formula":f"[{stage1_name}/Month End]"},
                 {"id":"g_amt","name":"Amount","formula":f'If([{stage1_name}/Kind] = "pct", [{stage1_name}/Eff Rate] * If({branches}, 0), [{stage1_name}/Amount])',"format":cur},
-                {"id":"g_p","name":"Period","formula":'"Forecast"'}]}
+                {"id":"g_p","name":"Period","formula":f"[{stage1_name}/Period]" if workflows is not None else '"Forecast"'}]}
         forecast_stages = [forecast, forecastRef, final]
         forecast = final
     def m(nm): return {"outputColumnName": nm, "sourceColumns": [f"[{nm}]", f"[{nm}]"]}
@@ -1056,13 +1066,14 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
             figures["ebitda"] = signed(ebitda, True)
         wf = demo_workflows.workflow_elements(
             workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast", figures,
-            scenario_control=forecast_app.SCENARIO_CONTROL if spreads else None, no_status="Draft")
+            scenario_control=forecast_app.SCENARIO_CONTROL if spreads else None, no_status="Draft",
+            start=forecast_app.START_MONTH if approved_inputs is None else demo_workflows.DEFAULT_START)
         return app_spec(P, dm, els, wf=wf, rows=rows, kpi={"middle": middle, "bottom": bottom},
                         first_positive=first_positive, fy_nums=fy_nums, periods=periods, n_act=n_act,
                         hidden=[actuals, spineWrap, *forecast_stages, pnlCombined], pivot=pivot, gl=glTable,
                         assump=assumpTable, rate=rateInput if editable else None,
                         manual=manualInput if editable else None, plan_src=plan_src, spreads=spreads,
-                        cur=cur, landed=landed)
+                        cur=cur, landed=landed, history=history)
     main_els=[header]+([wf["tables"][0], wf["status"], *wf["buttons"]] if wf else [])+kpis+[trend]+source_charts+[pivot]
     detail_els=[glTable]
     input_els=[assumpTable]
@@ -1095,7 +1106,7 @@ def _app_titles(P):
 
 
 def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_act, hidden, pivot, gl, assump,
-             rate, manual, plan_src, spreads, cur, landed):
+             rate, manual, plan_src, spreads, cur, landed, history=None):
     """The planning-app workbook (lib/forecast_app.py) for a forecast built with --workflows."""
     by_num = {p["num"]: p for p in periods}
     fy_label = re.sub(r"\s+total$", "", P.get("fyLabel") or "FY", flags=re.I)
@@ -1132,8 +1143,10 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
            "hidden": hidden, "pivot": pivot, "gl": gl, "assump": assump, "rate": rate, "manual": manual,
            "dm": dm, "plan": plan_src, "region_of": (plan_src or {}).get("regions") or {},
            "scenario": ({"names": P["scenarios"]["names"], "default": P["scenarios"]["default"]} if spreads else None),
-           "title": title, "company": company, "start_key": forecast_boundary(P)["start_key"],
-           "cost_lines": cost_lines(P)}
+           "title": title, "company": company, "boundary": forecast_boundary(P)["element"],
+           "cost_lines": cost_lines(P),
+           # migrated log rows per table (the setup program seeds them from the source's own logs)
+           "history": {el: len(rows) for el, _cols, rows in (history or []) if rows}}
     app = forecast_app.build(ctx)
     return {"name": P["name"], "schemaVersion": 1, "kind": "workbook", "folderId": P["folderId"],
             "pages": app["pages"], "layout": app["layout"], "settings": app["settings"]}
@@ -1155,11 +1168,12 @@ def merge_agent(wb_spec, macros, workflows, name="FP&A forecast agent", quiet=Fa
     return agent_enhance.merge_fragment(wb_spec, fragment) if fragment else wb_spec
 
 
-def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
+def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path, history=None):
     """The post-create setup program, when asked for: manual commit on every input table,
     then the seeds. The one-row Parameters seed is emitted only with ``--workflows`` (that
     table exists only then); the rate / manual input tables are seeded from ``seed_rows``
-    (the seed CSVs' rows) whenever the plan is editable or what-if."""
+    (the seed CSVs' rows) whenever the plan is editable or what-if; ``history``
+    (demo_workflows.source_history) seeds the Versions / Approvals logs with the source's own."""
     if program_path:
         seed = None
         if workflows is not None:
@@ -1171,6 +1185,8 @@ def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
         if P["intent"] in ("editable", "what-if"):
             rate, manual = seed_rows(P)
             table_seeds = [("rateInput", RATE_SEED_COLUMNS, rate), ("manualInput", MANUAL_SEED_COLUMNS, manual)]
+        if workflows is not None:
+            table_seeds += list(history or [])
         program = demo_workflows.emit_manual_commit_program(
             wb_spec, seed, table_seeds, series_colors=forecast_app.SERIES_COLORS,
             column_widths=demo_workflows.input_column_widths(wb_spec, table_seeds))
@@ -1332,6 +1348,16 @@ def main(argv=None):
             print(f"PLAN ERROR: --workflows {error}", file=sys.stderr)
             return 1
         print("WORKFLOWS: " + ", ".join(w["actionId"] for w in workflows["workflows"]))
+    history = []
+    if workflows is not None:
+        try:   # the source's own version / approval logs seed Versions / Approvals (migrated history)
+            history = demo_workflows.source_history(source_path)
+        except (OSError, ValueError) as error:
+            print(f"PLAN ERROR: source history {error}", file=sys.stderr)
+            return 1
+        if history:
+            print("HISTORY: " + ", ".join(f"{el} {len(rows)} rows" for el, _c, rows in history)
+                  + " from the source workbook's own logs (seeded by the setup program)")
     # parity — a mismatch stops the run before any spec is written or posted
     try:
         par=parity(P)
@@ -1345,7 +1371,7 @@ def main(argv=None):
               file=sys.stderr)
         return 1
     try:   # a plan the workbook cannot express fails before anything is written or posted
-        preflight = build_wb_spec(P,"<dm-id>",LOCAL_DM_IDS,landed=landed,workflows=workflows,plan_src=plan_src)
+        preflight = build_wb_spec(P,"<dm-id>",LOCAL_DM_IDS,landed=landed,workflows=workflows,plan_src=plan_src,history=history)
     except PlanError as error:
         print(f"PLAN ERROR: {error}", file=sys.stderr)
         return 1
@@ -1363,9 +1389,9 @@ def main(argv=None):
     if not do_post:
         # map ids from the local spec (ids as-authored) for a dry-run wb spec
         els=dict(LOCAL_DM_IDS)
-        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed,workflows=workflows,plan_src=plan_src))
+        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed,workflows=workflows,plan_src=plan_src,history=history))
         try:
-            emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
+            emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program, history)
         except demo_workflows.WorkflowError as error:
             print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
             return 1
@@ -1385,9 +1411,9 @@ def main(argv=None):
     full=api(base,tok,"GET",f"/v2/dataModels/{dm_id}/spec")
     els=map_dm_elements(full)
     # Layout is the last write before the current contents API validates + creates.
-    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed,workflows=workflows,plan_src=plan_src))
+    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed,workflows=workflows,plan_src=plan_src,history=history))
     try:
-        emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
+        emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program, history)
     except demo_workflows.WorkflowError as error:
         print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
         return 1

@@ -659,8 +659,8 @@ class TestDemoWorkflows(unittest.TestCase):
         spec=self.spec(self.manifest)
         by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
         for tid,names in (('parameters',['Selected Scenario','Forecast Start Month']),
-                ('versions',['Version','Scenario','Forecast Start Month','FY Revenue','FY Gross Margin','FY EBITDA','Saved By','Saved At']),
-                ('approvals',['Request','Submitted By','Approver','Status','Submitted At'])):
+                ('versions',['Version','Scenario','Forecast Start Month','FY Revenue','FY Gross Margin','FY EBITDA','Saved By','Saved At','Comment','Log Order']),
+                ('approvals',['Request','Submitted By','Approver','Status','Submitted At','Comment','Log Order'])):
             t=by_id[tid]
             self.assertEqual(t['kind'],'input-table')
             self.assertEqual(t['source'],{'kind':'empty','connectionId':'conn-1'})
@@ -670,7 +670,9 @@ class TestDemoWorkflows(unittest.TestCase):
         roll=by_id['btnRoll']['actions'][0]['effects'][0]
         self.assertEqual(roll['effect'],'update-rows')
         self.assertEqual(roll['whichRows'],{'type':'formula','formula':'true'})
-        self.assertEqual(roll['values']['pa_start']['formula'],'DateAdd("month", 1, Max([Parameters/Forecast Start Month]))')
+        # the planning app advances its one boundary element (which reads Parameters.Forecast Start Month)
+        self.assertEqual(roll['values']['pa_start']['formula'],'DateAdd("month", 1, Max([Forecast Boundary/Start Month]))')
+        self.assertIn('[Parameters/Forecast Start Month]',json.dumps(by_id['boundary']))
         approve=by_id['btnSubmit']['actions'][0]['effects'][0]
         self.assertEqual(approve['values']['ap_status']['value']['value'],'Submitted')
         self.assertIn('FY27',approve['values']['ap_req']['value']['value'])
@@ -687,7 +689,9 @@ class TestDemoWorkflows(unittest.TestCase):
         eff=by_id['btnSnapshot']['actions'][0]['effects'][0]
         self.assertEqual(eff['effect'],'insert-rows'); self.assertEqual(eff['tableElementId'],'versions')
         cols={c['name']:c['id'] for c in by_id['versions']['columns'] if 'type' in c}
-        self.assertEqual(set(eff['values']),set(cols.values()))  # one row covers every Versions column
+        # one row covers every Versions column but the free-text Comment (migrated rows carry the source's)
+        self.assertEqual(set(eff['values']),set(cols.values())-{cols['Comment']})
+        self.assertEqual(eff['values'][cols['Log Order']]['formula'],'Coalesce(Max([Versions/Log Order]), 0) + 1')
         f=lambda name:eff['values'][cols[name]]['formula']
         plain=self.spec()   # the plain dashboard's KPI tiles carry the same headline formulas
         tiles={e['id']:e['columns'][0]['formula'] for pg in plain['pages'] for e in pg['elements'] if e['kind']=='kpi-chart'}
@@ -698,11 +702,14 @@ class TestDemoWorkflows(unittest.TestCase):
         self.assertEqual(f('Scenario'),'Max([Parameters/Selected Scenario])')
         self.assertIn('CurrentUserEmail()',f('Saved By')); self.assertEqual(f('Saved At'),'Now()')
 
-    def test_latest_status_is_row_with_max_submitted_at(self):
+    def test_latest_status_is_the_last_entered_approval(self):
+        # entry order, not Submitted At: migrated history keeps the source's own (possibly future) dates
         spec=self.spec(self.manifest)
         by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
         self.assertEqual(by_id['approvalStatus']['columns'][0]['formula'],
-            'Coalesce(Lookup([Approvals/Status], Max([Approvals/Submitted At]), [Approvals/Submitted At]), "Draft")')
+            'Coalesce(Lookup([Approvals/Status], Max([Approvals/Log Order]), [Approvals/Log Order]), "Draft")')
+        sub=by_id['btnSubmit']['actions'][0]['effects'][0]['values']
+        self.assertEqual(sub['ap_seq']['formula'],'Coalesce(Max([Approvals/Log Order]), 0) + 1')
 
     def test_manual_commit_program_final_mode_and_seed(self):
         spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
@@ -742,7 +749,8 @@ class TestDemoWorkflows(unittest.TestCase):
             out=Path(d)/'out';prog=Path(d)/'program.py'
             args=[str(plan),'--out-dir',str(out),'--workflows',str(wf),'--emit-manual-commit-program',str(prog)]
             gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
-            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate):
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate),\
+                    unittest.mock.patch.object(build.demo_workflows,'source_history',return_value=[]):
                 rc=build.main(args)
             self.assertEqual(rc,0)
             self.assertIn("set_edit_mode('published-all-users')",prog.read_text())
@@ -787,7 +795,8 @@ class TestDemoWorkflows(unittest.TestCase):
             wf=Path(d)/'workflows.json';wf.write_text(json.dumps(self.manifest))
             out=Path(d)/'out';prog=Path(d)/'program.py'
             gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
-            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate):
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate),\
+                    unittest.mock.patch.object(build.demo_workflows,'source_history',return_value=[]):
                 rc=build.main([str(planp),'--out-dir',str(out),'--workflows',str(wf),'--emit-manual-commit-program',str(prog)])
             self.assertEqual(rc,0)
             program=prog.read_text()
@@ -818,7 +827,8 @@ class TestDemoWorkflows(unittest.TestCase):
             planp=Path(d)/'plan.json';planp.write_text(json.dumps(plan))
             out=Path(d)/'out';prog=Path(d)/'program.py'
             gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
-            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate):
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate),\
+                    unittest.mock.patch.object(build.demo_workflows,'source_history',return_value=[]):
                 rc=build.main([str(planp),'--out-dir',str(out),'--emit-manual-commit-program',str(prog)])
             self.assertEqual(rc,0)
             calls=self.run_program(prog.read_text())

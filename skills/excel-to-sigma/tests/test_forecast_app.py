@@ -12,18 +12,21 @@ import re
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS / "lib"))
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import agent_enhance as ae  # noqa: E402
 import code_rep  # noqa: E402
 import demo_workflows as dw  # noqa: E402
 import forecast_app  # noqa: E402
 from forecast_plan import draft_plan  # noqa: E402
+import planning_app_eval as pe  # noqa: E402
 
 
 def load(name, path):
@@ -78,11 +81,11 @@ class ForecastAppTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def spec(self, workflows="default", plan_src="default"):
+    def spec(self, workflows="default", plan_src="default", history=None):
         wf = self.manifest if workflows == "default" else workflows
         ps = self.plan_src if plan_src == "default" else plan_src
         return self.build.build_wb_spec(copy.deepcopy(self.plan), "dm-1", self.els, landed=self.landed,
-                                        workflows=wf, plan_src=ps)
+                                        workflows=wf, plan_src=ps, history=history)
 
     @staticmethod
     def by_id(spec):
@@ -100,7 +103,7 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual(spec["pages"][-1].get("visibility"), "hidden")
         self.assertTrue(all(p.get("visibility") != "hidden" for p in spec["pages"][:-1]))
         owners = self.owners(spec)
-        for plumbing in ("parameters", "versions", "approvals", "approvalStatus", "pnlCombined", "reportFacts",
+        for plumbing in ("boundary", "parameters", "versions", "approvals", "approvalStatus", "pnlCombined", "reportFacts",
                          "summaryFacts", "metricWrap", "planLines", "forecast", "actuals", "spineWrap"):
             self.assertEqual(owners[plumbing], "model", plumbing)
         forecast_kinds = {e["kind"] for e in spec["pages"][0]["elements"]}
@@ -227,8 +230,7 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual(t["seriesLineAreaStyle"][0]["style"]["line"]["style"], "dashed")
 
     # ---------------------------------------------------------------- roll forward = month close
-    START_KEY = ('DatePart("year", Coalesce(Max([Parameters/Forecast Start Month]), MakeDate(2027, 7, 1))) * 12 '
-                 '+ DatePart("month", Coalesce(Max([Parameters/Forecast Start Month]), MakeDate(2027, 7, 1)))')
+    START_KEY = "Max([Forecast Boundary/Start Key])"
 
     def test_actual_forecast_split_follows_the_forecast_start_month(self):
         b = self.by_id(self.spec())
@@ -240,11 +242,14 @@ class ForecastAppTests(unittest.TestCase):
                                                     "mode": "include", "values": ["Actual"]}])
         fc = {c["name"]: c for c in b["forecast"]["columns"]}
         self.assertEqual(fc["Start Key"]["formula"], self.START_KEY)
-        self.assertEqual(fc["Window"]["formula"], 'If([Month Key] >= [Start Key], "Forecast", "Actual")')
+        self.assertEqual(fc["Landed"]["formula"], "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], "
+                                                  "[Month Key], [Actuals/Month Key])")
+        self.assertEqual(fc["Window"]["formula"], 'If([Month Key] >= [Start Key], "Forecast", IsNull([Landed]), '
+                                                  '"Awaiting actuals", "Actual")')
         self.assertEqual(b["forecast"]["filters"], [{"id": "f_wf", "columnId": fc["Window"]["id"], "kind": "list",
-                                                     "mode": "include", "values": ["Forecast"]}])
-        # the union's Period labels stay constants: each branch only carries its side of the boundary
-        self.assertEqual(fc["Period"]["formula"], '"Forecast"')
+                                                     "mode": "include", "values": ["Forecast", "Awaiting actuals"]}])
+        # a closed month whose actuals have not landed keeps its forecast, flagged in the Period column
+        self.assertEqual(fc["Period"]["formula"], 'If([Window] = "Awaiting actuals", "Awaiting actuals", "Forecast")')
         self.assertEqual(act["Period"]["formula"], '"Actual"')
 
     def test_forecast_reseeds_from_the_last_closed_month(self):
@@ -262,14 +267,26 @@ class ForecastAppTests(unittest.TestCase):
                                        '[Seed] * (1 + [Eff Rate]) ^ [N])')
 
     def test_every_surface_reads_the_one_boundary(self):
-        b = self.by_id(self.spec())
+        spec = self.spec()
+        b = self.by_id(spec)
+        # defined once: a one-row hidden element; nothing else reads Parameters.Forecast Start Month
+        bd = b["boundary"]
+        self.assertEqual((bd["name"], bd["source"]["kind"]), ("Forecast Boundary", "sql"))
+        cols = {c["name"]: c["formula"] for c in bd["columns"]}
+        self.assertEqual(cols["Start Month"], "Coalesce(Max([Parameters/Forecast Start Month]), MakeDate(2027, 7, 1))")
+        self.assertEqual(cols["Start Key"], 'DatePart("year", [Start Month]) * 12 + DatePart("month", [Start Month])')
+        text = json.dumps(spec)
+        self.assertEqual(text.count("[Parameters/Forecast Start Month]"), 1)
+        self.assertEqual(text.count("MakeDate(2027, 7, 1)"), 1)
+        self.assertNotIn("<= 18", text)
         phase = next(c for c in b["reportFacts"]["columns"] if c["name"] == "Phase")["formula"]
-        self.assertEqual(phase, 'If(DatePart("year", [Union of 2 Sources/Month End]) * 12 + DatePart("month", '
-                                f'[Union of 2 Sources/Month End]) < {self.START_KEY}, "Actual", "Forecast")')
-        spec_text = json.dumps(self.spec())
-        self.assertNotIn("<= 18", spec_text)
-        self.assertIn("Max([Parameters/Forecast Start Month])", b["hdrTitle"]["body"])
-        self.assertIn("Max([Parameters/Forecast Start Month])", b["kpiMonthsText"]["body"])
+        self.assertIn(f">= {self.START_KEY}", phase)
+        for el in ("hdrTitle", "kpiMonthsText"):
+            self.assertIn("Max([Forecast Boundary/", b[el]["body"], el)
+        roll = b["btnRoll"]["actions"][0]["effects"][0]["values"]["pa_start"]["formula"]
+        self.assertEqual(roll, 'DateAdd("month", 1, Max([Forecast Boundary/Start Month]))')
+        snap = b["btnSnapshot"]["actions"][0]["effects"][0]["values"]["ve_start"]["formula"]
+        self.assertEqual(snap, "Max([Forecast Boundary/Start Month])")
         # the P&L detail groups by the union's Period, which the boundary now decides
         self.assertEqual(b["pnlPivot"]["columnsBy"][0]["columnId"], "p_per")
 
@@ -302,7 +319,192 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual(fc["Eff Rate"], "[Forecast Spine/Default Rate]")
         self.assertEqual(fc["N"], 'If([Kind] = "yoy", [Forecast Spine/N], [Month Key] - [Base Key])')
         self.assertIn("[Seed] * (1 + [Eff Rate]) ^ [N]", fc["Amount"])
-        self.assertEqual(b["forecast"]["filters"][0]["values"], ["Forecast"])
+        self.assertEqual(b["forecast"]["filters"][0]["values"], ["Forecast", "Awaiting actuals"])
+
+    # ---------------------------------------------------------------- the boundary, evaluated
+    # The emitted data model + workbook run over local rows (tests/planning_app_eval.py): the landed
+    # actuals (plan rows, plus a simulated Jul-27 month-end load), the plan table, the seeded input tables.
+    JULY_UPLIFT = 1.0137
+
+    def july_landed(self):
+        """A simulated Jul-27 load: every line near its June actual (deterministic)."""
+        june = {}
+        for r in self.plan["actuals"]:
+            if r["month"] == "Jun-27":
+                june[r["line"]] = june.get(r["line"], 0.0) + float(r["amt"])
+        return {line: round(amount * self.JULY_UPLIFT, 2) for line, amount in june.items()}
+
+    def model(self, start, july=False, history=None):
+        raw = [{"POSTING_DATE": date.fromisoformat(r["date"]), "MONTH": r["month"], "LINE_ITEM": r["line"],
+                "REGION": "", "AMOUNT": float(r["amt"])} for r in self.plan["actuals"]]
+        if july:
+            raw += [{"POSTING_DATE": date(2027, 7, 1), "MONTH": "Jul-27", "LINE_ITEM": line, "REGION": "",
+                     "AMOUNT": amount} for line, amount in self.july_landed().items()]
+        with open(self.landing["tables"][1]["csv"], newline="") as f:
+            plan_rows = [{**r, "PLAN_AMOUNT": float(r["PLAN_AMOUNT"])} for r in csv.DictReader(f)]
+        rate, manual = self.build.seed_rows(self.plan)
+        inputs = {"rateInput": [dict(zip(self.build.RATE_SEED_COLUMNS, r)) for r in rate],
+                  "manualInput": [dict(zip(self.build.MANUAL_SEED_COLUMNS, r)) for r in manual],
+                  "parameters": [] if start is None else [{"pa_start": start}]}
+        for element, cols, rows in history or []:
+            inputs[element] = [dict(zip(cols, r)) for r in rows]
+        dm = self.build.build_dm_spec(self.plan, self.landed, self.plan_src, app=True)
+        return pe.Model(self.spec(history=history), dm,
+                        warehouse={"FPA_X_ACTUALS": raw, "FPA_X_PLAN": plan_rows},
+                        inputs=inputs, controls={"Scenario": "Base"})
+
+    @staticmethod
+    def first_money(model, body):
+        """The first ``$x.xM`` figure of a KPI card body, evaluated (the card's own emitted formula)."""
+        expr = re.search(r"\{\{\((.*?)\) / 1000000 \|", body).group(1)
+        return model.scalar(expr)
+
+    def kpis(self, model):
+        b = self.by_id(self.spec())
+        return {"Revenue": self.first_money(model, b["kpiRevenueText"]["body"]),
+                "Gross Margin": self.first_money(model, b["kpiMarginText"]["body"]),
+                "EBITDA": self.first_money(model, b["kpiProfitText"]["body"])}
+
+    @staticmethod
+    def by_line_month(model, month_num):
+        return {r["Line Item"]: r for r in model.rows("pnlCombined") if r["Month Num"] == month_num}
+
+    @staticmethod
+    def render(model, body):
+        """A text element's body with each ``{{expr}}`` evaluated and the span markup dropped."""
+        def value(m):
+            v = model.scalar(m.group(1).split(" | ")[0])
+            return "" if v is None else str(v)
+        return re.sub(r"<[^>]+>", "", re.sub(r"\{\{(.*?)\}\}", value, body))
+
+    def assert_ties_to_the_source(self, model):
+        for name, value in self.kpis(model).items():
+            self.assertAlmostEqual(value, self.plan["parityTargets"][name], places=2, msg=name)
+
+    def test_before_roll_forward_fy_ties_to_the_source_even_with_july_landed(self):
+        m = self.model(date(2027, 7, 1), july=True)
+        self.assert_ties_to_the_source(m)
+        july = self.by_line_month(m, 19)
+        self.assertEqual({r["Period"] for r in july.values()}, {"Forecast"})    # the landed rows are ignored
+        b = self.by_id(self.spec())
+        self.assertIn("actuals through Jun-27 · live", self.render(m, b["hdrTitle"]["body"]))
+        self.assertIn("6 of 12", self.render(m, b["kpiMonthsText"]["body"]))
+        # Roll forward advances the one boundary by a month
+        roll = b["btnRoll"]["actions"][0]["effects"][0]["values"]["pa_start"]["formula"]
+        self.assertEqual(m.scalar(roll), date(2027, 8, 1))
+
+    def test_unseeded_parameters_fall_back_to_the_source_boundary(self):
+        self.assert_ties_to_the_source(self.model(None))
+
+    def test_after_roll_forward_july_reads_the_landed_actuals(self):
+        pre = self.model(date(2027, 7, 1), july=True)
+        m = self.model(date(2027, 8, 1), july=True)
+        landed = self.july_landed()
+        july = self.by_line_month(m, 19)
+        self.assertEqual(set(july), set(landed))
+        for line, row in july.items():
+            self.assertEqual(row["Period"], "Actual", line)
+            self.assertAlmostEqual(row["Amount"], landed[line], places=2, msg=line)
+        aug, aug_pre = self.by_line_month(m, 20), self.by_line_month(pre, 20)
+        lines = {ln["line"]: ln for ln in self.plan["lines"]}
+        kinds = set()
+        for line, row in aug.items():
+            ln = lines[line]
+            kinds.add(ln["kind"])
+            if ln["kind"] == "growth":     # re-seeded off the July actual
+                self.assertAlmostEqual(row["Amount"], landed[line] * (1 + ln["rate"]), places=2, msg=line)
+            elif ln["kind"] == "flat":
+                self.assertAlmostEqual(row["Amount"], landed[line], places=2, msg=line)
+            elif ln["kind"] == "manual":   # typed values stay
+                self.assertAlmostEqual(row["Amount"], aug_pre[line]["Amount"], places=2, msg=line)
+        self.assertEqual(kinds, {"growth", "flat", "manual"})
+        phase = {r["Month Num"]: r["Phase"] for r in m.rows("reportFacts")}
+        self.assertEqual((phase[18], phase[19], phase[20]), ("Actual", "Actual", "Forecast"))
+        b = self.by_id(self.spec())
+        self.assertIn("actuals through Jul-27 · live", self.render(m, b["hdrTitle"]["body"]))
+        self.assertIn("5 of 12", self.render(m, b["kpiMonthsText"]["body"]))
+        # the July load (1.37% over June, not the forecast's growth) moves the FY off the source's figure
+        self.assertGreater(abs(self.kpis(m)["Revenue"] - self.plan["parityTargets"]["Revenue"]), 1000)
+
+    def test_rolled_month_without_landed_actuals_keeps_its_forecast_flagged(self):
+        pre = self.model(date(2027, 7, 1))
+        m = self.model(date(2027, 8, 1))           # rolled, but no Jul-27 load yet
+        july, july_pre = self.by_line_month(m, 19), self.by_line_month(pre, 19)
+        self.assertEqual(len(july), len(self.plan["lines"]))
+        self.assertEqual(set(july), set(july_pre))   # never dropped
+        for line, row in july.items():
+            self.assertEqual(row["Period"], "Awaiting actuals", line)
+            self.assertAlmostEqual(row["Amount"], july_pre[line]["Amount"], places=2, msg=line)
+        for month in range(20, 25):                 # the rest re-forecast from the frozen July value: unchanged
+            later, later_pre = self.by_line_month(m, month), self.by_line_month(pre, month)
+            for line, row in later.items():
+                self.assertAlmostEqual(row["Amount"], later_pre[line]["Amount"], places=2, msg=(month, line))
+        self.assert_ties_to_the_source(m)
+        phase = {r["Month Num"]: r["Phase"] for r in m.rows("reportFacts")}
+        self.assertEqual((phase[18], phase[19]), ("Actual", "Forecast"))
+        title = self.render(m, self.by_id(self.spec())["hdrTitle"]["body"])
+        self.assertIn("actuals through Jun-27 · Jul-27 awaiting actuals · live on Snowflake", title)
+
+    # ---------------------------------------------------------------- migrated history
+    def test_source_logs_seed_versions_and_approvals(self):
+        history = dw.source_history(self.plan["sourcePath"])
+        seeds = {el: (cols, rows) for el, cols, rows in history}
+        self.assertEqual(set(seeds), {"versions", "approvals"})
+        vcols, vrows = seeds["versions"]
+        self.assertEqual(vcols, ["ve_ver", "ve_scn", "ve_by", "ve_at", "ve_note", "ve_seq"])
+        self.assertEqual(len(vrows), 7)
+        self.assertEqual([r[0] for r in vrows], [f"v{i}" for i in range(1, 8)])
+        self.assertEqual([r[-1] for r in vrows], list(range(1, 8)))
+        self.assertRegex(vrows[0][3], r"^\d{4}-\d{2}-\d{2}$")
+        acols, arows = seeds["approvals"]
+        self.assertEqual(acols, ["ap_req", "ap_by", "ap_to", "ap_status", "ap_at", "ap_note", "ap_seq"])
+        self.assertEqual(len(arows), 3)
+        # the views and the status pill follow the entry order, not the source's (future) dates
+        spec = self.spec(history=history)
+        b = self.by_id(spec)
+        for view in ("versionsView", "approvalsView"):
+            order = next(c for c in b[view]["columns"] if c["name"] == "Log Order")
+            self.assertIs(order.get("hidden"), True)
+            self.assertEqual(b[view]["sort"], [{"columnId": order["id"], "direction": "descending"}])
+            self.assertIn("Comment", [c["name"] for c in b[view]["columns"]])
+        self.assertIn("migrated from the source workbook", b["logHead"]["body"])
+        self.assertNotIn("start empty", b["logHead"]["body"])
+        m = self.model(date(2027, 7, 1), history=history)
+        self.assertEqual(m.rows("approvalStatus")[0]["Latest approval status"], arows[-1][3])
+        # the next snapshot / request continue the numbering
+        snap = b["btnSnapshot"]["actions"][0]["effects"][0]["values"]
+        self.assertEqual(m.scalar(snap["ve_ver"]["formula"]), "v8")
+        self.assertEqual(m.scalar(snap["ve_seq"]["formula"]), 8)
+        sub = b["btnSubmit"]["actions"][0]["effects"][0]["values"]
+        self.assertEqual(m.scalar(sub["ap_seq"]["formula"]), 4)
+        # the setup program seeds them, last
+        wired = self.build.workbook_wire.wire_workbook(spec)
+        program = dw.emit_manual_commit_program(wired, {"start": "2027-07-01"}, history)
+        self.assertIn("# Seed versions: 7 row(s)", program)
+        self.assertIn("# Seed approvals: 3 row(s)", program)
+        self.assertIn("c_ve_seq: 7}", program)
+        self.assertIn("c_ve_seq = t.get_column('ve_seq')", program)
+        self.assertNotIn("c_ve_rev", program)              # the source never froze the figures
+        compile(program, "program", "exec")
+
+    def test_cli_seeds_the_source_history_in_the_setup_program(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path, landing_path, wf_path = self._cli_files(tmp)
+            program_path = Path(tmp) / "setup.py"
+            argv = [str(plan_path), "--actuals-table", "CSA.TJ.FPA_X_ACTUALS", "--landing", str(landing_path),
+                    "--workflows", str(wf_path), "--emit-manual-commit-program", str(program_path),
+                    "--out-dir", str(Path(tmp) / "out")]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.build.main(argv), 0)
+            program = program_path.read_text()
+            wb = json.loads((Path(tmp) / "out" / "wb_spec.json").read_text())
+        self.assertIn("HISTORY: versions 7 rows, approvals 3 rows", out.getvalue())
+        self.assertIn("versions 7 rows, approvals 3 rows", out.getvalue().split("SETUP PROGRAM")[1])
+        self.assertIn("get_element('versions')", program[program.index("# Seed versions"):])
+        self.assertIn("migrated from the source workbook", json.dumps(wb))
 
     def test_detail_page_shows_the_fy_in_thousands(self):
         b = self.by_id(self.spec())
