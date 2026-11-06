@@ -1123,16 +1123,18 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
         raise PlanError("the planning-app layout needs dated periods (month grain)")
     company, title = _app_titles(P)
     # Display-ready copies of the builder's own detail elements.
-    # The monthly P&L shows the FY's months (actual | forecast) in $000s so every column is readable.
+    # The monthly P&L shows the FY's months (actual | forecast) in $000s so every column is readable; the
+    # cells carry the K, so the title does not repeat the unit.
     fy_first = by_num[fy_nums[0]] if fy_nums else periods[0]
     fy_start = (fy_first.get("end") or "")[:8] + "01"
     thousands = {"kind": "number", "formatString": ",.0f", "prefix": "$", "suffix": "K"}
-    pivot = {**pivot, "name": f"Monthly P&L — {fy_label} ($000s)", "tableStyle": {"preset": "presentation"},
+    pivot = {**pivot, "name": f"Monthly P&L — {fy_label}", "tableStyle": {"preset": "presentation"},
              "columns": [{**c, "formula": c["formula"] + " / 1000", "format": thousands} if c["id"] == "p_amt" else c
                          for c in pivot["columns"]],
              "filters": [{"id": "p_fy", "columnId": "p_m", "kind": "date-range", "mode": "between",
                           "startDate": fy_start, "endDate": end}]}
-    gl = {**gl, "name": f"GL actuals ({len(P.get('actuals', [])):,} transactions)",
+    # no row count in the title: a month close lands more rows than the source had
+    gl = {**gl, "name": "GL actuals",
           "tableComponents": {"summaryBar": "hidden"}, "tableStyle": {"preset": "presentation"},
           # a dimension the landed table does not carry (an empty Department / Vendor) is not shown
           "columns": [{**c, "name": forecast_app.sentence(c["name"])} for c in gl["columns"]

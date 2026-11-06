@@ -55,7 +55,8 @@ MILLIONS = {"kind": "number", "formatString": ",.1f", "prefix": "$", "suffix": "
 PCT1 = {"kind": "number", "formatString": ".1%"}
 SIGNED_PCT = {"kind": "number", "formatString": "+.1%"}
 MONTH_FMT = {"kind": "datetime", "formatString": "%b-%y"}
-STAMP_FMT = {"kind": "datetime", "formatString": "%b %d, %Y %I:%M %p"}
+STAMP_FMT = {"kind": "datetime", "formatString": "%b %-d, %Y"}   # migrated log rows carry a date only
+NULL_DASH = "\u2014"                    # a log figure the source never froze reads as a dash, not "null"
 
 
 def sentence(label):
@@ -416,13 +417,18 @@ def build(ctx):
     # ---------------------------------------------------------------- P&L detail page
     detail_els = [ctx["pivot"], ctx["gl"]]
     # ---------------------------------------------------------------- Versions & approvals page
-    fmt = {"Forecast Start Month": MONTH_FMT, "FY Revenue": CUR_SI, "FY Gross Margin": CUR_SI, "FY EBITDA": CUR_SI,
+    figure = {**CUR_SI, "displayNullAs": NULL_DASH}
+    fmt = {"FY Revenue": figure, "FY Gross Margin": figure, "FY EBITDA": figure,
            "Saved At": STAMP_FMT, "Submitted At": STAMP_FMT}
+    # a migrated row has no forecast start / comment: show a dash / nothing, never the word "null"
+    shown = {"Forecast Start Month": lambda ref: f'Coalesce(DateFormat({ref}, "%b-%y"), "{NULL_DASH}")',
+             "Comment": lambda ref: f'Coalesce({ref}, "")'}
     # newest first by entry order (dw.LOG_ORDER): migrated history keeps the source's dates
     label = {"Forecast Start Month": "Forecast start", "FY Revenue": f"{fy} revenue",
              "FY Gross Margin": "Gross margin", "FY EBITDA": "EBITDA"}
     def log_view(view_id, table, names, title):
-        cols = [{"id": f"{view_id}_{i}", "name": label.get(n, sentence(n)), "formula": f"[{table['name']}/{n}]",
+        cols = [{"id": f"{view_id}_{i}", "name": label.get(n, sentence(n)),
+                 "formula": shown.get(n, lambda ref: ref)(f"[{table['name']}/{n}]"),
                  **({"format": fmt[n]} if n in fmt else {})}
                 for i, n in enumerate(names) if any(c["name"] == n for c in table["columns"])]
         cols.append({"id": f"{view_id}_order", "name": dw.LOG_ORDER, "formula": f"[{table['name']}/{dw.LOG_ORDER}]",
@@ -514,8 +520,9 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons):
     lines.append(_container("asmImpactCard", at, 25, 5, 19, [("asmImpact", 1, 25, 1, 14)]))
     page("pgAssumptions", lines)
     page("pgDetail", [_el("pnlPivot", 1, 25, 1, 41), _el("glTable", 1, 25, 41, 63)])
-    page("pgVersions", [_el("logHead", 1, 25, 1, 5), _el("versionsView", 1, 25, 5, 19),
-                        _el("approvalsView", 1, 25, 19, 31)])
+    # tall enough for the migrated history plus a few new rows without an inner scroll
+    page("pgVersions", [_el("logHead", 1, 25, 1, 5), _el("versionsView", 1, 25, 5, 29),
+                        _el("approvalsView", 1, 25, 29, 43)])
     hidden = next(p for p in pages if p["id"] == "model")
     page("model", [_el(e["id"], 1, 25, 1 + i * 12, 13 + i * 12) for i, e in enumerate(hidden["elements"])])
     return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)

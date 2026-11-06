@@ -512,6 +512,36 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual(pivot["filters"][0]["startDate"], "2027-01-01")
         self.assertTrue(next(c for c in pivot["columns"] if c["id"] == "p_amt")["formula"].endswith("/ 1000"))
         self.assertNotIn("Txn Date", [c["name"] for c in b["glTable"]["columns"]])
+        # the cells carry the K, so the title does not repeat the unit; the GL title carries no row count
+        # (a month close lands more rows than the source had, so a frozen count goes stale)
+        self.assertEqual(pivot["name"], "Monthly P&L — FY27")
+        self.assertEqual(b["glTable"]["name"], "GL actuals")
+
+    def test_log_views_show_blanks_not_null(self):
+        history = dw.source_history(self.plan["sourcePath"])
+        b = self.by_id(self.spec(history=history))
+        versions = {c["name"]: c for c in b["versionsView"]["columns"]}
+        # figures the source never froze read as a dash, not the word "null"
+        for name in ("FY27 revenue", "Gross margin", "EBITDA"):
+            self.assertEqual(versions[name]["format"].get("displayNullAs"), "—", name)
+            self.assertEqual(versions[name]["format"]["kind"], "number", name)
+        start = versions["Forecast start"]
+        self.assertEqual(start["formula"], 'Coalesce(DateFormat([Versions/Forecast Start Month], "%b-%y"), "—")')
+        self.assertNotIn("format", start)
+        for view in ("versionsView", "approvalsView"):
+            cols = {c["name"]: c for c in b[view]["columns"]}
+            self.assertTrue(cols["Comment"]["formula"].startswith("Coalesce("), view)
+            self.assertTrue(cols["Comment"]["formula"].endswith(', "")'), view)
+            stamp = cols["Saved at" if view == "versionsView" else "Submitted at"]["format"]["formatString"]
+            self.assertNotIn("%I", stamp)                  # migrated rows carry a date, not a midnight time
+            self.assertNotIn("%H", stamp)
+        # every migrated row and the next few snapshots fit without an inner scroll
+        layout = self.build.workbook_wire.wire_workbook(self.spec(history=history))["contents"]["layout"]
+        def rows(element_id):
+            m = re.search(r'elementId="%s"[^>]*gridRow="(\d+) / (\d+)"' % element_id, layout)
+            return int(m.group(2)) - int(m.group(1))
+        self.assertGreaterEqual(rows("versionsView"), 24)
+        self.assertGreaterEqual(rows("approvalsView"), 13)
 
     def test_plain_forecast_path_unchanged(self):
         plain = self.build.build_wb_spec(copy.deepcopy(self.plan), "dm-1", self.els, landed=self.landed)
