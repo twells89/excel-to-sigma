@@ -83,6 +83,10 @@ def signed(expr, unit, suffix, scale=100):
     return span(up, GOOD) + span(down, BAD) + span(f" {esc(suffix)}", MUTED)
 
 
+def month_key(date_expr):
+    return f'DatePart("year", {date_expr}) * 12 + DatePart("month", {date_expr})'
+
+
 def month_label(expr):
     return f'DateFormat({expr}, "%b-%y")'
 
@@ -189,6 +193,10 @@ def build(ctx):
     region_src = union_name if len(sources) > 1 else COMBINED
     report_facts["columns"].append({"id": "rf_region", "name": "Region",
                                     "formula": region_formula.replace("Union of 2 Sources", region_src)})
+    # Actual / Forecast by month against the one boundary (Parameters.Forecast Start Month), plan rows
+    # included, so a chart coloured by it gives every month one colour that moves at Roll forward.
+    report_facts["columns"].append({"id": "rf_phase", "name": "Phase", "formula": (
+        f'If({month_key(f"[{region_src}/Month End]")} < {ctx["start_key"]}, "Actual", "Forecast")')})
     metric_wrap = {"id": "metricWrap", "kind": "table", "name": METRICS, "source": ctx["dm"]("metricMap"),
                    "columns": [{"id": "mm_m", "name": "Metric", "formula": "[Custom SQL/Metric]"},
                                {"id": "mm_o", "name": "Metric Order", "formula": "[Custom SQL/Metric Order]"},
@@ -266,12 +274,11 @@ def build(ctx):
     # ---------------------------------------------------------------- C. trend + agent panel
     # One bar series (actual + forecast months) coloured by a per-month Actual / Forecast category, and the
     # plan as a dashed line layer (a combo chart colours only its bar layers by the category).
-    last_actual = ctx["last_actual_num"]
     rev_cond = f'[{FACTS}/Section] = "{ctx["first_positive"]}"'
     columns = [{"id": "tr_m", "name": "Month", "formula": f'DateTrunc("month", [{FACTS}/Month End])',
                 "format": MONTH_FMT},
                {"id": "tr_cat", "name": "Period",
-                "formula": f'If([{FACTS}/Month Num] <= {last_actual}, "Actual", "Forecast")'},
+                "formula": f"[{FACTS}/Phase]"},
                {"id": "tr_rev", "name": sentence(ctx["first_positive"]),
                 "formula": f'Sum(If({rev_cond} and [{FACTS}/Period] != "Plan", [{FACTS}/Amount], Null))',
                 "format": CUR_SI}]

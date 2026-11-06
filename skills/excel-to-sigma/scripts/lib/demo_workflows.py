@@ -69,8 +69,10 @@ DISPOSITIONS = {
         "Cell formatting is carried by workbook styling and number formats, not an action."),
 }
 NOTES = {
-    "roll-forward": "Advances Parameters.Forecast Start Month by one month (update-rows, DateAdd). "
-                    "Replaces the VBA that copied the first forecast month into the Actuals table.",
+    "roll-forward": "Advances Parameters.Forecast Start Month by one month (update-rows, DateAdd): a month "
+                    "close. The actual / forecast split follows it, so the closed month reads the landed "
+                    "actuals and the remaining months re-forecast from it. Replaces the VBA that copied the "
+                    "first forecast month into the Actuals table.",
     "snapshot-version": "Appends ONE Versions row freezing the headline numbers at click time (version label, "
                         "scenario, forecast start month, FY revenue / gross margin / EBITDA taken from the same "
                         "formulas the KPI tiles use, user, time). The VBA pasted the whole forecast grid as "

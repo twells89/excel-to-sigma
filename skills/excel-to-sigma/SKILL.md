@@ -639,6 +639,19 @@ summary joins — sits on the hidden `Model (sources)` page.
   formula handle, so the switch drives the forecast directly. Edited growth rates stay the base
   the spread applies to. Snapshot records the switch's value; the agent's set-scenario tool
   sets the control.
+- **Roll forward = a month just closed.** The actual / forecast split follows
+  `Parameters.Forecast Start Month` (the source's first forecast month until the setup program
+  seeds the row), not the static spine. The Actuals wrap keeps landed rows before it; the
+  forecast keeps spine rows from it on, and each growth / flat line re-seeds off the line's
+  landed actual in the month before the boundary (`Lookup(Sum([Actuals/Amount]), [Line Item],
+  ..., [Base Key], [Actuals/Month Key])`, N counted from there; its frozen forecast value while
+  that month's actuals have not landed). Manual lines keep their typed values; year-over-year
+  lines keep the source seeding. The trend colouring (`Forecast Facts/Phase`), KPIs, months-left
+  card, header subtitle and the P&L detail's Actual | Forecast groups all read that one boundary.
+  Before roll forward the FY figures tie to the source exactly (actual rows landed for a month the
+  source still forecasts are ignored). Roll forward after the month's actuals have landed in the
+  actuals table (the landed `Month Num` maps every period, so they keep their number).
+  A plain run (no `--workflows`) keeps the static split.
 - **Plan figures.** When a `--workflows` run's `--landing` includes the plan table (`tblPlan`:
   Month, Line Item, Region, Plan Amount), it joins the data model as `Plan Detail` (a warehouse table, with the
   forecast's sections and month numbers attached by `Switch`); every month and line must be a

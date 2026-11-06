@@ -365,14 +365,16 @@ def _switch(key, mapping, default):
     return f"Switch({key}, {body}, {default})"
 
 
-def landed_gl_detail(P, landed):
+def landed_gl_detail(P, landed, all_periods=False):
     """glDetail as a warehouse-table source on the plan's connection (no inline VALUES).
 
     Landed columns pass through; Month Num / Month End / Section / Section Order / Line Order,
     which the landed table does not carry, are Switch / date formulas built from the plan.
+    With ``all_periods`` (the planning app, where Roll forward closes a month) Month Num maps every
+    period, so actuals landed for a month the source still forecast keep their period number.
     """
     periods, n_act, _ = plan_model(P)
-    views = calc.month_views(periods)[:n_act]
+    views = calc.month_views(periods) if all_periods else calc.month_views(periods)[:n_act]
     t = landed["path"][-1]; c = landed["columns"]
     ref = lambda out: f"[{t}/{c[out]}]"
     lab = lambda out: landed.get("labels", {}).get(out, out)  # user-visible name = source header
@@ -414,7 +416,7 @@ def build_dm_spec(P, landed=None, plan_src=None, app=False):
     for row, r in zip(gl, P["actuals"]):
         row.insert(2, str(mnum[r['month']])); row.insert(3, sql_date(mend[r['month']]))
     gl_cols[2:2] = ["MONTH_NUM", "MONTH_END"]
-    glDetail = landed_gl_detail(P, landed) if landed else {"id": "glDetail", "kind": "table", "source": {"kind": "sql", "connectionId": conn, "statement": values_sql(gl, gl_cols)},
+    glDetail = landed_gl_detail(P, landed, all_periods=app) if landed else {"id": "glDetail", "kind": "table", "source": {"kind": "sql", "connectionId": conn, "statement": values_sql(gl, gl_cols)},
                 "columns": dmcols([("TXN_DATE","Txn Date"),("MONTH","Month"),("MONTH_NUM","Month Num"),("MONTH_END","Month End"),("LINE_ITEM","Line Item"),("SECTION","Section"),("SEC_ORDER","Section Order"),("LINE_ORDER","Line Order"),("DEPARTMENT","Department"),("VENDOR","Vendor"),("AMOUNT","Amount")])}
     # assumptions
     arows = [[q(a), f"{b}", q(c)] for a, b, c in P["assumptions"]]
@@ -428,6 +430,8 @@ def build_dm_spec(P, landed=None, plan_src=None, app=False):
     for ln in P["lines"]:
         for i, m in enumerate(forecast_views):
             kind, rate, manual, base, n = terms[ln["line"]][i]
+            if app and ln["kind"] == "yoy":
+                kind = "yoy"   # the planning app re-seeds growth lines at Roll forward, not year-over-year ones
             row = [q(ln["line"]), q(ln["section"]), str(ln["secOrder"]), str(ln["lineOrder"]),
                    q(m["month"]), str(m["num"]), sql_date(m["end"]), str(n), q(kind),
                    f"{rate}" if rate is not None else "NULL",
@@ -717,6 +721,72 @@ def cost_lines(P):
             if coeffs and all(sign.get(sec, 1) < 0 and w > 0 for sec, w in coeffs.items())]
 
 
+def month_key(date_expr):
+    """Integer month index (year * 12 + month) of a date formula: the boundary's comparison key."""
+    return f'DatePart("year", {date_expr}) * 12 + DatePart("month", {date_expr})'
+
+
+def forecast_boundary(P):
+    """The planning app's actual / forecast boundary: Parameters.Forecast Start Month (the source's first
+    forecast month until the Parameters row is seeded). ``{"start_key", "last_key"}``: the boundary's month
+    key formula and the source's last actual month key (where the plan's June Base sits)."""
+    periods, n_act, _ = plan_model(P)
+    if periods[0]["grain"] != "month" or not periods[n_act].get("end") or not periods[n_act - 1].get("end"):
+        raise PlanError("the planning-app layout needs dated periods (month grain)")
+    first, last = periods[n_act]["end"], periods[n_act - 1]["end"]
+    start = (f"Coalesce(Max([{demo_workflows.TABLES[demo_workflows.PARAMETERS][0]}/Forecast Start Month]), "
+             f"MakeDate({int(first[:4])}, {int(first[5:7])}, 1))")
+    return {"start_key": month_key(start), "last_key": int(last[:4]) * 12 + int(last[5:7])}
+
+
+def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
+    """Roll forward = a month just closed: months before Parameters.Forecast Start Month read the landed
+    actuals, months from it on are the driver forecast re-seeded off the last closed month.
+
+    ``actuals`` keeps only rows before the boundary and gains the ``Month Key`` the forecast looks up;
+    ``stage1`` (the forecast's first element, columns read through ``prefix``) keeps only rows from the
+    boundary on: a growth / flat line seeds from the line's actual in the month before the boundary
+    (its frozen forecast value while that month's actuals have not landed), with N counted from there;
+    manual lines keep their typed values and year-over-year lines their source seeding.
+    ``read_only_cols`` adds the Kind / June Base / Eff Rate / Eff Manual columns a read-only forecast
+    does not carry. Both elements keep their constant Period label (each holds one side of the split).
+    """
+    S = bnd["start_key"]
+    actuals["columns"] += [
+        {"id": "a_mk", "name": "Month Key", "formula": month_key(f"[{actuals_prefix(actuals)}/Month End]")},
+        {"id": "a_win", "name": "Window", "formula": f'If([Month Key] < {S}, "Actual", "Forecast")'}]
+    actuals["filters"] = [{"id": "a_wf", "columnId": "a_win", "kind": "list", "mode": "include", "values": ["Actual"]}]
+    cols = stage1["columns"]
+    names = {c["name"] for c in cols}
+    at = next(i for i, c in enumerate(cols) if c["name"] == "Amount")
+    extra = [c for c in (read_only_cols or []) if c["name"] not in names]
+    extra += [] if "N" in names else [{"id": "f_n", "name": "N", "formula": f"[{prefix}/N]"}]
+    extra += [
+        {"id": "f_mk", "name": "Month Key", "formula": month_key(f"[{prefix}/Month End]")},
+        {"id": "f_sk", "name": "Start Key", "formula": S},
+        {"id": "f_bk", "name": "Base Key", "formula": "[Start Key] - 1"},
+        {"id": "f_win", "name": "Window", "formula": 'If([Month Key] >= [Start Key], "Forecast", "Actual")'},
+        {"id": "f_la", "name": "Last Actual",
+         "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Base Key], [Actuals/Month Key])"},
+        {"id": "f_seed", "name": "Seed",
+         "formula": ('Coalesce([Last Actual], If([Kind] = "flat", [June Base], '
+                     f'[June Base] * (1 + [Eff Rate]) ^ ([Base Key] - {bnd["last_key"]})))')}]
+    cols[at:at] = extra
+    for c in cols:
+        if c["name"] == "N":
+            c["formula"] = f'If([Kind] = "yoy", [{prefix}/N], [Month Key] - [Base Key])'
+        if c["name"] == "Amount":
+            c["formula"] = ('If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [Seed], '
+                            + ('[Kind] = "pct", 0, ' if has_pct else "")
+                            + '[Kind] = "yoy", [June Base] * (1 + [Eff Rate]) ^ [N], [Seed] * (1 + [Eff Rate]) ^ [N])')
+    stage1["filters"] = [{"id": "f_wf", "columnId": "f_win", "kind": "list", "mode": "include", "values": ["Forecast"]}]
+
+
+def actuals_prefix(actuals):
+    """The source prefix the actuals wrap reads its columns through (``GL Detail`` / ``Custom SQL``)."""
+    return actuals["columns"][0]["formula"][1:].split("/", 1)[0]
+
+
 def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None, plan_src=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     GLP = "GL Detail" if landed else DMP  # a DM table element is referenced by its name
@@ -807,6 +877,14 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
                    {"id":"f_er","name":"Eff Rate","formula":"[Forecast Spine/Default Rate]"}] if has_pct else []),
                 {"id":"f_amt","name":"Amount","formula":'If([Forecast Spine/Kind] = "manual", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = "flat", [Forecast Spine/June Base], ' + ('[Forecast Spine/Kind] = "pct", 0, ' if has_pct else "") + '[Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])',"format":cur},
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
+    if workflows is not None and approved_inputs is None:
+        # The planning app: Roll forward moves the actual / forecast split (Parameters.Forecast Start Month).
+        ro = None if editable else [
+            {"id": "f_k", "name": "Kind", "formula": "[Forecast Spine/Kind]"},
+            {"id": "f_jb", "name": "June Base", "formula": "[Forecast Spine/June Base]"},
+            {"id": "f_er", "name": "Eff Rate", "formula": "[Forecast Spine/Default Rate]"},
+            {"id": "f_em", "name": "Eff Manual", "formula": "[Forecast Spine/Manual Value]"}]
+        apply_boundary(actuals, forecast, "FJ" if editable else "Forecast Spine", forecast_boundary(P), has_pct, ro)
     forecast_stages = [forecast]
     if has_pct:
         # Second pass without a join: a join to a grouped table also matches that table's
@@ -1054,7 +1132,7 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
            "hidden": hidden, "pivot": pivot, "gl": gl, "assump": assump, "rate": rate, "manual": manual,
            "dm": dm, "plan": plan_src, "region_of": (plan_src or {}).get("regions") or {},
            "scenario": ({"names": P["scenarios"]["names"], "default": P["scenarios"]["default"]} if spreads else None),
-           "title": title, "company": company, "last_actual_num": periods[n_act - 1]["num"],
+           "title": title, "company": company, "start_key": forecast_boundary(P)["start_key"],
            "cost_lines": cost_lines(P)}
     app = forecast_app.build(ctx)
     return {"name": P["name"], "schemaVersion": 1, "kind": "workbook", "folderId": P["folderId"],

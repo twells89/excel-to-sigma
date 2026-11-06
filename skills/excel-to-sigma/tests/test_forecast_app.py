@@ -223,8 +223,86 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual(t["yAxis"]["columnIds"], [{"columnId": "tr_rev", "type": "bar"},
                                                    {"columnId": "tr_plan", "type": "line"}])
         self.assertEqual(t["color"]["column"], "tr_cat")
-        self.assertIn("<= 18", next(c for c in t["columns"] if c["id"] == "tr_cat")["formula"])
+        self.assertEqual(next(c for c in t["columns"] if c["id"] == "tr_cat")["formula"], "[Forecast Facts/Phase]")
         self.assertEqual(t["seriesLineAreaStyle"][0]["style"]["line"]["style"], "dashed")
+
+    # ---------------------------------------------------------------- roll forward = month close
+    START_KEY = ('DatePart("year", Coalesce(Max([Parameters/Forecast Start Month]), MakeDate(2027, 7, 1))) * 12 '
+                 '+ DatePart("month", Coalesce(Max([Parameters/Forecast Start Month]), MakeDate(2027, 7, 1)))')
+
+    def test_actual_forecast_split_follows_the_forecast_start_month(self):
+        b = self.by_id(self.spec())
+        act = {c["name"]: c for c in b["actuals"]["columns"]}
+        self.assertEqual(act["Month Key"]["formula"],
+                         'DatePart("year", [GL Detail/Month End]) * 12 + DatePart("month", [GL Detail/Month End])')
+        self.assertEqual(act["Window"]["formula"], f'If([Month Key] < {self.START_KEY}, "Actual", "Forecast")')
+        self.assertEqual(b["actuals"]["filters"], [{"id": "a_wf", "columnId": act["Window"]["id"], "kind": "list",
+                                                    "mode": "include", "values": ["Actual"]}])
+        fc = {c["name"]: c for c in b["forecast"]["columns"]}
+        self.assertEqual(fc["Start Key"]["formula"], self.START_KEY)
+        self.assertEqual(fc["Window"]["formula"], 'If([Month Key] >= [Start Key], "Forecast", "Actual")')
+        self.assertEqual(b["forecast"]["filters"], [{"id": "f_wf", "columnId": fc["Window"]["id"], "kind": "list",
+                                                     "mode": "include", "values": ["Forecast"]}])
+        # the union's Period labels stay constants: each branch only carries its side of the boundary
+        self.assertEqual(fc["Period"]["formula"], '"Forecast"')
+        self.assertEqual(act["Period"]["formula"], '"Actual"')
+
+    def test_forecast_reseeds_from_the_last_closed_month(self):
+        fc = {c["name"]: c["formula"] for c in self.by_id(self.spec())["forecast"]["columns"]}
+        self.assertEqual(fc["Base Key"], "[Start Key] - 1")
+        self.assertEqual(fc["Last Actual"], "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], "
+                                            "[Base Key], [Actuals/Month Key])")
+        last_key = 2027 * 12 + 6   # Jun-27, the source's last actual month
+        # a closed month whose actuals have not landed seeds from its own frozen forecast value
+        self.assertEqual(fc["Seed"], f'Coalesce([Last Actual], If([Kind] = "flat", [June Base], '
+                                     f'[June Base] * (1 + [Eff Rate]) ^ ([Base Key] - {last_key})))')
+        self.assertEqual(fc["N"], 'If([Kind] = "yoy", [FJ/N], [Month Key] - [Base Key])')
+        self.assertEqual(fc["Amount"], 'If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [Seed], '
+                                       '[Kind] = "yoy", [June Base] * (1 + [Eff Rate]) ^ [N], '
+                                       '[Seed] * (1 + [Eff Rate]) ^ [N])')
+
+    def test_every_surface_reads_the_one_boundary(self):
+        b = self.by_id(self.spec())
+        phase = next(c for c in b["reportFacts"]["columns"] if c["name"] == "Phase")["formula"]
+        self.assertEqual(phase, 'If(DatePart("year", [Union of 2 Sources/Month End]) * 12 + DatePart("month", '
+                                f'[Union of 2 Sources/Month End]) < {self.START_KEY}, "Actual", "Forecast")')
+        spec_text = json.dumps(self.spec())
+        self.assertNotIn("<= 18", spec_text)
+        self.assertIn("Max([Parameters/Forecast Start Month])", b["hdrTitle"]["body"])
+        self.assertIn("Max([Parameters/Forecast Start Month])", b["kpiMonthsText"]["body"])
+        # the P&L detail groups by the union's Period, which the boundary now decides
+        self.assertEqual(b["pnlPivot"]["columnsBy"][0]["columnId"], "p_per")
+
+    def test_landed_actuals_map_every_period_so_a_closed_month_keeps_its_number(self):
+        dm = self.build.build_dm_spec(self.plan, self.landed, self.plan_src, app=True)
+        gl = next(e for e in dm["pages"][0]["elements"] if e["id"] == "glDetail")
+        num = next(c for c in gl["columns"] if c["name"] == "Month Num")["formula"]
+        self.assertIn('"Jun-27", 18', num)
+        self.assertIn('"Jul-27", 19', num)
+        self.assertIn('"Dec-27", 24', num)
+        plain = self.build.build_dm_spec(self.plan, self.landed)
+        gl = next(e for e in plain["pages"][0]["elements"] if e["id"] == "glDetail")
+        self.assertNotIn('"Jul-27"', next(c for c in gl["columns"] if c["name"] == "Month Num")["formula"])
+
+    def test_plain_forecast_keeps_the_static_split(self):
+        plain = self.by_id(self.build.build_wb_spec(copy.deepcopy(self.plan), "dm-1", self.els, landed=self.landed))
+        self.assertNotIn("filters", plain["forecast"])
+        self.assertNotIn("filters", plain["actuals"])
+        self.assertNotIn("Parameters", json.dumps(plain["forecast"]))
+        amount = next(c for c in plain["forecast"]["columns"] if c["name"] == "Amount")["formula"]
+        self.assertIn("[June Base] * (1 + [Eff Rate]) ^ [N]", amount)
+
+    def test_read_only_planning_app_also_follows_the_boundary(self):
+        plan = copy.deepcopy(self.plan)
+        plan["intent"] = "read-only"
+        b = self.by_id(self.build.build_wb_spec(plan, "dm-1", self.els, landed=self.landed,
+                                                workflows=self.manifest, plan_src=self.plan_src))
+        fc = {c["name"]: c["formula"] for c in b["forecast"]["columns"]}
+        self.assertEqual(fc["Start Key"], self.START_KEY)
+        self.assertEqual(fc["Eff Rate"], "[Forecast Spine/Default Rate]")
+        self.assertEqual(fc["N"], 'If([Kind] = "yoy", [Forecast Spine/N], [Month Key] - [Base Key])')
+        self.assertIn("[Seed] * (1 + [Eff Rate]) ^ [N]", fc["Amount"])
+        self.assertEqual(b["forecast"]["filters"][0]["values"], ["Forecast"])
 
     def test_detail_page_shows_the_fy_in_thousands(self):
         b = self.by_id(self.spec())
