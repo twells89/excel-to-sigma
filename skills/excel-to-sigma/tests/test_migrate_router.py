@@ -56,45 +56,113 @@ class TestRouter(unittest.TestCase):
         wb.save(path)
         return path
 
-    def test_forecast_route_offers_landing_and_enhance(self):
-        import shutil
-        from unittest import mock
+    def macro_enabled_forecast(self):
+        """The forecast fixture as a real .xlsm: the 08 fixture's vbaProject.bin (one recorded
+        macro) injected with the macro-enabled workbook content type and its relationship."""
         xlsx = self.dir / "pnl.xlsx"
         fixture.build_pnl(xlsx)
+        with zipfile.ZipFile(ROOT / "tests" / "fixtures" / "broader-eight"
+                             / "08 Inventory Replenishment Plan.xlsm") as donor:
+            vba = donor.read("xl/vbaProject.bin")
+        xlsm = self.dir / "pnl.xlsm"
+        with zipfile.ZipFile(xlsx) as src, zipfile.ZipFile(xlsm, "w", zipfile.ZIP_DEFLATED) as dst:
+            for item in src.infolist():
+                data = src.read(item.filename)
+                if item.filename == "[Content_Types].xml":
+                    text = data.decode("utf-8").replace(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+                        "application/vnd.ms-excel.sheet.macroEnabled.main+xml")
+                    assert "macroEnabled.main" in text
+                    data = text.replace("</Types>", '<Default Extension="bin" '
+                                        'ContentType="application/vnd.ms-office.vbaProject"/></Types>').encode()
+                elif item.filename == "xl/_rels/workbook.xml.rels":
+                    data = data.decode("utf-8").replace("</Relationships>", '<Relationship Id="rIdVBA" '
+                        'Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" '
+                        'Target="vbaProject.bin"/></Relationships>').encode()
+                dst.writestr(item, data)
+            dst.writestr("xl/vbaProject.bin", vba)
+        return xlsx, xlsm
+
+    @staticmethod
+    def enhance_absent(test, result):
+        text = "\n".join(result["nextCommands"])
+        test.assertNotIn("recommend-agent.py", text)
+        test.assertNotIn("demo-manifest", text)
+        test.assertNotIn("--emit-manual-commit-program", text)
+        test.assertNotIn("refs/agent-enhance.md", result["readRefs"])
+
+    def test_forecast_route_offers_landing_and_enhance(self):
+        try:
+            import oletools  # noqa: F401
+        except ImportError:
+            self.skipTest("oletools is not installed")
+        xlsx, xlsm = self.macro_enabled_forecast()
         # Non-macro .xlsx: landing is offered, the Enhance step is not.
         _, plain = self.plan(xlsx)
         text = "\n".join(plain["nextCommands"])
         self.assertIn("land-in-snowflake.py", text)
         self.assertIn("--actuals-table", text)
         self.assertIn("--landing", text)
-        self.assertNotIn("recommend-agent.py", text)
-        # Macro-enabled source: Enhance (Phase 6) is offered after the build.
-        xlsm = self.dir / "pnl.xlsm"
-        shutil.copy(xlsx, xlsm)
-        real = MIGRATE.run_json
-        macro = [{"module": "Module1", "procedure": "RollForward", "status": "AUTO",
-                  "classes": ["WHATIF_SCENARIO"]}]
-
-        def fake(*args):
-            if Path(args[0]).name == "macro-classify.py":
-                return macro
-            return real(*args)
-
-        with mock.patch.object(MIGRATE, "run_json", fake):
-            _, enabled = self.plan(xlsm)
+        self.enhance_absent(self, plain)
+        # Real macro-enabled forecast source, real macro-classify (no mock): Enhance (Phase 6)
+        # is offered after the build.
+        code, enabled = self.plan(xlsm)
+        self.assertEqual(code, 0)
+        self.assertEqual(enabled["archetype"], "forecast")
+        self.assertIsInstance(enabled["macros"], list)
+        self.assertEqual([(m["name"], m["class"], m["status"]) for m in enabled["macros"]],
+                         [("Macro1", "NAVIGATION", "AUTO")])
+        self.assertEqual(json.loads((self.out / "macros.json").read_text()), enabled["macros"])
         cmds = enabled["nextCommands"]
         text = "\n".join(cmds)
         self.assertIn("land-in-snowflake.py", text)
         self.assertIn("macro-actions.py demo-manifest", text)
-        self.assertIn("--out ", next(c for c in cmds if "demo-manifest" in c))
-        self.assertTrue(next(c for c in cmds if "demo-manifest" in c).split("--out ")[1].split()[0].endswith("workflows.json"))
+        manifest = next(c for c in cmds if "demo-manifest" in c)
+        self.assertTrue(manifest.split("--out ")[1].split()[0].endswith("workflows.json"))
         self.assertIn("recommend-agent.py", text)
         self.assertLess(next(i for i, c in enumerate(cmds) if "land-in-snowflake.py" in c),
                         next(i for i, c in enumerate(cmds) if "recommend-agent.py" in c))
         self.assertIn("refs/agent-enhance.md", enabled["readRefs"])
-        # Non-forecast archetypes never get the forecast-only landing/Enhance commands.
+
+    def test_macro_enabled_non_forecast_source_gets_no_enhance(self):
+        try:
+            import oletools  # noqa: F401
+        except ImportError:
+            self.skipTest("oletools is not installed")
+        # 08 Inventory Replenishment Plan.xlsm: real macros, table-report archetype.
+        _, result = self.plan(ROOT / "tests" / "fixtures" / "broader-eight"
+                              / "08 Inventory Replenishment Plan.xlsm")
+        self.assertEqual(result["archetype"], "table-report")
+        self.assertEqual([m["status"] for m in result["macros"]], ["AUTO"])
+        self.enhance_absent(self, result)
+        self.assertNotIn("land-in-snowflake.py", "\n".join(result["nextCommands"]))
+        self.assertFalse((self.out / "macros.json").exists())
+        # Non-forecast table workbooks never get the forecast-only landing/Enhance commands.
         _, table = self.plan(self.table_workbook())
-        self.assertNotIn("recommend-agent.py", "\n".join(table["nextCommands"]))
+        self.enhance_absent(self, table)
+
+    def test_macro_classify_without_a_procedure_list_gets_no_enhance(self):
+        from unittest import mock
+        _, xlsm = self.macro_enabled_forecast()
+        real = MIGRATE.run_json
+
+        def raises(*args):
+            raise RuntimeError("olevba exploded")
+
+        for label, outcome in (("empty list", []), ("error dict", {"error": "no VBA"}),
+                               ("raised", raises)):
+            def fake(*args, outcome=outcome):
+                if Path(args[0]).name == "macro-classify.py":
+                    return outcome(*args) if callable(outcome) else outcome
+                return real(*args)
+            with self.subTest(label), mock.patch.object(MIGRATE, "run_json", fake):
+                code, result = self.plan(xlsm)
+                self.assertEqual(code, 0)
+                self.assertEqual(result["archetype"], "forecast")
+                self.enhance_absent(self, result)
+                self.assertIn("land-in-snowflake.py", "\n".join(result["nextCommands"]))
+                self.assertFalse((self.out / "macros.json").exists())
+        self.assertIn("macro-classify failed (olevba exploded)", " ".join(result["notes"]))
 
     def test_forecast_archetype_routes_to_drafter_then_builder(self):
         path = self.dir / "pnl.xlsx"
