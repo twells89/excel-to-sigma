@@ -271,7 +271,9 @@ class ForecastAppTests(unittest.TestCase):
     # ---------------------------------------------------------------- design round 2
     def test_input_tables_hide_row_id_and_fit_columns_to_content(self):
         # A number column stretched across a wide input table renders its edit pencil far left and its
-        # right-aligned name far right, which reads as an empty unlabelled column: autofit the columns.
+        # right-aligned name far right, which reads as an empty unlabelled column. Autofit and the
+        # presentation preset (live, d2) still stretch the columns, and the taller presentation rows clip
+        # the tables: keep the dense grid, turn autofit off and size each column to its content.
         b = self.by_id(self.spec())
         for tid in ("rateInput", "manualInput"):
             cols = {c["id"]: c for c in b[tid]["columns"]}
@@ -279,15 +281,38 @@ class ForecastAppTests(unittest.TestCase):
             self.assertNotIn("ID", b[tid]["order"])
             style = b[tid]["tableStyle"]
             self.assertEqual((style["preset"], style["gridLines"], style["autofitColumns"]),
-                             ("presentation", "horizontal", "shown"), tid)
-        # the setup program re-applies the style (preset first: switching preset resets the rest)
-        program = dw.emit_manual_commit_program(self.build.workbook_wire.wire_workbook(self.spec()),
-                                                {"start": "2027-07-01"})
-        block = program[program.index("get_element('rateInput')"):]
+                             ("spreadsheet", "horizontal", "hidden"), tid)
+        wired = self.build.workbook_wire.wire_workbook(self.spec())
+        rate_rows = [["North America Cost of Revenue", 0.008], ["EMEA", 0.01]]   # seed_rows shape
+        widths = dw.input_column_widths(wired, [("rateInput", ["LINE_ITEM", "RATE"], rate_rows)])
+        # every visible typed column gets a width; hidden ones and the system ID do not
+        self.assertEqual(set(widths["rateInput"]), {"LINE_ITEM", "RATE"})
+        self.assertEqual(set(widths["manualInput"]), {"LINE_ITEM", "MONTH", "AMOUNT"})
+        # the longest value (or the header plus its edit pencil) sets the width, within bounds
+        self.assertGreater(widths["rateInput"]["LINE_ITEM"], widths["manualInput"]["LINE_ITEM"])
+        for table in widths.values():
+            for px in table.values():
+                self.assertTrue(dw.MIN_COLUMN_PX <= px <= dw.MAX_COLUMN_PX, px)
+        # the setup program re-applies the style (preset first: switching preset resets the rest), then the widths
+        program = dw.emit_manual_commit_program(wired, {"start": "2027-07-01"}, column_widths=widths)
+        block = program[program.index("get_element('rateInput')"):program.index("get_element('manualInput')")]
         self.assertIn("s = t.table_style()", block)
-        self.assertLess(block.index("s.set_preset('presentation')"), block.index("s.set_grid_lines('horizontal')"))
-        self.assertIn("s.set_autofit_columns(True)", block)
+        self.assertLess(block.index("s.set_preset('spreadsheet')"), block.index("s.set_grid_lines('horizontal')"))
+        self.assertIn("s.set_autofit_columns(False)", block)
+        self.assertIn(f"t.set_column_width(t.get_column('RATE'), {widths['rateInput']['RATE']})", block)
+        self.assertLess(block.index("set_autofit_columns"), block.index("set_column_width"))
         compile(program, "program", "exec")
+        # Assumptions: the narrow tables sit side by side with the impact card, no separate manual heading
+        layout = wired["contents"]["layout"]
+        def cols(element_id):
+            m = re.search(r'elementId="%s"[^>]*gridColumn="(\d+) / (\d+)"[^>]*gridRow="(\d+) / (\d+)"'
+                          % element_id, layout)
+            return tuple(int(g) for g in m.groups())
+        rate, manual, impact = cols("rateInput"), cols("manualInput"), cols("asmImpactCard")
+        self.assertEqual((rate[1], manual[1]), (manual[0], impact[0]))
+        self.assertEqual(impact[1], 25)
+        self.assertEqual({rate[2:], manual[2:], impact[2:]}, {rate[2:]})
+        self.assertNotIn('elementId="manualHead"', layout)
         plain = self.build.build_wb_spec(copy.deepcopy(self.plan), "dm-1", self.els, landed=self.landed)
         self.assertNotIn("tableStyle", next(e for pg in plain["pages"] for e in pg["elements"]
                                             if e["id"] == "rateInput"))
@@ -359,6 +384,23 @@ class ForecastAppTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                 self.assertEqual(self.build.main(base + ["--workflows", str(wf_path)]), 1)
             self.assertIn("plan table month 'Jan-30'", err.getvalue())
+
+    def test_cli_setup_program_sizes_the_input_table_columns_from_the_seeds(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path, landing_path, wf_path = self._cli_files(tmp)
+            program_path = Path(tmp) / "setup.py"
+            argv = [str(plan_path), "--actuals-table", "CSA.TJ.FPA_X_ACTUALS", "--landing", str(landing_path),
+                    "--workflows", str(wf_path), "--emit-manual-commit-program", str(program_path),
+                    "--out-dir", str(Path(tmp) / "out")]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.build.main(argv), 0)
+            program = program_path.read_text()
+        for tid, col in (("rateInput", "LINE_ITEM"), ("rateInput", "RATE"), ("manualInput", "AMOUNT")):
+            block = program[program.index(f"get_element('{tid}')"):]
+            self.assertRegex(block[:block.index("set_edit_mode('draft')")],
+                             r"t\.set_column_width\(t\.get_column\('%s'\), \d+\)" % col)
 
     def test_post_preflights_the_agent_merge_before_creating_anything(self):
         import contextlib

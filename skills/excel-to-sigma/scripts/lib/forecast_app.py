@@ -357,8 +357,10 @@ def build(ctx):
     scen_line = (span("Scenario: ", MUTED, 13) + span(f"**{{{{[{SCENARIO_CONTROL}]}}}}**", INK, 13) + span(
         " (switch it in the Forecast header; Downside and Upside move every growth rate by the source "
         "workbook's spread).", MUTED, 13)) if ctx["scenario"] else ""
+    manual_note = (" Manual forecast lines are typed in by hand, as in the source workbook, rather than grown "
+                   "from a driver." if ctx["manual"] is not None else "")
     asm_head = text("asmHead", "## Growth drivers\n" + span(
-        "Monthly growth rate per forecast line. Edit a rate and the forecast recalculates.", MUTED, 13)
+        "Monthly growth rate per forecast line. Edit a rate and the forecast recalculates." + manual_note, MUTED, 13)
         + ("\n" + scen_line if scen_line else ""), "top")
     impact = ["**Forecast impact**", span("Recalculates as you edit.", MUTED, 12),
               kpi_body(f"{fy} revenue", money_m(rev_fc), *([signed(f"({rev_fc}) / ({rev_plan}) - 1", "%", "vs plan")]
@@ -370,8 +372,7 @@ def build(ctx):
     if rate is not None:
         asm_els.append(rate)
     if manual is not None:
-        asm_els += [text("manualHead", "### Manual forecast lines\n" + span(
-            "Lines the source workbook typed in by hand rather than growing from a driver.", MUTED, 13), "top"), manual]
+        asm_els.append(manual)
     # ---------------------------------------------------------------- P&L detail page
     detail_els = [ctx["pivot"], ctx["gl"]]
     # ---------------------------------------------------------------- Versions & approvals page
@@ -457,13 +458,14 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons):
     else:
         lines += [_el(bottom[0], 1, 25, 33, 49)]
     page("pgForecast", lines)
-    # Assumptions
+    # Assumptions: the content-sized input tables side by side, then the impact card, one row
     lines = [_el("asmHead", 1, 25, 1, 5)]
-    if rate:
-        lines.append(_el("rateInput", 1, 17, 5, 19))
-    lines.append(_container("asmImpactCard", 17 if rate else 1, 25, 5, 19, [("asmImpact", 1, 25, 1, 14)]))
-    if manual:
-        lines += [_el("manualHead", 1, 25, 19, 22), _el("manualInput", 1, 17, 22, 33)]
+    at = 1
+    for element_id, span_cols, present in (("rateInput", 9, rate), ("manualInput", 8, manual)):
+        if present:
+            lines.append(_el(element_id, at, at + span_cols, 5, 19))
+            at += span_cols
+    lines.append(_container("asmImpactCard", at, 25, 5, 19, [("asmImpact", 1, 25, 1, 14)]))
     page("pgAssumptions", lines)
     page("pgDetail", [_el("pnlPivot", 1, 25, 1, 41), _el("glTable", 1, 25, 41, 63)])
     page("pgVersions", [_el("logHead", 1, 25, 1, 5), _el("versionsView", 1, 25, 5, 19),

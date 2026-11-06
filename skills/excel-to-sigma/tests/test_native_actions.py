@@ -767,6 +767,7 @@ class TestDemoWorkflows(unittest.TestCase):
             def __init__(self,eid,calls):self.eid=eid;self.calls=calls
             def get_column(self,cid):return LiteralEditableColumn(cid)
             def table_style(self):return InputTableStyle()
+            def set_column_width(self,column,width):pass
             def set_edit_mode(self,mode):pass
             def upsert_rows(self,rows):
                 self.calls.setdefault(self.eid,[]).append([{c.cid:v for c,v in r.items()} for r in rows])

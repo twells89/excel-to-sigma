@@ -644,14 +644,17 @@ summary joins — sits on the hidden `Model (sources)` page.
   toolbar: stretched buttons in adjacent cells of the header band, primary last and flush right
   (no nested container — the server's layout check misplaces a container inside a container);
   the status pill sits right after the scenario switch.
-- **Input tables** autofit their columns (`tableStyle.autofitColumns`, presentation preset,
-  horizontal lines) and hide the system `ID` column; a number column stretched across a wide
-  table otherwise shows its edit pencil far from its right-aligned name and reads as an empty
-  column.
+- **Input tables** hide the system `ID` column, keep the dense grid (horizontal lines; the
+  presentation preset's taller rows clip a 10-row driver table) and turn autofit off; the setup
+  program sizes each visible column to its longest seed value or header
+  (`demo_workflows.input_column_widths`, `set_column_width`). A number column stretched across a
+  wide table (autofit or not) shows its edit pencil far from its right-aligned name and reads
+  as an empty column. On Assumptions the two tables sit side by side with the impact card.
 - **What the POST cannot carry** — input-table typed-column `format` / `hidden`, and a combo
   chart's per-series colour — the setup program re-applies through Code Mode
   (`set_format_pattern`, `set_visible(False)`, `set_series_color`; and the input tables'
-  `tableStyle` through `table_style()`) before it switches the edit modes.
+  `tableStyle` through `table_style()` and their column widths through `set_column_width`) before it
+  switches the edit modes.
 
 ---
 

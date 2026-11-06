@@ -701,9 +701,11 @@ def amount_formula(row, table, sec_cols, fy_nums, fy=False):
     return out
 
 
-# Planning-app input tables: columns fit their content, so a number column is not stretched across the
-# table (its edit pencil far left, its right-aligned name far right reads as an empty unlabelled column).
-APP_INPUT_STYLE = {"preset": "presentation", "gridLines": "horizontal", "autofitColumns": "shown"}
+# Planning-app input tables: the dense grid (presentation rows clip a 10-row driver table), autofit off and
+# each column sized to its content by the setup program (demo_workflows.input_column_widths) -- a number
+# column stretched across the table shows its edit pencil far left and its right-aligned name far right,
+# which reads as an empty unlabelled column (autofit and the presentation preset both stretch, live d2).
+APP_INPUT_STYLE = {"preset": "spreadsheet", "gridLines": "horizontal", "autofitColumns": "hidden"}
 
 
 def cost_lines(P):
@@ -1091,8 +1093,9 @@ def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
         if P["intent"] in ("editable", "what-if"):
             rate, manual = seed_rows(P)
             table_seeds = [("rateInput", RATE_SEED_COLUMNS, rate), ("manualInput", MANUAL_SEED_COLUMNS, manual)]
-        program = demo_workflows.emit_manual_commit_program(wb_spec, seed, table_seeds,
-                                                            series_colors=forecast_app.SERIES_COLORS)
+        program = demo_workflows.emit_manual_commit_program(
+            wb_spec, seed, table_seeds, series_colors=forecast_app.SERIES_COLORS,
+            column_widths=demo_workflows.input_column_widths(wb_spec, table_seeds))
         with open(program_path, "w", encoding="utf-8") as stream:
             stream.write(program)
         seeded = (["parameters 1 row"] if seed else []) + [f"{el} {len(rows)} rows" for el, _c, rows in table_seeds if rows]

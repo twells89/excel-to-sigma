@@ -280,6 +280,49 @@ def input_table_style_lines(spec):
     return out
 
 
+# Content-sized input-table columns (an input table with autofit off): about 7 px per character of the
+# longest seed value or the header, plus room for the header's edit pencil and the cell padding.
+CHAR_PX, HEADER_EXTRA_CHARS, PAD_PX = 7, 3, 28
+MIN_COLUMN_PX, MAX_COLUMN_PX = 120, 360
+
+
+def _shown(value, fmt):
+    """Roughly how a seed value displays under its d3 format (only its length matters)."""
+    if isinstance(value, (int, float)) and fmt:
+        if "%" in fmt:
+            return f"{value * 100:.1f}%"
+        if "$" in fmt:
+            return f"${value:,.0f}"
+    return "" if value is None else str(value)
+
+
+def input_column_widths(spec, table_seeds=()):
+    """``{elementId: {columnId: px}}`` for the visible typed columns of every input table whose spec
+    ``tableStyle`` turns autofit off: sized to the longest of the header (plus its edit pencil) and the
+    seed values, so a number column is not stretched across the table (its pencil far left, its
+    right-aligned name far right reads as an empty unlabelled column). ``table_seeds`` is
+    ``[(elementId, [columnId, ...], rows)]`` with each row a list in that column order."""
+    import code_rep
+    seeds = {el: (list(cols), list(rows)) for el, cols, rows in table_seeds}
+    out = {}
+    for el in code_rep.workbook_elements(code_rep.document(spec)):
+        if el.get("kind") != "input-table" or (el.get("tableStyle") or {}).get("autofitColumns") != "hidden":
+            continue
+        cols, rows = seeds.get(el["id"], ([], []))
+        widths = {}
+        for col in el.get("columns", []):
+            if not col.get("type") or col.get("hidden"):
+                continue
+            fmt = (col.get("format") or {}).get("formatString")
+            chars = len(col.get("name") or col["id"]) + HEADER_EXTRA_CHARS
+            if col["id"] in cols:
+                i = cols.index(col["id"])
+                chars = max([chars] + [len(_shown(row[i], fmt)) for row in rows])
+            widths[col["id"]] = max(MIN_COLUMN_PX, min(MAX_COLUMN_PX, chars * CHAR_PX + PAD_PX))
+        out[el["id"]] = widths
+    return out
+
+
 MAX_SEED_ROWS = 2000  # rows per input table in one program's single upsert_rows batch
 
 
@@ -326,13 +369,15 @@ def _series_color_lines(spec, series_colors):
     return out
 
 
-def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()):
+def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=(), column_widths=None):
     """Post-create Code Mode program text: re-set each input table's edit mode so the
     host publishes it with manual commit enabled, then seed rows.
 
     ``seed`` (``{"scenario", "start"}``) writes the single Parameters row. ``table_seeds``
     is ``[(elementId, [columnId, ...], rows)]``: each table gets one ``upsert_rows`` call
     with all of its rows (at most ``MAX_SEED_ROWS``); a table with no rows is skipped.
+    ``column_widths`` (``{elementId: {columnId: px}}``, see ``input_column_widths``) sizes input-table
+    columns after their style.
     upsert_rows neither queries first nor enforces keys, so the program is run once, on a
     fresh workbook."""
     tables = _input_tables(spec)
@@ -347,7 +392,7 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
             raise WorkflowError(f"{element_id} seed has {len(rows):,} rows; one program seeds at most "
                                 f"{MAX_SEED_ROWS:,} rows per table")
     lines = ["# Enable manual commit on every input table (required for backend actions / agent tools);",
-             "# first re-apply the typed columns' display formats / hidden flags and the table style (a workbook POST may drop them).",
+             "# first re-apply the typed columns' display formats / hidden flags, the table style and column widths (a workbook POST may drop them).",
              "# Run once through Sigma MCP Code Mode after the workbook is created."]
     if seed or table_seeds:
         seeded = ([PARAMETERS] if seed else []) + [el for el, _c, _r in table_seeds]
@@ -369,6 +414,8 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
             if hidden:
                 lines.append("c.set_visible(False)")
         lines += styles.get(element_id, [])
+        lines += [f"t.set_column_width(t.get_column({cid!r}), {px})"
+                  for cid, px in ((column_widths or {}).get(element_id) or {}).items()]
         lines += ["t.set_edit_mode('draft')", "t.set_edit_mode('published-all-users')", ""]
     if seed:
         page = pages.get(PARAMETERS)
