@@ -404,7 +404,7 @@ Excel Tables in the warehouse so the model reads real tables.
 
 - Headers become stable UPPER_SNAKE identifiers (`Net Revenue ($)` -> `NET_REVENUE`); the
   builder's column map reads the same names from `landing.json`.
-- Excel date cells and serial numbers land as `DATE`; blank cells land as `NULL`
+- Excel date cells land as `DATE`; integer serials land as `DATE` only in columns whose header contains date/month/period/day, otherwise `NUMBER`; blank cells land as `NULL`
   (blank-as-zero parity per `refs/source-blank-validation.md`).
 - Re-running into a schema that already holds a table exits 2 unless `--replace` is passed;
   it never appends a duplicate. `--execute` verifies each row count against the source and
@@ -575,6 +575,8 @@ Prerequisites the agent depends on:
   workbook is created, submit the program from `--emit-manual-commit-program` through
   Sigma MCP Code Mode (`set_edit_mode('draft')`, then `set_edit_mode('published-all-users')`
   per input table). `published-all-users` is data entry for everyone with workbook access.
+  The program also appends a one-row Parameters seed; run it once on a fresh workbook only,
+  it cannot check whether the row already exists.
 - Agent SQL that touches input-table system columns (`CREATED_BY` ...) fails with
   "Ambiguous column reference"; ground tools in the user columns. See
   `refs/sigma-build-gotchas.md`.

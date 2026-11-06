@@ -86,6 +86,8 @@ class TestRouter(unittest.TestCase):
         text = "\n".join(cmds)
         self.assertIn("land-in-snowflake.py", text)
         self.assertIn("macro-actions.py demo-manifest", text)
+        self.assertIn("--out ", next(c for c in cmds if "demo-manifest" in c))
+        self.assertTrue(next(c for c in cmds if "demo-manifest" in c).split("--out ")[1].split()[0].endswith("workflows.json"))
         self.assertIn("recommend-agent.py", text)
         self.assertLess(next(i for i, c in enumerate(cmds) if "land-in-snowflake.py" in c),
                         next(i for i, c in enumerate(cmds) if "recommend-agent.py" in c))

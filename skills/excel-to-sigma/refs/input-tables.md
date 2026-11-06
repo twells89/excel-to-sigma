@@ -273,8 +273,9 @@ workbook exists, through Sigma MCP Code Mode: `set_edit_mode('draft')` then
 `set_edit_mode('published-all-users')`. `published-all-users` is data entry for everyone with
 workbook access. Spec `inputMode` maps to the SDK mode as: `edit` = `draft`,
 `explore` = `published-explore`, `view` = `published-all-users`.
-`build-forecast-model.py --emit-manual-commit-program OUT.py` writes this program (and seeds
-the single Parameters row when empty). Query the table afterward to confirm a button write lands.
+`build-forecast-model.py --emit-manual-commit-program OUT.py` writes this program (and appends a
+one-row Parameters seed: Base scenario, forecast start month; run it once on a fresh workbook
+only, it cannot check whether the row already exists). Query the table afterward to confirm a button write lands.
 
 ## Seed rows through Sigma MCP Code Mode
 

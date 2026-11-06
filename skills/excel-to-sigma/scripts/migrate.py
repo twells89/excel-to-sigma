@@ -150,7 +150,7 @@ ROUTES = {
 
 # Phase 6 (Enhance): only when the source carries macros that became workflows.
 ENHANCE_COMMANDS = [
-    "python scripts/macro-actions.py demo-manifest <file>   # classify the macros into workflows.json "
+    "python scripts/macro-actions.py demo-manifest <file> --out <workdir>/workflows.json   # classify the macros into workflows.json "
     "(never executes VBA)",
     "python scripts/build-forecast-model.py <workdir>/plan.json --workflows <workdir>/workflows.json "
     "--emit-manual-commit-program <workdir>/manual-commit.py --out-dir <workdir>/build   "
