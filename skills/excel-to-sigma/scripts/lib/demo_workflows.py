@@ -146,8 +146,11 @@ def _values(element, formulas):
     return {COLUMN_IDS[(element, name)]: value for name, value in formulas.items()}
 
 
-def action_effects(action_id, request_label, figures=None):
-    """The effect list for one workflow (live-proven working shapes)."""
+def action_effects(action_id, request_label, figures=None, scenario_control=None):
+    """The effect list for one workflow (live-proven working shapes).
+
+    With ``scenario_control`` (the controlId of the workbook's scenario switch) Snapshot records the
+    control's current value; otherwise the Parameters row's Selected Scenario."""
     if action_id == "roll-forward":
         return [{"effect": "update-rows", "tableElementId": PARAMETERS,
                  "whichRows": {"type": "formula", "formula": "true"},
@@ -158,7 +161,8 @@ def action_effects(action_id, request_label, figures=None):
             raise WorkflowError("snapshot needs the KPI figure formulas (figures=)")
         values = {
             "Version": _formula('Concat("v", Text(Count([Versions/Saved At]) + 1))'),
-            "Scenario": _formula("Max([Parameters/Selected Scenario])"),
+            "Scenario": ({"type": "control", "control": scenario_control} if scenario_control
+                         else _formula("Max([Parameters/Selected Scenario])")),
             "Forecast Start Month": _formula("Max([Parameters/Forecast Start Month])"),
             "Saved By": _formula("CurrentUserEmail()"), "Saved At": _formula("Now()")}
         names = {"revenue": "FY Revenue", "grossMargin": "FY Gross Margin", "ebitda": "FY EBITDA"}
@@ -172,8 +176,10 @@ def action_effects(action_id, request_label, figures=None):
     raise WorkflowError(f"no button action for {action_id}")
 
 
-def input_table(element, connection_id, mode, figures=None):
+def input_table(element, connection_id, mode, figures=None, scenario_control=None):
     name, cols = TABLES[element]
+    if element == PARAMETERS and scenario_control:
+        cols = [c for c in cols if c[1] != "Selected Scenario"]   # the scenario switch holds it
     if element == VERSIONS and figures is not None:
         keep = {"FY Revenue": "revenue", "FY Gross Margin": "grossMargin", "FY EBITDA": "ebitda"}
         cols = [c for c in cols if c[1] not in keep or keep[c[1]] in figures]
@@ -183,11 +189,15 @@ def input_table(element, connection_id, mode, figures=None):
                         *[{"id": cid, "type": typ, "name": nm} for cid, nm, typ in cols]]}
 
 
-def workflow_elements(manifest, connection_id, request_label, figures=None):
+def workflow_elements(manifest, connection_id, request_label, figures=None, scenario_control=None,
+                      no_status="Not submitted"):
     """Workbook elements for a manifest: ``{tables, buttons, status}``.
 
     ``figures`` maps revenue / grossMargin / ebitda to the workbook's KPI formulas;
-    Snapshot freezes exactly those into its Versions row.
+    Snapshot freezes exactly those into its Versions row. ``scenario_control`` is the controlId of
+    a scenario switch that the forecast reads: Parameters then carries only the forecast start
+    month and Snapshot records the switch's value. ``no_status`` is the status shown before any
+    request was submitted.
     """
     if figures is None and any(w["actionId"] == "snapshot-version" for w in manifest.get("workflows", [])):
         figures = {"revenue": "Sum([PnL Combined/Amount])"}  # structural default (checks); builder passes real KPIs
@@ -197,7 +207,7 @@ def workflow_elements(manifest, connection_id, request_label, figures=None):
     for w in items.values():
         if w["effect"] not in EFFECTS:
             raise WorkflowError(f"unsupported workflow effect {w['effect']}")
-    tables = [input_table(PARAMETERS, connection_id, "edit"),
+    tables = [input_table(PARAMETERS, connection_id, "edit", scenario_control=scenario_control),
               input_table(VERSIONS, connection_id, "view", figures),
               input_table(APPROVALS, connection_id, "view")]
     buttons = []
@@ -208,12 +218,13 @@ def workflow_elements(manifest, connection_id, request_label, figures=None):
         buttons.append({"id": element_id, "kind": "button", "text": w["label"],
             "appearance": "outline" if action_id == "submit-approval" else "filled",
             "actions": [{"id": "a-" + action_id, "trigger": "on-click",
-                         "effects": action_effects(action_id, request_label, figures)}]})
+                         "effects": action_effects(action_id, request_label, figures, scenario_control)}]})
     # Latest status = Status of the Approvals row with the max Submitted At. A one-row table
     # over Parameters holds the cross-table Lookup (the shape proven for the forecast lookup).
     status = {"id": STATUS_KPI, "kind": "table", "name": "Latest approval status",
         "source": {"kind": "table", "elementId": PARAMETERS},
-        "columns": [{"id": "st_v", "name": "Latest approval status", "formula": STATUS_FORMULA}]}
+        "columns": [{"id": "st_v", "name": "Latest approval status",
+                     "formula": STATUS_FORMULA.replace('"Not submitted"', '"' + no_status + '"')}]}
     return {"tables": tables, "buttons": buttons, "status": status}
 
 
@@ -227,6 +238,26 @@ def _input_tables(spec):
     if missing:
         raise WorkflowError("input tables not placed on a page by the layout: " + ", ".join(missing))
     return [(owners[t]["id"], t) for t in tables]
+
+
+def input_column_display(spec):
+    """``{elementId: [(columnId, d3 pattern or None, hidden)]}`` for typed input-table columns.
+
+    A workbook POST keeps an input table's typed columns but drops their ``format`` and ``hidden``
+    (live readback, 2026-11); the setup program re-applies them through Code Mode
+    (``set_format_pattern`` / ``set_visible(False)``) so a rate shows as 1.0%, not 0.01."""
+    import code_rep
+    out = {}
+    for el in code_rep.workbook_elements(code_rep.document(spec)):
+        if el.get("kind") != "input-table":
+            continue
+        for col in el.get("columns", []):
+            if not col.get("type"):
+                continue        # system columns (ID, ...) keep their spec fields
+            fmt = (col.get("format") or {}).get("formatString")
+            if fmt or col.get("hidden"):
+                out.setdefault(el["id"], []).append((col["id"], fmt, bool(col.get("hidden"))))
+    return out
 
 
 MAX_SEED_ROWS = 2000  # rows per input table in one program's single upsert_rows batch
@@ -252,7 +283,30 @@ def _table_seed_lines(page_id, element_id, columns, rows):
     return out + ["])", ""]
 
 
-def emit_manual_commit_program(spec, seed=None, table_seeds=()):
+def _series_color_lines(spec, series_colors):
+    import code_rep
+    doc = code_rep.document(spec)
+    owners = code_rep.workbook_page_by_element(doc)
+    by_id = {e["id"]: e for e in code_rep.workbook_elements(doc)}
+    kinds = {k: e.get("kind") for k, e in by_id.items()}
+    cls = {"combo-chart": "ComboChart", "bar-chart": "BarChart", "line-chart": "LineChart"}
+    out = []
+    for element_id, column_id, color in series_colors:
+        if element_id not in owners or kinds.get(element_id) not in cls:
+            continue
+        if not any(c.get("id") == column_id for c in by_id[element_id].get("columns", [])):
+            continue
+        out += [f"# Series colour the spec cannot carry: {element_id}.{column_id}",
+                f"ch = sigma.workbook.get_page('{owners[element_id]['id']}').get_element('{element_id}')",
+                f"if not isinstance(ch, {cls[kinds[element_id]]}):",
+                f"    raise RuntimeError('{element_id} is not a {cls[kinds[element_id]]}')",
+                "for s in ch.list_series():",
+                f"    if s.id() == '{column_id}':",
+                f"        ch.set_series_color(s, '{color}')", ""]
+    return out
+
+
+def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()):
     """Post-create Code Mode program text: re-set each input table's edit mode so the
     host publishes it with manual commit enabled, then seed rows.
 
@@ -272,18 +326,28 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=()):
         if len(rows) > MAX_SEED_ROWS:
             raise WorkflowError(f"{element_id} seed has {len(rows):,} rows; one program seeds at most "
                                 f"{MAX_SEED_ROWS:,} rows per table")
-    lines = ["# Enable manual commit on every input table (required for backend actions / agent tools).",
+    lines = ["# Enable manual commit on every input table (required for backend actions / agent tools);",
+             "# first re-apply the typed columns' display formats / hidden flags a workbook POST drops.",
              "# Run once through Sigma MCP Code Mode after the workbook is created."]
     if seed or table_seeds:
         seeded = ([PARAMETERS] if seed else []) + [el for el, _c, _r in table_seeds]
         lines.append("# The seeds at the end write rows into " + ", ".join(seeded) + ": run once on a fresh "
                      "workbook (the writes do not query first and keys are not enforced).")
     lines.append("")
+    display = input_column_display(spec)
     for page_id, element_id in tables:
         lines += [f"t = sigma.workbook.get_page('{page_id}').get_element('{element_id}')",
                   "if not isinstance(t, InputTable):",
-                  f"    raise RuntimeError('{element_id} is not an InputTable')",
-                  "t.set_edit_mode('draft')", "t.set_edit_mode('published-all-users')", ""]
+                  f"    raise RuntimeError('{element_id} is not an InputTable')"]
+        for column_id, fmt, hidden in display.get(element_id, []):
+            lines += [f"c = t.get_column('{column_id}')",
+                      "if not isinstance(c, LiteralEditableColumn):",
+                      f"    raise RuntimeError('{element_id}.{column_id} is not an editable column')"]
+            if fmt:
+                lines.append(f"c.set_format_pattern({fmt!r})")
+            if hidden:
+                lines.append("c.set_visible(False)")
+        lines += ["t.set_edit_mode('draft')", "t.set_edit_mode('published-all-users')", ""]
     if seed:
         page = pages.get(PARAMETERS)
         if page is None:
@@ -292,13 +356,16 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=()):
                   f"t = sigma.workbook.get_page('{page}').get_element('{PARAMETERS}')",
                   "if not isinstance(t, InputTable):",
                   f"    raise RuntimeError('{PARAMETERS} is not an InputTable')",
-                  f"c_scn = t.get_column('{COLUMN_IDS[(PARAMETERS, 'Selected Scenario')]}')",
-                  "if not isinstance(c_scn, LiteralEditableColumn):",
-                  "    raise RuntimeError('Selected Scenario is not an editable column')",
+                  *([f"c_scn = t.get_column('{COLUMN_IDS[(PARAMETERS, 'Selected Scenario')]}')",
+                     "if not isinstance(c_scn, LiteralEditableColumn):",
+                     "    raise RuntimeError('Selected Scenario is not an editable column')"]
+                    if seed.get("scenario") else []),
                   f"c_start = t.get_column('{COLUMN_IDS[(PARAMETERS, 'Forecast Start Month')]}')",
                   "if not isinstance(c_start, LiteralEditableColumn):",
                   "    raise RuntimeError('Forecast Start Month is not an editable column')",
-                  f"t.upsert_rows([{{c_scn: {seed['scenario']!r}, c_start: {seed['start']!r}}}])", ""]
+                  "t.upsert_rows([{" + (f"c_scn: {seed['scenario']!r}, " if seed.get("scenario") else "")
+                  + f"c_start: {seed['start']!r}}}])", ""]
     for element_id, columns, rows in table_seeds:
         lines += _table_seed_lines(pages[element_id], element_id, columns, rows)
+    lines += _series_color_lines(spec, series_colors)
     return "\n".join(lines)

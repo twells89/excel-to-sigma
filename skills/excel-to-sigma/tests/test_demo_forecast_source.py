@@ -64,6 +64,17 @@ class TestDemoForecastSource(unittest.TestCase):
         _plan, shape = draft_plan(self.src, intent="what-if", connection="<c>", folder="<f>")
         self.assertGreaterEqual(shape["lines"], 12)
 
+    def test_drafter_captures_driver_scenarios(self):
+        plan, _shape = draft_plan(self.src, intent="what-if", connection="<c>", folder="<f>")
+        scn = plan["scenarios"]
+        self.assertEqual(scn["names"], ["Downside", "Base", "Upside"])
+        self.assertEqual(scn["default"], "Base")      # the scenario whose rates are the live rates
+        na = next(ln for ln in plan["lines"] if ln["line"] == "North America Revenue")
+        self.assertAlmostEqual(scn["rates"][na["driver"]]["Base"], na["rate"])
+        self.assertAlmostEqual(scn["rates"][na["driver"]]["Upside"], round(na["rate"] + 0.004, 4))
+        self.assertAlmostEqual(scn["rates"][na["driver"]]["Downside"], round(na["rate"] - 0.004, 4))
+        self.assertEqual(len(scn["rates"]), len(plan["assumptions"]))
+
     def test_macro_classes(self):
         done = subprocess.run([sys.executable, SCRIPTS / "macro-classify.py", "--json", BAS],
                               capture_output=True, text=True, check=True)

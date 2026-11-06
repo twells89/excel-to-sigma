@@ -597,6 +597,51 @@ Prerequisites the agent depends on:
   "Ambiguous column reference"; ground tools in the user columns. See
   `refs/sigma-build-gotchas.md`.
 
+**One run, one POST.** `build-forecast-model.py ... --workflows work/workflows.json
+--agent-macros work/macros.json --post` prints the same pitch and merges the agent into the
+workbook spec after the data model is posted (so it carries the real data-model id) and
+before the workbook dry-run and create; `build/wb_spec.posted.json` and `build/posted-ids.json`
+record what was posted. Only pass `--agent-macros` after the user said yes to the agent.
+
+**Staging build while review is pending.** Production `--post` keeps the strict verified
+review-disposition gate. To build in an isolated staging folder while issues such as
+`VBA_PROJECT` / `FLAT_CARRY_POLICY` are honestly pending, write the approval to review with
+`--staging-approval-template work/staging-approval.json`, have the named owner and reviewer
+check every audited issue and set `sourceReviewApproval.status` to `approved_for_staging`,
+then post with `--post --staging-approval work/staging-approval.json`. The approval is bound
+to the source bytes, the exact issue objects and the plan's `folderId`; nothing is marked
+verified.
+
+### The planning app (`--workflows`)
+
+With `--workflows` the forecast is laid out as a planning app (`scripts/lib/forecast_app.py`),
+not the plain dashboard: **Forecast** (header band with title, Downside / Base / Upside
+switch, approval-status pill and Roll forward / Snapshot / Submit for approval; four KPI
+cards — FY revenue vs plan and vs prior FY, gross margin %, EBITDA, forecast months left; a
+revenue chart with actual and forecast bars and a dashed plan line; the agent panel; forecast
+vs plan by region and a P&L summary), **Assumptions** (editable growth rates and manual lines
+with a live impact card), **P&L detail** (the FY's monthly P&L in $000s, actual | forecast, and
+the GL actuals) and **Versions & approvals** (newest-first read-only views of the logs). Every
+helper — Parameters / Versions / Approvals input tables, the status table, the union and
+summary joins — sits on the hidden `Model (sources)` page.
+
+- **Scenario switch.** When the driver table has scenario columns beside the live rate
+  (`Downside | Base | Upside`), the drafter writes `plan.scenarios`; the data-model spine
+  carries each non-default scenario's spread (scenario rate minus the default scenario's rate)
+  and the forecast's `Eff Rate` adds `Switch([Scenario], ...)` — a control's `controlId` is a
+  formula handle, so the switch drives the forecast directly. Edited growth rates stay the base
+  the spread applies to. Snapshot records the switch's value; the agent's set-scenario tool
+  sets the control.
+- **Plan figures.** When `--landing` includes the plan table (`tblPlan`: Month, Line Item,
+  Region, Plan Amount), it joins the data model as `Plan Detail` (a warehouse table, with the
+  forecast's sections and month numbers attached by `Switch`); every month and line must be a
+  forecast period / line or the build stops. The region chart and the plan comparisons appear
+  only when it is there.
+- **What the POST cannot carry** — input-table typed-column `format` / `hidden`, and a combo
+  chart's per-series colour — the setup program re-applies through Code Mode
+  (`set_format_pattern`, `set_visible(False)`, `set_series_color`) before it switches the edit
+  modes.
+
 ---
 
 ## What this skill does NOT do (yet)

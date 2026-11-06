@@ -32,7 +32,10 @@ import workbook_wire  # noqa: E402
 import sigma_auth  # noqa: E402
 from lib import forecast_calc as calc  # noqa: E402
 from lib import demo_workflows  # noqa: E402
-from lib.migration_gate import MigrationGateError, gate_plan_source  # noqa: E402
+import forecast_app  # noqa: E402
+from lib.migration_gate import (MigrationGateError, gate_plan_source, gate_plan_staging_source,  # noqa: E402
+                                source_issue_hash)
+import agent_enhance  # noqa: E402
 
 CUR = lambda p: {"kind": "number", "formatString": p["currencyFormat"]}
 PCT = lambda p: {"kind": "number", "formatString": p.get("pctFormat", ".1%")}
@@ -234,6 +237,126 @@ def _cross_check_landing(entry, columns, P, actuals_table):
                         f"actuals total {plan_total:,.2f}; re-land or re-draft the plan")
 
 
+PLAN_ALIASES = {"Month": ("month",), "Line Item": ("line item",), "Region": ("region",),
+                "Plan Amount": ("plan amount", "plan", "budget amount", "budget")}
+
+
+def landed_plan_source(landing, P):
+    """The landed plan table (``tblPlan``) from landing.json, or ``None`` when none was landed.
+
+    A plan table is the excel table named like ``*plan*`` / ``*budget*`` or any landed table with a
+    ``Plan Amount`` header; it needs Month, Line Item and a plan amount column. Returns
+    ``{"path", "columns": {role: landed column}, "regions": {line item: region}}``; every month must
+    be a plan period and every line item a plan line (else ``PlanError``, never a silent zero).
+    """
+    def is_plan(entry):
+        headers = {c["header"].strip().lower() for c in entry["columns"]}
+        named = re.search(r"plan|budget", entry.get("excelTable", ""), re.I)
+        return bool(headers & set(PLAN_ALIASES["Plan Amount"])) and (named or "plan amount" in headers)
+    entry = next((t for t in landing.get("tables", []) if is_plan(t)), None)
+    if entry is None:
+        return None
+    by_header = {c["header"].strip().lower(): c for c in entry["columns"]}
+    columns = {}
+    for role, aliases in PLAN_ALIASES.items():
+        col = next((by_header[a] for a in aliases if a in by_header), None)
+        if col:
+            columns[role] = col["name"]
+    for required in ("Month", "Line Item", "Plan Amount"):
+        if required not in columns:
+            raise PlanError(f"landed plan table {entry['snowflakeTable']} has no {required!r} column")
+    regions = {}
+    path = entry.get("csv")
+    if path and os.path.exists(path):
+        periods, _n, _s = plan_model(P)
+        labels = {p["label"] for p in periods}
+        lines = {ln["line"] for ln in P["lines"]}
+        with open(path, encoding="utf-8", newline="") as stream:
+            for row in csv.DictReader(stream):
+                month, line = row[columns["Month"]], row[columns["Line Item"]]
+                if month not in labels:
+                    raise PlanError(f"plan table month {month!r} is not a period of the forecast")
+                if line not in lines:
+                    raise PlanError(f"plan table line {line!r} is not a forecast line")
+                if "Region" in columns and row[columns["Region"]]:
+                    regions.setdefault(line, row[columns["Region"]])
+    db, schema = landing["database"].upper(), landing["schema"].upper()
+    return {"path": [db, schema, entry["snowflakeTable"].upper()], "columns": columns, "regions": regions}
+
+
+def _make_date(iso):
+    y, m, d = (int(x) for x in iso[:10].split("-"))
+    return f"MakeDate({y}, {m}, {d})"
+
+
+def landed_plan_detail(P, plan_src):
+    """planDetail: the landed plan table on the plan's connection, with the forecast's Section /
+    order / Month Num / Month End attached by Switch (the landed table carries only names)."""
+    periods, _n, _s = plan_model(P)
+    t = plan_src["path"][-1]; c = plan_src["columns"]
+    ref = lambda role: f"[{t}/{c[role]}]"
+    lines = {ln["line"]: ln for ln in P["lines"]}
+    cols = [("Month", ref("Month")), ("Line Item", ref("Line Item")),
+            ("Region", ref("Region") if "Region" in c else '""'),
+            ("Plan Amount", ref("Plan Amount")),
+            ("Month Num", _switch(ref("Month"), {p["label"]: p["num"] for p in periods}, 0)),
+            ("Month End", _switch(ref("Month"), {p["label"]: _make_date(p["end"]) for p in periods if p.get("end")}, "Null")),
+            ("Section", _switch(ref("Line Item"), {k: f'"{v["section"]}"' for k, v in lines.items()}, '""')),
+            ("Section Order", _switch(ref("Line Item"), {k: v["secOrder"] for k, v in lines.items()}, 0)),
+            ("Line Order", _switch(ref("Line Item"), {k: v["lineOrder"] for k, v in lines.items()}, 0))]
+    return {"id": "planDetail", "kind": "table", "name": "Plan Detail",
+            "source": {"kind": "warehouse-table", "connectionId": P["connectionId"], "path": plan_src["path"]},
+            "columns": [{"id": f"c{i}", "name": nm, "formula": f} for i, (nm, f) in enumerate(cols, 1)]}
+
+
+def summary_metrics(P):
+    """P&L summary rows ``[(label, {section: weight})]``: the revenue section, then each amount row,
+    each but the first preceded by the sections it adds (Revenue, Gross margin, Opex, EBITDA)."""
+    _periods, _n, sections = plan_model(P)
+    first = next((s["name"] for s in sections if s["sign"] > 0), sections[0]["name"])
+    out, seen = [(first, {first: 1})], {first}
+    rows = [r for r in amount_rows(P, sections) if not r.get("lineCoefficients")]
+    for i, row in enumerate(rows):
+        added = [s["name"] for s in sections if s["name"] in row["coefficients"] and s["name"] not in seen]
+        if i:
+            out += [(name, {name: 1}) for name in added]
+        seen |= set(row["coefficients"])
+        out.append((row["label"], dict(row["coefficients"])))
+    return out
+
+
+def metric_map_element(P):
+    """metricMap: one row per (summary metric, section, weight) for the P&L summary join."""
+    rows = []
+    for order, (label, coeffs) in enumerate(summary_metrics(P), 1):
+        for section, weight in coeffs.items():
+            rows.append([q(forecast_app.sentence(label)), str(order), q(section), f"{float(weight)}"])
+    return {"id": "metricMap", "kind": "table", "source": {"kind": "sql", "connectionId": P["connectionId"],
+            "statement": values_sql(rows, ["METRIC", "METRIC_ORDER", "SECTION", "WEIGHT"])},
+            "columns": dmcols([("METRIC", "Metric"), ("METRIC_ORDER", "Metric Order"), ("SECTION", "Section"),
+                               ("WEIGHT", "Weight")])}
+
+
+def scenario_spreads(P):
+    """``[(scenario, column name, {line: spread})]`` for every non-default driver scenario: the
+    scenario's rate minus the default scenario's rate, per growth line (0 for other lines)."""
+    scn = P.get("scenarios")
+    if not scn:
+        return []
+    out = []
+    for name in scn["names"]:
+        if name == scn["default"]:
+            continue
+        if '"' in name or "\\" in name or "/" in name or "[" in name or "]" in name:
+            raise PlanError(f"scenario name {name!r} cannot be carried into a Sigma column name")
+        spread = {}
+        for ln in P["lines"]:
+            rates = scn["rates"].get(ln.get("driver") or "")
+            spread[ln["line"]] = (rates[name] - rates[scn["default"]]) if rates and ln["kind"] in RATE_KINDS else 0.0
+        out.append((name, f"{name} Spread", spread))
+    return out
+
+
 def _switch(key, mapping, default):
     for k in mapping:
         if '"' in str(k) or "\\" in str(k):
@@ -273,7 +396,7 @@ def landed_gl_detail(P, landed):
             "columns": [{"id": f"c{i}", "name": nm, "formula": f} for i, (nm, f) in enumerate(cols, 1)]}
 
 
-def build_dm_spec(P, landed=None):
+def build_dm_spec(P, landed=None, plan_src=None, app=False):
     conn = P["connectionId"]
     periods, n_act, _ = plan_model(P)
     views = calc.month_views(periods)
@@ -301,6 +424,7 @@ def build_dm_spec(P, landed=None):
     # raw forecast spine
     terms = spine_terms(P, ev)
     srows = []
+    spreads = scenario_spreads(P) if app else []
     for ln in P["lines"]:
         for i, m in enumerate(forecast_views):
             kind, rate, manual, base, n = terms[ln["line"]][i]
@@ -311,15 +435,20 @@ def build_dm_spec(P, landed=None):
                    f"{base:.2f}" if base is not None else "NULL"]
             if has_pct:
                 row.append(q(ln["of"]) if ln["kind"] == "pct_of_total" else "NULL")
+            row += [f"{spread[ln['line']]:.6f}" for _n, _c, spread in spreads]
             srows.append(row)
     scols = ["LINE_ITEM","SECTION","SEC_ORDER","LINE_ORDER","MONTH","MONTH_NUM","MONTH_END","N","KIND","DEFAULT_RATE","MANUAL_VALUE","JUNE_BASE"]
     spine_pairs = [("LINE_ITEM","Line Item"),("SECTION","Section"),("SEC_ORDER","Section Order"),("LINE_ORDER","Line Order"),("MONTH","Month"),("MONTH_NUM","Month Num"),("MONTH_END","Month End"),("N","N"),("KIND","Kind"),("DEFAULT_RATE","Default Rate"),("MANUAL_VALUE","Manual Value"),("JUNE_BASE","June Base")]
     if has_pct:
         scols.append("OF_SECTION"); spine_pairs.append(("OF_SECTION", "Of Section"))
+    for i, (_name, col_name, _spread) in enumerate(spreads, 1):
+        scols.append(f"SPREAD_{i}"); spine_pairs.append((f"SPREAD_{i}", col_name))
     spine = {"id": "spine", "kind": "table", "source": {"kind": "sql", "connectionId": conn, "statement": values_sql(srows, scols)},
              "columns": dmcols(spine_pairs)}
     return {"name": P["name"] + " — Model", "schemaVersion": 1, "folderId": P["folderId"],
-            "pages": [{"id": "model", "name": "Model", "elements": [glDetail, assumptions, spine]}]}
+            "pages": [{"id": "model", "name": "Model", "elements": [glDetail, assumptions, spine,
+                                                                     *([landed_plan_detail(P, plan_src)] if plan_src else []),
+                                                                     *([metric_map_element(P)] if app else [])]}]}
 
 def dmcols(pairs):
     return [{"id": f"c{i}", "name": nm, "formula": f"[Custom SQL/{al}]"} for i, (al, nm) in enumerate(pairs, 1)]
@@ -332,6 +461,8 @@ def map_dm_elements(spec):
         if "Txn Date" in names: out["glDetail"] = el["id"]
         elif "Kind" in names: out["spine"] = el["id"]
         elif "Driver" in names: out["assumptions"] = el["id"]
+        elif "Plan Amount" in names: out["planDetail"] = el["id"]
+        elif "Weight" in names: out["metricMap"] = el["id"]
     return out
 
 # ---------- parity (local) ----------
@@ -570,7 +701,7 @@ def amount_formula(row, table, sec_cols, fy_nums, fy=False):
     return out
 
 
-def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None):
+def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None, plan_src=None):
     conn = P["connectionId"]; editable = P["intent"] in ("editable", "what-if"); DMP = "Custom SQL"; C = "PnL Combined"
     GLP = "GL Detail" if landed else DMP  # a DM table element is referenced by its name
     DEPT = (landed or {}).get("labels", {}).get("Department", "Department")
@@ -595,6 +726,13 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
         approved_graph = emit_workbook_wiring(manifest, receipt)["wiring"]
         editable = False  # Assigned wide input is the only editable surface.
     cur = CUR(P)
+    # With workflows the workbook is a planning app (lib/forecast_app.py): a scenario switch whose
+    # value the forecast reads directly (a control's controlId is a formula handle).
+    spreads = scenario_spreads(P) if (workflows is not None and editable and approved_inputs is None) else []
+    scenario_term = ""
+    if spreads:
+        scenario_term = (f" + Switch([{forecast_app.SCENARIO_CONTROL}], "
+                         + ", ".join(f'"{name}", [FJ/{col}]' for name, col, _s in spreads) + ", 0)")
     def dm(elid): return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
     elements = []
     # actuals wrap (live)
@@ -607,6 +745,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
     spine_names = [("sec","Section"),("so","Section Order"),("line","Line Item"),("lo","Line Order"),("m","Month"),("mn","Month Num"),("me","Month End"),("n","N"),("k","Kind"),("dr","Default Rate"),("mv","Manual Value"),("jb","June Base")]
     if has_pct:
         spine_names.append(("of", "Of Section"))
+    spine_names += [(f"sp{i}", col) for i, (_n, col, _s) in enumerate(spreads, 1)]
     spineWrap = {"id":"spineWrap","kind":"table","name":"Forecast Spine","source":dm("spine"),
         "columns":[{"id":f"s_{k}","name":nm,"formula":f"[{DMP}/{nm}]"} for k,nm in spine_names]}
     # forecast element(s). Without percentage-of-total lines there is one "forecast" table;
@@ -615,20 +754,31 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
     stage1_id, stage1_name = ("forecastCalc", "Forecast Base") if has_pct else ("forecast", "Forecast")
     pct_branch = '[Kind] = "pct", 0, ' if has_pct else ""
     if editable:
-        rateInput = {"id":"rateInput","kind":"input-table","name":"Growth Rates (editable)","inputMode":"edit","source":{"kind":"empty","connectionId":conn},
-            "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"RATE","type":"number","name":"Rate","format":PCT(P)}],"order":["LINE_ITEM","RATE"]}
-        manualInput = {"id":"manualInput","kind":"input-table","name":"Manual Forecast (editable)","inputMode":"edit","source":{"kind":"empty","connectionId":conn},
-            "columns":[{"id":"ID"},{"id":"LINE_ITEM","type":"text","name":"Line Item"},{"id":"MONTH","type":"text","name":"Month"},{"id":"MONTH_NUM","type":"number","name":"Month Num"},{"id":"MONTH_END","type":"datetime","name":"Month End"},{"id":"AMOUNT","type":"number","name":"Amount","format":cur}],"order":["LINE_ITEM","MONTH","AMOUNT"]}
+        # The planning app (workflows) labels the editable tables in sentence case; join keys and the
+        # forecast formulas follow the names (a join column is referenced by its display name).
+        app = workflows is not None
+        RL, RR = ("Line item", "Monthly growth rate") if app else ("Line Item", "Rate")
+        rate_title, manual_title = ("Growth rates", "Manual forecast") if app else ("Growth Rates (editable)", "Manual Forecast (editable)")
+        rateInput = {"id":"rateInput","kind":"input-table","name":rate_title,"inputMode":"edit","source":{"kind":"empty","connectionId":conn},
+            "columns":[{"id":"ID",**({"name":"Row ID","hidden":True} if app else {})},{"id":"LINE_ITEM","type":"text","name":RL},{"id":"RATE","type":"number","name":RR,"format":PCT(P)}],"order":["LINE_ITEM","RATE"],
+            **({"tableComponents":{"summaryBar":"hidden"}} if app else {})}
+        manualInput = {"id":"manualInput","kind":"input-table","name":manual_title,"inputMode":"edit","source":{"kind":"empty","connectionId":conn},
+            **({"tableComponents":{"summaryBar":"hidden"}} if app else {}),
+            "columns":[{"id":"ID",**({"name":"Row ID","hidden":True} if app else {})},{"id":"LINE_ITEM","type":"text","name":RL},{"id":"MONTH","type":"text","name":"Month"},
+                       {"id":"MONTH_NUM","type":"number","name":"Month Num",**({"hidden":True} if app else {})},
+                       {"id":"MONTH_END","type":"datetime","name":"Month End",**({"hidden":True} if app else {})},
+                       {"id":"AMOUNT","type":"number","name":"Amount","format":cur}],"order":["LINE_ITEM","MONTH","AMOUNT"]}
         forecast = {"id":stage1_id,"kind":"table","name":stage1_name,
             "source":{"kind":"join","name":"FJ","primarySource":{"kind":"table","elementId":"spineWrap"},
-                "joins":[{"name":"Rates","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"rateInput"},"columns":[{"left":"[Line Item]","right":"[Line Item]"}]},
-                         {"name":"Manual","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"manualInput"},"columns":[{"left":"[Line Item]","right":"[Line Item]"},{"left":"[Month Num]","right":"[Month Num]"}]}]},
+                "joins":[{"name":"Rates","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"rateInput"},"columns":[{"left":"[Line Item]","right":f"[{RL}]"}]},
+                         {"name":"Manual","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"manualInput"},"columns":[{"left":"[Line Item]","right":f"[{RL}]"},{"left":"[Month Num]","right":"[Month Num]"}]}]},
             "columns":[{"id":"f_sec","name":"Section","formula":"[FJ/Section]"},{"id":"f_so","name":"Section Order","formula":"[FJ/Section Order]"},
                 {"id":"f_line","name":"Line Item","formula":"[FJ/Line Item]"},{"id":"f_lo","name":"Line Order","formula":"[FJ/Line Order]"},
                 {"id":"f_m","name":"Month","formula":"[FJ/Month]"},{"id":"f_mn","name":"Month Num","formula":"[FJ/Month Num]"},{"id":"f_me","name":"Month End","formula":"[FJ/Month End]"},
                 {"id":"f_n","name":"N","formula":"[FJ/N]"},{"id":"f_k","name":"Kind","formula":"[FJ/Kind]"},{"id":"f_jb","name":"June Base","formula":"[FJ/June Base]"},
                 *([{"id":"f_of","name":"Of Section","formula":"[FJ/Of Section]"}] if has_pct else []),
-                {"id":"f_er","name":"Eff Rate","formula":"Coalesce([Rates/Rate], [FJ/Default Rate])"},
+                {"id":"f_er","name":"Eff Rate","formula":f"Coalesce([Rates/{RR}], [FJ/Default Rate])" + scenario_term},
+                *([{"id":"f_scn","name":"Active Scenario","formula":f'Coalesce([{forecast_app.SCENARIO_CONTROL}], "{P["scenarios"]["default"]}")'}] if spreads else []),
                 {"id":"f_em","name":"Eff Manual","formula":"Coalesce([Manual/Amount], [FJ/Manual Value])"},
                 {"id":"f_amt","name":"Amount","formula":'If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [June Base], ' + pct_branch + '[June Base] * (1 + [Eff Rate]) ^ [N])',"format":cur},
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
@@ -810,9 +960,15 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
             figures["grossMargin"] = signed(gm, True)
         if ebitda is not None:
             figures["ebitda"] = signed(ebitda, True)
-        wf = demo_workflows.workflow_elements(workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast", figures)
-        # Header zone: title, Parameters (scenario picker + forecast start), latest status, buttons.
-        header["body"] = f"# {P['name']}\n{grain_adj} actuals and forecast"
+        wf = demo_workflows.workflow_elements(
+            workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast", figures,
+            scenario_control=forecast_app.SCENARIO_CONTROL if spreads else None, no_status="Draft")
+        return app_spec(P, dm, els, wf=wf, rows=rows, kpi={"middle": middle, "bottom": bottom},
+                        first_positive=first_positive, fy_nums=fy_nums, periods=periods, n_act=n_act,
+                        hidden=[actuals, spineWrap, *forecast_stages, pnlCombined], pivot=pivot, gl=glTable,
+                        assump=assumpTable, rate=rateInput if editable else None,
+                        manual=manualInput if editable else None, plan_src=plan_src, spreads=spreads,
+                        cur=cur, landed=landed)
     main_els=[header]+([wf["tables"][0], wf["status"], *wf["buttons"]] if wf else [])+kpis+[trend]+source_charts+[pivot]
     detail_els=[glTable]
     input_els=[assumpTable]
@@ -832,6 +988,72 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
     return {"name":P["name"],"schemaVersion":1,"kind":"workbook","folderId":P["folderId"],
             "pages":pages,"layout":forecast_layout(editable, extra_model_ids, [c["id"] for c in source_charts], [k["id"] for k in kpis], bool(wf))}
 
+def _app_titles(P):
+    """``(company, title)`` for the app header: ``Vantora FY27 Rolling Forecast — run tag`` ->
+    ``("Vantora", "FY27 rolling forecast")``; the run tag stays in the document name only."""
+    base = re.split(r"\s+[—–-]\s+", P["name"], maxsplit=1)[0].strip()
+    fy = P.get("fyLabel") or ""
+    fy = re.sub(r"\s+total$", "", fy, flags=re.I)
+    if fy and f" {fy} " in f" {base} ":
+        company, rest = base.split(fy, 1)
+        return company.strip(), forecast_app.sentence((fy + rest).strip())
+    return "", forecast_app.sentence(base)
+
+
+def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_act, hidden, pivot, gl, assump,
+             rate, manual, plan_src, spreads, cur, landed):
+    """The planning-app workbook (lib/forecast_app.py) for a forecast built with --workflows."""
+    by_num = {p["num"]: p for p in periods}
+    fy_label = re.sub(r"\s+total$", "", P.get("fyLabel") or "FY", flags=re.I)
+    prior_nums = [n - len(fy_nums) for n in fy_nums] if fy_nums else []
+    if not prior_nums or not all(n in by_num and by_num[n].get("role", "actual") == "actual"
+                                 and n <= periods[n_act - 1]["num"] for n in prior_nums):
+        prior_nums = []
+    digits = re.search(r"(\d+)$", fy_label)
+    prior_label = (fy_label[:digits.start()] + str(int(digits.group(1)) - 1).zfill(len(digits.group(1)))
+                   if digits else "Prior year")
+    fy_last = by_num[fy_nums[-1]] if fy_nums else periods[-1]
+    end = fy_last.get("end") or ""
+    if not end:
+        raise PlanError("the planning-app layout needs dated periods (month grain)")
+    company, title = _app_titles(P)
+    # Display-ready copies of the builder's own detail elements.
+    # The monthly P&L shows the FY's months (actual | forecast) in $000s so every column is readable.
+    fy_first = by_num[fy_nums[0]] if fy_nums else periods[0]
+    fy_start = (fy_first.get("end") or "")[:8] + "01"
+    thousands = {"kind": "number", "formatString": ",.0f", "prefix": "$", "suffix": "K"}
+    pivot = {**pivot, "name": f"Monthly P&L — {fy_label} ($000s)", "tableStyle": {"preset": "presentation"},
+             "columns": [{**c, "formula": c["formula"] + " / 1000", "format": thousands} if c["id"] == "p_amt" else c
+                         for c in pivot["columns"]],
+             "filters": [{"id": "p_fy", "columnId": "p_m", "kind": "date-range", "mode": "between",
+                          "startDate": fy_start, "endDate": end}]}
+    gl = {**gl, "name": f"GL actuals ({len(P.get('actuals', [])):,} transactions)",
+          "tableComponents": {"summaryBar": "hidden"}, "tableStyle": {"preset": "presentation"},
+          # a dimension the landed table does not carry (an empty Department / Vendor) is not shown
+          "columns": [{**c, "name": forecast_app.sentence(c["name"])} for c in gl["columns"]
+                      if c["name"] != "Txn Date" and c["formula"] not in ("[GL Detail/Department]", "[GL Detail/Vendor]")]}
+    ctx = {"P": P, "wf": wf, "rows": rows, "kpi": kpi, "first_positive": first_positive, "fy_nums": fy_nums,
+           "prior_nums": prior_nums, "fy_label": fy_label, "prior_label": prior_label,
+           "fy_end": (int(end[:4]), int(end[5:7])), "n_fy": len(fy_nums) or len(periods),
+           "hidden": hidden, "pivot": pivot, "gl": gl, "assump": assump, "rate": rate, "manual": manual,
+           "dm": dm, "plan": plan_src, "region_of": (plan_src or {}).get("regions") or {},
+           "scenario": ({"names": P["scenarios"]["names"], "default": P["scenarios"]["default"]} if spreads else None),
+           "title": title, "company": company, "last_actual_num": periods[n_act - 1]["num"]}
+    app = forecast_app.build(ctx)
+    return {"name": P["name"], "schemaVersion": 1, "kind": "workbook", "folderId": P["folderId"],
+            "pages": app["pages"], "layout": app["layout"], "settings": app["settings"]}
+
+
+def merge_agent(wb_spec, macros, workflows, name="FP&A forecast agent"):
+    """Phase 6 in the same run: the recommended workbook agent + chat merged into the spec (unchanged
+    when no macros were given or no agent is recommended). Prints the on-camera pitch."""
+    if macros is None:
+        return wb_spec
+    rec, fragment = agent_enhance.recommend_for_workbook(macros, workflows, wb_spec, name)
+    print("AGENT: " + (rec["pitch"] if rec["recommend"] else "no agent recommended"))
+    return agent_enhance.merge_fragment(wb_spec, fragment) if fragment else wb_spec
+
+
 def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
     """The post-create setup program, when asked for: manual commit on every input table,
     then the seeds. The one-row Parameters seed is emitted only with ``--workflows`` (that
@@ -841,17 +1063,24 @@ def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path):
         seed = None
         if workflows is not None:
             periods, n_act, _sections = plan_model(P)
-            seed = {"scenario": "Base", "start": periods[n_act]["end"][:8] + "01"}
+            seed = {"start": periods[n_act]["end"][:8] + "01"}
+            if not (P["intent"] in ("editable", "what-if") and scenario_spreads(P)):
+                seed["scenario"] = "Base"   # no scenario switch: the Parameters row holds the scenario
         table_seeds = []
         if P["intent"] in ("editable", "what-if"):
             rate, manual = seed_rows(P)
             table_seeds = [("rateInput", RATE_SEED_COLUMNS, rate), ("manualInput", MANUAL_SEED_COLUMNS, manual)]
-        program = demo_workflows.emit_manual_commit_program(wb_spec, seed, table_seeds)
+        program = demo_workflows.emit_manual_commit_program(wb_spec, seed, table_seeds,
+                                                            series_colors=forecast_app.SERIES_COLORS)
         with open(program_path, "w", encoding="utf-8") as stream:
             stream.write(program)
         seeded = (["parameters 1 row"] if seed else []) + [f"{el} {len(rows)} rows" for el, _c, rows in table_seeds if rows]
         print(f"SETUP PROGRAM: {program_path} (manual commit on every input table"
               + ("; seeds " + ", ".join(seeded) if seeded else "") + "; run once on the new workbook)")
+
+
+LOCAL_DM_IDS = {"glDetail": "glDetail", "spine": "spine", "assumptions": "assumptions",
+                "planDetail": "planDetail", "metricMap": "metricMap"}
 
 
 def parse_args(argv=None):
@@ -874,27 +1103,96 @@ def parse_args(argv=None):
                              "input table (needed before backend actions / agent tools can write), then seeds "
                              "the rate / manual input tables from the seed CSV rows (editable / what-if plans) "
                              "and, with --workflows, the one Parameters row; run it once on a fresh workbook")
+    parser.add_argument("--staging-approval", metavar="APPROVAL.json",
+                        help="with --post: build in an isolated staging folder while source review issues are "
+                             "still pending, under a named staging approval (owner, reviewer, folderId, "
+                             "sourceSha256, sourceReviewApproval {status: approved_for_staging, issues: the exact "
+                             "audited issue objects}). Never asserts verified dispositions")
+    parser.add_argument("--staging-approval-template", metavar="OUT.json",
+                        help="write the staging approval to review (exact audited issues, blank owner/reviewer, "
+                             "status pending) and stop")
+    parser.add_argument("--agent-macros", metavar="MACROS.json",
+                        help="with --workflows: merge the Phase 6 workbook agent (recommend-agent.py) into the "
+                             "workbook before it is validated and created, so one POST carries it")
     parser.add_argument("--parity-tolerance", type=float, default=None,
                         help="absolute tolerance for plan.parityTargets (default: float noise only, "
                              "max(1e-6, 1e-9 * |source value|))")
     return parser.parse_args(argv)
 
 
+class StagingError(ValueError):
+    """A staging approval that does not cover the exact audited source issues and folder."""
+
+
+def staging_template(P, report):
+    return {"scope": "staging build only; production --post keeps the verified-disposition gate",
+            "folderId": P.get("folderId"), "sourceSha256": report["sourceSha256"], "owner": "", "reviewer": "",
+            "sourceReviewApproval": {"status": "pending", "issues": report["issues"]}}
+
+
+def check_staging_approval(P, report, approval):
+    """The approval must name an owner and reviewer, approve exactly the audited issues of these source
+    bytes for staging, and be bound to the plan's folder. It never marks anything verified."""
+    if not str(approval.get("owner") or "").strip() or not str(approval.get("reviewer") or "").strip():
+        raise StagingError("staging approval needs a named owner and reviewer")
+    review = approval.get("sourceReviewApproval") or {}
+    if review.get("status") != "approved_for_staging":
+        raise StagingError("sourceReviewApproval.status must be approved_for_staging")
+    if approval.get("sourceSha256") != report["sourceSha256"]:
+        raise StagingError("staging approval is for different source bytes; re-approve")
+    if approval.get("folderId") != P.get("folderId"):
+        raise StagingError("staging approval is bound to a different folder than the plan's")
+    want = sorted(source_issue_hash(i) for i in report["issues"])
+    got = sorted(source_issue_hash(i) for i in review.get("issues") or [])
+    if want != got:
+        raise StagingError("approved issues are not exactly the audited issues; re-approve")
+
+
 def main(argv=None):
     args = parse_args(argv)
     with open(args.plan, encoding="utf-8") as stream:
         P = json.load(stream)
+    staging = bool(args.staging_approval or args.staging_approval_template)
+    if args.staging_approval and not args.post:
+        print("STAGING: --staging-approval goes with --post", file=sys.stderr)
+        return 1
     try:
-        source_path, gate_report = gate_plan_source(
-            P,
-            source_arg=args.source,
-            dispositions_path=args.review_dispositions,
-            plan_path=args.plan,
-            draft=not args.post,
-        )
+        if staging:
+            source_path, gate_report = gate_plan_staging_source(P, source_arg=args.source, plan_path=args.plan)
+        else:
+            source_path, gate_report = gate_plan_source(
+                P,
+                source_arg=args.source,
+                dispositions_path=args.review_dispositions,
+                plan_path=args.plan,
+                draft=not args.post,
+            )
     except MigrationGateError as error:
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
         return error.exit_code
+    if args.staging_approval_template:
+        with open(args.staging_approval_template, "w", encoding="utf-8") as stream:
+            json.dump(staging_template(P, gate_report), stream, indent=1)
+        print(f"STAGING APPROVAL TEMPLATE: {args.staging_approval_template} — review every issue, name the owner "
+              "and reviewer, set status approved_for_staging, then re-run with --post --staging-approval")
+        return 0
+    if args.staging_approval:
+        try:
+            with open(args.staging_approval, encoding="utf-8") as stream:
+                check_staging_approval(P, gate_report, json.load(stream))
+        except (OSError, ValueError) as error:
+            print(f"STAGING GATE: {error}", file=sys.stderr)
+            return 1
+        print("STAGING GATE: approved_for_staging by the named owner/reviewer for folder "
+              f"{P.get('folderId')}; pending issues stay pending: "
+              + ", ".join(i.get("code", "?") for i in gate_report["issues"]))
+    agent_macros = None
+    if args.agent_macros:
+        if not args.workflows:
+            print("PLAN ERROR: --agent-macros needs --workflows", file=sys.stderr)
+            return 1
+        with open(args.agent_macros, encoding="utf-8") as stream:
+            agent_macros = json.load(stream)
     print(
         f"MIGRATION GATE: {gate_report['status']} "
         f"source={source_path.name} sha256={gate_report['sourceSha256']}"
@@ -908,14 +1206,19 @@ def main(argv=None):
     if bool(args.actuals_table) != bool(args.landing):
         print("PLAN ERROR: --actuals-table and --landing go together", file=sys.stderr)
         return 1
+    plan_src = None
     if args.actuals_table:
         try:
             with open(args.landing, encoding="utf-8") as stream:
-                landed = landed_actuals_source(json.load(stream), args.actuals_table, P)
+                landing = json.load(stream)
+            landed = landed_actuals_source(landing, args.actuals_table, P)
+            plan_src = landed_plan_source(landing, P)
         except (PlanError, OSError, ValueError) as error:
             print(f"PLAN ERROR: {error}", file=sys.stderr)
             return 1
         print("ACTUALS SOURCE: warehouse table " + ".".join(landed["path"]))
+        if plan_src:
+            print("PLAN SOURCE: warehouse table " + ".".join(plan_src["path"]))
     workflows = None
     if args.workflows:
         try:
@@ -939,25 +1242,26 @@ def main(argv=None):
               file=sys.stderr)
         return 1
     try:   # a plan the workbook cannot express fails before anything is written or posted
-        build_wb_spec(P,"<dm-id>",{"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"},landed=landed,workflows=workflows)
+        build_wb_spec(P,"<dm-id>",LOCAL_DM_IDS,landed=landed,workflows=workflows,plan_src=plan_src)
     except PlanError as error:
         print(f"PLAN ERROR: {error}", file=sys.stderr)
         return 1
     os.makedirs(outdir, exist_ok=True)
     rate_csv,man_csv=seed_csvs(P,outdir)
     print(f"seed CSVs: {rate_csv}, {man_csv}")
-    dm_spec=build_dm_spec(P,landed)
+    dm_spec=build_dm_spec(P,landed,plan_src,app=workflows is not None)
     with open(f"{outdir}/dm_spec.json", "w", encoding="utf-8") as stream:
         json.dump(dm_spec, stream, indent=1)
     if not do_post:
         # map ids from the local spec (ids as-authored) for a dry-run wb spec
-        els={"glDetail":"glDetail","spine":"spine","assumptions":"assumptions"}
-        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed,workflows=workflows))
+        els=dict(LOCAL_DM_IDS)
+        wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,"<dm-id>",els,landed=landed,workflows=workflows,plan_src=plan_src))
         try:
             emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
         except demo_workflows.WorkflowError as error:
             print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
             return 1
+        wb_spec = merge_agent(wb_spec, agent_macros, workflows)
         with open(f"{outdir}/wb_spec.json", "w", encoding="utf-8") as stream:
             json.dump(wb_spec, stream, indent=1)
         print(f"DRY RUN — specs written to {outdir}/ (dm_spec.json, wb_spec.json). Re-run with --post to build live.")
@@ -969,16 +1273,22 @@ def main(argv=None):
     full=api(base,tok,"GET",f"/v2/dataModels/{dm_id}/spec")
     els=map_dm_elements(full)
     # Layout is the last write before the current contents API validates + creates.
-    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed,workflows=workflows))
+    wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed,workflows=workflows,plan_src=plan_src))
     try:
         emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program)
     except demo_workflows.WorkflowError as error:
         print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
         return 1
+    wb_spec = merge_agent(wb_spec, agent_macros, workflows)
+    with open(f"{outdir}/wb_spec.posted.json", "w", encoding="utf-8") as stream:
+        json.dump(wb_spec, stream, indent=1)
     checked=api(base,tok,"POST","/v2/workbooks",workbook_wire.dry_run_request(wb_spec))
     workbook_wire.assert_dry_run_success(checked)
     wb=api(base,tok,"POST","/v2/workbooks",wb_spec)
     print("workbookId:",wb["workbookId"],"| url:",wb.get("url"))
+    with open(f"{outdir}/posted-ids.json", "w", encoding="utf-8") as stream:
+        json.dump({"dataModelId": dm_id, "dmElements": els, "workbookId": wb["workbookId"], "url": wb.get("url"),
+                   "staging": bool(args.staging_approval)}, stream, indent=1)
     print("NOTE: POST uses a stacked notebook-flow layout via code_rep; refine with wb-rep push if needed.")
     return 0
 

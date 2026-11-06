@@ -54,3 +54,13 @@ does this reuse automatically.
 `POST /v2/workbooks` with `dryRun: true` validates the merged spec's agent and chat schema
 (a bad tool kind is rejected by name). Live behavior (driver change, Versions row,
 Approvals row) is checked after publish by querying those tables.
+
+## Planning-app workbooks
+
+When the workbook has the planning app's scenario switch (a `segmented` control with
+`controlId: Scenario`), the set-scenario tool is a `set-control-value` step on that control
+(agent input `scenario`) instead of a Parameters update, and the agent reads the active scenario
+from the forecast's `Active Scenario` column. The chat is placed inside the reserved
+`agentPanel` container on the Forecast page, under its header; the agent carries a static
+greeting naming what it can do. `build-forecast-model.py --agent-macros macros.json` merges the
+agent in the same run, before the workbook POST.

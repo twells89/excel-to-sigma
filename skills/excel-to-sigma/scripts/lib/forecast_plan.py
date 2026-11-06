@@ -748,6 +748,7 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
                 note_driver(dsheet, dcol, drow, float(rate))
                 basis = next((_text(c.value) for c in dws[drow][rate_col:] if _text(c.value)), "")
                 assumptions.append([drv_name, float(rate), basis])
+    scenarios = driver_scenarios(wv, driver_ranges, assumptions)
 
     # ---- actuals (GL)
     if len(sumifs_sheets - {ws.title}) != 1:
@@ -879,6 +880,8 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
         "sourceCharts": charts,
         "draftReviewIssues": issues,
     })
+    if scenarios:
+        plan["scenarios"] = scenarios
     if fy_labels and len(fy_labels) != len(periods):
         plan["fyPeriods"] = fy_labels
         plan["fyLabel"] = _text(ws.cell(header_row, fy_col).value)
@@ -1260,3 +1263,45 @@ def _chart_title(chart):
         return "".join(run.t for p in chart.title.tx.rich.p for run in (p.r or [])).strip() or None
     except AttributeError:
         return None
+
+
+def driver_scenarios(wv, driver_ranges, assumptions):
+    """Scenario rate columns beside the live driver column (``Downside | Base | Upside``).
+
+    In the driver table's header row (the nearest row above the first driver whose rate cell is
+    text), every other column with a text header that holds a number on every driver row is a
+    scenario. Two or more are needed. The default scenario is the one whose rates equal the live
+    rates on every driver (the scenario the workbook was saved on); else the first. Returns
+    ``{"names", "default", "rates": {driver: {scenario: rate}}}`` or ``None``.
+    """
+    live = {name: rate for name, rate, _basis in assumptions}
+    found = {}
+    for dsheet, dcol in driver_ranges:
+        dws = wv[dsheet]
+        rate_col = column_index_from_string(dcol)
+        rows = [r for r in range(1, dws.max_row + 1)
+                if _is_number(dws.cell(r, rate_col).value)
+                and next((_text(c.value) for c in dws[r][:rate_col - 1] if _text(c.value)), None) in live]
+        if not rows:
+            continue
+        header = next((r for r in range(rows[0] - 1, 0, -1) if _text(dws.cell(r, rate_col).value)), None)
+        if header is None:
+            continue
+        cols = [c for c in range(rate_col + 1, dws.max_column + 1)
+                if _text(dws.cell(header, c).value)
+                and all(_is_number(dws.cell(r, c).value) for r in rows)]
+        if len(cols) < 2:
+            continue
+        names = [_text(dws.cell(header, c).value) for c in cols]
+        if found and found["names"] != names:
+            return None   # driver tables disagree on their scenarios: leave scenarios to review
+        found.setdefault("names", names)
+        rates = found.setdefault("rates", {})
+        for r in rows:
+            name = next(_text(c.value) for c in dws[r][:rate_col - 1] if _text(c.value))
+            rates[name] = {n: float(dws.cell(r, c).value) for n, c in zip(names, cols)}
+    if not found or set(found["rates"]) != set(live):
+        return None
+    default = next((n for n in found["names"]
+                    if all(abs(found["rates"][d][n] - live[d]) < 1e-12 for d in live)), found["names"][0])
+    return {"names": found["names"], "default": default, "rates": found["rates"]}

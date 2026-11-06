@@ -19,6 +19,8 @@ SCENARIO_INPUT = "scenario"
 DRIVER_ID = "set-driver"          # growth driver edit; not a macro workflow, offered with the act profile
 DRIVER_TABLE = "rateInput"        # build-forecast-model.py "Growth Rates (editable)" input table
 DRIVER_KEY_COL, DRIVER_VALUE_COL = "LINE_ITEM", "RATE"
+AGENT_PANEL = "agentPanel"        # lib/forecast_app.py reserves this container for the chat
+SCENARIO_CONTROL = "Scenario"     # lib/forecast_app.py scenario switch controlId
 # Plain nouns for the on-camera sentence, keyed by actionId.
 SPOKEN = {"roll-forward": "roll forward a month", "snapshot-version": "snapshot a version",
           "submit-approval": "submit for approval", SCENARIO_ID: "switch scenario",
@@ -100,7 +102,11 @@ TOOL_DESCRIPTIONS = {
 }
 
 
-def _scenario_effects():
+def _scenario_effects(scenario_control=None):
+    if scenario_control:
+        # the workbook's scenario switch is what the forecast reads: the tool sets that control
+        return [{"effect": "set-control-value", "control": scenario_control,
+                 "value": {"type": "agent-input", "inputName": SCENARIO_INPUT}}]
     return [{"effect": "update-rows", "tableElementId": dw.PARAMETERS,
              "whichRows": {"type": "formula", "formula": "true"},
              "values": {dw.COLUMN_IDS[(dw.PARAMETERS, "Selected Scenario")]:
@@ -116,11 +122,13 @@ def _driver_effects():
              "values": {DRIVER_VALUE_COL: {"type": "agent-input", "inputName": "rate"}}}]
 
 
-def _instructions(rec, name):
+def _instructions(rec, name, scenario_control=None):
     ids = {t["actionId"] for t in rec["tools"]}
     lines = [f"You operate the {name} workbook that replaced a macro-driven Excel forecast. "
              'Read @dataSource("parameters"), @dataSource("versions") and @dataSource("approvals") '
-             "to see the current scenario, forecast start month, saved versions and approval requests."]
+             + ("to see the forecast start month, saved versions and approval requests; the Active Scenario "
+                'column of @dataSource("forecast") is the scenario the forecast is on.' if scenario_control else
+                "to see the current scenario, forecast start month, saved versions and approval requests.")]
     if "roll-forward" in ids:
         lines.append('To roll the forecast forward one month call @tool("roll-forward").')
     if "snapshot-version" in ids:
@@ -132,14 +140,19 @@ def _instructions(rec, name):
                      'rate; read @dataSource("rateInput") first and compute the new rate from the current one.')
     if SCENARIO_ID in ids:
         lines.append(f'To switch scenario call @tool("{SCENARIO_ID}") with the scenario name.')
+    lines.append("Answer in plain finance language with figures formatted like $145.4M and 65.8%.")
     lines.append("Writes ask the user for approval first. After any write, approved or declined, re-query "
                  "the affected table and report the row count and values as the data shows them; never "
                  "claim a change from the tool result alone. Refer to columns by their display names only.")
     return " ".join(lines)
 
 
+GREETING = ("Hi, I'm the forecast agent. I can explain the numbers or run the forecast workflows for you: "
+            "{actions}. Anything that changes the workbook asks you first. Try asking: {example}")
+
+
 def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=None, request_label="Forecast",
-                            figures=None, agent_id="fpa-agent", chat_id="chat"):
+                            figures=None, agent_id="fpa-agent", chat_id="chat", scenario_control=None):
     """``{"agents": [agent], "chatElement": {...}}`` for a recommendation.
 
     ``effects_by_action`` (actionId -> effect list) lets the caller reuse the exact effects of the
@@ -157,7 +170,7 @@ def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=
                 continue  # workbook has no growth-rate table; never emit a tool that targets nothing
             effects = _driver_effects()
         elif action_id == SCENARIO_ID:
-            effects = _scenario_effects()
+            effects = _scenario_effects(scenario_control)
         elif action_id in effects_by_action:
             effects = effects_by_action[action_id]
         else:
@@ -165,7 +178,11 @@ def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=
         tools.append(_tool(entry, effects, entry["label"]))
     if DRIVER_TABLE not in grounding_element_ids:
         rec = {**rec, "tools": [t for t in rec["tools"] if t["actionId"] != DRIVER_ID]}
-    agent = {"id": agent_id, "name": name, "instructions": _instructions(rec, name),
+    actions = _join(SPOKEN.get(t["actionId"], t["label"].lower()) for t in rec["tools"])
+    example = ("how does revenue compare with plan?"
+               if any(t["actionId"] == SCENARIO_ID for t in rec["tools"]) else "summarise the forecast.")
+    agent = {"id": agent_id, "name": name, "instructions": _instructions(rec, name, scenario_control),
+             "greeting": {"mode": "static", "message": GREETING.format(actions=actions, example=example)},
              "dataSources": [{"kind": "table", "elementId": e} for e in grounding_element_ids],
              "tools": tools}
     return {"agents": [agent], "chatElement": {"id": chat_id, "kind": "chat", "agentId": agent_id}}
@@ -199,9 +216,21 @@ def merge_fragment(spec, fragment, chat_anchor="forecast", columns=(1, 25), rows
     if any(e.get("id") == chat["id"] for e in elements):
         raise ValueError(f"workbook already has an element {chat['id']}")
     elements.append(chat)
+    layout = doc["layout"]
+    # A planning-app workbook reserves an agent panel: the chat fills the panel below its header.
+    panel = re.search(r'(<Container\b[^>]*\belementId="%s"[^>]*>)(.*?)(</Container>)' % re.escape(AGENT_PANEL),
+                      layout, re.S)
+    if panel:
+        ends = [int(m.group(1)) for m in re.finditer(r'gridRow="\d+ / (\d+)"', panel.group(2))]
+        start = max(ends, default=1)
+        rows_end = int(re.search(r'gridRow="(\d+) / (\d+)"', panel.group(1)).group(2)) - \
+            int(re.search(r'gridRow="(\d+) / (\d+)"', panel.group(1)).group(1)) + 1
+        line = (f'      <Element elementId="{chat["id"]}" gridColumn="1 / 25" '
+                f'gridRow="{start} / {max(rows_end, start + 6)}"/>\n')
+        doc["layout"] = layout[:panel.end(2)] + line + layout[panel.end(2):]
+        return out
     owners = code_rep.workbook_page_by_element(doc)
     page_id = (owners.get(chat_anchor) or doc["pages"][0])["id"]
-    layout = doc["layout"]
     block = re.search(r'(<Page\b[^>]*\bid="%s"[^>]*>)(.*?)(</Page>)' % re.escape(page_id), layout, re.S)
     if not block:
         raise ValueError(f"page {page_id} not found in layout")
@@ -211,3 +240,26 @@ def merge_fragment(spec, fragment, chat_anchor="forecast", columns=(1, 25), rows
             f'gridRow="{start} / {start + rows}"/>\n')
     doc["layout"] = layout[:block.end(2)] + line + layout[block.end(2):]
     return out
+
+
+GROUNDING = ("forecast", "parameters", "versions", "approvals", "rateInput")
+
+
+def recommend_for_workbook(macros, workflows, wb=None, name="FP&A forecast agent", fragment=True):
+    """``(recommendation, fragment or None)`` for a workbook spec (or the default grounding).
+
+    Grounds the agent in the workbook's real elements, reuses its button effects and, when the
+    workbook has the planning app's scenario switch, makes set-scenario set that control."""
+    import code_rep
+    wf = workflows.get("workflows", []) if isinstance(workflows, dict) else workflows
+    elements = code_rep.workbook_elements(wb) if wb else []
+    have = {e.get("id") for e in elements} if wb else set(GROUNDING)
+    rec = recommend_agent(macros, wf, drivers=DRIVER_TABLE in have)
+    if not rec["recommend"] or not fragment:
+        return rec, None
+    ids = [i for i in GROUNDING if i in have]
+    effects = button_effects(wb) if wb else None
+    scenario = next((e.get("controlId") for e in elements
+                     if e.get("kind") == "control" and e.get("controlId") == SCENARIO_CONTROL), None)
+    return rec, agent_document_fragment(rec, name, ids, effects_by_action=effects, scenario_control=scenario)
+

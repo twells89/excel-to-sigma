@@ -64,7 +64,8 @@ class AgentEnhanceTests(unittest.TestCase):
                                           figures={"revenue": "Sum([PnL Combined/Amount])"})
         self.assertEqual(frag["chatElement"], spike["chat"])
         agent = frag["agents"][0]
-        self.assertEqual(set(agent), set(spike["agent"]))
+        self.assertEqual(set(agent) - {"greeting"}, set(spike["agent"]))   # greeting: static, dry-run verified
+        self.assertEqual(agent["greeting"]["mode"], "static")
         self.assertEqual(agent["dataSources"][0], spike["agent"]["dataSources"][0])
         spike_tool = next(t for t in spike["agent"]["tools"] if t["toolId"] == "roll-forward")
         for tool in agent["tools"]:

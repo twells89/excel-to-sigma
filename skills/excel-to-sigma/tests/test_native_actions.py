@@ -598,7 +598,7 @@ class TestDemoWorkflows(unittest.TestCase):
             'assumptions':[['Revenue growth',0.1,'monthly']],
             'actuals':[{'date':'2026-01-10','month':'Jan-26','line':'Revenue','section':'Revenue','secOrder':1,
                 'lineOrder':1,'dept':'Sales','vendor':'Customer','amt':100.0}]}
-        cls.els={'glDetail':'gl','spine':'sp','assumptions':'as'}
+        cls.els={'glDetail':'gl','spine':'sp','assumptions':'as','metricMap':'mm','planDetail':'pd'}
 
     def spec(self,workflows=None):
         return self.build.build_wb_spec(copy.deepcopy(self.plan),'dm',self.els,workflows=workflows)
@@ -678,7 +678,7 @@ class TestDemoWorkflows(unittest.TestCase):
         self.assertEqual(by_id['approvalStatus']['source'],{'kind':'table','elementId':'parameters'})
         wire=self.build.workbook_wire.wire_workbook(spec)
         layout=wire['contents']['layout']
-        for eid in ('parameters','versions','approvals','btnRoll','btnSnapshot','btnSubmit','approvalStatus','pnlHeader'):
+        for eid in ('parameters','versions','approvals','btnRoll','btnSnapshot','btnSubmit','approvalStatus','hdrTitle','hdrBand'):
             self.assertIn(f'elementId="{eid}"',layout)
 
     def test_snapshot_freezes_headline_figures_from_kpi_formulas(self):
@@ -689,11 +689,11 @@ class TestDemoWorkflows(unittest.TestCase):
         cols={c['name']:c['id'] for c in by_id['versions']['columns'] if 'type' in c}
         self.assertEqual(set(eff['values']),set(cols.values()))  # one row covers every Versions column
         f=lambda name:eff['values'][cols[name]]['formula']
-        kpi=lambda eid:by_id[eid]['columns'][0]['formula']
-        tiles={kpi(k) for k in ('kpiRev','kpiEbitda','kpiNI')}
-        self.assertEqual(f('FY Revenue'),kpi('kpiRev'))
-        self.assertIn(f('FY EBITDA'),tiles)  # the EBITDA row's own KPI formula, not recomputed
-        self.assertTrue(kpi('kpiGM').startswith('('+f('FY Gross Margin')+')'))
+        plain=self.spec()   # the plain dashboard's KPI tiles carry the same headline formulas
+        tiles={e['id']:e['columns'][0]['formula'] for pg in plain['pages'] for e in pg['elements'] if e['kind']=='kpi-chart'}
+        self.assertEqual(f('FY Revenue'),tiles['kpiRev'])
+        self.assertIn(f('FY EBITDA'),set(tiles.values()))  # the EBITDA row's own KPI formula, not recomputed
+        self.assertTrue(tiles['kpiGM'].startswith('('+f('FY Gross Margin')+')'))
         self.assertNotEqual(f('FY EBITDA'),f('FY Gross Margin'))
         self.assertEqual(f('Scenario'),'Max([Parameters/Selected Scenario])')
         self.assertIn('CurrentUserEmail()',f('Saved By')); self.assertEqual(f('Saved At'),'Now()')
@@ -702,7 +702,7 @@ class TestDemoWorkflows(unittest.TestCase):
         spec=self.spec(self.manifest)
         by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
         self.assertEqual(by_id['approvalStatus']['columns'][0]['formula'],
-            'Coalesce(Lookup([Approvals/Status], Max([Approvals/Submitted At]), [Approvals/Submitted At]), "Not submitted")')
+            'Coalesce(Lookup([Approvals/Status], Max([Approvals/Submitted At]), [Approvals/Submitted At]), "Draft")')
 
     def test_manual_commit_program_final_mode_and_seed(self):
         spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
@@ -730,8 +730,8 @@ class TestDemoWorkflows(unittest.TestCase):
         self.assertEqual(program.count("t.set_edit_mode('draft')"),len(tables))
         self.assertEqual(program.count("t.set_edit_mode('published-all-users')"),len(tables))
         self.assertEqual(program.count('isinstance(t, InputTable)'),len(tables))
-        self.assertIn("get_page('inputs').get_element('versions')",program)
-        self.assertIn("get_page('pnl').get_element('parameters')",program)
+        self.assertIn("get_page('model').get_element('versions')",program)   # plumbing lives on the hidden page
+        self.assertIn("get_page('model').get_element('parameters')",program)
         compile(program,'program','exec')
 
     def test_cli_writes_program_dry_run(self):
@@ -757,6 +757,8 @@ class TestDemoWorkflows(unittest.TestCase):
         ``{elementId: [[row dict keyed by column id], ...]}`` per upsert_rows call."""
         class LiteralEditableColumn:
             def __init__(self,cid):self.cid=cid
+            def set_format_pattern(self,pattern):self.pattern=pattern
+            def set_visible(self,visible):self.visible=visible
         class InputTable:
             def __init__(self,eid,calls):self.eid=eid;self.calls=calls
             def get_column(self,cid):return LiteralEditableColumn(cid)

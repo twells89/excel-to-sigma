@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import agent_enhance as ae  # noqa: E402
 import code_rep  # noqa: E402
 
-GROUNDING = ("forecast", "parameters", "versions", "approvals", "rateInput")
+GROUNDING = ae.GROUNDING
 
 
 def load(path):
@@ -39,12 +39,10 @@ def main(argv=None):
     if a.merge_into and not a.out:
         p.error("--merge-into needs --out")
 
-    wf = load(a.workflows)
     wb_path = a.merge_into or a.workbook
     wb = load(wb_path) if wb_path else None
-    have = {e.get("id") for e in code_rep.workbook_elements(wb)} if wb else set(GROUNDING)
-    rec = ae.recommend_agent(load(a.macros), wf.get("workflows", []) if isinstance(wf, dict) else wf,
-                             drivers=ae.DRIVER_TABLE in have)
+    rec, frag = ae.recommend_for_workbook(load(a.macros), load(a.workflows), wb, a.name,
+                                          fragment=bool(a.emit or a.merge_into))
     print(rec["pitch"] if rec["recommend"] else "No agent recommended.")
     for r in rec["reasons"]:
         print("  - " + r)
@@ -54,9 +52,6 @@ def main(argv=None):
         print("Nothing to emit.", file=sys.stderr)
         return 1
 
-    ids = [i for i in GROUNDING if i in have]
-    effects = ae.button_effects(wb) if wb else None
-    frag = ae.agent_document_fragment(rec, a.name, ids, effects_by_action=effects)
     if a.emit:
         Path(a.emit).write_text(json.dumps(frag, indent=2) + "\n", encoding="utf-8")
         print(f"fragment written: {a.emit}")
