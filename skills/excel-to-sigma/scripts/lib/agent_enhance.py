@@ -122,9 +122,9 @@ def _tool(entry, effects, label):
 
 
 TOOL_DESCRIPTIONS = {
-    "roll-forward": "Advances Forecast Start Month in Parameters by one month. Takes no inputs.",
-    "snapshot-version": "Appends one Versions row freezing the current scenario, start month and headline figures. Takes no inputs.",
-    "submit-approval": "Appends a Submitted row to Approvals for the current forecast. Takes no inputs. Does not send email.",
+    "roll-forward": "Advances Forecast Start Month in Parameters by one month. Takes no inputs: call it with an empty inputs object, inputs: {}.",
+    "snapshot-version": "Appends one Versions row freezing the current scenario, start month and headline figures. Takes no inputs: call it with an empty inputs object, inputs: {}.",
+    "submit-approval": "Appends a Submitted row to Approvals for the current forecast. Takes no inputs: call it with an empty inputs object, inputs: {}. Does not send email.",
     DRIVER_ID: "Changes the monthly growth Rate of one row in the Growth Rates table. Inputs line_item (text): "
                "the exact Line Item, for example North America Revenue; rate (number): the new monthly rate as a "
                "decimal, for example 0.008 for 0.8%. Read the current rate first and compute the new value.",
@@ -189,6 +189,9 @@ def _instructions(rec, name, scenario_control=None, grounding=(), plan=False):
                      'rate; read @dataSource("rateInput") first and compute the new rate from the current one.')
     if SCENARIO_ID in ids:
         lines.append(f'To switch scenario call @tool("{SCENARIO_ID}") with the scenario name.')
+    if ids & {"roll-forward", "snapshot-version", "submit-approval"}:
+        lines.append("Those three tools take no inputs, but every tool call must still include the inputs "
+                     "argument: pass inputs: {} (an empty object).")
     lines.append("Answer in plain finance language with figures formatted like $145.4M and 65.8%.")
     lines.append("Writes ask the user for approval first. After any write, approved or declined, re-query "
                  "the affected table and report the row count and values as the data shows them; never "

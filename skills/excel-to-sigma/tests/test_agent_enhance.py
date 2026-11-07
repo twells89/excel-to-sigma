@@ -232,6 +232,19 @@ class AgentEnhanceTests(unittest.TestCase):
         for aid in dw.BUTTON_IDS:
             self.assertEqual([{k: v for k, v in s.items() if k != "kind"} for s in tools[aid]["steps"]], eff[aid])
 
+    def test_no_input_tools_tell_agent_to_pass_empty_inputs_object(self):
+        # The workbook agent's tool-call schema requires an `inputs` argument even for input-less tools; the
+        # spec has no field to declare it, so the tool description and agent instructions say to pass {}.
+        macros, wfs = demo()
+        rec = ae.recommend_agent(macros, wfs)
+        frag = ae.agent_document_fragment(rec, "A", ["forecast", "parameters", "versions", "approvals", "rateInput"],
+                                          figures={"revenue": "Sum([PnL Combined/Amount])"})
+        agent = frag["agents"][0]
+        tools = {t["toolId"]: t for t in agent["tools"]}
+        for aid in ("roll-forward", "snapshot-version", "submit-approval"):
+            self.assertIn("inputs: {}", tools[aid]["description"])
+        self.assertIn("inputs: {}", agent["instructions"])
+
     def test_agent_snapshot_tool_labels_version_as_integer(self):
         macros, wfs = demo()
         rec = ae.recommend_agent(macros, wfs)
