@@ -710,7 +710,7 @@ class TestDemoWorkflows(unittest.TestCase):
         by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
         for tid,names in (('parameters',['Selected Scenario','Forecast Start Month']),
                 ('versions',['Version','Scenario','Forecast Start Month','FY Revenue','FY Gross Margin','FY EBITDA','Saved By','Saved At','Comment','Log Order']),
-                ('approvals',['Request','Submitted By','Approver','Status','Submitted At','Comment','Log Order'])):
+                ('approvals',['Request','Submitted By','Approver','Status','Submitted At','Decided By','Decided At','Comment','Log Order'])):
             t=by_id[tid]
             self.assertEqual(t['kind'],'input-table')
             self.assertEqual(t['source'],{'kind':'empty','connectionId':'conn-1'})

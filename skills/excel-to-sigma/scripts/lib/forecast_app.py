@@ -457,7 +457,7 @@ def build(ctx):
     # ---------------------------------------------------------------- Versions & approvals page
     figure = {**CUR_SI, "displayNullAs": NULL_DASH}
     fmt = {"FY Revenue": figure, "FY Gross Margin": figure, "FY EBITDA": figure,
-           "Saved At": STAMP_FMT, "Submitted At": STAMP_FMT}
+           "Saved At": STAMP_FMT, "Submitted At": STAMP_FMT, "Decided At": STAMP_FMT}
     # a migrated row has no forecast start / comment: show a dash / nothing, never the word "null"
     shown = {"Forecast Start Month": lambda ref: f'Coalesce(DateFormat({ref}, "%b-%y"), "{NULL_DASH}")',
              "Comment": lambda ref: f'Coalesce({ref}, "")'}
@@ -483,7 +483,8 @@ def build(ctx):
                                    "FY EBITDA", "Saved By", "Saved At", "Comment"], "Versions"))
     if dw.APPROVALS in logs:
         log_views.append(log_view("approvalsView", logs[dw.APPROVALS],
-                                  ["Status", "Request", "Submitted By", "Submitted At", "Comment"], "Approvals"))
+                                  ["Status", "Request", "Submitted By", "Submitted At", "Decided By", "Decided At",
+                                   "Comment"], "Approvals"))
     history = {el: n for el, n in (ctx.get("history") or {}).items() if el in logs}
     both = dw.VERSIONS in logs and dw.APPROVALS in logs
     counts = _join_and([f"{history[el]} {noun}" for el, noun in ((dw.VERSIONS, "versions"),
@@ -500,17 +501,27 @@ def build(ctx):
         + ("buttons" if both else "button") + " on the Forecast page (or by the forecast agent, after you "
         "approve), with who and when, newest first." + origin, MUTED, 13), "top") if logs else None
 
+    # Approve / Send back: beside the Approvals table (only with --approvers), same size, Approve primary.
+    decision_els = []
+    if wf.get("decisions") and dw.APPROVALS in logs:
+        for b in wf["decisions"]:
+            primary = b["id"] == dw.DECISION_IDS["approve"]
+            decision_els.append({**b, "size": "medium", "align": "stretch", "borderRadius": "round",
+                                 "appearance": "filled" if primary else "outline",
+                                 **({"fillColor": PRIMARY} if primary else {})})
+        decision_els.append(text("decisionNote", span("Only approvers can approve: "
+                                                      + esc(", ".join(wf["approvers"])), MUTED, 12)))
     pages = [{"id": "pgForecast", "name": "Forecast", "elements": elements},
              {"id": "pgAssumptions", "name": "Assumptions", "elements": asm_els},
              {"id": "pgDetail", "name": "P&L detail", "elements": detail_els},
              *([{"id": "pgVersions", "name": PAGE_NAMES["pgVersions"] if log_title == "Versions & approvals"
-                  else log_title, "elements": [log_head, *log_views]}] if log_views else []),
+                  else log_title, "elements": [log_head, *log_views, *decision_els]}] if log_views else []),
              {"id": "model", "name": "Model (sources)", "visibility": "hidden",
               "elements": hidden + ([ctx["assump"]] if ctx["assump"] else [])}]
     layout = app_layout(pages, controls=bool(controls), cards=[c for c, _ in cards], bottom=[b["id"] for b in bottom],
                         rate=rate is not None, manual=manual is not None,
                         buttons=[b["id"] for b in buttons], status=status_text is not None,
-                        logs=[v["id"] for v in log_views])
+                        logs=[v["id"] for v in log_views], decisions=[e["id"] for e in decision_els])
     theme = {"theme": {"overrides": {"categoricalScheme": [PRIMARY, FORECAST_TINT, PLAN_GREY, "#14B8A6", "#F59E0B",
                                                            "#8B5CF6"]}}}
     return {"pages": pages, "layout": layout, "settings": theme}
@@ -570,7 +581,7 @@ AGENT_CHAT_ROWS = (4, 22)        # the chat's rows inside the agent panel (merge
 
 
 def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons, status=True,
-               logs=("versionsView", "approvalsView")):
+               logs=("versionsView", "approvalsView"), decisions=()):
     blocks = []
     def page(page_id, lines):
         blocks.append("\n".join([f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" '
@@ -610,6 +621,10 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons, status=
         rows = {"versionsView": 24, "approvalsView": 14}
         lines, at = [_el("logHead", 1, 25, 1, 5)], 5
         for view in logs:
+            if view == "approvalsView" and decisions:    # Approve / Send back + caption, above the Approvals table
+                buttons_at = {"btnApprove": (1, 4), "btnReturn": (4, 7), "decisionNote": (7, 25)}
+                lines += [_el(d, *buttons_at[d], at, at + 3) for d in decisions]
+                at += 3
             lines.append(_el(view, 1, 25, at, at + rows[view]))
             at += rows[view]
         page("pgVersions", lines)

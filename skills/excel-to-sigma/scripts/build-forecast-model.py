@@ -1270,6 +1270,11 @@ def parse_args(argv=None):
     parser.add_argument("--workflows", help="workflows.json from macro-actions.py demo-manifest: adds the "
                         "Parameters / Versions / Approvals input tables, the Roll forward / Snapshot version / "
                         "Submit for approval buttons and a latest-approval-status KPI")
+    parser.add_argument("--approvers", metavar="EMAILS", help="with --workflows: comma-separated emails allowed to "
+                        "Approve / Send back a Submitted request. Baked in at build time: the buttons' row "
+                        "filter only matches when the signed-in user's email (case-insensitive) is listed. "
+                        "Without it (or without a Submit workflow) the Approve / Send back buttons are omitted "
+                        "and the workflows manifest says so")
     parser.add_argument("--emit-manual-commit-program", metavar="OUT.py",
                         help="write the post-create Code Mode setup program: enables manual commit on every "
                              "input table (needed before backend actions / agent tools can write), then seeds "
@@ -1472,11 +1477,18 @@ def main(argv=None):
         try:
             with open(args.workflows, encoding="utf-8") as stream:
                 workflows = json.load(stream)
+            workflows = demo_workflows.with_approvers(workflows, args.approvers)
             demo_workflows.workflow_elements(workflows, P["connectionId"], "check")
         except (OSError, ValueError, KeyError) as error:
             print(f"PLAN ERROR: --workflows {error}", file=sys.stderr)
             return 1
         print("WORKFLOWS: " + ", ".join(w["actionId"] for w in workflows["workflows"]))
+        if workflows.get("approvers"):
+            print("APPROVERS: " + ", ".join(workflows["approvers"]) + " (Approve / Send back on Versions & approvals)")
+        else:
+            print("APPROVERS: none; " + next((d["note"] for d in workflows.get("dispositions", [])
+                                                if d.get("disposition") == "approve-omitted-no-approvers"),
+                                               "no Submit workflow, so no Approve / Send back"))
     history = []
     if workflows is not None:
         try:   # the source's own version / approval logs seed Versions / Approvals (migrated history)

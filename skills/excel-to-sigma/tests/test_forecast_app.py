@@ -211,6 +211,37 @@ class ForecastAppTests(unittest.TestCase):
             self.assertIn(f'= "{name}"', status)
         self.assertIn('"Draft")', b["approvalStatus"]["columns"][0]["formula"])
 
+    def test_status_pill_has_approved_and_returned(self):
+        status = self.by_id(self.spec())["hdrStatus"]["body"]
+        for name, (bg, fg) in (("Approved", ("#DCFCE7", "#15803D")), ("Returned", ("#FEE2E2", "#B91C1C"))):
+            self.assertIn(f'= "{name}"', status)
+            self.assertEqual(forecast_app.PILLS[name], (bg, fg))
+
+    def approvers_manifest(self, approvers="tj+1@sigmacomputing.com"):
+        return dw.with_approvers(self.manifest, approvers)
+
+    def test_approve_buttons_on_versions_page(self):
+        spec = self.spec(self.approvers_manifest())
+        b, owners = self.by_id(spec), self.owners(spec)
+        self.assertEqual((owners["btnApprove"], owners["btnReturn"], owners["decisionNote"]),
+                         ("pgVersions",) * 3)
+        self.assertEqual((b["btnApprove"]["appearance"], b["btnReturn"]["appearance"]), ("filled", "outline"))
+        self.assertEqual(b["btnApprove"]["size"], b["btnReturn"]["size"])
+        self.assertEqual((b["btnApprove"]["text"], b["btnReturn"]["text"]), ("Approve", "Send back"))
+        self.assertIn("Only approvers can approve: tj+1@sigmacomputing.com", b["decisionNote"]["body"])
+        self.assertIn("Decided by", [c["name"] for c in b["approvalsView"]["columns"]])
+        wired = self.build.workbook_wire.wire_workbook(spec)       # every element placed exactly once
+        placed = re.findall(r'elementId="([^"]+)"', wired["contents"]["layout"])
+        self.assertEqual(sorted(placed), sorted(owners))
+
+    def test_no_approvers_build_has_no_approve_buttons(self):
+        spec = self.spec(self.approvers_manifest(None))
+        self.assertFalse({"btnApprove", "btnReturn", "decisionNote"} & set(self.owners(spec)))
+
+    def test_cli_approvers_flow_into_the_build(self):
+        args = self.build.parse_args(["plan.json", "--workflows", "w.json", "--approvers", "A@x.com, b@y.org"])
+        self.assertEqual(dw.approver_list(args.approvers), ["a@x.com", "b@y.org"])
+
     # ---------------------------------------------------------------- scenario
     def test_scenario_switch_drives_the_forecast_rate(self):
         b = self.by_id(self.spec())

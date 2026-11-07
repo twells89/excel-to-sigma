@@ -26,6 +26,11 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 PARAMETERS, VERSIONS, APPROVALS = "parameters", "versions", "approvals"
 STATUS_KPI = "approvalStatus"
 BUTTON_IDS = {"roll-forward": "btnRoll", "snapshot-version": "btnSnapshot", "submit-approval": "btnSubmit"}
+# Approver decisions: actionId -> (button text, Status written). They live under the manifest's
+# ``decisions`` (never ``workflows``) with their own button ids, apart from BUTTON_IDS, so the workbook
+# agent is never given an approve tool and the header toolbar never lays them out.
+DECISION_IDS = {"approve": "btnApprove", "send-back": "btnReturn"}
+DECISIONS = {"approve": ("Approve", "Approved"), "send-back": ("Send back", "Returned")}
 EFFECTS = ("update-rows", "insert-rows", "control")
 
 # elementId -> (display name, [(columnId, display name, type)])
@@ -47,7 +52,9 @@ TABLES = {
                             ("ve_note", "Comment", "text"), ("ve_seq", LOG_ORDER, "number")]),
     APPROVALS: ("Approvals", [("ap_req", "Request", "text"), ("ap_by", "Submitted By", "text"),
                               ("ap_to", "Approver", "text"), ("ap_status", "Status", "text"),
-                              ("ap_at", "Submitted At", "datetime"), ("ap_note", "Comment", "text"),
+                              ("ap_at", "Submitted At", "datetime"),
+                              ("ap_dby", "Decided By", "text"), ("ap_dat", "Decided At", "datetime"),
+                              ("ap_note", "Comment", "text"),
                               ("ap_seq", LOG_ORDER, "number")]),
 }
 HIDDEN_COLUMNS = {"ve_seq", "ap_seq"}
@@ -175,7 +182,64 @@ def _values(element, formulas):
     return {COLUMN_IDS[(element, name)]: value for name, value in formulas.items()}
 
 
-def action_effects(action_id, request_label, figures=None, scenario_control=None, start=DEFAULT_START):
+def approver_list(approvers):
+    """Normalised approver emails (lower case, de-duplicated, order kept) from a comma-separated string or a
+    list; raises ``WorkflowError`` for an entry that is not an email address."""
+    items = approvers.split(",") if isinstance(approvers, str) else list(approvers or [])
+    out = []
+    for item in items:
+        email = str(item).strip().lower()
+        if not email:
+            continue
+        if not re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", email):
+            raise WorkflowError(f"approver {item!r} is not an email address")
+        if email not in out:
+            out.append(email)
+    return out
+
+
+def with_approvers(manifest, approvers):
+    """A copy of the workflows manifest with the Approve / Send back decisions and ``approvers`` recorded.
+
+    The decisions need a Submit workflow (the Approvals log) and at least one approver. Without approvers
+    the buttons are omitted and a disposition says so (never silent); a manifest without a Submit
+    workflow is returned unchanged."""
+    out = {**manifest, "dispositions": [d for d in manifest.get("dispositions", [])
+                                        if d.get("disposition") != "approve-omitted-no-approvers"]}
+    out.pop("decisions", None)
+    out.pop("approvers", None)
+    if not any(w.get("actionId") == "submit-approval" for w in manifest.get("workflows", [])):
+        return out
+    emails = approver_list(approvers)
+    if not emails:
+        out["dispositions"].append({"macro": "(none)", "class": "ACTION_WRITEBACK",
+            "disposition": "approve-omitted-no-approvers",
+            "note": "No Approve / Send back buttons were built: pass --approvers EMAILS (comma-separated) to "
+                    "build-forecast-model.py to add them. Approvals then stay a log written by Submit."})
+        return out
+    out["approvers"] = emails
+    out["decisions"] = [{"actionId": a, "label": label, "effect": "update-rows",
+                         "target": {"elementId": APPROVALS, "columns": ["Status", "Decided By", "Decided At"]},
+                         "writes": True, "note": DECISION_NOTE}
+                        for a, (label, _status) in DECISIONS.items()]
+    return out
+
+
+DECISION_NOTE = ("update-rows on the Approvals table: every Submitted request becomes Approved / Returned, "
+                 "stamped with who and when, only when the signed-in user's email is one of the build-time "
+                 "approvers (the row filter matches nothing for anyone else). Migrated history is never "
+                 "rewritten: only Submitted rows match. Two outstanding requests both get the decision.")
+
+
+def approver_filter(approvers):
+    """The ``whichRows`` formula of an Approve / Send back click: Submitted rows, and only for an approver."""
+    wrapped = "," + ",".join(approver_list(approvers)) + ","
+    return (f'[Status] = "Submitted" and Contains("{wrapped}", '
+            f'Concat(",", Lower(CurrentUserEmail()), ","))')
+
+
+def action_effects(action_id, request_label, figures=None, scenario_control=None, start=DEFAULT_START,
+                   approvers=None):
     """The effect list for one workflow (live-proven working shapes).
 
     With ``scenario_control`` (the controlId of the workbook's scenario switch) Snapshot records the
@@ -206,6 +270,14 @@ def action_effects(action_id, request_label, figures=None, scenario_control=None
             "Request": _const(request_label), "Submitted By": _formula("CurrentUserEmail()"),
             "Approver": _const(APPROVER), "Status": _const("Submitted"), "Submitted At": _formula("Now()"),
             LOG_ORDER: _formula(next_entry("Approvals"))})}]
+    if action_id in DECISIONS:
+        if not approver_list(approvers):
+            raise WorkflowError(f"{action_id} needs approvers")
+        return [{"effect": "update-rows", "tableElementId": APPROVALS,
+                 "whichRows": {"type": "formula", "formula": approver_filter(approvers)},
+                 "values": _values(APPROVALS, {"Status": _const(DECISIONS[action_id][1]),
+                                               "Decided By": _formula("CurrentUserEmail()"),
+                                               "Decided At": _formula("Now()")})}]
     raise WorkflowError(f"no button action for {action_id}")
 
 
@@ -245,6 +317,15 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
     for w in items.values():
         if w["effect"] not in EFFECTS:
             raise WorkflowError(f"unsupported workflow effect {w['effect']}")
+    decisions = []
+    approvers = approver_list(manifest.get("approvers"))
+    for d in manifest.get("decisions", []) if approvers else []:
+        if d.get("actionId") not in DECISIONS:
+            raise WorkflowError(f"unsupported decision {d.get('actionId')}")
+        decisions.append({"id": DECISION_IDS[d["actionId"]], "kind": "button", "text": d.get("label") or DECISIONS[d["actionId"]][0],
+            "appearance": "filled" if d["actionId"] == "approve" else "outline",
+            "actions": [{"id": "a-" + d["actionId"], "trigger": "on-click",
+                         "effects": action_effects(d["actionId"], request_label, approvers=approvers)}]})
     buttons = []
     for action_id, element_id in BUTTON_IDS.items():
         if action_id not in items:
@@ -279,7 +360,10 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
             "source": source,
             "columns": [{"id": "st_v", "name": "Latest approval status",
                          "formula": STATUS_FORMULA.replace('"Not submitted"', '"' + no_status + '"')}]}
-    return {"tables": tables, "buttons": buttons, "status": status}
+    if decisions and not wanted[APPROVALS]:
+        raise WorkflowError("Approve / Send back need the Submit workflow (the Approvals table)")
+    return {"tables": tables, "buttons": buttons, "status": status, "decisions": decisions,
+            "approvers": approvers}
 
 
 # Migrated history: the source workbook's version / approval log tables -> the Versions / Approvals

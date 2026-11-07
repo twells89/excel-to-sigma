@@ -612,6 +612,17 @@ plan` writes the macro inventory to `<workdir>/macros.json`; classify the macros
 `--landed` when Phase 1b landed the source Tables, so the refresh disposition says so).
 The build emits only the input tables its workflows target: Parameters for set-scenario /
 roll-forward, Versions for snapshot, Approvals and the status pill for submit.
+
+**Approve / Send back (`--approvers`).** With a Submit workflow, pass
+`build-forecast-model.py --approvers a@x.com,b@y.org` to add approver-only decision buttons beside the
+Approvals table on the Versions & approvals page (Approve filled, Send back outline, and a caption
+"Only approvers can approve: ..."). Each is an `update-rows` on Approvals whose row filter is
+`[Status] = "Submitted"` and the signed-in user's email (case-insensitive, whole address) being in the
+build-time list, so for anyone else it matches no row; only Submitted rows match, so migrated history is
+never rewritten, and two outstanding requests both get the decision. It writes Status (Approved /
+Returned), Decided By and Decided At; the header status badge follows the latest entry. The decisions are
+kept out of the workbook agent's tools. Without `--approvers` the buttons are omitted and
+`workflows.json` gets an `approve-omitted-no-approvers` disposition saying so.
 Read the macro inventory and `workflows.json`, say in plain
 language which macros were workflows people triggered by hand, and offer a Sigma
 workbook agent that runs them on request, with approval before every write:
