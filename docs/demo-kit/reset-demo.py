@@ -60,15 +60,13 @@ if not isinstance(versions, InputTable):
     raise RuntimeError('versions is not an InputTable')
 v_src = sigma.data.source.element(versions.id())
 v_ver = versions.get_column('ve_ver').id()
-v_seq = versions.get_column('ve_seq').id()
-sigma.data.sql.execute(f'DELETE FROM {{v_src.ref()}} WHERE "{{v_ver}}" IS NULL OR "{{v_ver}}" NOT IN ({vers}) OR "{{v_seq}}" > {n_ver}')
+sigma.data.sql.execute(f'DELETE FROM {{v_src.ref()}} WHERE "{{v_ver}}" IS NULL OR "{{v_ver}}" NOT IN ({vers})')
 
 approvals = def_page.get_element('approvals')
 if not isinstance(approvals, InputTable):
     raise RuntimeError('approvals is not an InputTable')
 a_src = sigma.data.source.element(approvals.id())
 a_req = approvals.get_column('ap_req').id()
-a_seq = approvals.get_column('ap_seq').id()
-sigma.data.sql.execute(f'DELETE FROM {{a_src.ref()}} WHERE "{{a_req}}" IS NULL OR "{{a_req}}" NOT IN ({apps}) OR "{{a_seq}}" > {n_app}')
+sigma.data.sql.execute(f'DELETE FROM {{a_src.ref()}} WHERE "{{a_req}}" IS NULL OR "{{a_req}}" NOT IN ({apps})')
 '''
 (open(a.out, "w") if a.out else sys.stdout).write(prog)
