@@ -457,10 +457,12 @@ def build(ctx):
     # ---------------------------------------------------------------- Versions & approvals page
     figure = {**CUR_SI, "displayNullAs": NULL_DASH}
     fmt = {"FY Revenue": figure, "FY Gross Margin": figure, "FY EBITDA": figure,
-           "Saved At": STAMP_FMT, "Submitted At": STAMP_FMT, "Decided At": STAMP_FMT}
+           "Saved At": STAMP_FMT, "Submitted At": STAMP_FMT}
     # a migrated row has no forecast start / comment: show a dash / nothing, never the word "null"
     shown = {"Forecast Start Month": lambda ref: f'Coalesce(DateFormat({ref}, "%b-%y"), "{NULL_DASH}")',
-             "Comment": lambda ref: f'Coalesce({ref}, "")'}
+             "Comment": lambda ref: f'Coalesce({ref}, "")',
+             "Decided By": lambda ref: f'Coalesce({ref}, "")',
+             "Decided At": lambda ref: f'Coalesce(DateFormat({ref}, "%b %-d, %Y"), "")'}
     # newest first by entry order (dw.LOG_ORDER): migrated history keeps the source's dates
     label = {"Forecast Start Month": "Forecast start", "FY Revenue": f"{fy} revenue",
              "FY Gross Margin": "Gross margin", "FY EBITDA": "EBITDA"}

@@ -668,6 +668,13 @@ class ForecastAppTests(unittest.TestCase):
             stamp = cols["Saved at" if view == "versionsView" else "Submitted at"]["format"]["formatString"]
             self.assertNotIn("%I", stamp)                  # migrated rows carry a date, not a midnight time
             self.assertNotIn("%H", stamp)
+        approvals = {c["name"]: c for c in b["approvalsView"]["columns"]}
+        self.assertEqual(approvals["Decided by"]["formula"], 'Coalesce([Approvals/Decided By], "")')
+        self.assertEqual(
+            approvals["Decided at"]["formula"],
+            'Coalesce(DateFormat([Approvals/Decided At], "%b %-d, %Y"), "")',
+        )
+        self.assertNotIn("format", approvals["Decided at"])
         # every migrated row and the next few snapshots fit without an inner scroll
         layout = self.build.workbook_wire.wire_workbook(self.spec(history=history))["contents"]["layout"]
         def rows(element_id):
