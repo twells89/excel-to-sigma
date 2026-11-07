@@ -86,10 +86,13 @@ class ForecastAppTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def spec(self, workflows="default", plan_src="default", history=None):
+    def spec(self, workflows="default", plan_src="default", history=None, name=None):
         wf = self.manifest if workflows == "default" else workflows
         ps = self.plan_src if plan_src == "default" else plan_src
-        return self.build.build_wb_spec(copy.deepcopy(self.plan), "dm-1", self.els, landed=self.landed,
+        plan = copy.deepcopy(self.plan)
+        if name:
+            plan["name"] = name
+        return self.build.build_wb_spec(plan, "dm-1", self.els, landed=self.landed,
                                         workflows=wf, plan_src=ps, history=history)
 
     @staticmethod
@@ -177,6 +180,24 @@ class ForecastAppTests(unittest.TestCase):
         self.assertNotIn("rehearsal", canvas.lower())
         self.assertNotIn("Department", canvas)
         self.assertNotIn("Vendor", canvas)
+
+    def test_canvas_title_from_a_raw_file_name(self):
+        for raw in ("Vantora_FY27_Rolling_Forecast_v7_FINAL", "Vantora FY27 Rolling Forecast v7 FINAL",
+                    "Vantora-FY27-Rolling-Forecast (2) final_v3"):
+            self.assertEqual(self.build._app_titles({**self.plan, "name": raw}),
+                             ("Vantora", "FY27 rolling forecast"), raw)
+
+    def test_header_subtitle_without_a_company(self):
+        b = self.by_id(self.spec(name="FY27 Rolling Forecast"))
+        body = b["hdrTitle"]["body"]
+        self.assertIn(">Actuals through ", body)
+        self.assertNotIn("> · actuals", body)
+
+    def test_display_name_cleans_file_stems(self):
+        self.assertEqual(forecast_app.display_name("Vantora_FY27_Rolling_Forecast_v7_FINAL"),
+                         "Vantora FY27 Rolling Forecast")
+        self.assertEqual(forecast_app.display_name("Q3 Budget - draft copy"), "Q3 Budget")
+        self.assertEqual(forecast_app.display_name("FINAL"), "FINAL")  # never empties a name
 
     def test_header_buttons_one_primary(self):
         b = self.by_id(self.spec())

@@ -65,6 +65,24 @@ STAMP_FMT = {"kind": "datetime", "formatString": "%b %-d, %Y"}   # migrated log 
 NULL_DASH = "\u2014"                    # a log figure the source never froze reads as a dash, not "null"
 
 
+# a version / status tail a file name carries but an app title does not: v7, FINAL, draft, copy, (2)
+_NAME_TAIL = re.compile(r"(?:\s+(?:v\d+(?:\.\d+)*|final|draft|copy|latest|wip|\(\d+\)))+$", re.I)
+
+
+def display_name(raw):
+    """A file stem as a title: ``Vantora_FY27_Rolling_Forecast_v7_FINAL`` -> ``Vantora FY27 Rolling Forecast``.
+
+    Underscores and hyphen-joined words become spaces, a trailing ``- draft`` style suffix and
+    version / status words (v7, FINAL, draft, copy, (2)) are dropped. Never returns an empty name."""
+    text = re.sub(r"[_]+", " ", str(raw))
+    text = re.sub(r"(?<=\w)-(?=\w)", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+[—–-]\s+(?:draft|copy|final|wip|latest)(?:\s.*)?$", "", text, flags=re.I)
+    cleaned = _NAME_TAIL.sub("", text).strip(" -—–")
+    cleaned = _NAME_TAIL.sub("", cleaned).strip(" -—–")
+    return cleaned or text
+
+
 def sentence(label):
     """``Gross Margin`` -> ``Gross margin``; all-caps words (EBITDA, FY27) keep their case."""
     words = str(label).split()
@@ -265,7 +283,7 @@ def build(ctx):
                 f'{month_label(LAST_CLOSED)}, " {AWAITING.lower()}"), "")}}}}')
     title = text("hdrTitle",
                  "## " + span(" V ", CANVAS, None, PRIMARY) + " " + esc(ctx["title"]) + "\n"
-                 + span(esc(ctx["company"]) + " · actuals through "
+                 + span((esc(ctx["company"]) + " · actuals through " if ctx["company"] else "Actuals through ")
                         + f"{{{{{month_label('Max([Actuals/Month End])')}}}}}", MUTED, 13)
                  + span(awaiting, AMBER, 13)
                  + (span(" · live on Snowflake", MUTED, 13) if ctx.get("landed") else ""))

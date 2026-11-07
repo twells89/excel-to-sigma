@@ -1107,7 +1107,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
 def _app_titles(P):
     """``(company, title)`` for the app header: ``Vantora FY27 Rolling Forecast — run tag`` ->
     ``("Vantora", "FY27 rolling forecast")``; the run tag stays in the document name only."""
-    base = re.split(r"\s+[—–-]\s+", P["name"], maxsplit=1)[0].strip()
+    base = forecast_app.display_name(re.split(r"\s+[—–-]\s+", P["name"], maxsplit=1)[0].strip())
     fy = P.get("fyLabel") or ""
     fy = re.sub(r"\s+total$", "", fy, flags=re.I)
     if fy and f" {fy} " in f" {base} ":

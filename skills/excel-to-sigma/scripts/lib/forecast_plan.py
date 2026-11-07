@@ -36,6 +36,11 @@ except ImportError:  # direct import when scripts/lib itself is on sys.path
     from migration_gate import source_sha256
     import forecast_calc as calc
 
+try:
+    from forecast_app import display_name
+except ImportError:
+    from .forecast_app import display_name
+
 SECTIONS = ("Revenue", "Cost of Revenue", "Operating Expenses", "Below the Line")
 LEGACY_SIGNS = {"Revenue": 1, "Cost of Revenue": -1, "Operating Expenses": -1, "Below the Line": -1}
 TARGET_LABELS = calc.TARGET_LABELS
@@ -855,7 +860,7 @@ def _draft_plan(source, *, intent, connection, folder, name, sheet, currency_for
         })
 
     plan = {
-        "name": name or (wf.properties.title or "").strip() or src.stem,
+        "name": name or (wf.properties.title or "").strip() or display_name(src.stem),
         "intent": intent,
         "connectionId": connection,
         "folderId": folder,
