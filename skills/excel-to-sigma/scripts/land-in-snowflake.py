@@ -10,6 +10,7 @@ import argparse, json, os, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import sigma_auth  # noqa: E402
 import snowflake_landing as sl  # noqa: E402
 
 
@@ -23,8 +24,20 @@ PROBE_TIMEOUT_SECONDS = 60
 NOT_CHECKED = "; --execute checks again and stops if one exists"
 
 
+class SnowOutputError(ValueError):
+    """``snow`` printed something that is not the JSON result (an SSO banner, a warning)."""
+
+
+def snow_json(stdout):
+    try:
+        return json.loads(stdout or "[]")
+    except json.JSONDecodeError:
+        first = ((stdout or "").strip().splitlines() or ["?"])[0][:80]
+        raise SnowOutputError(f"snow printed non-JSON output: {first!r}") from None
+
+
 def first_value(stdout):
-    data = json.loads(stdout or "[]")
+    data = snow_json(stdout)
     if not data:
         return None
     return list(data[0].values())[0]
@@ -46,10 +59,9 @@ def existing_tables_note(plan, connection, replace):
             reason = (r.stderr or r.stdout).strip().splitlines()
             return f"EXISTING TABLES: not checked ({reason[-1] if reason else f'exit {r.returncode}'}){NOT_CHECKED}"
         try:
-            rows = json.loads(r.stdout or "[]")
-        except json.JSONDecodeError:
-            first = (r.stdout.strip().splitlines() or ["?"])[0][:80]
-            return f"EXISTING TABLES: not checked (snow printed non-JSON output: {first!r}){NOT_CHECKED}"
+            rows = snow_json(r.stdout)
+        except SnowOutputError as error:
+            return f"EXISTING TABLES: not checked ({error}){NOT_CHECKED}"
         if rows:
             found.append(sl.fqn(plan, table))
     if not found:
@@ -57,7 +69,8 @@ def existing_tables_note(plan, connection, replace):
     names = ", ".join(found)
     verb = "exists" if len(found) == 1 else "exist"
     if replace:
-        return f"EXISTING TABLES: {names} already {verb}; --replace overwrites {'it' if len(found) == 1 else 'them'}"
+        return (f"EXISTING TABLES: {names} already {verb}; --replace overwrites {'it' if len(found) == 1 else 'them'} "
+                "(CREATE OR REPLACE ... COPY GRANTS keeps the existing grants)")
     return f"EXISTING TABLES: {names} already {verb}; --execute stops (exit 2) unless you pass --replace"
 
 
@@ -78,6 +91,17 @@ def main(argv=None):
     p.add_argument("--out", required=True, help="landing.json path (CSVs are written beside it)")
     a = p.parse_args(argv)
 
+    try:   # every value that reaches SQL text or the sigma argv is checked before anything runs
+        if a.grant_select_to is not None:
+            sl.validate_identifier(a.grant_select_to, "--grant-select-to")
+        if a.sigma_profile:
+            sigma_auth._validate_profile(a.sigma_profile)
+        for flag, value, empty in (("--database", a.database, False), ("--schema", a.schema, False),
+                                   ("--table-prefix", a.table_prefix, True)):
+            sl.validate_identifier(value, flag, allow_empty=empty)
+    except (ValueError, sigma_auth.SigmaAuthError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -105,7 +129,12 @@ def main(argv=None):
             if r.returncode != 0:
                 print(r.stderr, file=sys.stderr)
                 return 1
-            if json.loads(r.stdout or "[]"):
+            try:
+                exists = snow_json(r.stdout)
+            except SnowOutputError as error:
+                print(f"ERROR: existence check for {sl.fqn(plan, table)}: {error}", file=sys.stderr)
+                return 1
+            if exists:
                 print(f"table {sl.fqn(plan, table)} exists; pass --replace to overwrite", file=sys.stderr)
                 return 2
     per_table = len(commands) // len(plan["tables"])
@@ -115,7 +144,11 @@ def main(argv=None):
             if r.returncode != 0:
                 print(f"FAILED: {c[c.index('-q') + 1][:120]}\n{r.stderr}", file=sys.stderr)
                 return 1
-        count = first_value(r.stdout)   # the last command of each table is the COUNT(*)
+        try:
+            count = first_value(r.stdout)   # the last command of each table is the COUNT(*)
+        except SnowOutputError as error:
+            print(f"ERROR: row count for {sl.fqn(plan, table)}: {error}", file=sys.stderr)
+            return 1
         if count is None or int(count) != table["rowCount"]:
             print(f"row count mismatch for {sl.fqn(plan, table)}: warehouse={count} source={table['rowCount']}",
                   file=sys.stderr)

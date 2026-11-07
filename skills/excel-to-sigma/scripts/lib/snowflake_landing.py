@@ -16,6 +16,28 @@ NUMBER = "NUMBER(38,6)"
 SERIAL_MIN, SERIAL_MAX = 25569, 73050
 DATE_HEADER = re.compile(r"(date|month|period|day)", re.I)
 EPOCH = dt.date(1899, 12, 30)
+# Database / schema / role / table-prefix values go into SQL text unquoted, so each must be one plain
+# unquoted Snowflake identifier: no dots, quotes, spaces, semicolons or a leading digit / '-'.
+PLAIN_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+
+
+def validate_identifier(value, label: str, allow_empty: bool = False) -> str:
+    """``value`` when it is one plain unquoted Snowflake identifier (``^[A-Za-z_][A-Za-z0-9_$]*$``); a
+    table prefix may also be empty. Raises ``ValueError`` before any SQL is built."""
+    if allow_empty and value == "":
+        return value
+    if not isinstance(value, str) or not PLAIN_IDENTIFIER.fullmatch(value):
+        raise ValueError(f"{label} {value!r} is not a plain Snowflake identifier "
+                         "(letters, digits, '_' and '$'; starting with a letter or '_')")
+    return value
+
+
+def _check_plan(plan: dict) -> None:
+    """A plan read back from landing.json is checked again: every name that reaches SQL text."""
+    validate_identifier(plan.get("database"), "database")
+    validate_identifier(plan.get("schema"), "schema")
+    for table in plan.get("tables", []):
+        validate_identifier(table.get("snowflakeTable"), "table")
 
 
 def snowflake_identifier(header: str) -> str:
@@ -102,6 +124,9 @@ def snowflake_table_name(excel_table: str, prefix: str) -> str:
 def landing_plan(source: Path, tables: list[str], database: str, schema: str, prefix: str,
                  out_dir: Path | None = None) -> dict:
     """Plan + one CSV per table, written beside ``out_dir`` (default: a ``landing/`` dir next to the source)."""
+    validate_identifier(database, "--database")
+    validate_identifier(schema, "--schema")
+    validate_identifier(prefix, "--table-prefix", allow_empty=True)
     source = Path(source)
     out_dir = Path(out_dir) if out_dir else source.parent / "landing"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -136,27 +161,34 @@ def _sql(connection: str, statement: str, *, json_out: bool = False) -> list[str
 
 
 def exists_command(plan: dict, table: dict, connection: str) -> list[str]:
+    _check_plan({**plan, "tables": [table]})
     return _sql(connection, f"SHOW TABLES LIKE '{table['snowflakeTable']}' IN SCHEMA "
                 f"{plan['database']}.{plan['schema']}", json_out=True)
 
 
 def count_command(plan: dict, table: dict, connection: str) -> list[str]:
+    _check_plan({**plan, "tables": [table]})
     return _sql(connection, f"SELECT COUNT(*) AS N FROM {fqn(plan, table)}", json_out=True)
 
 
 def snow_commands(plan: dict, connection: str, replace: bool, grant_role: str | None) -> list[list[str]]:
     """argv lists, per table: create, PUT, COPY INTO, optional per-table GRANT, then COUNT(*).
 
-    Never creates a schema; ``CREATE OR REPLACE`` only when ``replace``.
+    Never creates a schema; ``CREATE OR REPLACE ... COPY GRANTS`` only when ``replace`` (a replaced table
+    keeps the privileges granted on the one it replaces). Every identifier is validated first.
     """
+    _check_plan(plan)
+    if grant_role is not None:
+        validate_identifier(grant_role, "--grant-select-to")
     commands = []
     for table in plan["tables"]:
         name = fqn(plan, table)
         csv_name = Path(table["csv"]).name
         stage = f"@{plan['database']}.{plan['schema']}.%{table['snowflakeTable']}"
         cols = ", ".join(f'"{c["name"]}" {c["type"]}' for c in table["columns"])
-        verb = "CREATE OR REPLACE TABLE" if replace else "CREATE TABLE"
-        commands.append(_sql(connection, f"{verb} {name} ({cols})"))
+        create = (f"CREATE OR REPLACE TABLE {name} ({cols}) COPY GRANTS" if replace
+                  else f"CREATE TABLE {name} ({cols})")
+        commands.append(_sql(connection, create))
         commands.append(_sql(connection, f"PUT 'file://{table['csv']}' {stage} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"))
         commands.append(_sql(
             connection,

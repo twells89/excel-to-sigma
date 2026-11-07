@@ -244,6 +244,102 @@ class CliTests(unittest.TestCase):
             self.assertIn("row count mismatch", r.stderr)
 
 
+class InjectionTests(unittest.TestCase):
+    """Every identifier that reaches SQL text is checked before any SQL is built or run."""
+    BAD = ("R; GRANT ALL ON ACCOUNT TO ROLE PUBLIC", "SC'--", 'SC"', "DB.SC", "-x", "", "1DB", "A B")
+
+    def test_lib_refuses_injection_in_database_schema_prefix_and_grant(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = make_source(Path(d) / "s.xlsx")
+            for bad in self.BAD:
+                for kwargs in ({"database": bad}, {"schema": bad}):
+                    args = {"database": "DB", "schema": "SC", **kwargs}
+                    with self.subTest(**kwargs), self.assertRaisesRegex(ValueError, "not a plain Snowflake"):
+                        sl.landing_plan(src, ["tblActuals"], args["database"], args["schema"], "FPA_T_",
+                                        out_dir=Path(d) / "out")
+                if bad == "":
+                    continue                      # an empty prefix is allowed
+                with self.subTest(prefix=bad), self.assertRaisesRegex(ValueError, "not a plain Snowflake"):
+                    sl.landing_plan(src, ["tblActuals"], "DB", "SC", bad, out_dir=Path(d) / "out")
+            self.assertFalse((Path(d) / "out").exists() and any((Path(d) / "out").iterdir()))
+            plan = sl.landing_plan(src, ["tblActuals"], "DB", "SC", "", out_dir=Path(d) / "ok")
+            self.assertEqual(plan["tables"][0]["snowflakeTable"], "ACTUALS")
+            for good in ("FPA_", "_x$1_", "fpa_t_"):
+                sl.validate_identifier(good, "--table-prefix", allow_empty=True)
+            for bad in self.BAD:
+                with self.subTest(grant=bad), self.assertRaisesRegex(ValueError, "not a plain Snowflake"):
+                    sl.snow_commands(plan, "tj", False, bad)
+            tampered = {**plan, "schema": "SC; DROP TABLE X"}   # a hand-edited plan is checked too
+            with self.assertRaisesRegex(ValueError, "not a plain Snowflake"):
+                sl.snow_commands(tampered, "tj", False, None)
+            with self.assertRaisesRegex(ValueError, "not a plain Snowflake"):
+                sl.exists_command(tampered, plan["tables"][0], "tj")
+
+    def run_cli(self, d, args):
+        d = Path(d)
+        bindir = d / "bin"
+        bindir.mkdir(exist_ok=True)
+        install(bindir, "snow", FAKE_SNOW)
+        install(bindir, "sigma", FAKE_SIGMA)
+        src = make_source(d / "s.xlsx")
+        base = {"--database": "DB", "--schema": "SC", "--table-prefix": "FPA_T_"}
+        base.update(args)
+        flat = [f"{k}={v}" if v is not None else k for k, v in base.items()]   # '=' so '-x' is a value
+        e = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}",
+                 FAKE_SNOW_LOG=str(d / "snow.log"), FAKE_SIGMA_LOG=str(d / "sigma.log"),
+                 LANG="en_US.UTF-8", LC_ALL="en_US.UTF-8")
+        e.pop("SIGMA_CLI_PROFILE", None)
+        return subprocess.run([sys.executable, str(CLI), str(src), "--tables", "tblActuals",
+                               "--snow-connection", "tj", "--out", str(d / "landing.json"), *flat],
+                              text=True, capture_output=True, env=e)
+
+    def test_cli_refuses_injection_before_any_sql(self):
+        cases = [{"--database": "R; GRANT ALL ON ACCOUNT TO ROLE PUBLIC"}, {"--schema": "SC'"},
+                 {"--schema": "A.B"}, {"--table-prefix": 'X"; DROP'},
+                 {"--grant-select-to": "R; GRANT OWNERSHIP ON SCHEMA SC TO ROLE PUBLIC", "--execute": None},
+                 {"--grant-select-to": "-r", "--execute": None},
+                 {"--sigma-profile": "p; rm -rf /", "--execute": None, "--sync-sigma-connection": "c"},
+                 {"--sigma-profile": "-p", "--execute": None, "--sync-sigma-connection": "c"}]
+        for args in cases:
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as d:
+                r = self.run_cli(d, args)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("ERROR", r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+                self.assertFalse((Path(d) / "snow.log").exists(), "snow ran before validation")
+                self.assertFalse((Path(d) / "sigma.log").exists())
+                self.assertFalse((Path(d) / "landing.json").exists())
+
+    def test_execute_survives_non_json_snow_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            env_extra = {"FAKE_SNOW_BANNER": "1"}
+            d = Path(d)
+            bindir = d / "bin"
+            bindir.mkdir()
+            install(bindir, "snow", FAKE_SNOW)
+            src = make_source(d / "s.xlsx")
+            e = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}", FAKE_SNOW_LOG=str(d / "snow.log"),
+                     LANG="en_US.UTF-8", LC_ALL="en_US.UTF-8", **env_extra)
+            base = [sys.executable, str(CLI), str(src), "--tables", "tblActuals", "--database", "DB", "--schema",
+                    "SC", "--snow-connection", "tj", "--out", str(d / "landing.json"), "--execute"]
+            for extra in ([], ["--replace"]):   # existence probe, then the COUNT(*) readback
+                r = subprocess.run(base + extra, text=True, capture_output=True, env=e)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertNotIn("Traceback", r.stderr)
+                self.assertIn("non-JSON output", r.stderr)
+
+    def test_replace_keeps_grants(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = sl.landing_plan(make_source(Path(d) / "s.xlsx"), ["tblActuals"], "DB", "SC", "FPA_T_")
+            creates = [c[c.index("-q") + 1] for c in sl.snow_commands(plan, "tj", True, None)
+                       if "CREATE" in c[c.index("-q") + 1]]
+            self.assertEqual(len(creates), 1)
+            self.assertTrue(creates[0].startswith("CREATE OR REPLACE TABLE DB.SC.FPA_T_ACTUALS ("))
+            self.assertTrue(creates[0].endswith(") COPY GRANTS"))
+            plain = [c[c.index("-q") + 1] for c in sl.snow_commands(plan, "tj", False, None)]
+            self.assertFalse(any("COPY GRANTS" in s for s in plain))
+
+
 class DocConsistencyTests(unittest.TestCase):
     def test_docs_name_the_table_the_landing_actually_creates(self):
         # snowflake_table_name strips a leading "tbl": --tables tblActuals --table-prefix FPA_
