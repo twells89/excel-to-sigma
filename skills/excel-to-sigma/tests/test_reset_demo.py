@@ -5,6 +5,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[3] / "docs" / "demo-kit" / "reset-demo.py"
 
 
+@unittest.skipUnless(SCRIPT.is_file(), "demo kit not present (standalone skill copy)")
 class ResetDemoTests(unittest.TestCase):
     def emit(self):
         with tempfile.TemporaryDirectory() as d:
