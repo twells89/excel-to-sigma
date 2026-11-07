@@ -13,8 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import snowflake_landing as sl  # noqa: E402
 
 
-def run(argv):
-    return subprocess.run(argv, text=True, capture_output=True)
+def run(argv, timeout=None, stdin=None):
+    return subprocess.run(argv, text=True, capture_output=True, timeout=timeout, stdin=stdin)
+
+
+# The dry run's existence probe is advisory: it must never hang on a ``snow`` connection that waits
+# for an SSO / externalbrowser sign-in, and never crash on output that is not JSON.
+PROBE_TIMEOUT_SECONDS = 60
+NOT_CHECKED = "; --execute checks again and stops if one exists"
 
 
 def first_value(stdout):
@@ -29,14 +35,22 @@ def existing_tables_note(plan, connection, replace):
     found = []
     for table in plan["tables"]:
         try:
-            r = run(sl.exists_command(plan, table, connection))
+            r = run(sl.exists_command(plan, table, connection), timeout=PROBE_TIMEOUT_SECONDS,
+                    stdin=subprocess.DEVNULL)   # a sign-in prompt reads EOF instead of waiting
+        except subprocess.TimeoutExpired:
+            return (f"EXISTING TABLES: not checked (snow did not answer within {PROBE_TIMEOUT_SECONDS}s; "
+                    f"is the connection waiting for a browser sign-in?){NOT_CHECKED}")
         except OSError as error:
-            return f"EXISTING TABLES: not checked ({error}); --execute checks again and stops if one exists"
+            return f"EXISTING TABLES: not checked ({error}){NOT_CHECKED}"
         if r.returncode != 0:
             reason = (r.stderr or r.stdout).strip().splitlines()
-            return (f"EXISTING TABLES: not checked ({reason[-1] if reason else f'exit {r.returncode}'}); "
-                    "--execute checks again and stops if one exists")
-        if json.loads(r.stdout or "[]"):
+            return f"EXISTING TABLES: not checked ({reason[-1] if reason else f'exit {r.returncode}'}){NOT_CHECKED}"
+        try:
+            rows = json.loads(r.stdout or "[]")
+        except json.JSONDecodeError:
+            first = (r.stdout.strip().splitlines() or ["?"])[0][:80]
+            return f"EXISTING TABLES: not checked (snow printed non-JSON output: {first!r}){NOT_CHECKED}"
+        if rows:
             found.append(sl.fqn(plan, table))
     if not found:
         return "EXISTING TABLES: none of " + ", ".join(sl.fqn(plan, t) for t in plan["tables"]) + " exist yet"

@@ -47,6 +47,8 @@ with open(log, "a") as f:
 if os.environ.get("FAKE_SNOW_FAIL"):
     print("not signed in", file=sys.stderr)
     sys.exit(1)
+if os.environ.get("FAKE_SNOW_BANNER"):
+    print("Initiating login request with your identity provider. A browser window should have opened")
 if sql.startswith("SHOW TABLES"):
     print(json.dumps([{"name": "FPA_T_ACTUALS"}] if os.environ.get("FAKE_EXISTS") else []))
 elif "COUNT(*)" in sql:
@@ -180,6 +182,33 @@ class CliTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("EXISTING TABLES: not checked", r.stdout)
             self.assertIn("CREATE TABLE", r.stdout)
+
+    def test_dry_run_survives_non_json_snow_output(self):
+        # an SSO banner (or any warning) on stdout must not crash the dry run with a traceback
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_cli(d, (), {"FAKE_SNOW_BANNER": "1"})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertIn("EXISTING TABLES: not checked (snow printed non-JSON output: 'Initiating login",
+                          r.stdout)
+            self.assertIn("--execute checks again and stops if one exists", r.stdout)
+            self.assertIn("CREATE TABLE", r.stdout)
+
+    def test_dry_run_probe_is_bounded_and_never_waits_on_a_prompt(self):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("land_in_snowflake", CLI)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        plan = {"database": "DB", "schema": "SC", "tables": [{"snowflakeTable": "FPA_T_ACTUALS"}]}
+        hang = subprocess.TimeoutExpired(["snow"], mod.PROBE_TIMEOUT_SECONDS)
+        with mock.patch.object(mod.subprocess, "run", side_effect=hang) as run:
+            note = mod.existing_tables_note(plan, "tj", False)
+        self.assertIn(f"not checked (snow did not answer within {mod.PROBE_TIMEOUT_SECONDS}s", note)
+        self.assertIn("--execute checks again", note)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["timeout"], mod.PROBE_TIMEOUT_SECONDS)
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
 
     def test_refuses_existing_without_replace(self):
         with tempfile.TemporaryDirectory() as d:
