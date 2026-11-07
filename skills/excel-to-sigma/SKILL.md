@@ -166,6 +166,18 @@ eval "$(bash scripts/browser-login.sh)"                  # browser OAuth (PKCE);
 python scripts/build-forecast-model.py plan.json --post --sigma-profile <name>   # example
 python scripts/get_token.py --workdir <dir>              # shell-neutral auth.json handoff (0600)
 ```
+With a CLI profile, `export SIGMA_CLI_PROFILE='<profile>'` once (off camera) so no command has to
+carry `--sigma-profile` (`land-in-snowflake.py`'s connection sync reads it too).
+
+Look up the target folder and the write-enabled connection by name, read-only, instead of
+filtering a `sigma api files list` by hand:
+
+```bash
+python scripts/migrate.py resolve-targets --folder-name '<folder name>' --connection-name '<connection name>'
+# prints folderId, connectionId and draftFlags ("--connection <id> --folder <id>") for draft-forecast-plan.py;
+# a missing or ambiguous name lists the candidates; a connection without writeAccess is refused
+```
+
 Resolution order: `SIGMA_API_TOKEN` (+ `SIGMA_BASE_URL`) in the environment, then
 `<SIGMA_WORKDIR>/auth.json` / `./auth.json`, then the Sigma CLI profile
 (`--sigma-profile` / `SIGMA_CLI_PROFILE`), then the provider (`get_token.py`: keychain
@@ -276,6 +288,12 @@ Each procedure is classified (olevba-extracted VBA) and routed: **AUTO**,
 **FLAG**. Actions, Python, and stored procedures are now code-representable, but
 still require implementation plus live side-effect/parity checks. Surface every
 non-AUTO record before build. Never silently omit a macro.
+
+`migrate.py plan` records the gate in `<workdir>/macro-gate.json` (and names it as
+`macroGate`): every procedure surfaced, `dropped: []`, the `nonAuto` list, and per procedure
+its class, status, Sigma route and disposition (`implement, then verify live (pending)`, or
+`drop after formula parity` for AUTO) with `verified: false`. Read the non-AUTO records to the
+user from the `macro-classify.py <file>` report; nothing in the gate is marked verified.
 
 ### Phase 0c — Model map & intent (for "report drawn in cells" / planning models)
 
@@ -409,6 +427,9 @@ Excel Tables in the warehouse so the model reads real tables.
   builder's column map reads the same names from `landing.json`.
 - Excel date cells land as `DATE`; integer serials land as `DATE` only in columns whose header contains date/month/period/day, otherwise `NUMBER`; blank cells land as `NULL`
   (blank-as-zero parity per `refs/source-blank-validation.md`).
+- The dry run runs one read-only `SHOW TABLES LIKE` per target and prints `EXISTING TABLES:`,
+  so you know before `--execute` whether `--replace` is needed (if `snow` cannot answer it says
+  "not checked" and `--execute` checks again).
 - Re-running into a schema that already holds a table exits 2 unless `--replace` is passed;
   it never appends a duplicate. `--execute` verifies each row count against the source and
   exits non-zero on a mismatch.
@@ -503,7 +524,7 @@ warehouse / Sigma admin — this skill does not apply RLS automatically.
 | land workbook Tables in Snowflake (Phase 1b) | ✅ `scripts/land-in-snowflake.py` (`snow` CLI; dry run by default; `--execute`, row-count verified) + `--sync-sigma-connection` |
 | enable **manual commit** on input tables (needed for backend actions / agent tools to write) | ❌ REST spec POST never sets it; ✅ post-create MCP Code Mode `set_edit_mode('draft')` then `set_edit_mode('published-all-users')` per input table (`build-forecast-model.py --emit-manual-commit-program`, which also seeds the forecast's rate / manual / Parameters tables) |
 | macros -> workflow buttons + approvals (`--workflows`) | ✅ `macro-actions.py demo-manifest` -> `workflows.json` -> `build-forecast-model.py --workflows` |
-| workbook **agent** (Phase 6 Enhance) | ✅ `scripts/recommend-agent.py` (`--merge-into`); `requiresApproval` is enforced in the chat UI, not over the REST/MCP run API |
+| workbook **agent** (Phase 6 Enhance) | ✅ `scripts/recommend-agent.py` (pitch) + `build-forecast-model.py --agent-macros` on the post (`--merge-into` only for specs the forecast builder did not build); `requiresApproval` is enforced in the chat UI, not over the REST/MCP run API |
 | DM **source-swap** to `FROM <view>` | ✅ API (DM spec PUT/POST) |
 | read/output DM + workbook build | ✅ API |
 | API/writeback/navigation/stored-procedure actions | ✅ code representation; runtime-test every effect |
@@ -572,16 +593,32 @@ Last step, after parity. `migrate.py plan` writes the macro inventory to
 (the positional is the `.xlsm` or a `.bas` macro module; VBA is only read, never run).
 Read the macro inventory and `workflows.json`, say in plain
 language which macros were workflows people triggered by hand, and offer a Sigma
-workbook agent that runs them on request, with approval before every write. Only
-with a yes: `--merge-into <workbook-spec> --out <merged>`, dry-run validate, then
-create or update the workbook. A macro inventory with no action or scenario classes
-(only recalc / cosmetic) gets no agent and no write tools. See
-`refs/agent-enhance.md`.
+workbook agent that runs them on request, with approval before every write:
+
+```bash
+.venv/bin/python scripts/recommend-agent.py --macros work/macros.json --workflows work/workflows.json
+```
+
+That prints the pitch only. With a yes, the agent reaches the workbook one way: add
+`--agent-macros work/macros.json` to the post (see **One run, one POST** below). Do not run
+`recommend-agent.py --merge-into` for a forecast build: its merged spec is never posted.
+`--merge-into <workbook-spec> --out <merged>` / `--emit` are only for a workbook spec this
+skill's forecast builder did not build. A macro inventory with no action or scenario classes
+(only recalc / cosmetic) gets no agent and no write tools. See `refs/agent-enhance.md`.
+
+The forecast run, in order (`migrate.py plan` prints it as `nextCommands`, with the staging
+post as `stagingAlternative`): `macro-classify.py` (Phase 0b) → `land-in-snowflake.py` dry run,
+then `--execute` (Phase 1b) → `draft-forecast-plan.py` → `macro-actions.py demo-manifest` →
+`build-forecast-model.py` dry run (`--actuals-table --landing --workflows
+--emit-manual-commit-program work/setup-program.py`) → `recommend-agent.py` (pitch) → the post
+with the same flags plus `--agent-macros` → the setup program once → the smoke pass.
 
 Prerequisites the agent depends on:
 - Build with `build-forecast-model.py --workflows work/workflows.json
-  --emit-manual-commit-program work/manual-commit.py` so the Parameters / Versions /
-  Approvals input tables and workflow buttons exist.
+  --emit-manual-commit-program work/setup-program.py` so the Parameters / Versions /
+  Approvals input tables and workflow buttons exist. Pass the same
+  `--emit-manual-commit-program` path on the post too: the post rewrites the program against
+  the created workbook and prints `NEXT: run <path> ...`; run that file.
 - **Manual commit.** Backend actions and agent tools can only write to input tables
   that have manual commit enabled, and a REST spec POST never enables it. After the
   workbook is created, run the setup program from `--emit-manual-commit-program` once via
@@ -615,12 +652,39 @@ posted. Only pass `--agent-macros` after the user said yes to the agent.
 
 **Staging build while review is pending.** Production `--post` keeps the strict verified
 review-disposition gate. To build in an isolated staging folder while issues such as
-`VBA_PROJECT` / `FLAT_CARRY_POLICY` are honestly pending, write the approval to review with
-`--staging-approval-template work/staging-approval.json`, have the named owner and reviewer
-check every audited issue and set `sourceReviewApproval.status` to `approved_for_staging`,
-then post with `--post --staging-approval work/staging-approval.json`. The approval is bound
-to the source bytes, the exact issue objects and the plan's `folderId`; nothing is marked
-verified.
+`VBA_PROJECT` / `FLAT_CARRY_POLICY` are honestly pending, write the approval with
+`--staging-approval-template work/staging-approval.json` (it lists the exact audited issues),
+have the named owner and reviewer check every one, then record their approval on the command
+line — no hand edit of the JSON:
+
+```bash
+.venv/bin/python scripts/build-forecast-model.py work/plan.json ... \
+    --staging-approval-template work/staging-approval.json \
+    --owner 'TJ Wells' --reviewer 'Jane Reviewer' --approve-for-staging
+.venv/bin/python scripts/build-forecast-model.py work/plan.json ... --agent-macros work/macros.json \
+    --post --staging-approval work/staging-approval.json
+```
+
+`--approve-for-staging` needs both names and sets `sourceReviewApproval.status` to
+`approved_for_staging`; without it the names are recorded and the status stays `pending`. The
+approval is bound to the source bytes, the exact issue objects and the plan's `folderId`;
+nothing is marked verified.
+
+**Smoke pass (before the run is called clean).** The ACTION / CONTROL dispositions stay "live
+side-effect check pending" until this runs once on the seeded workbook, off camera, so the
+first execution of each path is never on camera. Log each step:
+1. Switch scenario (agent `set-scenario`, or the switch): the FY figures change.
+2. Roll forward (button or agent): Parameters `Forecast Start Month` +1 month; the closed month
+   reads landed actuals on the chart, P&L detail and header; months left drop by one.
+3. Snapshot: one new Versions row labelled `v<N>` (an integer) with the frozen FY figures.
+4. Submit for approval: one new Approvals row, status `Submitted`; the header pill follows.
+5. Agent `set-driver` on one line item: exactly one Growth Rates row changes.
+6. Read each back with Sigma MCP `query`; then restore — start month, the edited rate, delete
+   the test Versions / Approvals rows — and re-check parity and the header.
+`requiresApproval` is enforced only in the chat UI, so check the approval prompt there by hand.
+Elements on the hidden model page cannot be queried through MCP `query` (`Table workbook.<id>
+not found`); compile-check them through the visible elements that read them and the page
+screenshots.
 
 ### The planning app (`--workflows`)
 

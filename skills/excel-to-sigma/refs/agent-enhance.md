@@ -5,16 +5,22 @@ run those same workflows. This is a recommendation, not a default: nothing is ad
 until the user says yes.
 
 ```bash
-.venv/bin/python scripts/macro-classify.py --json book.xlsm > macros.json
+.venv/bin/python scripts/macro-classify.py --json book.xlsm > macros.json   # migrate.py plan writes it too
 .venv/bin/python scripts/macro-actions.py demo-manifest book.xlsm --out workflows.json
-.venv/bin/python scripts/recommend-agent.py --macros macros.json --workflows workflows.json
-# on approval:
-.venv/bin/python scripts/recommend-agent.py --macros macros.json --workflows workflows.json \
-    --merge-into wb_spec.json --out wb_with_agent.json     # or --emit fragment.json
+.venv/bin/python scripts/recommend-agent.py --macros macros.json --workflows workflows.json   # the pitch only
+# on approval, the forecast post itself carries the agent (one POST):
+.venv/bin/python scripts/build-forecast-model.py plan.json ... --workflows workflows.json \
+    --agent-macros macros.json --post ...
 ```
 
-The printed text is the on-camera recommendation. It names the workflows actually found
-and says writes ask for approval first.
+The printed text is the on-camera recommendation. It names the workflows actually found,
+counts the agent's actions (those workflows plus any extra tool, such as the growth-driver
+tool) and says each write asks for approval first.
+
+For the forecast builder there is one way the agent reaches the workbook: `--agent-macros` on
+the post. `recommend-agent.py --merge-into <spec> --out <merged>` (or `--emit fragment.json`)
+is only for a workbook spec that `build-forecast-model.py` did not build; a merged file that
+nothing posts is not a step of the forecast run.
 
 ## Decision rule
 

@@ -1138,7 +1138,14 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
           "tableComponents": {"summaryBar": "hidden"}, "tableStyle": {"preset": "presentation"},
           # a dimension the landed table does not carry (an empty Department / Vendor) is not shown
           "columns": [{**c, "name": forecast_app.sentence(c["name"])} for c in gl["columns"]
-                      if c["name"] != "Txn Date" and c["formula"] not in ("[GL Detail/Department]", "[GL Detail/Vendor]")]}
+                      if c["name"] != "Txn Date" and c["formula"] not in ("[GL Detail/Department]", "[GL Detail/Vendor]")]
+          # the one boundary: a landed month that is still a forecast month (before roll forward) is not
+          # listed as an actual; the same hidden window the Actuals wrap filters on
+          + [{"id": "g_mk", "name": "Month key", "hidden": True,
+              "formula": month_key(f"[{actuals_prefix(gl)}/Month End]")},
+             {"id": "g_win", "name": "Window", "hidden": True,
+              "formula": f'If([Month key] < {forecast_app.START_KEY}, "Actual", "Forecast")'}],
+          "filters": [{"id": "g_wf", "columnId": "g_win", "kind": "list", "mode": "include", "values": ["Actual"]}]}
     ctx = {"P": P, "wf": wf, "rows": rows, "kpi": kpi, "first_positive": first_positive, "fy_nums": fy_nums,
            "prior_nums": prior_nums, "fy_label": fy_label, "prior_label": prior_label,
            "fy_end": (int(end[:4]), int(end[5:7])), "n_fy": len(fy_nums) or len(periods),
@@ -1231,6 +1238,13 @@ def parse_args(argv=None):
     parser.add_argument("--staging-approval-template", metavar="OUT.json",
                         help="write the staging approval to review (exact audited issues, blank owner/reviewer, "
                              "status pending) and stop")
+    parser.add_argument("--owner", help="with --staging-approval-template: the named owner of the staging build")
+    parser.add_argument("--reviewer", help="with --staging-approval-template: the named reviewer who checked "
+                        "every audited issue")
+    parser.add_argument("--approve-for-staging", action="store_true",
+                        help="with --staging-approval-template, --owner and --reviewer: record that the named "
+                             "owner and reviewer approve the exact audited issues for this staging folder "
+                             "(status approved_for_staging). Never marks an issue verified")
     parser.add_argument("--agent-macros", metavar="MACROS.json",
                         help="with --workflows: merge the Phase 6 workbook agent (recommend-agent.py) into the "
                              "workbook before it is validated and created, so one POST carries it")
@@ -1244,10 +1258,16 @@ class StagingError(ValueError):
     """A staging approval that does not cover the exact audited source issues and folder."""
 
 
-def staging_template(P, report):
+def staging_template(P, report, owner="", reviewer="", approve=False):
+    """The staging approval for these source bytes and the plan's folder. ``approve`` records the named
+    owner's and reviewer's approval of exactly the audited issues; it never marks anything verified."""
+    if approve and not (str(owner or "").strip() and str(reviewer or "").strip()):
+        raise StagingError("--approve-for-staging needs --owner and --reviewer")
     return {"scope": "staging build only; production --post keeps the verified-disposition gate",
-            "folderId": P.get("folderId"), "sourceSha256": report["sourceSha256"], "owner": "", "reviewer": "",
-            "sourceReviewApproval": {"status": "pending", "issues": report["issues"]}}
+            "folderId": P.get("folderId"), "sourceSha256": report["sourceSha256"],
+            "owner": owner or "", "reviewer": reviewer or "",
+            "sourceReviewApproval": {"status": "approved_for_staging" if approve else "pending",
+                                     "issues": report["issues"]}}
 
 
 def check_staging_approval(P, report, approval):
@@ -1276,6 +1296,14 @@ def main(argv=None):
     if args.staging_approval and not args.post:
         print("STAGING: --staging-approval goes with --post", file=sys.stderr)
         return 1
+    if (args.owner or args.reviewer or args.approve_for_staging) and not args.staging_approval_template:
+        print("STAGING: --owner / --reviewer / --approve-for-staging go with --staging-approval-template",
+              file=sys.stderr)
+        return 1
+    if args.approve_for_staging and not (str(args.owner or "").strip() and str(args.reviewer or "").strip()):
+        print("STAGING: --approve-for-staging needs --owner and --reviewer (the named people who checked "
+              "every audited issue)", file=sys.stderr)
+        return 1
     try:
         if staging:
             source_path, gate_report = gate_plan_staging_source(P, source_arg=args.source, plan_path=args.plan)
@@ -1291,10 +1319,19 @@ def main(argv=None):
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
         return error.exit_code
     if args.staging_approval_template:
+        template = staging_template(P, gate_report, args.owner, args.reviewer, args.approve_for_staging)
         with open(args.staging_approval_template, "w", encoding="utf-8") as stream:
-            json.dump(staging_template(P, gate_report), stream, indent=1)
-        print(f"STAGING APPROVAL TEMPLATE: {args.staging_approval_template} — review every issue, name the owner "
-              "and reviewer, set status approved_for_staging, then re-run with --post --staging-approval")
+            json.dump(template, stream, indent=1)
+        codes = ", ".join(i.get("code", "?") for i in gate_report["issues"]) or "none"
+        if args.approve_for_staging:
+            print(f"STAGING APPROVAL: {args.staging_approval_template} — APPROVED FOR STAGING by owner "
+                  f"{args.owner} and reviewer {args.reviewer} for folder {P.get('folderId')}; issues stay "
+                  f"pending (not verified): {codes}. Post with --post --staging-approval "
+                  f"{args.staging_approval_template}")
+        else:
+            print(f"STAGING APPROVAL TEMPLATE: {args.staging_approval_template} — issues {codes}; review every "
+                  "issue, then re-run with --owner <name> --reviewer <name> --approve-for-staging (or post "
+                  "with --post --staging-approval once it is approved)")
         return 0
     if args.staging_approval:
         try:

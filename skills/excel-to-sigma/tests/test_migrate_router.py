@@ -56,15 +56,17 @@ class TestRouter(unittest.TestCase):
         wb.save(path)
         return path
 
-    def macro_enabled_forecast(self):
-        """The forecast fixture as a real .xlsm: the 08 fixture's vbaProject.bin (one recorded
-        macro) injected with the macro-enabled workbook content type and its relationship."""
-        xlsx = self.dir / "pnl.xlsx"
-        fixture.build_pnl(xlsx)
+    def macro_enabled_forecast(self, xlsx=None):
+        """A forecast source as a real .xlsm: the 08 fixture's vbaProject.bin (one recorded
+        macro) injected with the macro-enabled workbook content type and its relationship.
+        Default source: the P&L fixture (no Excel Tables)."""
+        if xlsx is None:
+            xlsx = self.dir / "pnl.xlsx"
+            fixture.build_pnl(xlsx)
         with zipfile.ZipFile(ROOT / "tests" / "fixtures" / "broader-eight"
                              / "08 Inventory Replenishment Plan.xlsm") as donor:
             vba = donor.read("xl/vbaProject.bin")
-        xlsm = self.dir / "pnl.xlsm"
+        xlsm = xlsx.with_suffix(".xlsm")
         with zipfile.ZipFile(xlsx) as src, zipfile.ZipFile(xlsm, "w", zipfile.ZIP_DEFLATED) as dst:
             for item in src.infolist():
                 data = src.read(item.filename)
@@ -83,6 +85,13 @@ class TestRouter(unittest.TestCase):
             dst.writestr("xl/vbaProject.bin", vba)
         return xlsx, xlsm
 
+    def demo_source(self):
+        """The demo forecast (formal Tables tblActuals, tblPlan, ...) as .xlsx and .xlsm."""
+        spec = importlib.util.spec_from_file_location("make_demo_router", SCRIPTS / "make-demo-forecast.py")
+        maker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(maker)
+        return self.macro_enabled_forecast(Path(maker.build_demo_workbook(self.dir)))
+
     @staticmethod
     def enhance_absent(test, result):
         text = "\n".join(result["nextCommands"])
@@ -98,12 +107,11 @@ class TestRouter(unittest.TestCase):
         except ImportError:
             self.skipTest("oletools is not installed")
         xlsx, xlsm = self.macro_enabled_forecast()
-        # Non-macro .xlsx: landing is offered, the Enhance step is not.
+        # No Excel Tables: nothing to land, so no landing step and no landed-actuals flags.
         _, plain = self.plan(xlsx)
         text = "\n".join(plain["nextCommands"])
-        self.assertIn("land-in-snowflake.py", text)
-        self.assertIn("--actuals-table", text)
-        self.assertIn("--landing", text)
+        self.assertNotIn("land-in-snowflake.py", text)
+        self.assertNotIn("--actuals-table", text)
         self.enhance_absent(self, plain)
         # Real macro-enabled forecast source, real macro-classify (no mock): Enhance (Phase 6)
         # is offered after the build.
@@ -115,15 +123,73 @@ class TestRouter(unittest.TestCase):
                          [("Macro1", "NAVIGATION", "AUTO")])
         self.assertEqual(json.loads((self.out / "macros.json").read_text()), enabled["macros"])
         cmds = enabled["nextCommands"]
-        text = "\n".join(cmds)
-        self.assertIn("land-in-snowflake.py", text)
-        self.assertIn("macro-actions.py demo-manifest", text)
+        self.assertIn("macro-classify.py", cmds[0])
         manifest = next(c for c in cmds if "demo-manifest" in c)
         self.assertTrue(manifest.split("--out ")[1].split()[0].endswith("workflows.json"))
-        self.assertIn("recommend-agent.py", text)
-        self.assertLess(next(i for i, c in enumerate(cmds) if "land-in-snowflake.py" in c),
+        self.assertLess(next(i for i, c in enumerate(cmds) if "demo-manifest" in c),
                         next(i for i, c in enumerate(cmds) if "recommend-agent.py" in c))
         self.assertIn("refs/agent-enhance.md", enabled["readRefs"])
+
+    def test_forecast_with_tables_and_macros_lists_the_run_in_order(self):
+        # The demo shape: Excel Tables + macros. nextCommands is the order the run takes; every build
+        # carries the landed actuals, the workflows and one setup-program name; the agent rides the post.
+        from unittest import mock
+        real = MIGRATE.run_json
+        demo_macros = json.loads((ROOT / "tests" / "fixtures" / "agent-enhance" / "demo-macros.json").read_text())
+
+        def fake(*args):
+            return demo_macros if Path(args[0]).name == "macro-classify.py" else real(*args)
+        _, xlsm = self.demo_source()
+        with mock.patch.object(MIGRATE, "run_json", fake):
+            code, result = self.plan(xlsm)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "forecast")
+        cmds = result["nextCommands"]
+
+        def kind(c):
+            for key, label in (("macro-classify.py", "classify"), ("land-in-snowflake.py --", None),
+                               ("draft-forecast-plan.py", "draft"), ("demo-manifest", "manifest"),
+                               ("recommend-agent.py", "pitch")):
+                if key in c and label:
+                    return label
+            if "land-in-snowflake.py" in c:
+                return "land-execute" if "--execute" in c else "land-dry"
+            if "build-forecast-model.py" in c:
+                return "post" if "--post" in c else "build-dry"
+            return c
+        self.assertEqual([kind(c) for c in cmds], ["classify", "land-dry", "land-execute", "draft", "manifest",
+                                                   "build-dry", "pitch", "post"])
+        program = str(self.out / "setup-program.py")
+        everything = json.dumps(result)
+        self.assertNotIn("manual-commit.py", everything)
+        self.assertNotIn("--merge-into", "\n".join(cmds))
+        self.assertIn("tblActuals, tblPlan", next(c for c in cmds if kind(c) == "land-dry"))
+        builds = [c for c in cmds if "build-forecast-model.py" in c] + result["stagingAlternative"]
+        self.assertEqual(len(builds), 4)
+        for c in builds:
+            for flag in ("--actuals-table", "--landing", "--workflows " + str(self.out / "workflows.json"),
+                         "--emit-manual-commit-program " + program):
+                self.assertIn(flag, c)
+        post = cmds[-1]
+        self.assertIn("--agent-macros " + str(self.out / "macros.json"), post)
+        self.assertIn("--post --review-dispositions", post)
+        self.assertNotIn("--agent-macros", cmds[cmds.index(post) - 2])   # the dry run precedes the yes
+        template, staged = result["stagingAlternative"]
+        self.assertIn("--staging-approval-template", template)
+        self.assertIn("--approve-for-staging", template)
+        self.assertIn("--owner", template)
+        self.assertIn("--post --staging-approval", staged)
+        self.assertIn("--agent-macros", staged)
+        setup = [h for h in result["userHandoffs"] if "setup program" in h]
+        self.assertEqual(len(setup), 1)
+        self.assertIn(program, setup[0])
+        self.assertTrue(any("Smoke pass" in h for h in result["userHandoffs"]))
+        gate = json.loads((self.out / "macro-gate.json").read_text())
+        self.assertEqual(result["macroGate"], str(self.out / "macro-gate.json"))
+        self.assertEqual((gate["procedures"], gate["dropped"]), (7, []))
+        self.assertEqual(len(gate["nonAuto"]), 6)
+        self.assertFalse(any(r["verified"] for r in gate["records"]))
+        self.assertTrue(any("resolve-targets" in d for d in result["askUser"]))
 
     def test_macro_enabled_non_forecast_source_gets_no_enhance(self):
         try:
@@ -163,7 +229,7 @@ class TestRouter(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(result["archetype"], "forecast")
                 self.enhance_absent(self, result)
-                self.assertIn("land-in-snowflake.py", "\n".join(result["nextCommands"]))
+                self.assertIn("build-forecast-model.py", "\n".join(result["nextCommands"]))
                 self.assertFalse((self.out / "macros.json").exists())
         self.assertIn("macro-classify failed (olevba exploded)", " ".join(result["notes"]))
 
@@ -173,7 +239,7 @@ class TestRouter(unittest.TestCase):
         _, result = self.plan(path)
         handoffs = result["userHandoffs"]
         self.assertFalse(any("paste" in h.lower() for h in handoffs), handoffs)
-        program = str(self.out / "manual-commit.py")
+        program = str(self.out / "setup-program.py")
         post = next(c for c in result["nextCommands"] if "--post" in c)
         self.assertIn("--emit-manual-commit-program " + program, post)
         setup = [h for h in handoffs if "setup program" in h]

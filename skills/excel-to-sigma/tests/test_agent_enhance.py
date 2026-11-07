@@ -39,6 +39,27 @@ class AgentEnhanceTests(unittest.TestCase):
             self.assertIn(phrase, rec["pitch"])
         self.assertNotIn("email", rec["pitch"].replace("never sends email", ""))
 
+    def test_pitch_counts_workflows_and_actions_consistently(self):
+        # 4 macro workflows + the growth-driver tool = 5 actions; never "4 workflows" then "5 of them".
+        macros, wfs = demo()
+        rec = ae.recommend_agent(macros, wfs)
+        self.assertEqual(rec["pitch"],
+                         "4 of your 7 macros were workflows people trigger by hand: switch scenario, roll forward "
+                         "a month, snapshot a version and submit for approval. A Sigma Agent can run all 4 on "
+                         "request, plus a fifth action: change a growth driver. Each of the 5 actions changes the "
+                         "workbook, so each asks for your approval first. It reads the forecast and the log "
+                         "tables to check what changed, and it never sends email.")
+        self.assertEqual(rec["reasons"], [
+            "4 of 7 macros were workflows people trigger by hand: Set scenario, Roll forward one month, "
+            "Snapshot version and Submit for approval.",
+            "The agent gets 5 actions: those 4 workflows plus a growth-driver tool. All 5 change the workbook, "
+            "so each asks for approval before it runs."])
+        self.assertNotIn("of them", " ".join(rec["reasons"]))
+        plain = ae.recommend_agent(macros, wfs, drivers=False)   # no driver tool: 4 workflows, 4 actions
+        self.assertIn("A Sigma Agent can run all 4 on request. Each of the 4 actions changes", plain["pitch"])
+        self.assertEqual(plain["reasons"][1], "The agent gets 4 actions, one per workflow. All 4 change the "
+                                              "workbook, so each asks for approval before it runs.")
+
     def test_analyze_only_when_no_actions(self):
         macros = [{"name": "RecalcAll", "class": "RECALC"}, {"name": "FormatReport", "class": "FORMAT_COSMETIC"}]
         rec = ae.recommend_agent(macros, [])

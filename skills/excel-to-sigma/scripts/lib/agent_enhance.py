@@ -38,6 +38,14 @@ def _macro_list(macros):
     return [m for m in (macros or []) if isinstance(m, dict)]
 
 
+EXTRA_NOUN = {DRIVER_ID: "a growth-driver tool"}   # agent tools that are not one of the macros
+_ORDINALS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth")
+
+
+def _ordinal(n):
+    return _ORDINALS[n - 1] if 1 <= n <= len(_ORDINALS) else f"{n}th"
+
+
 def _join(items):
     items = list(items)
     if len(items) <= 1:
@@ -71,16 +79,33 @@ def recommend_agent(macros, workflows, drivers=True):
                             "Sigma recalculates and styles the workbook on its own, so an agent has nothing to run."],
                 "pitch": ""}
     writes = [t for t in tools if t["requiresApproval"]]
-    names = [SPOKEN.get(t["actionId"], t["label"].lower()) for t in tools]
+    spoken = lambda t: SPOKEN.get(t["actionId"], t["label"].lower())  # noqa: E731
     flows = [t for t in tools if t["actionId"] != DRIVER_ID]  # driver edit is offered, not a macro
-    reasons = [f"{len(flows)} of {total} macros were workflows people trigger by hand: "
+    extras = [t for t in tools if t["actionId"] == DRIVER_ID]
+    # One count per noun: macros -> workflows, then actions (workflows + extra tools); never "4 ... 5 of them".
+    n, nf = len(tools), len(flows)
+    reasons = [f"{nf} of {total} macros were workflows people trigger by hand: "
                + _join(t["label"] for t in flows) + "."]
-    if writes:
-        reasons.append(f"{len(writes)} of them change the workbook, so each asks for approval before it runs.")
-    pitch = (f"{len(flows)} of your {total} macros were workflows people trigger by hand. "
-             f"A Sigma Agent can run them on request: {_join(names)}. "
-             + ("Each one changes the workbook, so each asks for your approval first. " if len(writes) == len(tools)
-                else f"The {len(writes)} that write ask for your approval first. " if writes else "")
+    gets = (f"The agent gets {n} actions: those {nf} workflows plus "
+            + _join(EXTRA_NOUN.get(t["actionId"], f"a {t['label'].lower()} tool") for t in extras) + "."
+            if extras else f"The agent gets {n} actions, one per workflow.")
+    if len(writes) == n:
+        gets += f" All {n} change the workbook, so each asks for approval before it runs."
+    elif writes:
+        gets += f" {len(writes)} of the {n} change the workbook, so each of those asks for approval before it runs."
+    reasons.append(gets)
+    if not extras:
+        more = ""
+    elif len(extras) == 1:
+        more = f", plus a {_ordinal(n)} action: {spoken(extras[0])}"
+    else:
+        more = f", plus {len(extras)} more actions: " + _join(spoken(t) for t in extras)
+    pitch = (f"{nf} of your {total} macros were workflows people trigger by hand: "
+             f"{_join(spoken(t) for t in flows)}. A Sigma Agent can run all {nf} on request{more}. "
+             + (f"Each of the {n} actions changes the workbook, so each asks for your approval first. "
+                if len(writes) == n
+                else f"The {len(writes)} of the {n} actions that change the workbook ask for your approval first. "
+                if writes else "")
              + "It reads the forecast and the log tables to check what changed, and it never sends email.")
     return {"recommend": True, "profile": "act" if writes else "analyze", "reasons": reasons,
             "tools": tools, "pitch": pitch}

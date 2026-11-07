@@ -44,6 +44,9 @@ log = os.environ["FAKE_SNOW_LOG"]
 sql = sys.argv[sys.argv.index("-q") + 1] if "-q" in sys.argv else ""
 with open(log, "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
+if os.environ.get("FAKE_SNOW_FAIL"):
+    print("not signed in", file=sys.stderr)
+    sys.exit(1)
 if sql.startswith("SHOW TABLES"):
     print(json.dumps([{"name": "FPA_T_ACTUALS"}] if os.environ.get("FAKE_EXISTS") else []))
 elif "COUNT(*)" in sql:
@@ -154,10 +157,29 @@ class CliTests(unittest.TestCase):
             r = self.run_cli(d)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("CREATE TABLE", r.stdout)
-            self.assertFalse((Path(d) / "snow.log").exists())
+            # only the read-only existence check runs; nothing is created, loaded or granted
+            sqls = [json.loads(x) for x in (Path(d) / "snow.log").read_text().splitlines()]
+            self.assertEqual([c[c.index("-q") + 1].split()[:2] for c in sqls], [["SHOW", "TABLES"]])
+            self.assertIn("EXISTING TABLES: none of DB.SC.FPA_T_ACTUALS", r.stdout)
             landing = json.loads((Path(d) / "landing.json").read_text())
             self.assertEqual(landing["database"], "DB")
             self.assertEqual(landing["tables"][0]["snowflakeTable"], "FPA_T_ACTUALS")
+
+    def test_dry_run_says_existing_tables_need_replace_before_execute(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_cli(d, (), {"FAKE_EXISTS": "1"})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("EXISTING TABLES: DB.SC.FPA_T_ACTUALS already exists; --execute stops (exit 2) "
+                          "unless you pass --replace", r.stdout)
+            self.assertNotIn("CREATE", (Path(d) / "snow.log").read_text())
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_cli(d, ["--replace"], {"FAKE_EXISTS": "1"})
+            self.assertIn("EXISTING TABLES: DB.SC.FPA_T_ACTUALS already exists; --replace overwrites it", r.stdout)
+        with tempfile.TemporaryDirectory() as d:   # snow cannot answer: the dry run still prints its plan
+            r = self.run_cli(d, (), {"FAKE_SNOW_FAIL": "1"})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("EXISTING TABLES: not checked", r.stdout)
+            self.assertIn("CREATE TABLE", r.stdout)
 
     def test_refuses_existing_without_replace(self):
         with tempfile.TemporaryDirectory() as d:
@@ -177,6 +199,14 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(sig), 1)
             self.assertIn("sync", sig[0])
             self.assertIn('{"path": ["DB", "SC", "FPA_T_ACTUALS"]}', sig[0])
+
+    def test_sync_profile_defaults_to_the_sigma_cli_profile_env(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_cli(d, ["--execute", "--sync-sigma-connection", "conn-1"],
+                             {"SIGMA_CLI_PROFILE": "acme (1)"})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            sig = [json.loads(x) for x in (Path(d) / "sigma.log").read_text().splitlines()]
+            self.assertEqual(sig[0][:2], ["-p", "acme (1)"])
 
     def test_row_count_mismatch_fails(self):
         with tempfile.TemporaryDirectory() as d:

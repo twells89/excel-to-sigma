@@ -628,6 +628,12 @@ class TestDemoWorkflows(unittest.TestCase):
         mapped={w['macro'] for w in self.manifest['workflows']}|set(disp)
         self.assertEqual(len(mapped),7)
 
+    def test_set_scenario_note_names_the_switch_the_forecast_reads(self):
+        note=next(w['note'] for w in self.manifest['workflows'] if w['actionId']=='set-scenario')
+        self.assertIn('Downside / Base / Upside switch',note)
+        self.assertIn('forecast formulas read',note)
+        self.assertNotIn('no button action writes it',note)
+
     def test_submit_never_emails(self):
         for w in self.manifest['workflows']:
             self.assertIn(w['effect'],('update-rows','insert-rows','control'))

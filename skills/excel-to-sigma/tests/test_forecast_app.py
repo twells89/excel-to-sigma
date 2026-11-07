@@ -393,6 +393,21 @@ class ForecastAppTests(unittest.TestCase):
         roll = b["btnRoll"]["actions"][0]["effects"][0]["values"]["pa_start"]["formula"]
         self.assertEqual(m.scalar(roll), date(2027, 8, 1))
 
+    def test_gl_actuals_follow_the_boundary(self):
+        # A landed month that is still a forecast month (Jul-27 before roll forward) is not shown as an
+        # actual on P&L detail; after roll forward it is.
+        gl = self.by_id(self.spec())["glTable"]
+        window = next(c for c in gl["columns"] if c["name"] == "Window")
+        self.assertIs(window.get("hidden"), True)
+        self.assertIn("Max([Forecast Boundary/Start Key])", window["formula"])
+        self.assertEqual(gl["filters"], [{"id": "g_wf", "columnId": window["id"], "kind": "list",
+                                          "mode": "include", "values": ["Actual"]}])
+        before = self.model(date(2027, 7, 1), july=True).rows("glTable")
+        after = self.model(date(2027, 8, 1), july=True).rows("glTable")
+        self.assertNotIn("Jul-27", {r["Month"] for r in before})
+        self.assertEqual(len(after) - len(before), len(self.july_landed()))
+        self.assertIn("Jul-27", {r["Month"] for r in after})
+
     def test_unseeded_parameters_fall_back_to_the_source_boundary(self):
         self.assert_ties_to_the_source(self.model(None))
 
@@ -842,6 +857,41 @@ class ForecastAppTests(unittest.TestCase):
                 self.build.check_staging_approval(P, report, {**good, **change})
         template = self.build.staging_template(P, report)
         self.assertEqual((template["owner"], template["sourceReviewApproval"]["status"]), ("", "pending"))
+
+    def test_staging_template_records_the_named_approval_from_flags(self):
+        # The owner/reviewer approval is given on the command line (logged), never by hand-editing JSON;
+        # the exact audited issues are kept and nothing is marked verified.
+        import contextlib
+        import io
+        from migration_gate import gate_plan_staging_source
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path, _landing, _wf = self._cli_files(tmp)
+            _src, report = gate_plan_staging_source(self.plan, plan_path=str(plan_path))
+            out_json = Path(tmp) / "staging-approval.json"
+            base = [str(plan_path), "--staging-approval-template", str(out_json)]
+            err, out = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(self.build.main(base + ["--approve-for-staging", "--owner", "TJ Wells"]), 1)
+            self.assertIn("--owner and --reviewer", err.getvalue())
+            self.assertFalse(out_json.exists())
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.build.main(base + ["--approve-for-staging", "--owner", "TJ Wells",
+                                                         "--reviewer", "Claude (controller)"]), 0)
+            approval = json.loads(out_json.read_text())
+            self.assertEqual((approval["owner"], approval["reviewer"]), ("TJ Wells", "Claude (controller)"))
+            self.assertEqual(approval["sourceReviewApproval"]["status"], "approved_for_staging")
+            self.assertEqual(approval["sourceReviewApproval"]["issues"], report["issues"])
+            self.assertNotIn('"verified": true', out_json.read_text())
+            self.build.check_staging_approval(self.plan, report, approval)
+            self.assertIn("APPROVED FOR STAGING", out.getvalue())
+            # without --approve-for-staging the names are recorded but the status stays pending
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.build.main(base + ["--owner", "TJ Wells"]), 0)
+            pending = json.loads(out_json.read_text())
+            self.assertEqual((pending["owner"], pending["sourceReviewApproval"]["status"]), ("TJ Wells", "pending"))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.build.main([str(plan_path), "--approve-for-staging", "--owner", "a",
+                                                  "--reviewer", "b"]), 1)   # only with the template
 
 
 def forecast_app_disallowed(body):

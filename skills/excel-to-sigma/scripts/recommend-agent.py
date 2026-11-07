@@ -5,9 +5,11 @@
   recommend-agent.py ... --emit fragment.json [--workbook wb-spec.json] [--name "FP&A forecast agent"]
   recommend-agent.py ... --merge-into wb-spec.json --out merged.json
 
---macros is the `macro-classify.py --json` output; --workflows is workflows.json (Task 5).
+--macros is the `macro-classify.py --json` output; --workflows is workflows.json.
 Prints the recommendation (read it aloud: it is the on-camera moment). Never contacts Sigma and
-never sends email; get the user's approval before posting the merged spec.
+never sends email. For a forecast build the agent reaches the workbook through
+`build-forecast-model.py ... --agent-macros macros.json --post` (one POST); --emit / --merge-into
+are for workbook specs that builder did not build. Get the user's yes before either.
 """
 import argparse
 import json

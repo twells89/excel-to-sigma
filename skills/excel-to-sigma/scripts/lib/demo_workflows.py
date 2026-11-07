@@ -88,8 +88,9 @@ NOTES = {
                         "values; the full line x month grid is not reproduced.",
     "submit-approval": "Appends an Approvals row (status Submitted, user, time). The VBA also protected the "
                        "sheet and sent an Outlook email; neither is reproduced.",
-    "set-scenario": "Parameters is a one-row input table (a control filters but cannot feed a formula "
-                    "parameter); the scenario is picked in the Parameters cell, no button action writes it.",
+    "set-scenario": "The planning app's Downside / Base / Upside switch is a workbook control the forecast "
+                    "formulas read (set-scenario sets it; Snapshot records its value). Without the planning "
+                    "app, the one-row Parameters input table holds Selected Scenario instead.",
 }
 
 

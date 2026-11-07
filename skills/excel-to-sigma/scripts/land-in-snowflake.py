@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Phase 1b — land workbook Tables in Snowflake with the ``snow`` CLI.
 
-Default is a dry run (prints the plan and the SQL). ``--execute`` runs it, verifies each row
+Default is a dry run (prints the plan and the SQL, and runs one read-only ``SHOW TABLES`` per target
+to say whether ``--execute`` will need ``--replace``). ``--execute`` runs it, verifies each row
 count equals the source's, and exits non-zero on a mismatch. An existing table without
 ``--replace`` exits 2. ``--sync-sigma-connection <id>`` then makes Sigma see the tables.
 """
-import argparse, json, subprocess, sys
+import argparse, json, os, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
@@ -23,6 +24,29 @@ def first_value(stdout):
     return list(data[0].values())[0]
 
 
+def existing_tables_note(plan, connection, replace):
+    """Read-only SHOW TABLES per target, so the dry run says up front whether --execute needs --replace."""
+    found = []
+    for table in plan["tables"]:
+        try:
+            r = run(sl.exists_command(plan, table, connection))
+        except OSError as error:
+            return f"EXISTING TABLES: not checked ({error}); --execute checks again and stops if one exists"
+        if r.returncode != 0:
+            reason = (r.stderr or r.stdout).strip().splitlines()
+            return (f"EXISTING TABLES: not checked ({reason[-1] if reason else f'exit {r.returncode}'}); "
+                    "--execute checks again and stops if one exists")
+        if json.loads(r.stdout or "[]"):
+            found.append(sl.fqn(plan, table))
+    if not found:
+        return "EXISTING TABLES: none of " + ", ".join(sl.fqn(plan, t) for t in plan["tables"]) + " exist yet"
+    names = ", ".join(found)
+    verb = "exists" if len(found) == 1 else "exist"
+    if replace:
+        return f"EXISTING TABLES: {names} already {verb}; --replace overwrites {'it' if len(found) == 1 else 'them'}"
+    return f"EXISTING TABLES: {names} already {verb}; --execute stops (exit 2) unless you pass --replace"
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("file")
@@ -35,7 +59,8 @@ def main(argv=None):
     p.add_argument("--replace", action="store_true")
     p.add_argument("--execute", action="store_true")
     p.add_argument("--sync-sigma-connection", help="Sigma connection id; sync each landed table path after --execute")
-    p.add_argument("--sigma-profile", help="Sigma CLI profile for the sync")
+    p.add_argument("--sigma-profile", default=os.environ.get("SIGMA_CLI_PROFILE") or None,
+                   help="Sigma CLI profile for the sync (default: $SIGMA_CLI_PROFILE)")
     p.add_argument("--out", required=True, help="landing.json path (CSVs are written beside it)")
     a = p.parse_args(argv)
 
@@ -54,6 +79,7 @@ def main(argv=None):
         print(f"{sl.fqn(plan, table)}: {table['rowCount']} rows from {table['excelTable']}")
     print(f"plan written to {out}")
     if not a.execute:
+        print(existing_tables_note(plan, a.snow_connection, a.replace))
         print("DRY RUN — commands:")
         for c in commands:
             print("  " + " ".join(f"'{x}'" if " " in x else x for x in c))
