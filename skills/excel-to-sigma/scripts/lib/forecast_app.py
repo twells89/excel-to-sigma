@@ -462,7 +462,7 @@ def build(ctx):
     shown = {"Forecast Start Month": lambda ref: f'Coalesce(DateFormat({ref}, "%b-%y"), "{NULL_DASH}")',
              "Comment": lambda ref: f'Coalesce({ref}, "")',
              "Decided By": lambda ref: f'Coalesce({ref}, "")',
-             "Decided At": lambda ref: f'Coalesce(DateFormat({ref}, "%b %-d, %Y"), "")'}
+             "Decided At": lambda ref: f'Coalesce(DateFormat({ref}, "%b %d, %Y"), "")'}
     # newest first by entry order (dw.LOG_ORDER): migrated history keeps the source's dates
     label = {"Forecast Start Month": "Forecast start", "FY Revenue": f"{fy} revenue",
              "FY Gross Margin": "Gross margin", "FY EBITDA": "EBITDA"}
