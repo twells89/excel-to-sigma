@@ -111,11 +111,14 @@ def recommend_agent(macros, workflows, drivers=True):
             "tools": tools, "pitch": pitch}
 
 
-def _tool(entry, effects, label):
+def _tool(entry, effects, label, driver_example=None):
     action_id = entry["actionId"]
     steps = [{"kind": "effect", **copy.deepcopy(e)} for e in effects]
-    tool = {"toolId": action_id, "kind": "action", "name": label,
-            "description": TOOL_DESCRIPTIONS.get(action_id, label + "."), "steps": steps}
+    description = TOOL_DESCRIPTIONS.get(action_id, label + ".")
+    if action_id == DRIVER_ID:
+        description = description.format(
+            example=f", for example {driver_example}" if driver_example else "")
+    tool = {"toolId": action_id, "kind": "action", "name": label, "description": description, "steps": steps}
     if entry["requiresApproval"]:
         tool["requiresApproval"] = True
     return tool
@@ -125,8 +128,9 @@ TOOL_DESCRIPTIONS = {
     "roll-forward": "Advances Forecast Start Month in Parameters by one month. Takes no inputs: call it with an empty inputs object, inputs: {}.",
     "snapshot-version": "Appends one Versions row freezing the current scenario, start month and headline figures. Takes no inputs: call it with an empty inputs object, inputs: {}.",
     "submit-approval": "Appends a Submitted row to Approvals for the current forecast. Takes no inputs: call it with an empty inputs object, inputs: {}. Does not send email.",
+    # {example}: ", for example <the rate table's first line item>" when the builder passes it
     DRIVER_ID: "Changes the monthly growth Rate of one row in the Growth Rates table. Inputs line_item (text): "
-               "the exact Line Item, for example North America Revenue; rate (number): the new monthly rate as a "
+               "the exact Line Item{example}; rate (number): the new monthly rate as a "
                "decimal, for example 0.008 for 0.8%. Read the current rate first and compute the new value.",
     SCENARIO_ID: "Sets the Selected Scenario in Parameters. Input scenario (text): the scenario name, for example Base, Upside or Downside.",
 }
@@ -161,13 +165,22 @@ def _driver_effects(key_name=DRIVER_KEY_NAME):
              "values": {DRIVER_VALUE_COL: {"type": "agent-input", "inputName": "rate"}}}]
 
 
+LOG_SOURCES = ((dw.PARAMETERS, "the forecast start month"), (dw.VERSIONS, "saved versions"),
+               (dw.APPROVALS, "approval requests"))
+
+
 def _instructions(rec, name, scenario_control=None, grounding=(), plan=False):
     ids = {t["actionId"] for t in rec["tools"]}
-    lines = [f"You operate the {name} workbook that replaced a macro-driven Excel forecast. "
-             'Read @dataSource("parameters"), @dataSource("versions") and @dataSource("approvals") '
-             + ("to see the forecast start month, saved versions and approval requests; the Active Scenario "
-                'column of @dataSource("forecast") is the scenario the forecast is on.' if scenario_control else
-                "to see the current scenario, forecast start month, saved versions and approval requests.")]
+    # only the workflow tables this workbook has (a manifest without Submit has no Approvals table)
+    logs = [(el, what) for el, what in LOG_SOURCES if el in grounding] if grounding else list(LOG_SOURCES)
+    if not scenario_control and any(el == dw.PARAMETERS for el, _w in logs):
+        logs = [(el, "the current scenario and forecast start month" if el == dw.PARAMETERS else what)
+                for el, what in logs]
+    read = ("Read " + _join(f'@dataSource("{el}")' for el, _w in logs) + " to see "
+            + _join(what for _el, what in logs) + "." if logs else "")
+    scen = (' The Active Scenario column of @dataSource("forecast") is the scenario the forecast is on.'
+            if scenario_control else "")
+    lines = [(f"You operate the {name} workbook that replaced a macro-driven Excel forecast. " + read + scen).strip()]
     if AGENT_FACTS in grounding:
         # The forecast element holds only the forecast months: totalled, it is not a fiscal year.
         lines.append(f'@dataSource("{AGENT_FACTS}") holds every month\'s amounts by Fiscal year, Period, Section, '
@@ -189,8 +202,10 @@ def _instructions(rec, name, scenario_control=None, grounding=(), plan=False):
                      'rate; read @dataSource("rateInput") first and compute the new rate from the current one.')
     if SCENARIO_ID in ids:
         lines.append(f'To switch scenario call @tool("{SCENARIO_ID}") with the scenario name.')
-    if ids & {"roll-forward", "snapshot-version", "submit-approval"}:
-        lines.append("Those three tools take no inputs, but every tool call must still include the inputs "
+    no_input = [t for t in ("roll-forward", "snapshot-version", "submit-approval") if t in ids]
+    if no_input:
+        lines.append(("That tool takes" if len(no_input) == 1 else "Those tools take")
+                     + " no inputs, but every tool call must still include the inputs "
                      "argument: pass inputs: {} (an empty object).")
     lines.append("Answer in plain finance language with figures formatted like $145.4M and 65.8%.")
     lines.append("Writes ask the user for approval first. After any write, approved or declined, re-query "
@@ -205,11 +220,12 @@ GREETING = ("Hi, I'm the forecast agent. I can explain the numbers or run the fo
 
 def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=None, request_label="Forecast",
                             figures=None, agent_id="fpa-agent", chat_id="chat", scenario_control=None,
-                            driver_key_name=DRIVER_KEY_NAME, plan=False):
+                            driver_key_name=DRIVER_KEY_NAME, plan=False, driver_example=None):
     """``{"agents": [agent], "chatElement": {...}, "controlElements": [...]}`` for a recommendation.
 
     ``controlElements`` are the hidden controls the tools set (the set-driver row picker); ``merge_fragment``
     places them on the workbook's hidden page. ``plan`` says the grounded facts carry Plan rows.
+    ``driver_example`` is a real line item of the rate table, quoted in the set-driver tool's description.
 
     ``effects_by_action`` (actionId -> effect list) lets the caller reuse the exact effects of the
     workbook's own buttons so button and agent tool can never drift; otherwise the effects come
@@ -231,7 +247,7 @@ def agent_document_fragment(rec, name, grounding_element_ids, effects_by_action=
             effects = effects_by_action[action_id]
         else:
             effects = dw.action_effects(action_id, request_label, figures)
-        tools.append(_tool(entry, effects, entry["label"]))
+        tools.append(_tool(entry, effects, entry["label"], driver_example))
     if DRIVER_TABLE not in grounding_element_ids:
         rec = {**rec, "tools": [t for t in rec["tools"] if t["actionId"] != DRIVER_ID]}
     actions = _join(SPOKEN.get(t["actionId"], t["label"].lower()) for t in rec["tools"])
@@ -295,7 +311,12 @@ def merge_fragment(spec, fragment, chat_anchor="forecast", columns=(1, 25), rows
     import code_rep
     out = copy.deepcopy(spec)
     doc = out["contents"] if isinstance(out.get("contents"), dict) else out.get("document", out)
-    doc["agents"] = fragment["agents"]
+    agents = list(doc.get("agents") or [])   # the workbook's own agents are kept
+    for agent in fragment["agents"]:
+        if any(a.get("id") == agent["id"] for a in agents):
+            raise ValueError(f"workbook already has an agent {agent['id']}")
+        agents.append(agent)
+    doc["agents"] = agents
     chat = fragment["chatElement"]
     elements = doc.setdefault("elements", [])
     for el in [chat, *fragment.get("controlElements", [])]:
@@ -345,7 +366,8 @@ def _append_to_page(layout, page_id, element_id, rows, columns=(1, 25)):
 GROUNDING = ("forecast", "parameters", "versions", "approvals", "rateInput", AGENT_FACTS)
 
 
-def recommend_for_workbook(macros, workflows, wb=None, name="FP&A forecast agent", fragment=True):
+def recommend_for_workbook(macros, workflows, wb=None, name="FP&A forecast agent", fragment=True,
+                           driver_example=None):
     """``(recommendation, fragment or None)`` for a workbook spec (or the default grounding).
 
     Grounds the agent in the workbook's real elements, reuses its button effects and, when the
@@ -365,5 +387,6 @@ def recommend_for_workbook(macros, workflows, wb=None, name="FP&A forecast agent
     key_name = next((c.get("name") for c in rate.get("columns", []) if c.get("id") == DRIVER_KEY_COL),
                     None) or DRIVER_KEY_NAME
     return rec, agent_document_fragment(rec, name, ids, effects_by_action=effects, scenario_control=scenario,
-                                        driver_key_name=key_name, plan=PLAN_ELEMENT in have)
+                                        driver_key_name=key_name, plan=PLAN_ELEMENT in have,
+                                        driver_example=driver_example)
 

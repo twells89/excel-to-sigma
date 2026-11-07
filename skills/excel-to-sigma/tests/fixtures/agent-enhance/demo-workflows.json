@@ -75,13 +75,13 @@
       "macro": "RefreshActuals_Click",
       "class": "EXTERNAL_DATA_REFRESH",
       "disposition": "replaced-by-live-warehouse",
-      "note": "The ODBC reload of Actuals is replaced by the live Snowflake landing table; no refresh button is needed."
+      "note": "The macro's external data reload is replaced by the source Tables landed in Snowflake (Phase 1b), which Sigma reads live; no refresh button is needed."
     },
     {
       "macro": "SubmitForApproval_Click",
       "class": "EXTERNAL_IO",
       "disposition": "email-replaced-never-sent",
-      "note": "The Outlook email to the CFO is replaced by the Approvals row and the latest-status header; no email is sent by the workflow, the button or the agent."
+      "note": "The email the macro sent is replaced by the Approvals row and the latest-status header; no email is sent by the workflow, the button or the agent."
     },
     {
       "macro": "RecalcAll",

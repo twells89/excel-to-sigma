@@ -153,6 +153,38 @@ class AgentEnhanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ae.merge_fragment(merged, frag)
 
+    def test_merge_keeps_existing_agents_and_refuses_an_id_collision(self):
+        macros, wfs = demo()
+        rec = ae.recommend_agent(macros, wfs)
+        existing = {"id": "ops-agent", "name": "Ops", "instructions": "x", "tools": []}
+        wb = {"name": "wb", "contents": {
+            "schemaVersion": 1, "kind": "workbook", "pages": [{"id": "pnl", "name": "P&L"}],
+            "agents": [existing],
+            "elements": [{"id": "forecast", "kind": "table"}],
+            "layout": '<?xml version="1.0" encoding="utf-8"?>\n<Page type="grid" id="pnl">\n'
+                      '  <Element elementId="forecast" gridColumn="1 / 25" gridRow="1 / 13"/>\n</Page>'}}
+        frag = ae.agent_document_fragment(rec, "A", ["forecast"], figures={"revenue": "1"})
+        merged = ae.merge_fragment(wb, frag)
+        self.assertEqual([a["id"] for a in merged["contents"]["agents"]], ["ops-agent", "fpa-agent"])
+        self.assertEqual([a["id"] for a in wb["contents"]["agents"]], ["ops-agent"])   # input untouched
+        clash = copy.deepcopy(wb)
+        clash["contents"]["agents"][0]["id"] = "fpa-agent"
+        with self.assertRaisesRegex(ValueError, "already has an agent fpa-agent"):
+            ae.merge_fragment(clash, frag)
+
+    def test_instructions_name_only_the_workflow_tables_the_workbook_has(self):
+        macros, wfs = demo()
+        snap = [w for w in wfs if w["actionId"] == "snapshot-version"]
+        rec = ae.recommend_agent(macros, snap)
+        frag = ae.agent_document_fragment(rec, "A", ["forecast", "versions"], figures={"revenue": "1"},
+                                          scenario_control="Scenario")
+        text = frag["agents"][0]["instructions"]
+        self.assertIn('@dataSource("versions")', text)
+        self.assertNotIn('@dataSource("approvals")', text)
+        self.assertNotIn('@dataSource("parameters")', text)
+        self.assertIn("That tool takes no inputs", text)
+        self.assertNotIn("for example", frag["agents"][0]["tools"][0]["description"].split("Takes")[0])
+
     def _input_table_workbook(self):
         """A planning-app shaped workbook: rateInput is a real input table (system ID first), the model page hidden."""
         wb = self._workbook()
