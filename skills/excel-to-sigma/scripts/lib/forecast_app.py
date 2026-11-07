@@ -48,6 +48,12 @@ BUTTON_TEXT = {"roll-forward": "Roll forward", "snapshot-version": "Snapshot",
                "submit-approval": "Submit for approval"}
 PAGES = (("pgForecast", "Forecast"), ("pgAssumptions", "Assumptions"), ("pgDetail", "P&L detail"),
          ("pgVersions", "Versions & approvals"))
+PAGE_NAMES = dict(PAGES)
+
+
+def _join_and(items):
+    items = list(items)
+    return ", ".join(items[:-1]) + " and " + items[-1] if len(items) > 1 else "".join(items)
 MONEY_M = "$,.1f"                       # applied to value / 1e6, then "M"
 CUR0 = {"kind": "number", "formatString": "$,.0f"}
 CUR_SI = {"kind": "number", "formatString": "$.3~s"}
@@ -100,15 +106,18 @@ def month_label(expr):
     return f'DateFormat({expr}, "%b-%y")'
 
 
-def boundary_element(connection_id, first_forecast):
+def boundary_element(connection_id, first_forecast, parameters=True):
     """The planning app's one actual / forecast boundary: ``Parameters.Forecast Start Month``, or the
     source's first forecast month (``first_forecast`` = ``(year, month)``) while the Parameters row is
     not seeded. One row whatever Parameters holds (a one-row VALUES query anchors it), so every other
     element reads it as ``Max([Forecast Boundary/<column>])`` and nothing repeats the fallback.
-    Columns: Start Month, Start Key (year * 12 + month, the comparison key), Last Closed Month."""
+    Columns: Start Month, Start Key (year * 12 + month, the comparison key), Last Closed Month.
+    Without the Parameters table (no set-scenario / roll-forward workflow) the boundary is the source's
+    first forecast month."""
     year, month = first_forecast
-    start = (f"Coalesce(Max([{dw.TABLES[dw.PARAMETERS][0]}/Forecast Start Month]), "
-             f"MakeDate({int(year)}, {int(month)}, 1))")
+    first = f"MakeDate({int(year)}, {int(month)}, 1)"
+    start = (f"Coalesce(Max([{dw.TABLES[dw.PARAMETERS][0]}/Forecast Start Month]), {first})"
+             if parameters else first)
     return {"id": BOUNDARY_ID, "kind": "table", "name": BOUNDARY,
             "source": {"kind": "sql", "connectionId": connection_id,
                        "statement": "select * from (values\n(1)\n) as t(BOUNDARY_ROW)"},
@@ -244,7 +253,8 @@ def build(ctx):
                                  {"id": "sf_mn", "name": "Month Num", "formula": "[SJ/Month Num]"},
                                  {"id": "sf_v", "name": "Signed Amount", "formula": "[SJ/Amount] * [Metrics/Weight]"}]}
     agent_facts = agent_facts_element(ctx, has_plan, has_prior)
-    hidden += [ctx["boundary"], report_facts, metric_wrap, summary_facts, agent_facts, *wf["tables"], wf["status"]]
+    hidden += [ctx["boundary"], report_facts, metric_wrap, summary_facts, agent_facts, *wf["tables"],
+               *([wf["status"]] if wf["status"] else [])]
 
     # ---------------------------------------------------------------- A. header band
     start = START_MONTH
@@ -257,10 +267,12 @@ def build(ctx):
                  "## " + span(" V ", CANVAS, None, PRIMARY) + " " + esc(ctx["title"]) + "\n"
                  + span(esc(ctx["company"]) + " · actuals through "
                         + f"{{{{{month_label('Max([Actuals/Month End])')}}}}}", MUTED, 13)
-                 + span(awaiting, AMBER, 13) + span(" · live on Snowflake", MUTED, 13))
+                 + span(awaiting, AMBER, 13)
+                 + (span(" · live on Snowflake", MUTED, 13) if ctx.get("landed") else ""))
     pill = "".join(span(f'{{{{If({status} = "{name}", "  {name}  ", "")}}}}', fg, 14, bg)
                    for name, (bg, fg) in PILLS.items())
-    status_text = text("hdrStatus", span("Status", MUTED, 12) + "\n\n" + pill)
+    # the approval status pill exists only with a Submit workflow (the Approvals log)
+    status_text = text("hdrStatus", span("Status", MUTED, 12) + "\n\n" + pill) if wf["status"] else None
     buttons = []
     for b in wf["buttons"]:
         action = next(a for a, eid in dw.BUTTON_IDS.items() if eid == b["id"])
@@ -275,7 +287,7 @@ def build(ctx):
                          "controlType": "segmented", "selectionMode": "single", "value": ctx["scenario"]["default"],
                          "source": {"kind": "manual", "valueType": "text", "values": list(ctx["scenario"]["names"])}})
     band = card("hdrBand", {"backgroundColor": BAND, "borderColor": HAIRLINE, "borderWidth": 1, "borderRadius": "round"})
-    elements += [band, title, *controls, status_text, *buttons]
+    elements += [band, title, *controls, *([status_text] if status_text else []), *buttons]
 
     # ---------------------------------------------------------------- B. KPI strip
     rev_fc, rev_plan, rev_prior = (facts.row(rev, w) for w in ("fc", "plan", "prior"))
@@ -334,9 +346,13 @@ def build(ctx):
                                                                           "points": {"visibility": "hidden"},
                                                                           "missing": "hide"}}]
     agent_panel = card("agentPanel")
+    can = (["switch scenario"] if ctx["scenario"] else []) + ["change a driver"] + [
+        verb for action, verb in (("roll-forward", "roll forward"), ("snapshot-version", "snapshot"),
+                                  ("submit-approval", "submit for approval"))
+        if any(b["id"] == dw.BUTTON_IDS[action] for b in wf["buttons"])]
     agent_head = text("agentHead", "**Forecast agent**\n\n" + span(
-        "Ask about the forecast, or have it switch scenario, change a driver, roll forward, "
-        "snapshot or submit for approval. Every change asks you first.", MUTED, 12), "top")
+        "Ask about the forecast, or have it " + (", ".join(can[:-1]) + " or " + can[-1] if len(can) > 1 else can[0])
+        + ". Every change asks you first.", MUTED, 12), "top")
     elements += [trend, agent_panel, agent_head]
 
     # ---------------------------------------------------------------- D. region + P&L summary
@@ -396,9 +412,12 @@ def build(ctx):
 
     # ---------------------------------------------------------------- Assumptions page
     rate, manual = ctx["rate"], ctx["manual"]
+    others = [n for n in (ctx["scenario"] or {}).get("names", []) if n != (ctx["scenario"] or {}).get("default")]
+    moved = (" and ".join(esc(n) for n in others) + (" move" if len(others) > 1 else " moves")
+             + " every growth rate by the source workbook's spread") if others else ""
     scen_line = (span("Scenario: ", MUTED, 13) + span(f"**{{{{[{SCENARIO_CONTROL}]}}}}**", INK, 13) + span(
-        " (switch it in the Forecast header; Downside and Upside move every growth rate by the source "
-        "workbook's spread).", MUTED, 13)) if ctx["scenario"] else ""
+        " (switch it in the Forecast header" + (f"; {moved}" if moved else "") + ").", MUTED, 13)
+        ) if ctx["scenario"] else ""
     manual_note = (" Manual forecast lines are typed in by hand, as in the source workbook, rather than grown "
                    "from a driver." if ctx["manual"] is not None else "")
     asm_head = text("asmHead", "## Growth drivers\n" + span(
@@ -438,29 +457,42 @@ def build(ctx):
                 "columns": cols, "sort": [{"columnId": f"{view_id}_order", "direction": "descending"}],
                 "tableStyle": {"preset": "presentation"}, "tableComponents": {"summaryBar": "hidden"},
                 "style": dict(CARD)}
-    versions_view = log_view("versionsView", wf["tables"][1],
-                             ["Version", "Scenario", "Forecast Start Month", "FY Revenue", "FY Gross Margin",
-                              "FY EBITDA", "Saved By", "Saved At", "Comment"], "Versions")
-    approvals_view = log_view("approvalsView", wf["tables"][2],
-                              ["Status", "Request", "Submitted By", "Submitted At", "Comment"], "Approvals")
-    history = ctx.get("history") or {}
-    origin = (f" The first {history.get(dw.VERSIONS, 0)} versions and {history.get(dw.APPROVALS, 0)} approvals "
-              "are the history migrated from the source workbook (it did not freeze the figures, so those cells "
-              "are blank)." if history else " Both logs start empty in a new workbook.")
-    log_head = text("logHead", "## Versions & approvals\n" + span(
-        "Snapshot freezes the headline numbers as a version; Submit for approval logs a request. Both are written "
-        "by the buttons on the Forecast page (or by the forecast agent, after you approve), with who and when, "
-        "newest first." + origin, MUTED, 13), "top")
+    logs = {t["id"]: t for t in wf["tables"]}
+    log_views = []
+    if dw.VERSIONS in logs:
+        log_views.append(log_view("versionsView", logs[dw.VERSIONS],
+                                  ["Version", "Scenario", "Forecast Start Month", "FY Revenue", "FY Gross Margin",
+                                   "FY EBITDA", "Saved By", "Saved At", "Comment"], "Versions"))
+    if dw.APPROVALS in logs:
+        log_views.append(log_view("approvalsView", logs[dw.APPROVALS],
+                                  ["Status", "Request", "Submitted By", "Submitted At", "Comment"], "Approvals"))
+    history = {el: n for el, n in (ctx.get("history") or {}).items() if el in logs}
+    both = dw.VERSIONS in logs and dw.APPROVALS in logs
+    counts = _join_and([f"{history[el]} {noun}" for el, noun in ((dw.VERSIONS, "versions"),
+                                                                   (dw.APPROVALS, "approvals")) if el in history])
+    origin = ((f" The first {counts} are the history migrated from the source workbook"
+               + (" (it did not freeze the figures, so those cells are blank)." if dw.VERSIONS in history else "."))
+              if history else (" Both logs start" if both else " The log starts") + " empty in a new workbook.")
+    what = [s for el, s in ((dw.VERSIONS, "Snapshot freezes the headline numbers as a version"),
+                            (dw.APPROVALS, "Submit for approval logs a request")) if el in logs]
+    log_title = " & ".join(t for el, t in ((dw.VERSIONS, "Versions"), (dw.APPROVALS, "approvals" if both else "Approvals"))
+                           if el in logs)
+    log_head = text("logHead", f"## {log_title}\n" + span(
+        "; ".join(what) + ". " + ("Both are" if both else "It is") + " written by the "
+        + ("buttons" if both else "button") + " on the Forecast page (or by the forecast agent, after you "
+        "approve), with who and when, newest first." + origin, MUTED, 13), "top") if logs else None
 
     pages = [{"id": "pgForecast", "name": "Forecast", "elements": elements},
              {"id": "pgAssumptions", "name": "Assumptions", "elements": asm_els},
              {"id": "pgDetail", "name": "P&L detail", "elements": detail_els},
-             {"id": "pgVersions", "name": "Versions & approvals", "elements": [log_head, versions_view, approvals_view]},
+             *([{"id": "pgVersions", "name": PAGE_NAMES["pgVersions"] if log_title == "Versions & approvals"
+                  else log_title, "elements": [log_head, *log_views]}] if log_views else []),
              {"id": "model", "name": "Model (sources)", "visibility": "hidden",
               "elements": hidden + ([ctx["assump"]] if ctx["assump"] else [])}]
     layout = app_layout(pages, controls=bool(controls), cards=[c for c, _ in cards], bottom=[b["id"] for b in bottom],
                         rate=rate is not None, manual=manual is not None,
-                        buttons=[b["id"] for b in buttons])
+                        buttons=[b["id"] for b in buttons], status=status_text is not None,
+                        logs=[v["id"] for v in log_views])
     theme = {"theme": {"overrides": {"categoricalScheme": [PRIMARY, FORECAST_TINT, PLAN_GREY, "#14B8A6", "#F59E0B",
                                                            "#8B5CF6"]}}}
     return {"pages": pages, "layout": layout, "settings": theme}
@@ -519,7 +551,8 @@ SERIES_COLORS = (("revTrend", "tr_plan", "#475569"),)
 AGENT_CHAT_ROWS = (4, 22)        # the chat's rows inside the agent panel (merge_fragment fills the slot)
 
 
-def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons):
+def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons, status=True,
+               logs=("versionsView", "approvalsView")):
     blocks = []
     def page(page_id, lines):
         blocks.append("\n".join([f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" '
@@ -530,7 +563,8 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons):
     if controls:
         head.append(("ctlScenario", 8, 13, 1, 5))
         status_at = 13
-    head.append(("hdrStatus", status_at, status_at + 3, 1, 5))   # the pill sits right after the switch
+    if status:
+        head.append(("hdrStatus", status_at, status_at + 3, 1, 5))   # the pill sits right after the switch
     head += [(b, *ACTION_SPANS[b], 1, 5) for b in buttons]   # one right-aligned toolbar
     lines = [_container("hdrBand", 1, 25, 1, 5, head)]
     width = 24 // len(cards)
@@ -554,8 +588,13 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons):
     page("pgAssumptions", lines)
     page("pgDetail", [_el("pnlPivot", 1, 25, 1, 41), _el("glTable", 1, 25, 41, 63)])
     # tall enough for the migrated history plus a few new rows without an inner scroll
-    page("pgVersions", [_el("logHead", 1, 25, 1, 5), _el("versionsView", 1, 25, 5, 29),
-                        _el("approvalsView", 1, 25, 29, 43)])
+    if logs:
+        rows = {"versionsView": 24, "approvalsView": 14}
+        lines, at = [_el("logHead", 1, 25, 1, 5)], 5
+        for view in logs:
+            lines.append(_el(view, 1, 25, at, at + rows[view]))
+            at += rows[view]
+        page("pgVersions", lines)
     hidden = next(p for p in pages if p["id"] == "model")
     page("model", [_el(e["id"], 1, 25, 1 + i * 12, 13 + i * 12) for i, e in enumerate(hidden["elements"])])
     return '<?xml version="1.0" encoding="utf-8"?>\n' + "\n".join(blocks)

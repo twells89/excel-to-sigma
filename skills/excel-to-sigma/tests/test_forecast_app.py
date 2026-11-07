@@ -18,6 +18,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+# The demo kit (docs/demo-kit: the demo source generator and its VBA module) lives outside the skill;
+# a standalone copy of the skill has no demo kit, so the tests that need it skip.
+DEMO_KIT = ROOT.parents[1] / "docs" / "demo-kit"
 sys.path.insert(0, str(SCRIPTS / "lib"))
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -44,17 +47,18 @@ def region_of(line):
     return next(line[: -len(s)] for s in SUFFIXES if line.endswith(s))
 
 
+@unittest.skipUnless(DEMO_KIT.is_dir(), "demo kit not present (standalone skill copy)")
 class ForecastAppTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
         tmp = Path(cls._tmp.name)
         cls.build = load("bfm_app", SCRIPTS / "build-forecast-model.py")
-        src = load("make_demo_forecast_app", SCRIPTS / "make-demo-forecast.py").build_demo_workbook(tmp)
+        src = load("make_demo_forecast_app", DEMO_KIT / "make-demo-forecast.py").build_demo_workbook(tmp)
         plan, _ = draft_plan(src, intent="what-if", connection="conn-1", folder="fold-1",
                              name="Vantora FY27 Rolling Forecast — rehearsal r9")
         cls.plan = plan
-        cls.manifest = dw.build_workflow_manifest(SCRIPTS / "demo-forecast-macros.bas")
+        cls.manifest = dw.build_workflow_manifest(DEMO_KIT / "demo-forecast-macros.bas")
         plan_csv = tmp / "plan.csv"
         with plan_csv.open("w", newline="") as f:
             w = csv.writer(f)
@@ -114,6 +118,58 @@ class ForecastAppTests(unittest.TestCase):
         wired = self.build.workbook_wire.wire_workbook(spec)
         placed = re.findall(r'elementId="([^"]+)"', wired["contents"]["layout"])
         self.assertEqual(sorted(placed), sorted(owners))
+
+    def test_planning_app_with_a_partial_manifest_has_only_its_tables(self):
+        def only(*ids):
+            return {**self.manifest, "workflows": [w for w in self.manifest["workflows"] if w["actionId"] in ids]}
+        for ids, present, absent in (
+                (("snapshot-version",), {"versions", "versionsView", "btnSnapshot"},
+                 {"parameters", "approvals", "approvalStatus", "approvalsView", "hdrStatus", "btnSubmit", "btnRoll"}),
+                (("submit-approval",), {"approvals", "approvalStatus", "approvalsView", "hdrStatus", "btnSubmit"},
+                 {"parameters", "versions", "versionsView", "btnSnapshot"}),
+                (("set-scenario",), {"parameters"}, {"versions", "approvals", "pgVersions", "hdrStatus"})):
+            with self.subTest(ids=ids):
+                spec = self.spec(only(*ids))
+                owners = self.owners(spec)
+                self.assertTrue(present <= set(owners) | {p["id"] for p in spec["pages"]}, present - set(owners))
+                self.assertFalse(absent & (set(owners) | {p["id"] for p in spec["pages"]}))
+                text = json.dumps(spec)
+                if "parameters" not in owners:   # the boundary falls back to the source's first forecast month
+                    self.assertNotIn("[Parameters/", text)
+                if "approvals" not in owners:
+                    self.assertNotIn("[Approvals/", text)
+                    self.assertNotIn("Latest approval status", text)
+                wired = self.build.workbook_wire.wire_workbook(spec)
+                placed = re.findall(r'elementId="([^"]+)"', wired["contents"]["layout"])
+                self.assertEqual(sorted(placed), sorted(owners))
+
+    def test_scenario_note_names_the_plans_own_scenarios(self):
+        rename = {"Downside": "Bear", "Upside": "Bull"}
+        P = copy.deepcopy(self.plan)
+        P["scenarios"] = json.loads(json.dumps(P["scenarios"]).replace('"Downside"', '"Bear"')
+                                    .replace('"Upside"', '"Bull"'))
+        self.assertEqual(P["scenarios"]["names"], [rename.get(n, n) for n in self.plan["scenarios"]["names"]])
+        spec = self.build.build_wb_spec(P, "dm-1", self.els, landed=self.landed, workflows=self.manifest,
+                                        plan_src=self.plan_src)
+        head = self.by_id(spec)["asmHead"]["text"] if "text" in self.by_id(spec)["asmHead"] else json.dumps(
+            self.by_id(spec)["asmHead"])
+        self.assertIn("Bear and Bull move every growth rate", head)
+        self.assertNotIn("Downside", head)
+
+    def test_header_says_live_on_snowflake_only_when_landed(self):
+        title = json.dumps(self.by_id(self.spec())["hdrTitle"])
+        self.assertIn("live on Snowflake", title)
+        plain = self.build.build_wb_spec(copy.deepcopy(self.plan), "dm-1", self.els, workflows=self.manifest)
+        self.assertNotIn("Snowflake", json.dumps(self.by_id(plain)["hdrTitle"]))
+
+    def test_set_driver_example_is_the_rate_tables_first_line(self):
+        first = self.build.seed_rows(self.plan)[0][0][0]
+        macros = [{"name": w["macro"], "class": w["class"]} for w in self.manifest["workflows"]]
+        wired = self.build.workbook_wire.wire_workbook(self.spec())
+        merged = self.build.merge_agent(wired, macros, self.manifest, quiet=True,
+                                        driver_example=self.build.driver_example(self.plan))
+        tool = next(t for a in merged["contents"]["agents"] for t in a["tools"] if t["toolId"] == "set-driver")
+        self.assertIn(f"the exact Line Item, for example {first};", tool["description"])
 
     def test_canvas_title_drops_the_run_tag(self):
         self.assertEqual(self.build._app_titles(self.plan), ("Vantora", "FY27 rolling forecast"))
@@ -820,9 +876,10 @@ class ForecastAppTests(unittest.TestCase):
             _src, report = gate_plan_staging_source(self.plan, plan_path=str(plan_path))
             approval = Path(tmp) / "approval.json"
             approval.write_text(json.dumps({
-                "owner": "TJ Wells", "reviewer": "Claude (controller)", "folderId": self.plan["folderId"],
+                "owner": "Maria Lopez", "reviewer": "Jane Reviewer", "folderId": self.plan["folderId"],
                 "sourceSha256": report["sourceSha256"],
-                "sourceReviewApproval": {"status": "approved_for_staging", "issues": report["issues"]}}))
+                "sourceReviewApproval": {"status": "approved_for_staging", "issues": report["issues"],
+                                         "confirmation": self.build.TERMINAL_CONFIRMATION}}))
             macros = Path(tmp) / "macros.json"
             macros.write_text(json.dumps([{"name": w["macro"], "class": w["class"]}
                                           for w in self.manifest["workflows"]]))
@@ -846,14 +903,22 @@ class ForecastAppTests(unittest.TestCase):
         issue = {"code": "VBA_PROJECT", "severity": "review", "message": "m"}
         report = {"sourceSha256": "a" * 64, "issues": [issue]}
         P = {"folderId": "fold-1"}
-        good = {"owner": "TJ Wells", "reviewer": "Claude (controller)", "folderId": "fold-1", "sourceSha256": "a" * 64,
-                "sourceReviewApproval": {"status": "approved_for_staging", "issues": [issue]}}
+        confirmed = self.build.TERMINAL_CONFIRMATION
+        good = {"owner": "Maria Lopez", "reviewer": "Jane Reviewer", "folderId": "fold-1", "sourceSha256": "a" * 64,
+                "sourceReviewApproval": {"status": "approved_for_staging", "issues": [issue],
+                                         "confirmation": confirmed}}
         self.build.check_staging_approval(P, report, good)
+        # a hand-written "approved" JSON without the reviewer's terminal confirmation is refused
+        for review in ({"status": "approved_for_staging", "issues": [issue]},
+                       {"status": "approved_for_staging", "issues": [issue], "confirmation": "approved"}):
+            with self.assertRaisesRegex(self.build.StagingError, "confirmation"):
+                self.build.check_staging_approval(P, report, {**good, "sourceReviewApproval": review})
         for change in ({"owner": ""}, {"folderId": "other"}, {"sourceSha256": "b" * 64},
                        {"sourceReviewApproval": {"status": "pending", "issues": [issue]}},
                        {"sourceReviewApproval": {"status": "approved_for_staging", "issues": []}},
                        {"sourceReviewApproval": {"status": "approved_for_staging",
-                                                 "issues": [{**issue, "message": "edited"}]}}):
+                                                 "issues": [{**issue, "message": "edited"}],
+                                                 "confirmation": confirmed}}):
             with self.assertRaises(self.build.StagingError, msg=str(change)):
                 self.build.check_staging_approval(P, report, {**good, **change})
         template = self.build.staging_template(P, report)
@@ -913,7 +978,7 @@ class ForecastAppTests(unittest.TestCase):
             plan_path, _landing, _wf = self._cli_files(tmp)
             out_json = Path(tmp) / "staging-approval.json"
             argv = [str(plan_path), "--staging-approval-template", str(out_json), "--approve-for-staging",
-                    "--owner", "TJ Wells", "--reviewer", "Claude (controller)"]
+                    "--owner", "Maria Lopez", "--reviewer", "Jane Reviewer"]
             for stdin, why in ((PipeInput("APPROVE\n"), "interactive terminal"),
                                (TtyInput("yes\n"), "not approved"),
                                (TtyInput(""), "not approved")):

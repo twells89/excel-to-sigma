@@ -222,9 +222,13 @@ def landed_actuals_source(landing, actuals_table, P):
 
 
 def _cross_check_landing(entry, columns, P, actuals_table):
-    """Landed CSV (blank Amount = 0) must carry the plan's row count and actuals total."""
+    """Landed CSV (blank Amount = 0) must carry the plan's row count and actuals total. A landing.json
+    whose CSV is gone cannot be cross-checked: say so instead of passing silently."""
     path = entry.get("csv")
     if not path or not os.path.exists(path):
+        print(f"WARNING: landed CSV for {actuals_table} " + (f"({path}) " if path else "")
+              + "not found — the landed actuals were NOT cross-checked against the plan's actuals total; "
+              "re-run land-in-snowflake.py (dry run) to rewrite it")
         return
     total, rows = 0.0, 0
     with open(path, encoding="utf-8", newline="") as stream:
@@ -726,7 +730,7 @@ def month_key(date_expr):
     return f'DatePart("year", {date_expr}) * 12 + DatePart("month", {date_expr})'
 
 
-def forecast_boundary(P):
+def forecast_boundary(P, parameters=True):
     """The planning app's actual / forecast boundary: Parameters.Forecast Start Month (the source's first
     forecast month until the Parameters row is seeded), defined ONCE as the hidden ``Forecast Boundary``
     element (forecast_app.boundary_element). ``{"element", "start_key", "last_key"}``: that element, the
@@ -736,7 +740,8 @@ def forecast_boundary(P):
     if periods[0]["grain"] != "month" or not periods[n_act].get("end") or not periods[n_act - 1].get("end"):
         raise PlanError("the planning-app layout needs dated periods (month grain)")
     first, last = periods[n_act]["end"], periods[n_act - 1]["end"]
-    return {"element": forecast_app.boundary_element(P["connectionId"], (int(first[:4]), int(first[5:7]))),
+    return {"element": forecast_app.boundary_element(P["connectionId"], (int(first[:4]), int(first[5:7])),
+                                                     parameters=parameters),
             "start_key": forecast_app.START_KEY, "last_key": int(last[:4]) * 12 + int(last[5:7])}
 
 
@@ -1152,7 +1157,11 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
            "hidden": hidden, "pivot": pivot, "gl": gl, "assump": assump, "rate": rate, "manual": manual,
            "dm": dm, "plan": plan_src, "region_of": (plan_src or {}).get("regions") or {},
            "scenario": ({"names": P["scenarios"]["names"], "default": P["scenarios"]["default"]} if spreads else None),
-           "title": title, "company": company, "boundary": forecast_boundary(P)["element"],
+           "title": title, "company": company,
+           # without a Parameters table (no set-scenario / roll-forward) the boundary is the source's own
+           "boundary": forecast_boundary(P, parameters=any(t["id"] == demo_workflows.PARAMETERS
+                                                           for t in wf["tables"]))["element"],
+           "landed": landed is not None,
            "cost_lines": cost_lines(P),
            # migrated log rows per table (the setup program seeds them from the source's own logs)
            "history": {el: len(rows) for el, _cols, rows in (history or []) if rows}}
@@ -1166,44 +1175,71 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
 AGENT_ERRORS = (ValueError, KeyError, TypeError, AttributeError)
 
 
-def merge_agent(wb_spec, macros, workflows, name="FP&A forecast agent", quiet=False):
+def driver_example(P):
+    """The first growth-rate line of the plan (the set-driver tool's example line item), or None."""
+    rate, _manual = seed_rows(P)
+    return rate[0][0] if rate else None
+
+
+def merge_agent(wb_spec, macros, workflows, name="FP&A forecast agent", quiet=False, driver_example=None):
     """Phase 6 in the same run: the recommended workbook agent + chat merged into the spec (unchanged
-    when no macros were given or no agent is recommended). Prints the on-camera pitch unless quiet."""
+    when no macros were given or no agent is recommended). Prints the on-camera pitch unless quiet.
+    ``driver_example`` is a real line item of the rate table, quoted in the set-driver tool's description."""
     if macros is None:
         return wb_spec
-    rec, fragment = agent_enhance.recommend_for_workbook(macros, workflows, wb_spec, name)
+    rec, fragment = agent_enhance.recommend_for_workbook(macros, workflows, wb_spec, name,
+                                                         driver_example=driver_example)
     if not quiet:
         print("AGENT: " + (rec["pitch"] if rec["recommend"] else "no agent recommended"))
     return agent_enhance.merge_fragment(wb_spec, fragment) if fragment else wb_spec
 
 
+def setup_program(P, wb_spec, workflows, history=None):
+    """``(program text, seeded summary)`` of the post-create setup program for a wired workbook spec, or
+    ``None`` when the workbook has no input tables (a read-only plan without ``--workflows``): manual
+    commit on every input table, then the seeds. The one-row Parameters seed is emitted only when the
+    workbook has the Parameters table (``--workflows`` with a workflow that needs it); the rate / manual
+    input tables are seeded from ``seed_rows`` (the seed CSVs' rows) whenever the plan is editable or
+    what-if; ``history`` (demo_workflows.source_history) seeds the Versions / Approvals logs with the
+    source's own. Raises ``demo_workflows.WorkflowError`` when the program cannot be built."""
+    tables = {el for _pg, el in demo_workflows._input_tables(wb_spec)}
+    if not tables:
+        return None
+    seed = None
+    if workflows is not None and demo_workflows.PARAMETERS in tables:
+        periods, n_act, _sections = plan_model(P)
+        seed = {"start": periods[n_act]["end"][:8] + "01"}
+        if not (P["intent"] in ("editable", "what-if") and scenario_spreads(P)):
+            seed["scenario"] = "Base"   # no scenario switch: the Parameters row holds the scenario
+    table_seeds = []
+    if P["intent"] in ("editable", "what-if"):
+        rate, manual = seed_rows(P)
+        table_seeds = [("rateInput", RATE_SEED_COLUMNS, rate), ("manualInput", MANUAL_SEED_COLUMNS, manual)]
+    if workflows is not None:
+        table_seeds += [h for h in (history or []) if h[0] in tables]   # only the logs this workbook has
+    program = demo_workflows.emit_manual_commit_program(
+        wb_spec, seed, table_seeds, series_colors=forecast_app.SERIES_COLORS,
+        column_widths=demo_workflows.input_column_widths(wb_spec, table_seeds))
+    seeded = (["parameters 1 row"] if seed else []) + [f"{el} {len(rows)} rows" for el, _c, rows in table_seeds if rows]
+    return program, seeded
+
+
 def emit_workflow_outputs(P, wb_spec, outdir, workflows, program_path, history=None):
-    """The post-create setup program, when asked for: manual commit on every input table,
-    then the seeds. The one-row Parameters seed is emitted only with ``--workflows`` (that
-    table exists only then); the rate / manual input tables are seeded from ``seed_rows``
-    (the seed CSVs' rows) whenever the plan is editable or what-if; ``history``
-    (demo_workflows.source_history) seeds the Versions / Approvals logs with the source's own."""
-    if program_path:
-        seed = None
-        if workflows is not None:
-            periods, n_act, _sections = plan_model(P)
-            seed = {"start": periods[n_act]["end"][:8] + "01"}
-            if not (P["intent"] in ("editable", "what-if") and scenario_spreads(P)):
-                seed["scenario"] = "Base"   # no scenario switch: the Parameters row holds the scenario
-        table_seeds = []
-        if P["intent"] in ("editable", "what-if"):
-            rate, manual = seed_rows(P)
-            table_seeds = [("rateInput", RATE_SEED_COLUMNS, rate), ("manualInput", MANUAL_SEED_COLUMNS, manual)]
-        if workflows is not None:
-            table_seeds += list(history or [])
-        program = demo_workflows.emit_manual_commit_program(
-            wb_spec, seed, table_seeds, series_colors=forecast_app.SERIES_COLORS,
-            column_widths=demo_workflows.input_column_widths(wb_spec, table_seeds))
-        with open(program_path, "w", encoding="utf-8") as stream:
-            stream.write(program)
-        seeded = (["parameters 1 row"] if seed else []) + [f"{el} {len(rows)} rows" for el, _c, rows in table_seeds if rows]
-        print(f"SETUP PROGRAM: {program_path} (manual commit on every input table"
-              + ("; seeds " + ", ".join(seeded) if seeded else "") + "; run once on the new workbook)")
+    """Write the setup program (``setup_program``) to ``program_path`` when asked for; returns the path
+    written, or ``None`` (not asked for, or skipped with a printed note: no input tables)."""
+    if not program_path:
+        return None
+    built = setup_program(P, wb_spec, workflows, history)
+    if built is None:
+        print(f"SETUP PROGRAM: skipped — the workbook has no input tables (a {P['intent']} plan without "
+              f"--workflows), so there is nothing to enable or seed; {program_path} was not written")
+        return None
+    program, seeded = built
+    with open(program_path, "w", encoding="utf-8") as stream:
+        stream.write(program)
+    print(f"SETUP PROGRAM: {program_path} (manual commit on every input table"
+          + ("; seeds " + ", ".join(seeded) if seeded else "") + "; run once on the new workbook)")
+    return program_path
 
 
 LOCAL_DM_IDS = {"glDetail": "glDetail", "spine": "spine", "assumptions": "assumptions",
@@ -1245,7 +1281,8 @@ def parse_args(argv=None):
                         help="with --staging-approval-template, --owner and --reviewer: the named reviewer "
                              "runs this in their own terminal; it lists every audited issue and waits for "
                              "them to type APPROVE, then records status approved_for_staging. It refuses "
-                             "without an interactive terminal, so an agent cannot approve for the reviewer. "
+                             "without an interactive terminal. Policy: the approval must be given by the "
+                             "named human reviewer at their own terminal; the agent must not approve. "
                              "Never marks an issue verified")
     parser.add_argument("--agent-macros", metavar="MACROS.json",
                         help="with --workflows: merge the Phase 6 workbook agent (recommend-agent.py) into the "
@@ -1281,15 +1318,15 @@ def staging_template(P, report, owner="", reviewer="", approve=False):
 
 
 def confirm_staging_approval(P, report, owner, reviewer, stdin=None, prompt=None):
-    """The human step an agent cannot supply: the named reviewer, at an interactive terminal, reads every
-    audited issue and types APPROVE. Refuses when stdin is not a terminal (an agent's shell, a pipe, CI)
-    so a copy-pasted command can never turn into a self-approval."""
+    """The named human reviewer's step: at their own interactive terminal they read every audited issue and
+    type APPROVE (policy: the agent must not approve). Refuses when stdin is not a terminal (an agent's
+    shell, a pipe, CI), so a copy-pasted command does not record an approval by itself."""
     stdin = stdin or sys.stdin
     prompt = prompt or sys.stderr
     if not stdin.isatty():
         raise StagingError("--approve-for-staging needs the reviewer at an interactive terminal (stdin is not "
-                           "a terminal); the named reviewer runs this command in their own terminal, after "
-                           "reading every audited issue — an agent cannot approve for them")
+                           "a terminal); the named human reviewer runs this command in their own terminal, "
+                           "after reading every audited issue — the agent must not approve for them")
     lines = [f"Staging approval for folder {P.get('folderId')} — owner {owner}, reviewer {reviewer}.",
              f"{len(report['issues'])} audited issue(s) stay pending (nothing is marked verified):"]
     lines += [f"  - {i.get('code', '?')} [{i.get('severity', '?')}]: {i.get('message', '')}"
@@ -1303,13 +1340,18 @@ def confirm_staging_approval(P, report, owner, reviewer, stdin=None, prompt=None
 
 
 def check_staging_approval(P, report, approval):
-    """The approval must name an owner and reviewer, approve exactly the audited issues of these source
-    bytes for staging, and be bound to the plan's folder. It never marks anything verified."""
+    """The approval must name an owner and reviewer, carry the terminal confirmation that
+    ``--approve-for-staging`` records, approve exactly the audited issues of these source bytes for staging,
+    and be bound to the plan's folder. It never marks anything verified."""
     if not str(approval.get("owner") or "").strip() or not str(approval.get("reviewer") or "").strip():
         raise StagingError("staging approval needs a named owner and reviewer")
     review = approval.get("sourceReviewApproval") or {}
     if review.get("status") != "approved_for_staging":
         raise StagingError("sourceReviewApproval.status must be approved_for_staging")
+    if review.get("confirmation") != TERMINAL_CONFIRMATION:
+        raise StagingError("sourceReviewApproval.confirmation is missing or not the terminal confirmation: the "
+                           "approval must be recorded by --approve-for-staging, run by the named reviewer at "
+                           "their own terminal (a hand-written approval is not accepted)")
     if approval.get("sourceSha256") != report["sourceSha256"]:
         raise StagingError("staging approval is for different source bytes; re-approve")
     if approval.get("folderId") != P.get("folderId"):
@@ -1370,7 +1412,7 @@ def main(argv=None):
             print(f"STAGING APPROVAL TEMPLATE: {args.staging_approval_template} — issues {codes}; NOT approved. "
                   "The named reviewer reviews every issue and, in their own terminal, re-runs this command "
                   "with --owner <name> --reviewer <name> --approve-for-staging (it waits for them to type "
-                  "APPROVE; an agent cannot answer it). Then post with --post --staging-approval")
+                  "APPROVE; the agent must not answer it). Then post with --post --staging-approval")
         return 0
     if args.staging_approval:
         try:
@@ -1453,8 +1495,16 @@ def main(argv=None):
     except PlanError as error:
         print(f"PLAN ERROR: {error}", file=sys.stderr)
         return 1
+    wired_preflight = workbook_wire.wire_workbook(preflight)
+    if args.emit_manual_commit_program:
+        try:   # ... and so does a setup program that cannot be built (same input tables, local ids)
+            setup_program(P, wired_preflight, workflows, history)
+        except demo_workflows.WorkflowError as error:
+            print(f"PLAN ERROR: --emit-manual-commit-program {error} — nothing was written or posted",
+                  file=sys.stderr)
+            return 1
     try:   # ... and so does a Phase 6 agent merge that cannot apply (same spec shape, local ids)
-        merge_agent(workbook_wire.wire_workbook(preflight), agent_macros, workflows, quiet=True)
+        merge_agent(wired_preflight, agent_macros, workflows, quiet=True, driver_example=driver_example(P))
     except AGENT_ERRORS as error:
         print(f"AGENT ERROR: {error} — nothing was written or posted", file=sys.stderr)
         return 1
@@ -1474,7 +1524,7 @@ def main(argv=None):
             print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
             return 1
         try:
-            wb_spec = merge_agent(wb_spec, agent_macros, workflows)
+            wb_spec = merge_agent(wb_spec, agent_macros, workflows, driver_example=driver_example(P))
         except AGENT_ERRORS as error:
             print(f"AGENT ERROR: {error}", file=sys.stderr)
             return 1
@@ -1490,13 +1540,14 @@ def main(argv=None):
     els=map_dm_elements(full)
     # Layout is the last write before the current contents API validates + creates.
     wb_spec=workbook_wire.wire_workbook(build_wb_spec(P,dm_id,els,landed=landed,workflows=workflows,plan_src=plan_src,history=history))
-    try:
-        emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program, history)
+    try:   # preflighted above; a failure here still names the data model it leaves behind
+        written = emit_workflow_outputs(P, wb_spec, outdir, workflows, args.emit_manual_commit_program, history)
     except demo_workflows.WorkflowError as error:
-        print(f"PLAN ERROR: --emit-manual-commit-program {error}", file=sys.stderr)
+        print(f"PLAN ERROR: --emit-manual-commit-program {error} — data model {dm_id} was created; no workbook "
+              "was posted", file=sys.stderr)
         return 1
     try:   # preflighted above; a failure here still names the data model it leaves behind
-        wb_spec = merge_agent(wb_spec, agent_macros, workflows)
+        wb_spec = merge_agent(wb_spec, agent_macros, workflows, driver_example=driver_example(P))
     except AGENT_ERRORS as error:
         print(f"AGENT ERROR: {error} — data model {dm_id} was created; no workbook was posted", file=sys.stderr)
         return 1
@@ -1509,8 +1560,8 @@ def main(argv=None):
     with open(f"{outdir}/posted-ids.json", "w", encoding="utf-8") as stream:
         json.dump({"dataModelId": dm_id, "dmElements": els, "workbookId": wb["workbookId"], "url": wb.get("url"),
                    "staging": bool(args.staging_approval)}, stream, indent=1)
-    if args.emit_manual_commit_program:
-        print(f"NEXT: run {args.emit_manual_commit_program} once on this workbook through Sigma MCP Code Mode "
+    if written:
+        print(f"NEXT: run {written} once on this workbook through Sigma MCP Code Mode "
               "build_workbook (target existing) before anyone edits it or the agent writes.")
     return 0
 

@@ -19,7 +19,10 @@ sys.path.insert(0, str(SCRIPTS))
 
 from forecast_plan import draft_plan  # noqa: E402
 
-BAS = SCRIPTS / "demo-forecast-macros.bas"
+# The demo kit (docs/demo-kit: the demo source generator and its VBA module) lives outside the skill;
+# a standalone copy of the skill has no demo kit, so the tests that need it skip.
+DEMO_KIT = ROOT.parents[1] / "docs" / "demo-kit"
+BAS = DEMO_KIT / "demo-forecast-macros.bas"
 TABS = ["Instructions", "Actuals", "Plan", "Dimensions", "Assumptions", "Forecast", "Variance",
         "Versions", "Approvals"]
 TABLES = ["tblActuals", "tblPlan", "tblRegions", "tblProducts", "tblDrivers", "tblVersions",
@@ -27,7 +30,7 @@ TABLES = ["tblActuals", "tblPlan", "tblRegions", "tblProducts", "tblDrivers", "t
 
 
 def load_generator():
-    spec = importlib.util.spec_from_file_location("make_demo_forecast", SCRIPTS / "make-demo-forecast.py")
+    spec = importlib.util.spec_from_file_location("make_demo_forecast", DEMO_KIT / "make-demo-forecast.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -38,6 +41,7 @@ def run_json(*args):
     return done.returncode, json.loads(done.stdout)
 
 
+@unittest.skipUnless(DEMO_KIT.is_dir(), "demo kit not present (standalone skill copy)")
 class TestDemoForecastSource(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

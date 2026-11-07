@@ -18,7 +18,9 @@ cached results, so every formula cell's value is computed here in Python and inj
 saved sheet XML. Macro buttons are drawn as button-styled cells (openpyxl cannot bind macros);
 the VBA lives in demo-forecast-macros.bas and is imported by hand to produce the .xlsm.
 
-Usage: make-demo-forecast.py --out <dir>   -> <dir>/Vantora_FY27_Rolling_Forecast_v7_FINAL.xlsx
+Demo kit only (not part of the skill's migration path).
+
+Usage: docs/demo-kit/make-demo-forecast.py --out <dir>   -> <dir>/Vantora_FY27_Rolling_Forecast_v7_FINAL.xlsx
 """
 from __future__ import annotations
 

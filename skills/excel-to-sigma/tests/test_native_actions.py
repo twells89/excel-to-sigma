@@ -566,7 +566,8 @@ import csv
 import types
 
 SCRIPTS=ROOT/'scripts'
-DEMO_BAS=SCRIPTS/'demo-forecast-macros.bas'
+DEMO_KIT=ROOT.parents[1]/'docs'/'demo-kit'   # outside the skill: skipped in a standalone copy
+DEMO_BAS=DEMO_KIT/'demo-forecast-macros.bas'
 
 
 def _load(filename,name):
@@ -583,6 +584,7 @@ def _walk(value):
         for child in value:yield from _walk(child)
 
 
+@unittest.skipUnless(DEMO_KIT.is_dir(),'demo kit not present (standalone skill copy)')
 class TestDemoWorkflows(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -646,6 +648,48 @@ class TestDemoWorkflows(unittest.TestCase):
         self.assertEqual(effects[0]['tableElementId'],'approvals')
         self.assertNotIn('call-api',json.dumps(wf))
         self.assertNotIn('send-email',json.dumps(wf))
+
+    def only(self,*action_ids):
+        return {**self.manifest,'workflows':[w for w in self.manifest['workflows'] if w['actionId'] in action_ids]}
+
+    def test_workflow_elements_emit_only_the_tables_their_workflows_target(self):
+        app={'scenario_control':'Scenario','start':'Max([Forecast Boundary/Start Month])'}
+        cases=[(('snapshot-version',),app,['versions'],False,['btnSnapshot']),
+               (('submit-approval',),app,['approvals'],True,['btnSubmit']),
+               (('roll-forward',),app,['parameters'],False,['btnRoll']),
+               (('set-scenario',),app,['parameters'],False,[]),
+               (('set-scenario','roll-forward','snapshot-version','submit-approval'),app,
+                ['parameters','versions','approvals'],True,['btnRoll','btnSnapshot','btnSubmit']),
+               # Snapshot reads the Parameters row when there is no scenario switch / boundary element
+               (('snapshot-version',),{},['parameters','versions'],False,['btnSnapshot'])]
+        for ids,kwargs,tables,status,buttons in cases:
+            with self.subTest(ids=ids,kwargs=kwargs):
+                wf=self.dw.workflow_elements(self.only(*ids),'conn-1','FY27 forecast',**kwargs)
+                self.assertEqual([t['id'] for t in wf['tables']],tables)
+                self.assertEqual(wf['status'] is not None,status)
+                self.assertEqual([b['id'] for b in wf['buttons']],buttons)
+                text=json.dumps(wf)
+                for el,name in (('parameters','Parameters'),('versions','Versions'),('approvals','Approvals')):
+                    if el not in tables:   # nothing refers to a table that is not emitted
+                        self.assertNotIn(f'[{name}/',text)
+
+    def test_workflow_elements_refuse_a_manifest_that_is_not_an_object(self):
+        for bad in ([],'workflows',None,{'version':2,'workflows':[]},{'version':1,'workflows':['roll-forward']}):
+            with self.subTest(bad=bad),self.assertRaisesRegex(self.dw.WorkflowError,'manifest'):
+                self.dw.workflow_elements(bad,'conn-1','FY27 forecast')
+
+    def test_submit_names_a_generic_approver_and_dispositions_are_generic(self):
+        wf=self.dw.workflow_elements(self.manifest,'conn-1','FY27 forecast')
+        submit=next(b for b in wf['buttons'] if b['id']=='btnSubmit')
+        values=submit['actions'][0]['effects'][0]['values']
+        self.assertEqual(values['ap_to'],{'type':'constant','value':{'type':'text','value':'Approver'}})
+        self.assertNotIn('CFO',json.dumps(self.manifest))
+        disp={d['macro']:d['note'] for d in self.manifest['dispositions']}
+        self.assertIn('the email the macro sent',disp['SubmitForApproval_Click'].lower())
+        self.assertNotIn('Snowflake',disp['RefreshActuals_Click'])     # no landing on this run
+        landed=self.dw.build_workflow_manifest(DEMO_BAS,landed=True)
+        note=next(d['note'] for d in landed['dispositions'] if d['macro']=='RefreshActuals_Click')
+        self.assertIn('landed in Snowflake',note)
 
     def test_unrouted_macro_is_dispositioned_not_dropped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -858,5 +902,8 @@ class TestDemoWorkflows(unittest.TestCase):
             out=Path(d)/'workflows.json'
             self.assertEqual(mod.main(['demo-manifest',str(DEMO_BAS),'--out',str(out)]),0)
             self.assertEqual(len(json.loads(out.read_text())['workflows']),4)
+            self.assertNotIn('Snowflake',out.read_text())
+            self.assertEqual(mod.main(['demo-manifest',str(DEMO_BAS),'--landed','--out',str(out)]),0)
+            self.assertIn('landed in Snowflake',out.read_text())
 
 if __name__=='__main__':unittest.main()

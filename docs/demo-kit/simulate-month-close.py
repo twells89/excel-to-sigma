@@ -2,7 +2,7 @@
 """DEMO KIT ONLY (not part of the excel-to-sigma migration path): simulate the Jul-27 month-end ERP load.
 
 The source .xlsm's actuals end Jun-27. Before recording, this lands plausible Jul-27 actuals into the
-same landed actuals table (CSA.TJ.FPA_REH_ACTUALS by default), so pressing Roll forward on camera shows
+landed actuals table named by --table (DB.SCHEMA.TABLE, required), so pressing Roll forward on camera shows
 a real month close: July turns into landed actuals and Aug-Dec re-forecast from it.
 
 Deterministic: one row per Jun-27 (line, region, product) row, grown by the line's plan growth rate
@@ -14,8 +14,8 @@ import argparse, csv, json, random, subprocess, sys
 ap = argparse.ArgumentParser()
 ap.add_argument("--plan", required=True)
 ap.add_argument("--actuals-csv", required=True, help="the landed actuals CSV (landing.json csv)")
-ap.add_argument("--table", default="CSA.TJ.FPA_REH_ACTUALS")
-ap.add_argument("--snow-connection", default="tj")
+ap.add_argument("--table", required=True, help="the landed actuals table, DB.SCHEMA.TABLE (land-in-snowflake.py)")
+ap.add_argument("--snow-connection", required=True, help="the snow CLI connection name")
 ap.add_argument("--from-month", default="Jun-27")
 ap.add_argument("--month", default="Jul-27")
 ap.add_argument("--posting-date", default="2027-07-01")

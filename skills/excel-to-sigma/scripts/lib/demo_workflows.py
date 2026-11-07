@@ -3,15 +3,17 @@
 ``build_workflow_manifest`` classifies a macro module (``.bas`` source or a real
 ``.xlsm``; VBA is only read, never executed) and routes each macro to a native
 workflow or records a disposition. ``workflow_elements`` turns the manifest into
-workbook elements: Parameters / Versions / Approvals input tables, three buttons
-and a latest-approval-status KPI. ``emit_manual_commit_program`` writes the
+workbook elements: only the Parameters / Versions / Approvals input tables its
+workflows target, one button per button workflow and (with Submit) a
+latest-approval-status table. ``emit_manual_commit_program`` writes the
 post-create Code Mode program that enables manual commit on every input table
 (backend actions, e.g. a Sigma Agent tool, only write to such tables; a REST
 spec POST never sets the flag) and seeds the Parameters row and any other
 editable tables it is given.
 
-Nothing here sends email: the Outlook step of the Submit macro is replaced by an
-Approvals row and recorded under ``dispositions``.
+Nothing here sends email: the email step of a Submit macro is replaced by an
+Approvals row and recorded under ``dispositions``. The Approvals log is an editable
+input table (a governed log, not an access control).
 """
 from __future__ import annotations
 
@@ -69,9 +71,15 @@ WORKFLOWS = {
     "submit-approval": ("Submit for approval", "insert-rows", APPROVALS,
                         ["Request", "Submitted By", "Approver", "Status", "Submitted At"], True),
 }
+# The refresh disposition names the Snowflake landing only when this run landed the source Tables.
+REFRESH_NOTES = {
+    False: "The macro's external data reload is replaced by the live warehouse data Sigma reads on every "
+           "query; no refresh button is needed.",
+    True: "The macro's external data reload is replaced by the source Tables landed in Snowflake (Phase 1b), "
+          "which Sigma reads live; no refresh button is needed.",
+}
 DISPOSITIONS = {
-    "EXTERNAL_DATA_REFRESH": ("replaced-by-live-warehouse",
-        "The ODBC reload of Actuals is replaced by the live Snowflake landing table; no refresh button is needed."),
+    "EXTERNAL_DATA_REFRESH": ("replaced-by-live-warehouse", REFRESH_NOTES[False]),
     "RECALC": ("replaced-by-live-calculation",
         "Sigma recalculates on read; there is nothing to port."),
     "FORMAT_COSMETIC": ("styling",
@@ -118,8 +126,9 @@ def classify_macros(path):
     return out
 
 
-def build_workflow_manifest(path):
-    """Route every macro to a native workflow or a recorded disposition (never silent)."""
+def build_workflow_manifest(path, landed=False):
+    """Route every macro to a native workflow or a recorded disposition (never silent). ``landed``: this
+    run landed the source Tables in Snowflake (Phase 1b), so the refresh disposition can say so."""
     workflows, dispositions = [], []
     for macro in classify_macros(path):
         name, cls = macro["name"], macro["class"]
@@ -131,10 +140,12 @@ def build_workflow_manifest(path):
                               "writes": writes, "note": NOTES[route]})
             if route == "submit-approval" and any(re.search(r"outlook|sendmail", s, re.I) for s in macro["signals"]):
                 dispositions.append({"macro": name, "class": cls, "disposition": "email-replaced-never-sent",
-                    "note": "The Outlook email to the CFO is replaced by the Approvals row and the latest-status "
+                    "note": "The email the macro sent is replaced by the Approvals row and the latest-status "
                             "header; no email is sent by the workflow, the button or the agent."})
         elif cls in DISPOSITIONS:
             kind, note = DISPOSITIONS[cls]
+            if cls == "EXTERNAL_DATA_REFRESH":
+                note = REFRESH_NOTES[bool(landed)]
             dispositions.append({"macro": name, "class": cls, "disposition": kind, "note": note})
         else:
             dispositions.append({"macro": name, "class": cls, "disposition": "unmapped-needs-review",
@@ -142,6 +153,7 @@ def build_workflow_manifest(path):
     return {"version": 1, "workflows": workflows, "dispositions": dispositions}
 
 
+APPROVER = "Approver"   # generic: the source's approver role is not inferred from the macro
 STATUS_FORMULA = (f'Coalesce(Lookup([Approvals/Status], Max([Approvals/{LOG_ORDER}]), '
                   f'[Approvals/{LOG_ORDER}]), "Not submitted")')
 
@@ -192,7 +204,7 @@ def action_effects(action_id, request_label, figures=None, scenario_control=None
     if action_id == "submit-approval":
         return [{"effect": "insert-rows", "tableElementId": APPROVALS, "values": _values(APPROVALS, {
             "Request": _const(request_label), "Submitted By": _formula("CurrentUserEmail()"),
-            "Approver": _const("CFO"), "Status": _const("Submitted"), "Submitted At": _formula("Now()"),
+            "Approver": _const(APPROVER), "Status": _const("Submitted"), "Submitted At": _formula("Now()"),
             LOG_ORDER: _formula(next_entry("Approvals"))})}]
     raise WorkflowError(f"no button action for {action_id}")
 
@@ -222,17 +234,17 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
     request was submitted. ``start`` is the forecast start month formula Roll forward advances and
     Snapshot records.
     """
+    if not isinstance(manifest, dict) or manifest.get("version") != 1:
+        raise WorkflowError("workflows manifest version 1 required (a JSON object from demo-manifest)")
+    if not isinstance(manifest.get("workflows", []), list) or not all(
+            isinstance(w, dict) and "actionId" in w and "effect" in w for w in manifest.get("workflows", [])):
+        raise WorkflowError("workflows manifest: 'workflows' must be a list of workflow objects")
     if figures is None and any(w["actionId"] == "snapshot-version" for w in manifest.get("workflows", [])):
         figures = {"revenue": "Sum([PnL Combined/Amount])"}  # structural default (checks); builder passes real KPIs
-    if not isinstance(manifest, dict) or manifest.get("version") != 1:
-        raise WorkflowError("workflows manifest version 1 required")
     items = {w["actionId"]: w for w in manifest.get("workflows", [])}
     for w in items.values():
         if w["effect"] not in EFFECTS:
             raise WorkflowError(f"unsupported workflow effect {w['effect']}")
-    tables = [input_table(PARAMETERS, connection_id, "edit", scenario_control=scenario_control),
-              input_table(VERSIONS, connection_id, "view", figures),
-              input_table(APPROVALS, connection_id, "view")]
     buttons = []
     for action_id, element_id in BUTTON_IDS.items():
         if action_id not in items:
@@ -243,12 +255,30 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
             "actions": [{"id": "a-" + action_id, "trigger": "on-click",
                          "effects": action_effects(action_id, request_label, figures, scenario_control,
                                                    start)}]})
-    # Latest status = Status of the Approvals row with the last Log Order. A one-row table
-    # over Parameters holds the cross-table Lookup (the shape proven for the forecast lookup).
-    status = {"id": STATUS_KPI, "kind": "table", "name": "Latest approval status",
-        "source": {"kind": "table", "elementId": PARAMETERS},
-        "columns": [{"id": "st_v", "name": "Latest approval status",
-                     "formula": STATUS_FORMULA.replace('"Not submitted"', '"' + no_status + '"')}]}
+    # Only the tables the workflows target: Parameters for set-scenario / roll-forward (or when an effect
+    # reads its row: Snapshot without a scenario switch or boundary), Versions for Snapshot, Approvals and
+    # the status for Submit.
+    effects_text = repr([b["actions"] for b in buttons])
+    wanted = {PARAMETERS: bool({"set-scenario", "roll-forward"} & set(items))
+                          or f"[{TABLES[PARAMETERS][0]}/" in effects_text,
+              VERSIONS: "snapshot-version" in items, APPROVALS: "submit-approval" in items}
+    tables = [input_table(PARAMETERS, connection_id, "edit", scenario_control=scenario_control)
+              if el == PARAMETERS else
+              input_table(VERSIONS, connection_id, "view", figures) if el == VERSIONS else
+              input_table(APPROVALS, connection_id, "view")
+              for el in (PARAMETERS, VERSIONS, APPROVALS) if wanted[el]]
+    status = None
+    if wanted[APPROVALS]:
+        # Latest status = Status of the Approvals row with the last Log Order, held by a one-row table
+        # (over the one-row Parameters table when the workbook has it: the shape proven live; otherwise
+        # over a one-row VALUES query, the shape of the planning app's boundary element).
+        source = ({"kind": "table", "elementId": PARAMETERS} if wanted[PARAMETERS] else
+                  {"kind": "sql", "connectionId": connection_id,
+                   "statement": "select * from (values\n(1)\n) as t(STATUS_ROW)"})
+        status = {"id": STATUS_KPI, "kind": "table", "name": "Latest approval status",
+            "source": source,
+            "columns": [{"id": "st_v", "name": "Latest approval status",
+                         "formula": STATUS_FORMULA.replace('"Not submitted"', '"' + no_status + '"')}]}
     return {"tables": tables, "buttons": buttons, "status": status}
 
 
