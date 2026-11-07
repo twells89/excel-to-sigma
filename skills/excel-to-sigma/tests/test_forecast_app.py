@@ -669,10 +669,10 @@ class ForecastAppTests(unittest.TestCase):
             self.assertNotIn("%I", stamp)                  # migrated rows carry a date, not a midnight time
             self.assertNotIn("%H", stamp)
         approvals = {c["name"]: c for c in b["approvalsView"]["columns"]}
-        self.assertEqual(approvals["Decided by"]["formula"], 'Coalesce([Approvals/Decided By], "")')
+        self.assertEqual(approvals["Decided by"]["formula"], 'Coalesce([Approvals/Decided By], "—")')
         self.assertEqual(
             approvals["Decided at"]["formula"],
-            'Coalesce(DateFormat([Approvals/Decided At], "%b %d, %Y"), "")',
+            'Coalesce(DateFormat([Approvals/Decided At], "%b %d, %Y"), "—")',
         )
         self.assertNotIn("format", approvals["Decided at"])
         # every migrated row and the next few snapshots fit without an inner scroll

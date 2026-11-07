@@ -461,8 +461,9 @@ def build(ctx):
     # a migrated row has no forecast start / comment: show a dash / nothing, never the word "null"
     shown = {"Forecast Start Month": lambda ref: f'Coalesce(DateFormat({ref}, "%b-%y"), "{NULL_DASH}")',
              "Comment": lambda ref: f'Coalesce({ref}, "")',
-             "Decided By": lambda ref: f'Coalesce({ref}, "")',
-             "Decided At": lambda ref: f'Coalesce(DateFormat({ref}, "%b %d, %Y"), "")'}
+             # an undecided request: Sigma renders an empty-string result as a grey "null", so show a dash
+             "Decided By": lambda ref: f'Coalesce({ref}, "{NULL_DASH}")',
+             "Decided At": lambda ref: f'Coalesce(DateFormat({ref}, "%b %d, %Y"), "{NULL_DASH}")'}
     # newest first by entry order (dw.LOG_ORDER): migrated history keeps the source's dates
     label = {"Forecast Start Month": "Forecast start", "FY Revenue": f"{fy} revenue",
              "FY Gross Margin": "Gross margin", "FY EBITDA": "EBITDA"}
@@ -501,7 +502,9 @@ def build(ctx):
     log_head = text("logHead", f"## {log_title}\n" + span(
         "; ".join(what) + ". " + ("Both are" if both else "It is") + " written by the "
         + ("buttons" if both else "button") + " on the Forecast page (or by the forecast agent, after you "
-        "approve), with who and when, newest first." + origin, MUTED, 13), "top") if logs else None
+        "approve), with who and when, newest first."
+        + (" An approver decides a submitted request here with Approve or Send back."
+           if wf.get("decisions") and dw.APPROVALS in logs else "") + origin, MUTED, 13), "top") if logs else None
 
     # Approve / Send back: beside the Approvals table (only with --approvers), same size, Approve primary.
     decision_els = []
