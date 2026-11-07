@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Route an Excel workbook: audit + discover + classify, then print the next steps as JSON.
 
-usage: migrate.py plan <file.xlsx|.xlsm> [--out-dir DIR]
+usage: migrate.py plan <file.xlsx|.xlsm> [--out-dir DIR] [--intent read-only|editable|what-if]
+                       [--land-tables] [--enhance]
        migrate.py resolve-targets [--folder-name NAME] [--connection-name NAME] [--sigma-profile NAME]
 
 Writes migration-audit.json, discovery.json, macros.json (forecast with macros), macro-gate.json
@@ -11,6 +12,12 @@ record: audit status and issues, archetype, the refs worth reading, the decision
 ask the user, the next commands in the order they run, the staging alternative to the
 production post, and the steps only the user can do in the Sigma UI.
 Exit 2 only when the audit is BLOCKED.
+
+Forecast route: landing the source Tables in Snowflake (Phase 1b) and the workflow planning app +
+agent (Phase 6) are the user's yes/no decisions (askUser). By default nextCommands is the plain
+build; each offered option is listed under optIns with its opted-in commands, and --land-tables /
+--enhance make that variant the nextCommands. --intent fills the drafter's intent: a read-only
+plan has no input tables, so its builds write no setup program.
 
 resolve-targets looks up the target folder and the write-enabled connection by name
 (read-only REST GETs) and prints their ids for the drafter's --folder / --connection.
@@ -59,9 +66,16 @@ def archetype(discovery):
     return "unknown"
 
 
-# The setup program every forecast build writes (--emit-manual-commit-program) and the post prints
-# as NEXT; one name everywhere.
+# The setup program a forecast build with input tables writes (--emit-manual-commit-program) and the
+# post prints as NEXT; one name everywhere. A read-only plan without --workflows has no input tables.
 SETUP_PROGRAM = "<workdir>/setup-program.py"
+INTENTS = ("read-only", "editable", "what-if")
+# Macro classes that become a workflow people trigger by hand (lib/demo_workflows.py ROUTES).
+ENHANCE_CLASSES = ("ACTION_WRITEBACK", "EXTERNAL_IO", "WHATIF_SCENARIO")
+LAND_DECISION = ("land source Tables in Snowflake? needs the snow CLI + a Snowflake connection (yes/no; "
+                 "yes = the optIns --land-tables commands, or re-run plan with --land-tables)")
+ENHANCE_DECISION = ("build the workflow planning app + agent? (yes/no; yes = the optIns --enhance commands, "
+                    "or re-run plan with --enhance)")
 # The forecast route's one post-create MCP step (replaces pasting seed CSVs in the UI).
 FORECAST_SETUP_HANDOFF = (
     f"Run the setup program the post wrote ({SETUP_PROGRAM}) once via Sigma MCP Code Mode build_workbook "
@@ -174,15 +188,19 @@ SMOKE_PASS_HANDOFF = (
 MACRO_GATE = "<workdir>/macro-gate.json"
 
 
-def forecast_commands(tables, enhanced):
-    """The forecast route in the order it runs. With Tables, Phase 1b lands them and every build reads
-    the landed actuals; with macros (enhanced), the workflows manifest, the Phase 6 pitch and the
-    agent ride the same builds. Returns ``(next_commands, staging_alternative)``."""
+def forecast_commands(tables, enhanced, intent=None):
+    """The forecast route in the order it runs. With ``tables`` (the user said yes to landing), Phase 1b
+    lands them and every build reads the landed actuals; with ``enhanced`` (yes to the planning app +
+    agent) the workflows manifest, the Phase 6 pitch and the agent ride the same builds. The setup
+    program flag rides every build unless the plan is read-only without workflows (no input tables).
+    Returns ``(next_commands, staging_alternative)``."""
     landed = (" --actuals-table <db>.<schema>.<prefix>ACTUALS --landing <workdir>/landing.json"
               if tables else "")
     workflows = " --workflows <workdir>/workflows.json" if enhanced else ""
-    build = (f"python scripts/build-forecast-model.py <workdir>/plan.json{landed}{workflows} "
-             f"--emit-manual-commit-program {SETUP_PROGRAM} --out-dir <workdir>/build")
+    program = (f" --emit-manual-commit-program {SETUP_PROGRAM}"
+               if enhanced or intent != "read-only" else "")
+    build = (f"python scripts/build-forecast-model.py <workdir>/plan.json{landed}{workflows}{program} "
+             "--out-dir <workdir>/build")
     agent = " --agent-macros <workdir>/macros.json" if enhanced else ""
     commands = []
     if tables:
@@ -191,33 +209,61 @@ def forecast_commands(tables, enhanced):
         commands += [
             f"{land}   # Phase 1b dry run: SQL plus a read-only check for existing tables (source Tables: "
             + ", ".join(tables) + "; land the actuals and plan Tables)",
-            f"{land} --execute --grant-select-to <role> --sync-sigma-connection <conn>   "
-            "# after the user's OK; add --replace only when the dry run says the tables exist",
+            f"{land} --execute --sync-sigma-connection <conn>   # after the user's OK; optional: add "
+            "--grant-select-to <role> when Sigma's role needs SELECT, and --replace only when the dry run "
+            "says the tables exist",
         ]
-    commands.append("python scripts/draft-forecast-plan.py <file> --intent <intent> --connection <conn> "
-                    "--folder <folder> --out <workdir>/plan.json   # fails loudly on unknown shapes; verifies "
-                    "against cached values")
+    commands.append(f"python scripts/draft-forecast-plan.py <file> --intent {intent or '<intent>'} "
+                    "--connection <conn> --folder <folder> --out <workdir>/plan.json   # fails loudly on unknown "
+                    "shapes; verifies against cached values")
     if enhanced:
-        commands.append("python scripts/macro-actions.py demo-manifest <file> --out <workdir>/workflows.json   "
-                        "# classify the macros into workflows (never executes VBA)")
-    commands.append(f"{build}   # dry run: draft mode + local parity; writes specs and the setup program")
+        commands.append("python scripts/macro-actions.py demo-manifest <file> --out <workdir>/workflows.json"
+                        + (" --landed" if tables else "")
+                        + "   # classify the macros into workflows (never executes VBA)")
+    commands.append(f"{build}   # dry run: draft mode + local parity; writes the specs"
+                    + (" and the setup program" if program else ""))
     if enhanced:
         commands.append("python scripts/recommend-agent.py --macros <workdir>/macros.json --workflows "
                         "<workdir>/workflows.json   # Phase 6 pitch only (read it aloud); with a yes the post "
                         "below carries the agent via --agent-macros, in the same POST")
     commands.append(f"{build}{agent} --post --review-dispositions <workdir>/review.json   # production: strict "
-                    f"verified dispositions; creates the workbook and rewrites {SETUP_PROGRAM}")
+                    "verified dispositions; creates the workbook"
+                    + (f" and rewrites {SETUP_PROGRAM}" if program else ""))
     staging = [
         f"{build} --staging-approval-template <workdir>/staging-approval.json   # writes the exact audited "
         "issues for the plan's folder, status pending; hand them to the named reviewer",
         f"{build} --staging-approval-template <workdir>/staging-approval.json --owner '<owner>' "
-        "--reviewer '<reviewer>' --approve-for-staging   # USER HANDOFF: the named reviewer runs this in "
-        "their own terminal; it lists every issue and waits for them to type APPROVE (it refuses without "
-        "an interactive terminal, so the agent cannot approve); nothing is marked verified",
+        "--reviewer '<reviewer>' --approve-for-staging   # USER HANDOFF: must be approved by the named human "
+        "reviewer at their own terminal; the agent must not approve. It lists every issue and waits for them to "
+        "type APPROVE (it refuses without an interactive terminal); nothing is marked verified",
         f"{build}{agent} --post --staging-approval <workdir>/staging-approval.json   # staging post into that "
-        f"folder; creates the workbook and rewrites {SETUP_PROGRAM}",
+        "folder; creates the workbook" + (f" and rewrites {SETUP_PROGRAM}" if program else ""),
     ]
     return commands, staging
+
+
+def enhance_eligible(macros):
+    """A planning app + agent is worth offering only for a non-AUTO macro people trigger by hand
+    (an action write-back, external I/O or a what-if scenario switch)."""
+    return isinstance(macros, list) and any(
+        isinstance(m, dict) and m.get("status") != "AUTO" and m.get("class") in ENHANCE_CLASSES for m in macros)
+
+
+def forecast_handoffs(handoffs, enhanced, intent):
+    """The forecast route's user handoffs for one variant: the setup program only when a build writes it
+    (the --workflows wording when enhanced), plus the smoke pass when enhanced."""
+    out = []
+    for h in handoffs:
+        if h == FORECAST_SETUP_HANDOFF:
+            if enhanced:
+                out.append(ENHANCE_SETUP_HANDOFF)
+            elif intent != "read-only":
+                out.append(h)
+            continue
+        out.append(h)
+    if enhanced:
+        out.insert(1, SMOKE_PASS_HANDOFF)
+    return out
 
 
 def macro_gate(macros):
@@ -297,7 +343,7 @@ def plan(args):
     staging_alternative = []
     gate = None
 
-    enhanced = False
+    eligible = False
     if not blocked and source.suffix.lower() in MACRO_SUFFIXES:
         try:
             macros = run_json(HERE / "macro-classify.py", "--json", source)
@@ -308,16 +354,53 @@ def plan(args):
         if isinstance(macros, list) and macros:
             gate = macro_gate(macros)
             (workdir / "macro-gate.json").write_text(json.dumps(gate, indent=2) + "\n", encoding="utf-8")
-        enhanced = kind == "forecast" and isinstance(macros, list) and bool(macros)
-        if enhanced:
+        eligible = kind == "forecast" and enhance_eligible(macros)
+        if eligible:
             refs.append("refs/agent-enhance.md")
             (workdir / "macros.json").write_text(json.dumps(macros, indent=2) + "\n", encoding="utf-8")
-            handoffs = [ENHANCE_SETUP_HANDOFF if h == FORECAST_SETUP_HANDOFF else h for h in handoffs]
-            handoffs.insert(1, SMOKE_PASS_HANDOFF)
+    decisions = list(route["decisions"])
+    opt_ins = []
     if kind == "forecast":
-        next_commands, staging_alternative = forecast_commands(
-            [t["name"] for t in discovery.get("tables", [])], enhanced)
+        tables = [t["name"] for t in discovery.get("tables", [])]
+        if args.land_tables and not tables:
+            notes.append("--land-tables ignored: the workbook has no Excel Tables to land.")
+        if args.enhance and not eligible:
+            notes.append("--enhance ignored: no non-AUTO action write-back, external I/O or what-if scenario "
+                         "macro, so there is no workflow for a planning app or agent to run.")
+        land = bool(tables and args.land_tables)
+        enhanced = bool(eligible and args.enhance)
+        base_handoffs = handoffs
+
+        def variant(with_land, with_enhance):
+            cmds, staging = forecast_commands(tables if with_land else [], with_enhance, args.intent)
+            return cmds, staging, forecast_handoffs(base_handoffs, with_enhance, args.intent)
+
+        next_commands, staging_alternative, handoffs = variant(land, enhanced)
+        chosen = [f for f, on in (("--land-tables", land), ("--enhance", enhanced)) if on]
+        for flag, offered, decision, with_land, with_enhance in (
+                ("--land-tables", bool(tables) and not land, LAND_DECISION, True, enhanced),
+                ("--enhance", eligible and not enhanced, ENHANCE_DECISION, land, True)):
+            if not offered:
+                continue
+            decisions.append(decision)
+            cmds, staging, opt_handoffs = variant(with_land, with_enhance)
+            rerun = " ".join(["python scripts/migrate.py plan <file> --out-dir <workdir>"]
+                             + ([f"--intent {args.intent}"] if args.intent else []) + chosen + [flag])
+            opt_ins.append({"flag": flag, "decision": decision, "rerun": rerun, "nextCommands": cmds,
+                            "stagingAlternative": staging, "userHandoffs": opt_handoffs})
+        if args.intent:
+            decisions = [d for d in decisions if not d.startswith("intent:")]
+        else:
+            decisions[0] = ("intent: read-only | editable | what-if (re-run plan with --intent <intent> to fill "
+                            "it; a read-only plan without --enhance has no input tables, so its builds "
+                            "write no setup program)")
+    phase0b = None
     if gate:   # Phase 0b runs first, whatever the route: read every non-AUTO record to the user
+        phase0b = (f"python scripts/macro-classify.py <file>   # Phase 0b: surface all "
+                   f"{gate['procedures']} procedures ({len(gate['nonAuto'])} non-AUTO) before "
+                   f"building; the gate record is {MACRO_GATE}")
+        for o in opt_ins:
+            o["nextCommands"].insert(0, phase0b)
         next_commands.insert(0, f"python scripts/macro-classify.py <file>   # Phase 0b: surface all "
                                 f"{gate['procedures']} procedures ({len(gate['nonAuto'])} non-AUTO) before "
                                 f"building; the gate record is {MACRO_GATE}")
@@ -351,9 +434,12 @@ def plan(args):
         "macros": macros,
         "readRefs": list(dict.fromkeys(refs)),
         "beforePost": ["refs/coverage-contract.md"],
-        "askUser": route["decisions"],
+        "askUser": decisions,
         "nextCommands": [fill(c) for c in next_commands],
         "stagingAlternative": [fill(c) for c in staging_alternative],
+        "optIns": [{**o, "rerun": fill(o["rerun"]), "nextCommands": [fill(c) for c in o["nextCommands"]],
+                    "stagingAlternative": [fill(c) for c in o["stagingAlternative"]],
+                    "userHandoffs": [fill(h) for h in o["userHandoffs"]]} for o in opt_ins],
         "macroGate": (fill(MACRO_GATE) if gate else None),
         "userHandoffs": [fill(h) for h in handoffs],
         "reviewTemplate": str(workdir / "review.template.json") if review_template["issues"] else None,
@@ -403,6 +489,12 @@ def main(argv=None):
     p = sub.add_parser("plan", help="audit, discover and print next steps")
     p.add_argument("workbook")
     p.add_argument("--out-dir", help="where to write audit/discovery/review-template JSON")
+    p.add_argument("--intent", choices=INTENTS, help="forecast: the drafter's intent (the user's answer); "
+                   "read-only builds write no setup program")
+    p.add_argument("--land-tables", action="store_true", help="forecast: the user said yes to landing the "
+                   "source Tables in Snowflake (Phase 1b)")
+    p.add_argument("--enhance", action="store_true", help="forecast with action / scenario macros: the user "
+                   "said yes to the workflow planning app + agent (Phase 6)")
     r = sub.add_parser("resolve-targets", help="look up the folder and write-enabled connection ids by name")
     r.add_argument("--folder-name", help="exact folder name (case-insensitive)")
     r.add_argument("--connection-name", help="exact connection name (case-insensitive); must be write-enabled")

@@ -36,8 +36,15 @@ python scripts/migrate.py plan <file.xlsx|.xlsm> --out-dir <workdir>
 It runs the audit, discovery and (for macro files) macro classification, writes
 `migration-audit.json`, `discovery.json` and `review.template.json` to `<workdir>`,
 and prints JSON: `auditStatus`, `archetype`, `readRefs`, `beforePost`, `askUser`,
-`nextCommands`, `userHandoffs`, `routeReason`. Exit code 2 means `BLOCKED`. Read the refs
+`nextCommands`, `optIns`, `userHandoffs`, `routeReason`. Exit code 2 means `BLOCKED`. Read the refs
 it lists, ask the user the `askUser` questions, then run the `nextCommands` in order.
+On the forecast route, landing the source Tables in Snowflake (Phase 1b) and the workflow
+planning app + agent (Phase 6) are yes/no questions in `askUser`: by default `nextCommands`
+is the plain build, and each offered option is listed in `optIns` with its opted-in commands
+(or re-run `plan` with `--land-tables` / `--enhance`). The planning app is offered only when a
+non-AUTO macro is an action write-back, external I/O or what-if scenario macro. Pass
+`--intent read-only|editable|what-if` to fill the drafter's intent; a read-only build without
+the planning app has no input tables, so it writes no setup program.
 Routes are tried in order and each is named only when its drafter accepts the
 workbook: research template → `forecast` → `table-report` → `input-table`. A
 SUMIFS/driver workbook both drafters reject routes to `cell-model` (source
@@ -406,8 +413,10 @@ Parse Excel date serials → ISO dates here.
 
 ## Phase 1b — Land source tabs in Snowflake (`scripts/land-in-snowflake.py`)
 
-Optional, forecast path. Instead of inlining GL actuals as `VALUES`, land the workbook's
-Excel Tables in the warehouse so the model reads real tables.
+Optional, forecast path, and only with the user's yes (`migrate.py plan` asks "land source
+Tables in Snowflake?"; it needs the `snow` CLI and a Snowflake connection). Instead of
+inlining GL actuals as `VALUES`, land the workbook's Excel Tables in the warehouse so the
+model reads real tables. Without it the plain build reads the actuals from the plan.
 
 ```bash
 .venv/bin/python scripts/land-in-snowflake.py book.xlsx --tables tblActuals,tblPlan \
@@ -433,8 +442,15 @@ Excel Tables in the warehouse so the model reads real tables.
 - Re-running into a schema that already holds a table exits 2 unless `--replace` is passed;
   it never appends a duplicate. `--execute` verifies each row count against the source and
   exits non-zero on a mismatch.
-- `--grant-select-to <ROLE>` grants `SELECT` on each landed table and nothing else.
+- `--grant-select-to <ROLE>` (optional) grants `SELECT` on each landed table and nothing else;
+  pass it only when Sigma's connection role cannot read the schema already.
   `--sync-sigma-connection` makes Sigma see the new table paths.
+- `--replace` recreates with `CREATE OR REPLACE TABLE ... COPY GRANTS`, so the replaced table's
+  existing grants are kept.
+- `--database`, `--schema`, `--table-prefix` and `--grant-select-to` must each be one plain
+  Snowflake identifier (`^[A-Za-z_][A-Za-z0-9_$]*$`; the prefix may be empty); anything else
+  (dots, quotes, `;`, a leading `-`) is refused before any SQL runs, and `--sigma-profile` is
+  checked like every other Sigma CLI profile name.
 - Needs no warehouse views and no stored procedures. Ask the user before `--execute`,
   any grant, or a Sigma connection sync.
 
@@ -583,14 +599,19 @@ and formatting parity remain pending until actually tested.
 
 ## Phase 6 — Enhance: recommend a Sigma Agent (`scripts/recommend-agent.py`)
 
-Last step, after parity. `migrate.py plan` writes the macro inventory to
-`<workdir>/macros.json`; classify the macros into workflows with
+Last step, after parity, and only with the user's yes to "build the workflow planning app +
+agent?" (`migrate.py plan` asks it when a non-AUTO macro is an action write-back, external I/O
+or what-if scenario macro; navigation, recalc or cosmetic macros alone get no offer). `migrate.py
+plan` writes the macro inventory to `<workdir>/macros.json`; classify the macros into workflows with
 
 ```bash
 .venv/bin/python scripts/macro-actions.py demo-manifest book.xlsm --out work/workflows.json
 ```
 
-(the positional is the `.xlsm` or a `.bas` macro module; VBA is only read, never run).
+(the positional is the `.xlsm` or a `.bas` macro module; VBA is only read, never run; add
+`--landed` when Phase 1b landed the source Tables, so the refresh disposition says so).
+The build emits only the input tables its workflows target: Parameters for set-scenario /
+roll-forward, Versions for snapshot, Approvals and the status pill for submit.
 Read the macro inventory and `workflows.json`, say in plain
 language which macros were workflows people triggered by hand, and offer a Sigma
 workbook agent that runs them on request, with approval before every write:
@@ -606,12 +627,15 @@ That prints the pitch only. With a yes, the agent reaches the workbook one way: 
 skill's forecast builder did not build. A macro inventory with no action or scenario classes
 (only recalc / cosmetic) gets no agent and no write tools. See `refs/agent-enhance.md`.
 
-The forecast run, in order (`migrate.py plan` prints it as `nextCommands`, with the staging
-post as `stagingAlternative`): `macro-classify.py` (Phase 0b) → `land-in-snowflake.py` dry run,
+The forecast run with both opt-ins, in order (`migrate.py plan ... --land-tables --enhance`
+prints it as `nextCommands`, with the staging post as `stagingAlternative`; without them it is
+in `optIns`): `macro-classify.py` (Phase 0b) → `land-in-snowflake.py` dry run,
 then `--execute` (Phase 1b) → `draft-forecast-plan.py` → `macro-actions.py demo-manifest` →
 `build-forecast-model.py` dry run (`--actuals-table --landing --workflows
 --emit-manual-commit-program work/setup-program.py`) → `recommend-agent.py` (pitch) → the post
 with the same flags plus `--agent-macros` → the setup program once → the smoke pass.
+The post builds and checks the setup program from the local spec before it creates the data
+model, so a program that cannot be built stops the run before anything is posted.
 
 Prerequisites the agent depends on:
 - Build with `build-forecast-model.py --workflows work/workflows.json
@@ -660,16 +684,19 @@ review-disposition gate. To build in an isolated staging folder while issues suc
     --staging-approval-template work/staging-approval.json
 ```
 
-**User handoff — the reviewer approves, not the agent.** The named reviewer checks every issue,
-then runs the approve command **in their own terminal** (no hand edit of the JSON). It prints
-every audited issue and waits for them to type `APPROVE`; without an interactive terminal (an
-agent's shell, a pipe, CI) it refuses and writes nothing, so the agent cannot approve for them.
-Never pipe, script or fake the answer.
+**User handoff — the reviewer approves, not the agent.** Policy: the staging approval must be
+given by the named human reviewer at their own terminal; the agent must not approve, and must not
+pipe, script or fake the answer. The reviewer checks every issue, then runs the approve command
+**in their own terminal** (no hand edit of the JSON). It prints every audited issue and waits for
+them to type `APPROVE`; without an interactive terminal (an agent's shell, a pipe, CI) it refuses
+and writes nothing. The post refuses an approval file without the terminal confirmation that
+command records, so a hand-written `approved_for_staging` JSON is not accepted. (These checks
+support the policy; they are not an access control: anyone with a terminal can type `APPROVE`.)
 
 ```bash
 .venv/bin/python scripts/build-forecast-model.py work/plan.json ... \
     --staging-approval-template work/staging-approval.json \
-    --owner 'TJ Wells' --reviewer 'Jane Reviewer' --approve-for-staging
+    --owner '<owner name>' --reviewer '<reviewer name>' --approve-for-staging
 ```
 
 Once the file says `approved_for_staging`, the agent posts:
@@ -680,7 +707,8 @@ Once the file says `approved_for_staging`, the agent posts:
 ```
 
 `--approve-for-staging` needs both names and the typed `APPROVE`; it sets
-`sourceReviewApproval.status` to `approved_for_staging` and records the terminal confirmation.
+`sourceReviewApproval.status` to `approved_for_staging` and records the terminal confirmation
+(`sourceReviewApproval.confirmation`), which `--staging-approval` requires.
 Without it the names are recorded and the status stays `pending`. The approval is bound to the
 source bytes, the exact issue objects and the plan's `folderId`; nothing is marked verified.
 

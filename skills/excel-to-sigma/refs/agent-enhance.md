@@ -2,7 +2,9 @@
 
 After the workbook is built, read what the macros became and offer an agent that can
 run those same workflows. This is a recommendation, not a default: nothing is added
-until the user says yes.
+until the user says yes. `migrate.py plan` asks "build the workflow planning app + agent?"
+only when a non-AUTO macro is an `ACTION_WRITEBACK`, `EXTERNAL_IO` or `WHATIF_SCENARIO`
+macro; its opted-in commands are under `optIns` (or re-run `plan` with `--enhance`).
 
 ```bash
 .venv/bin/python scripts/macro-classify.py --json book.xlsm > macros.json   # migrate.py plan writes it too
@@ -77,6 +79,14 @@ does this reuse automatically.
 - After any write, approved or declined, the agent must re-query the affected table and
   report the data, not the tool result.
 - No email is ever sent by a tool. The Submit tool appends an Approvals row only.
+- The Approvals log is an editable input table: after the setup program it is published
+  `published-all-users`, so everyone with access to the workbook can add, change or delete its
+  rows (in the UI, through the Submit button or through the agent). It is a governed log —
+  who and when are recorded per row — not an access control: a row saying `Approved` is not a
+  sign-off the workbook enforces. Keep real approval authority in the system that owns it.
+- The workflow tables are emitted only when a workflow targets them: Parameters for
+  set-scenario / roll-forward, Versions for snapshot, Approvals (and the status pill) for submit.
+  The agent's instructions and data sources name only the tables the workbook has.
 
 ## Validation
 
