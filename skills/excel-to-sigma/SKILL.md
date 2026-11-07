@@ -652,23 +652,37 @@ posted. Only pass `--agent-macros` after the user said yes to the agent.
 
 **Staging build while review is pending.** Production `--post` keeps the strict verified
 review-disposition gate. To build in an isolated staging folder while issues such as
-`VBA_PROJECT` / `FLAT_CARRY_POLICY` are honestly pending, write the approval with
-`--staging-approval-template work/staging-approval.json` (it lists the exact audited issues),
-have the named owner and reviewer check every one, then record their approval on the command
-line — no hand edit of the JSON:
+`VBA_PROJECT` / `FLAT_CARRY_POLICY` are honestly pending, the agent writes the approval template
+(it lists the exact audited issues, status `pending`) and hands it to the named reviewer:
+
+```bash
+.venv/bin/python scripts/build-forecast-model.py work/plan.json ... \
+    --staging-approval-template work/staging-approval.json
+```
+
+**User handoff — the reviewer approves, not the agent.** The named reviewer checks every issue,
+then runs the approve command **in their own terminal** (no hand edit of the JSON). It prints
+every audited issue and waits for them to type `APPROVE`; without an interactive terminal (an
+agent's shell, a pipe, CI) it refuses and writes nothing, so the agent cannot approve for them.
+Never pipe, script or fake the answer.
 
 ```bash
 .venv/bin/python scripts/build-forecast-model.py work/plan.json ... \
     --staging-approval-template work/staging-approval.json \
     --owner 'TJ Wells' --reviewer 'Jane Reviewer' --approve-for-staging
+```
+
+Once the file says `approved_for_staging`, the agent posts:
+
+```bash
 .venv/bin/python scripts/build-forecast-model.py work/plan.json ... --agent-macros work/macros.json \
     --post --staging-approval work/staging-approval.json
 ```
 
-`--approve-for-staging` needs both names and sets `sourceReviewApproval.status` to
-`approved_for_staging`; without it the names are recorded and the status stays `pending`. The
-approval is bound to the source bytes, the exact issue objects and the plan's `folderId`;
-nothing is marked verified.
+`--approve-for-staging` needs both names and the typed `APPROVE`; it sets
+`sourceReviewApproval.status` to `approved_for_staging` and records the terminal confirmation.
+Without it the names are recorded and the status stays `pending`. The approval is bound to the
+source bytes, the exact issue objects and the plan's `folderId`; nothing is marked verified.
 
 **Smoke pass (before the run is called clean).** The ACTION / CONTROL dispositions stay "live
 side-effect check pending" until this runs once on the seeded workbook, off camera, so the

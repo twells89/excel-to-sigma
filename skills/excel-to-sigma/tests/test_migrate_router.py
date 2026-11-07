@@ -165,7 +165,7 @@ class TestRouter(unittest.TestCase):
         self.assertNotIn("--merge-into", "\n".join(cmds))
         self.assertIn("tblActuals, tblPlan", next(c for c in cmds if kind(c) == "land-dry"))
         builds = [c for c in cmds if "build-forecast-model.py" in c] + result["stagingAlternative"]
-        self.assertEqual(len(builds), 4)
+        self.assertEqual(len(builds), 5)
         for c in builds:
             for flag in ("--actuals-table", "--landing", "--workflows " + str(self.out / "workflows.json"),
                          "--emit-manual-commit-program " + program):
@@ -174,10 +174,15 @@ class TestRouter(unittest.TestCase):
         self.assertIn("--agent-macros " + str(self.out / "macros.json"), post)
         self.assertIn("--post --review-dispositions", post)
         self.assertNotIn("--agent-macros", cmds[cmds.index(post) - 2])   # the dry run precedes the yes
-        template, staged = result["stagingAlternative"]
+        template, approve, staged = result["stagingAlternative"]
+        # the agent's template step carries no approval; approving is the reviewer's own terminal step
         self.assertIn("--staging-approval-template", template)
-        self.assertIn("--approve-for-staging", template)
-        self.assertIn("--owner", template)
+        self.assertNotIn("--approve-for-staging", template)
+        self.assertNotIn("--owner", template)
+        self.assertIn("--approve-for-staging", approve)
+        self.assertIn("--owner", approve)
+        self.assertIn("USER HANDOFF", approve)
+        self.assertIn("own terminal", approve)
         self.assertIn("--post --staging-approval", staged)
         self.assertIn("--agent-macros", staged)
         setup = [h for h in result["userHandoffs"] if "setup program" in h]

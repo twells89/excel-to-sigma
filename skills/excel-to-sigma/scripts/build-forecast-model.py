@@ -1242,9 +1242,11 @@ def parse_args(argv=None):
     parser.add_argument("--reviewer", help="with --staging-approval-template: the named reviewer who checked "
                         "every audited issue")
     parser.add_argument("--approve-for-staging", action="store_true",
-                        help="with --staging-approval-template, --owner and --reviewer: record that the named "
-                             "owner and reviewer approve the exact audited issues for this staging folder "
-                             "(status approved_for_staging). Never marks an issue verified")
+                        help="with --staging-approval-template, --owner and --reviewer: the named reviewer "
+                             "runs this in their own terminal; it lists every audited issue and waits for "
+                             "them to type APPROVE, then records status approved_for_staging. It refuses "
+                             "without an interactive terminal, so an agent cannot approve for the reviewer. "
+                             "Never marks an issue verified")
     parser.add_argument("--agent-macros", metavar="MACROS.json",
                         help="with --workflows: merge the Phase 6 workbook agent (recommend-agent.py) into the "
                              "workbook before it is validated and created, so one POST carries it")
@@ -1258,16 +1260,46 @@ class StagingError(ValueError):
     """A staging approval that does not cover the exact audited source issues and folder."""
 
 
+APPROVAL_WORD = "APPROVE"
+TERMINAL_CONFIRMATION = "reviewer typed APPROVE at an interactive terminal"
+
+
 def staging_template(P, report, owner="", reviewer="", approve=False):
     """The staging approval for these source bytes and the plan's folder. ``approve`` records the named
-    owner's and reviewer's approval of exactly the audited issues; it never marks anything verified."""
+    owner's and reviewer's approval of exactly the audited issues (only after
+    ``confirm_staging_approval``); it never marks anything verified."""
     if approve and not (str(owner or "").strip() and str(reviewer or "").strip()):
         raise StagingError("--approve-for-staging needs --owner and --reviewer")
-    return {"scope": "staging build only; production --post keeps the verified-disposition gate",
-            "folderId": P.get("folderId"), "sourceSha256": report["sourceSha256"],
-            "owner": owner or "", "reviewer": reviewer or "",
-            "sourceReviewApproval": {"status": "approved_for_staging" if approve else "pending",
-                                     "issues": report["issues"]}}
+    template = {"scope": "staging build only; production --post keeps the verified-disposition gate",
+                "folderId": P.get("folderId"), "sourceSha256": report["sourceSha256"],
+                "owner": owner or "", "reviewer": reviewer or "",
+                "sourceReviewApproval": {"status": "approved_for_staging" if approve else "pending",
+                                         "issues": report["issues"]}}
+    if approve:
+        template["sourceReviewApproval"]["confirmation"] = TERMINAL_CONFIRMATION
+    return template
+
+
+def confirm_staging_approval(P, report, owner, reviewer, stdin=None, prompt=None):
+    """The human step an agent cannot supply: the named reviewer, at an interactive terminal, reads every
+    audited issue and types APPROVE. Refuses when stdin is not a terminal (an agent's shell, a pipe, CI)
+    so a copy-pasted command can never turn into a self-approval."""
+    stdin = stdin or sys.stdin
+    prompt = prompt or sys.stderr
+    if not stdin.isatty():
+        raise StagingError("--approve-for-staging needs the reviewer at an interactive terminal (stdin is not "
+                           "a terminal); the named reviewer runs this command in their own terminal, after "
+                           "reading every audited issue — an agent cannot approve for them")
+    lines = [f"Staging approval for folder {P.get('folderId')} — owner {owner}, reviewer {reviewer}.",
+             f"{len(report['issues'])} audited issue(s) stay pending (nothing is marked verified):"]
+    lines += [f"  - {i.get('code', '?')} [{i.get('severity', '?')}]: {i.get('message', '')}"
+              for i in report["issues"]]
+    lines.append(f"{reviewer}: type {APPROVAL_WORD} to approve exactly these issues for this staging folder: ")
+    prompt.write("\n".join(lines))
+    prompt.flush()
+    answer = stdin.readline().strip()
+    if answer != APPROVAL_WORD:
+        raise StagingError(f"not approved (expected {APPROVAL_WORD!r}); nothing was written")
 
 
 def check_staging_approval(P, report, approval):
@@ -1319,6 +1351,12 @@ def main(argv=None):
         print(f"MIGRATION GATE: {error}", file=sys.stderr)
         return error.exit_code
     if args.staging_approval_template:
+        if args.approve_for_staging:
+            try:
+                confirm_staging_approval(P, gate_report, args.owner, args.reviewer)
+            except StagingError as error:
+                print(f"STAGING: {error}", file=sys.stderr)
+                return 1
         template = staging_template(P, gate_report, args.owner, args.reviewer, args.approve_for_staging)
         with open(args.staging_approval_template, "w", encoding="utf-8") as stream:
             json.dump(template, stream, indent=1)
@@ -1329,9 +1367,10 @@ def main(argv=None):
                   f"pending (not verified): {codes}. Post with --post --staging-approval "
                   f"{args.staging_approval_template}")
         else:
-            print(f"STAGING APPROVAL TEMPLATE: {args.staging_approval_template} — issues {codes}; review every "
-                  "issue, then re-run with --owner <name> --reviewer <name> --approve-for-staging (or post "
-                  "with --post --staging-approval once it is approved)")
+            print(f"STAGING APPROVAL TEMPLATE: {args.staging_approval_template} — issues {codes}; NOT approved. "
+                  "The named reviewer reviews every issue and, in their own terminal, re-runs this command "
+                  "with --owner <name> --reviewer <name> --approve-for-staging (it waits for them to type "
+                  "APPROVE; an agent cannot answer it). Then post with --post --staging-approval")
         return 0
     if args.staging_approval:
         try:

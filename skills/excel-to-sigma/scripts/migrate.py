@@ -208,9 +208,12 @@ def forecast_commands(tables, enhanced):
     commands.append(f"{build}{agent} --post --review-dispositions <workdir>/review.json   # production: strict "
                     f"verified dispositions; creates the workbook and rewrites {SETUP_PROGRAM}")
     staging = [
+        f"{build} --staging-approval-template <workdir>/staging-approval.json   # writes the exact audited "
+        "issues for the plan's folder, status pending; hand them to the named reviewer",
         f"{build} --staging-approval-template <workdir>/staging-approval.json --owner '<owner>' "
-        "--reviewer '<reviewer>' --approve-for-staging   # the named owner and reviewer approve the exact "
-        "audited issues for the plan's folder; nothing is marked verified",
+        "--reviewer '<reviewer>' --approve-for-staging   # USER HANDOFF: the named reviewer runs this in "
+        "their own terminal; it lists every issue and waits for them to type APPROVE (it refuses without "
+        "an interactive terminal, so the agent cannot approve); nothing is marked verified",
         f"{build}{agent} --post --staging-approval <workdir>/staging-approval.json   # staging post into that "
         f"folder; creates the workbook and rewrites {SETUP_PROGRAM}",
     ]
@@ -362,7 +365,8 @@ def plan(args):
         ] + (["The drafter may add plan review issues (e.g. FLAT_CARRY_POLICY); add their codes to "
               "review.json too before --post.",
               "stagingAlternative replaces the production post (the last nextCommand) when review issues are "
-              "honestly pending and the target is an isolated staging folder.",
+              "honestly pending and the target is an isolated staging folder. Its approval step is the "
+              "named reviewer's, typed in their own terminal; the agent runs the template and the post only.",
               "Export SIGMA_CLI_PROFILE=<profile> once (off camera) instead of passing --sigma-profile on "
               "each command."] if kind == "forecast" else []
              ) + (["The drafter adds plan review issues (e.g. GROUPED_ROWS_FROM_DATA, "

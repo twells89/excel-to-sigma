@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import csv
 import importlib.util
+import io
 import json
 import re
 import sys
@@ -859,28 +860,37 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual((template["owner"], template["sourceReviewApproval"]["status"]), ("", "pending"))
 
     def test_staging_template_records_the_named_approval_from_flags(self):
-        # The owner/reviewer approval is given on the command line (logged), never by hand-editing JSON;
-        # the exact audited issues are kept and nothing is marked verified.
+        # The owner/reviewer approval is given on the command line by the reviewer at their own terminal
+        # (they type APPROVE), never by hand-editing JSON; the exact audited issues are kept and nothing
+        # is marked verified.
         import contextlib
         import io
+        from unittest import mock
         from migration_gate import gate_plan_staging_source
         with tempfile.TemporaryDirectory() as tmp:
             plan_path, _landing, _wf = self._cli_files(tmp)
             _src, report = gate_plan_staging_source(self.plan, plan_path=str(plan_path))
             out_json = Path(tmp) / "staging-approval.json"
             base = [str(plan_path), "--staging-approval-template", str(out_json)]
+            names = ["--approve-for-staging", "--owner", "TJ Wells", "--reviewer", "Jane Reviewer"]
             err, out = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 self.assertEqual(self.build.main(base + ["--approve-for-staging", "--owner", "TJ Wells"]), 1)
             self.assertIn("--owner and --reviewer", err.getvalue())
             self.assertFalse(out_json.exists())
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(self.build.main(base + ["--approve-for-staging", "--owner", "TJ Wells",
-                                                         "--reviewer", "Claude (controller)"]), 0)
+            # the reviewer types APPROVE at an interactive terminal: approved, issues listed to them first
+            prompt = io.StringIO()
+            with mock.patch.object(self.build.sys, "stdin", TtyInput("APPROVE\n")), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(prompt):
+                self.assertEqual(self.build.main(base + names), 0)
+            for issue in report["issues"]:
+                self.assertIn(issue["code"], prompt.getvalue())
+            self.assertIn("type APPROVE", prompt.getvalue())
             approval = json.loads(out_json.read_text())
-            self.assertEqual((approval["owner"], approval["reviewer"]), ("TJ Wells", "Claude (controller)"))
+            self.assertEqual((approval["owner"], approval["reviewer"]), ("TJ Wells", "Jane Reviewer"))
             self.assertEqual(approval["sourceReviewApproval"]["status"], "approved_for_staging")
             self.assertEqual(approval["sourceReviewApproval"]["issues"], report["issues"])
+            self.assertEqual(approval["sourceReviewApproval"]["confirmation"], self.build.TERMINAL_CONFIRMATION)
             self.assertNotIn('"verified": true', out_json.read_text())
             self.build.check_staging_approval(self.plan, report, approval)
             self.assertIn("APPROVED FOR STAGING", out.getvalue())
@@ -893,6 +903,38 @@ class ForecastAppTests(unittest.TestCase):
                 self.assertEqual(self.build.main([str(plan_path), "--approve-for-staging", "--owner", "a",
                                                   "--reviewer", "b"]), 1)   # only with the template
 
+    def test_agent_cannot_self_approve_staging(self):
+        # An agent's shell (or a pipe / CI) has no terminal: the copy-pasted approve command refuses and
+        # writes nothing; at a terminal anything but APPROVE also refuses.
+        import contextlib
+        import io
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path, _landing, _wf = self._cli_files(tmp)
+            out_json = Path(tmp) / "staging-approval.json"
+            argv = [str(plan_path), "--staging-approval-template", str(out_json), "--approve-for-staging",
+                    "--owner", "TJ Wells", "--reviewer", "Claude (controller)"]
+            for stdin, why in ((PipeInput("APPROVE\n"), "interactive terminal"),
+                               (TtyInput("yes\n"), "not approved"),
+                               (TtyInput(""), "not approved")):
+                err = io.StringIO()
+                with mock.patch.object(self.build.sys, "stdin", stdin), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    self.assertEqual(self.build.main(argv), 1)
+                self.assertIn(why, err.getvalue())
+                self.assertFalse(out_json.exists())
+
+
+class PipeInput(io.StringIO):
+    """stdin as an agent's shell or a pipe sees it: readable, not a terminal."""
+    def isatty(self):
+        return False
+
+
+class TtyInput(io.StringIO):
+    """stdin at a person's interactive terminal."""
+    def isatty(self):
+        return True
 
 def forecast_app_disallowed(body):
     import presentation_style
