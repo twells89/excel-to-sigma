@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 1b — land workbook Tables in Snowflake with the ``snow`` CLI.
 
-Default is a dry run (prints the plan and the SQL, and runs one read-only ``SHOW TABLES`` per target
+Default is a dry run (prints the plan and the SQL, and runs one read-only exact table lookup per target
 to say whether ``--execute`` will need ``--replace``). ``--execute`` runs it, verifies each row
 count equals the source's, and exits non-zero on a mismatch. An existing table without
 ``--replace`` exits 2. ``--sync-sigma-connection <id>`` then makes Sigma see the tables.
@@ -44,7 +44,7 @@ def first_value(stdout):
 
 
 def existing_tables_note(plan, connection, replace):
-    """Read-only SHOW TABLES per target, so the dry run says up front whether --execute needs --replace."""
+    """Read-only exact lookup per target, so the dry run says up front whether --execute needs --replace."""
     found = []
     for table in plan["tables"]:
         try:

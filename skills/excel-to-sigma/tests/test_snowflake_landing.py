@@ -49,7 +49,7 @@ if os.environ.get("FAKE_SNOW_FAIL"):
     sys.exit(1)
 if os.environ.get("FAKE_SNOW_BANNER"):
     print("Initiating login request with your identity provider. A browser window should have opened")
-if sql.startswith("SHOW TABLES"):
+if sql.startswith("SELECT TABLE_NAME FROM"):
     print(json.dumps([{"name": "FPA_T_ACTUALS"}] if os.environ.get("FAKE_EXISTS") else []))
 elif "COUNT(*)" in sql:
     print(json.dumps([{"N": int(os.environ.get("FAKE_COUNT", "2"))}]))
@@ -126,6 +126,15 @@ class CommandTests(unittest.TestCase):
             replaced = "\n".join(" ".join(c) for c in sl.snow_commands(plan, "tj", True, None))
             self.assertIn("CREATE OR REPLACE TABLE", replaced)
 
+    def test_existence_check_uses_exact_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = self.plan(d)
+            command = sl.exists_command(plan, plan["tables"][0], "tj")
+            sql = command[command.index("-q") + 1]
+            self.assertIn("TABLE_SCHEMA = 'SC'", sql)
+            self.assertIn("TABLE_NAME = 'FPA_T_ACTUALS'", sql)
+            self.assertNotIn(" LIKE ", sql)
+
     def test_grant_emitted_only_when_requested(self):
         with tempfile.TemporaryDirectory() as d:
             plan = self.plan(d)
@@ -161,7 +170,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("CREATE TABLE", r.stdout)
             # only the read-only existence check runs; nothing is created, loaded or granted
             sqls = [json.loads(x) for x in (Path(d) / "snow.log").read_text().splitlines()]
-            self.assertEqual([c[c.index("-q") + 1].split()[:2] for c in sqls], [["SHOW", "TABLES"]])
+            self.assertEqual([c[c.index("-q") + 1].split()[:2] for c in sqls], [["SELECT", "TABLE_NAME"]])
             self.assertIn("EXISTING TABLES: none of DB.SC.FPA_T_ACTUALS", r.stdout)
             landing = json.loads((Path(d) / "landing.json").read_text())
             self.assertEqual(landing["database"], "DB")

@@ -185,6 +185,20 @@ class AgentEnhanceTests(unittest.TestCase):
         self.assertIn("That tool takes no inputs", text)
         self.assertNotIn("for example", frag["agents"][0]["tools"][0]["description"].split("Takes")[0])
 
+    def test_scenario_tool_description_names_its_actual_target(self):
+        macros, wfs = demo()
+        scenario = [w for w in wfs if w["actionId"] == "set-scenario"]
+        rec = ae.recommend_agent(macros, scenario)
+        table_frag = ae.agent_document_fragment(rec, "A", ["forecast", "parameters"])
+        table_tool = table_frag["agents"][0]["tools"][0]
+        self.assertIn("Selected Scenario in Parameters", table_tool["description"])
+        control_frag = ae.agent_document_fragment(
+            rec, "A", ["forecast", "parameters"], scenario_control=ae.SCENARIO_CONTROL)
+        control_tool = control_frag["agents"][0]["tools"][0]
+        self.assertIn("Sets the Scenario control", control_tool["description"])
+        self.assertIn("read Active Scenario from the forecast", control_tool["description"])
+        self.assertNotIn("Selected Scenario in Parameters", control_tool["description"])
+
     def _input_table_workbook(self):
         """A planning-app shaped workbook: rateInput is a real input table (system ID first), the model page hidden."""
         wb = self._workbook()

@@ -162,8 +162,9 @@ def _sql(connection: str, statement: str, *, json_out: bool = False) -> list[str
 
 def exists_command(plan: dict, table: dict, connection: str) -> list[str]:
     _check_plan({**plan, "tables": [table]})
-    return _sql(connection, f"SHOW TABLES LIKE '{table['snowflakeTable']}' IN SCHEMA "
-                f"{plan['database']}.{plan['schema']}", json_out=True)
+    return _sql(connection, f"SELECT TABLE_NAME FROM {plan['database']}.INFORMATION_SCHEMA.TABLES "
+                f"WHERE TABLE_SCHEMA = '{plan['schema'].upper()}' "
+                f"AND TABLE_NAME = '{table['snowflakeTable'].upper()}'", json_out=True)
 
 
 def count_command(plan: dict, table: dict, connection: str) -> list[str]:

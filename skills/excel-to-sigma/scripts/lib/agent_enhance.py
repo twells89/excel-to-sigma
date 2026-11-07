@@ -115,6 +115,10 @@ def _tool(entry, effects, label, driver_example=None):
     action_id = entry["actionId"]
     steps = [{"kind": "effect", **copy.deepcopy(e)} for e in effects]
     description = TOOL_DESCRIPTIONS.get(action_id, label + ".")
+    if action_id == SCENARIO_ID and any(e.get("effect") == "set-control-value" for e in effects):
+        description = ("Sets the Scenario control that drives the forecast. Input scenario (text): "
+                       "the scenario name, for example Base, Upside or Downside. After approval, read "
+                       "Active Scenario from the forecast.")
     if action_id == DRIVER_ID:
         description = description.format(
             example=f", for example {driver_example}" if driver_example else "")

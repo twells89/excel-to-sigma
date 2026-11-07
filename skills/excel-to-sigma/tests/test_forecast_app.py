@@ -373,10 +373,19 @@ class ForecastAppTests(unittest.TestCase):
                                                 workflows=self.manifest, plan_src=self.plan_src))
         fc = {c["name"]: c["formula"] for c in b["forecast"]["columns"]}
         self.assertEqual(fc["Start Key"], self.START_KEY)
-        self.assertEqual(fc["Eff Rate"], "[Forecast Spine/Default Rate]")
+        self.assertIn('Switch([Scenario], "Downside", [Forecast Spine/Downside Spread], '
+                      '"Upside", [Forecast Spine/Upside Spread], 0)', fc["Eff Rate"])
+        self.assertEqual(fc["Active Scenario"], 'Coalesce([Scenario], "Base")')
+        self.assertEqual((b["ctlScenario"]["controlId"], b["ctlScenario"]["value"]), ("Scenario", "Base"))
         self.assertEqual(fc["N"], 'If([Kind] = "yoy", [Forecast Spine/N], [Month Key] - [Base Key])')
         self.assertIn("[Seed] * (1 + [Eff Rate]) ^ [N]", fc["Amount"])
         self.assertEqual(b["forecast"]["filters"][0]["values"], ["Forecast", "Awaiting actuals"])
+        program, _seeded = self.build.setup_program(
+            plan, self.build.workbook_wire.wire_workbook(
+                self.build.build_wb_spec(plan, "dm-1", self.els, landed=self.landed,
+                                         workflows=self.manifest, plan_src=self.plan_src)),
+            self.manifest)
+        self.assertNotIn("c_scn", program)
 
     # ---------------------------------------------------------------- the boundary, evaluated
     # The emitted data model + workbook run over local rows (tests/planning_app_eval.py): the landed

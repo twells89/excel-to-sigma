@@ -33,6 +33,7 @@ import sigma_auth  # noqa: E402
 from lib import forecast_calc as calc  # noqa: E402
 from lib import demo_workflows  # noqa: E402
 import forecast_app  # noqa: E402
+import code_rep  # noqa: E402
 from lib.migration_gate import (MigrationGateError, gate_plan_source, gate_plan_staging_source,  # noqa: E402
                                 source_issue_hash)
 import agent_enhance  # noqa: E402
@@ -828,11 +829,12 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
     cur = CUR(P)
     # With workflows the workbook is a planning app (lib/forecast_app.py): a scenario switch whose
     # value the forecast reads directly (a control's controlId is a formula handle).
-    spreads = scenario_spreads(P) if (workflows is not None and editable and approved_inputs is None) else []
+    spreads = scenario_spreads(P) if (workflows is not None and approved_inputs is None) else []
     scenario_term = ""
     if spreads:
+        scenario_prefix = "FJ" if editable else "Forecast Spine"
         scenario_term = (f" + Switch([{forecast_app.SCENARIO_CONTROL}], "
-                         + ", ".join(f'"{name}", [FJ/{col}]' for name, col, _s in spreads) + ", 0)")
+                         + ", ".join(f'"{name}", [{scenario_prefix}/{col}]' for name, col, _s in spreads) + ", 0)")
     def dm(elid): return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
     elements = []
     # actuals wrap (live)
@@ -888,7 +890,8 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
                 {"id":"f_line","name":"Line Item","formula":"[Forecast Spine/Line Item]"},{"id":"f_lo","name":"Line Order","formula":"[Forecast Spine/Line Order]"},
                 {"id":"f_m","name":"Month","formula":"[Forecast Spine/Month]"},{"id":"f_mn","name":"Month Num","formula":"[Forecast Spine/Month Num]"},{"id":"f_me","name":"Month End","formula":"[Forecast Spine/Month End]"},
                 *([{"id":"f_k","name":"Kind","formula":"[Forecast Spine/Kind]"},{"id":"f_of","name":"Of Section","formula":"[Forecast Spine/Of Section]"},
-                   {"id":"f_er","name":"Eff Rate","formula":"[Forecast Spine/Default Rate]"}] if has_pct else []),
+                   {"id":"f_er","name":"Eff Rate","formula":"[Forecast Spine/Default Rate]" + scenario_term}]
+                  if has_pct else []),
                 {"id":"f_amt","name":"Amount","formula":'If([Forecast Spine/Kind] = "manual", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = "flat", [Forecast Spine/June Base], ' + ('[Forecast Spine/Kind] = "pct", 0, ' if has_pct else "") + '[Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])',"format":cur},
                 {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
     if workflows is not None and approved_inputs is None:
@@ -896,7 +899,10 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
         ro = None if editable else [
             {"id": "f_k", "name": "Kind", "formula": "[Forecast Spine/Kind]"},
             {"id": "f_jb", "name": "June Base", "formula": "[Forecast Spine/June Base]"},
-            {"id": "f_er", "name": "Eff Rate", "formula": "[Forecast Spine/Default Rate]"},
+            {"id": "f_er", "name": "Eff Rate", "formula": "[Forecast Spine/Default Rate]" + scenario_term},
+            *([{"id": "f_scn", "name": "Active Scenario",
+                "formula": f'Coalesce([{forecast_app.SCENARIO_CONTROL}], "{P["scenarios"]["default"]}")'}]
+              if spreads else []),
             {"id": "f_em", "name": "Eff Manual", "formula": "[Forecast Spine/Manual Value]"}]
         boundary = forecast_boundary(P)
         apply_boundary(actuals, forecast, "FJ" if editable else "Forecast Spine", boundary, has_pct, ro)
@@ -1209,7 +1215,10 @@ def setup_program(P, wb_spec, workflows, history=None):
     if workflows is not None and demo_workflows.PARAMETERS in tables:
         periods, n_act, _sections = plan_model(P)
         seed = {"start": periods[n_act]["end"][:8] + "01"}
-        if not (P["intent"] in ("editable", "what-if") and scenario_spreads(P)):
+        has_scenario_control = any(
+            el.get("kind") == "control" and el.get("controlId") == forecast_app.SCENARIO_CONTROL
+            for el in code_rep.workbook_elements(wb_spec))
+        if not has_scenario_control:
             seed["scenario"] = "Base"   # no scenario switch: the Parameters row holds the scenario
     table_seeds = []
     if P["intent"] in ("editable", "what-if"):
