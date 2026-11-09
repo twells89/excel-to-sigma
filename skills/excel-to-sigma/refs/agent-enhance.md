@@ -74,8 +74,19 @@ does this reuse automatically.
 - Agent writes only work on **manual-commit-enabled** input tables. A REST spec POST never
   sets that flag; run the post-create program from `build-forecast-model.py
   --workflows workflows.json --emit-manual-commit-program` once, before the agent's first write.
-- `requiresApproval` is a chat-UI behavior. It does not gate the REST `run_agent` call, so
-  approval can only be demonstrated in the chat panel.
+- `requiresApproval` is a chat-UI behavior, by design: Sigma's docs say an agent run outside
+  the workbook chat (REST `run_agent`, MCP `call_agent`, a schedule) runs action tools that
+  require approval **without** approval, with the calling user's permissions
+  ([Call Sigma agents with the API](https://help.sigmacomputing.com/docs/call-agents-with-the-api)).
+  Approval can only be demonstrated in the chat panel. What holds on every route:
+  - the agent never gets an Approve / Send back tool; those decisions are buttons whose row
+    filter matches only for the named approvers (`tests/test_agent_enhance.py`);
+  - every tool keeps `requiresApproval: true`, so chat users are always asked;
+  - Snapshot and Submit rows record `CurrentUserEmail()` and `Now()`, so an unattended run's
+    writes name the account that made them. Roll forward and Set growth driver edit a row in
+    place and carry no who / when column of their own.
+  Do not run the agent's write tools through the API, MCP or a schedule, and tell the user
+  that anyone who can call the agent there can run them without a prompt.
 - After any write, approved or declined, the agent must re-query the affected table and
   report the data, not the tool result.
 - No email is ever sent by a tool. The Submit tool appends an Approvals row only.

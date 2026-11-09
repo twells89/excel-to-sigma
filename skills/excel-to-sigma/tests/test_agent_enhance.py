@@ -252,6 +252,31 @@ class AgentEnhanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "DriverLineItem"):
             ae.merge_fragment(wb, bad)
 
+    def test_agent_never_gets_an_approval_decision(self):
+        # requiresApproval is skipped outside the workbook chat (REST / MCP / scheduled runs), so the
+        # approver-only decision must not depend on it: the agent gets no Approve / Send back tool and
+        # no tool step can change an Approvals row's Status, even when the workbook has those buttons.
+        import demo_workflows as dw
+        macros, wfs = demo()
+        manifest = dw.with_approvers({"version": 1, "workflows": wfs, "dispositions": []},
+                                     "approver@example.com")
+        self.assertEqual({d["actionId"] for d in manifest["decisions"]}, set(dw.DECISIONS))
+        wb = self._workbook()
+        decision_buttons = dw.workflow_elements(manifest, "conn-1", "FY27 forecast")["decisions"]
+        self.assertEqual({b["id"] for b in decision_buttons}, set(dw.DECISION_IDS.values()))
+        wb["contents"]["elements"] += decision_buttons
+        rec, frag = ae.recommend_for_workbook(macros, manifest, wb)
+        tool_ids = {t["toolId"] for t in frag["agents"][0]["tools"]}
+        self.assertFalse(tool_ids & set(dw.DECISIONS), tool_ids)
+        for tool in frag["agents"][0]["tools"]:
+            self.assertIs(tool.get("requiresApproval"), True, tool["toolId"])
+            for step in tool["steps"]:
+                if step.get("tableElementId") == dw.APPROVALS:
+                    self.assertEqual(step["effect"], "insert-rows", tool["toolId"])
+                    self.assertEqual(step["values"]["ap_status"],
+                                     {"type": "constant", "value": {"type": "text", "value": "Submitted"}})
+                    self.assertEqual(step["values"]["ap_by"], {"type": "formula", "formula": "CurrentUserEmail()"})
+
     def _workbook(self):
         import demo_workflows as dw
         buttons = [{"id": bid, "kind": "button", "text": bid, "actions": [{"id": "a-" + aid, "trigger": "on-click",
