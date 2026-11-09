@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import shlex
 import sys
 import tempfile
 import unittest
@@ -320,6 +321,37 @@ class TestRouter(unittest.TestCase):
         self.assertIn("Parameters", setup[0])
         self.assertIn("manual commit", setup[0])
 
+    def test_commands_start_with_the_interpreter_that_ran_the_router(self):
+        skill = self.dir / "skill"
+        venv_py = skill / ".venv" / "bin" / "python"
+        self.assertEqual(MIGRATE.interpreter(str(venv_py), skill), ".venv/bin/python")
+        outside = self.dir / "elsewhere" / "my python" / "python3.15"
+        self.assertEqual(MIGRATE.interpreter(str(outside), skill), shlex.quote(str(outside)))
+        record = {"nextCommands": ["python scripts/migrate.py plan a.xlsx", "x   # then python scripts/b.py"],
+                  "notes": ["run with python3 scripts/c.py", "mypython scripts/d.py", "python scripts"]}
+        self.assertEqual(MIGRATE.with_interpreter(record, ".venv/bin/python"),
+                         {"nextCommands": [".venv/bin/python scripts/migrate.py plan a.xlsx",
+                                           "x   # then .venv/bin/python scripts/b.py"],
+                          "notes": ["run with python3 scripts/c.py", "mypython scripts/d.py", "python scripts"]})
+
+    def test_plan_prints_no_bare_python_commands(self):
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path)
+        original = MIGRATE.PY
+        MIGRATE.PY = ".venv/bin/python"
+        try:
+            code, result = self.plan(path, "--intent", "editable", "--land-tables", "--enhance")
+        finally:
+            MIGRATE.PY = original
+        self.assertEqual(code, 0)
+        text = json.dumps(result)
+        self.assertNotRegex(text, r"(?<![\w./-])python scripts/")
+        self.assertIn(".venv/bin/python scripts/", text)
+        for command in result["nextCommands"]:
+            words = command.split()
+            if len(words) > 1 and words[1].startswith("scripts/"):
+                self.assertEqual(words[0], ".venv/bin/python", command)
+
     def test_read_only_forecast_route_writes_no_setup_program_and_dry_runs(self):
         import subprocess
         path = self.dir / "pnl.xlsx"
@@ -336,7 +368,7 @@ class TestRouter(unittest.TestCase):
             if "--post" in command:
                 break
             command = (command.split("   #")[0].replace("<conn>", "conn-1").replace("<folder>", "fold-1")
-                       .replace("python scripts/", f"{sys.executable} {SCRIPTS}/"))
+                       .replace(f"{MIGRATE.PY} scripts/", f"{sys.executable} {SCRIPTS}/"))
             import shlex
             done = subprocess.run(shlex.split(command), capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, command + "\n" + done.stdout + done.stderr)

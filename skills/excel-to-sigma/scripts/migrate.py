@@ -26,12 +26,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+SKILL_DIR = HERE.parent
 sys.path.insert(0, str(HERE / "lib"))
 
 import sigma_auth  # noqa: E402
@@ -41,6 +45,41 @@ from migration_gate import source_sha256  # noqa: E402
 from table_report import NoTableReportShape, PlanDraftError as TableReportDraftError  # noqa: E402
 from table_report import draft_table_report  # noqa: E402
 from xlsx_audit import audit_workbook  # noqa: E402
+
+
+def interpreter(executable=None, skill_dir=SKILL_DIR):
+    """The interpreter the printed commands start with: the one running this script.
+
+    Inside the skill directory (its ``.venv``) it is written relative to that directory, the
+    directory the commands run from (``.venv/bin/python``). Outside it, ``python3`` when that is
+    the same interpreter on PATH, else its absolute path. The path is not resolved, so a venv's
+    ``python`` symlink stays the venv's."""
+    exe = Path(os.path.abspath(executable or sys.executable or "python3"))
+    try:
+        return shlex.quote(exe.relative_to(Path(os.path.abspath(skill_dir))).as_posix())
+    except ValueError:
+        pass
+    on_path = shutil.which("python3")
+    if on_path and Path(on_path).resolve() == exe.resolve():
+        return "python3"
+    return shlex.quote(str(exe))
+
+
+PY = interpreter()
+
+
+def with_interpreter(value, py=None):
+    """``value`` (a routing record or any part of it) with each ``python scripts/`` command
+    started by ``py`` (default: ``PY``)."""
+    py = py or PY
+    if isinstance(value, str):
+        return re.sub(r"(?<![\w./-])python (?=scripts/)", lambda _m: py + " ", value)
+    if isinstance(value, list):
+        return [with_interpreter(v, py) for v in value]
+    if isinstance(value, dict):
+        return {k: with_interpreter(v, py) for k, v in value.items()}
+    return value
+
 
 MACRO_SUFFIXES = {".xlsm", ".xlsb", ".xls"}
 RESEARCH_HINTS = ("FY results", "PER SHARE", "PROFIT AND LOSS", "__FDSCACHE__")
@@ -460,7 +499,7 @@ def plan(args):
                    "codes to review.json too before --post."]
                   if kind == "table-report" else []),
     }
-    print(json.dumps(result, indent=2))
+    print(json.dumps(with_interpreter(result), indent=2))
     return 2 if blocked else 0
 
 

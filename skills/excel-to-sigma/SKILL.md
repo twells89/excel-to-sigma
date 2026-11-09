@@ -200,6 +200,9 @@ Verified write connection on tj-wells-1989: `cb2f5180-…` (Snowflake ymb68310).
 ### Python
 From this skill directory, install its pinned dependencies:
 `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
+Then run every command with `.venv/bin/python`. This file and `refs/` write commands as
+`python scripts/…`; `migrate.py` prints them with the interpreter that ran it, so
+`.venv/bin/python scripts/migrate.py plan …` prints `.venv/bin/python scripts/…` commands.
 
 ### Optional: `snow` CLI
 Used by **Phase 1b** (`scripts/land-in-snowflake.py`) to land the workbook's Tables in
