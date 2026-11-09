@@ -449,7 +449,10 @@ model reads real tables. Without it the plain build reads the actuals from the p
   pass it only when Sigma's connection role cannot read the schema already.
   `--sync-sigma-connection` makes Sigma see the new table paths.
 - `--replace` recreates with `CREATE OR REPLACE TABLE ... COPY GRANTS`, so the replaced table's
-  existing grants are kept.
+  existing grants are kept. Proven live on ymb68310 (2026-11-09): a table landed with
+  `--grant-select-to SIGMA_ROLE`, then re-landed with `--replace` and new rows and no grant
+  flag, still lists `SELECT` to `SIGMA_ROLE`, and `SIGMA_ROLE` reads the new row count. Do not
+  pass `--grant-select-to` again on a replace; the grant carries over.
 - `--database`, `--schema`, `--table-prefix` and `--grant-select-to` must each be one plain
   Snowflake identifier (`^[A-Za-z_][A-Za-z0-9_$]*$`; the prefix may be empty); anything else
   (dots, quotes, `;`, a leading `-`) is refused before any SQL runs, and `--sigma-profile` is
@@ -756,6 +759,10 @@ helper — Parameters / Versions / Approvals input tables, the status table, the
 summary joins, the one `Forecast Boundary` — sits on the hidden `Model (sources)` page.
 The logs keep a hidden `Log Order` (entry order): migrated rows carry the source's own dates,
 which can lie after today, so "newest first" and the latest-approval pill follow entry order.
+Without a Parameters table (Submit but no scenario switch or roll forward), the status table
+sits on a one-row `VALUES` query instead. Proven live on tj-wells-1989 (2026-11-09): an empty
+log reads the no-status text, then follows the row with the highest `Log Order` (Submitted,
+then Approved).
 
 - **Scenario switch.** When the driver table has scenario columns beside the live rate
   (`Downside | Base | Upside`), the drafter writes `plan.scenarios`; the data-model spine

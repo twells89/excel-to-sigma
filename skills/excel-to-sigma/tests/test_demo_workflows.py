@@ -92,5 +92,37 @@ class ApproveTests(unittest.TestCase):
         self.assertIn("ap_dby", [c["id"] for c in table["columns"]])
 
 
+SUBMIT_ONLY = {"version": 1, "dispositions": [], "workflows": [
+    {"macro": "SubmitForApproval_Click", "class": "EXTERNAL_IO", "actionId": "submit-approval",
+     "label": "Submit for approval", "effect": "insert-rows", "writes": True,
+     "target": {"elementId": "approvals",
+                "columns": ["Request", "Submitted By", "Approver", "Status", "Submitted At"]}}]}
+
+
+class NoParametersStatusTests(unittest.TestCase):
+    """Submit with no scenario switch or roll forward: no Parameters table, so the latest-status
+    table sits on a one-row VALUES query (the shape proven live on 2026-11-09)."""
+
+    def test_status_reads_a_one_row_values_query(self):
+        wf = dw.workflow_elements(SUBMIT_ONLY, "conn-1", "FY27 forecast", no_status="Draft")
+        self.assertEqual([t["id"] for t in wf["tables"]], [dw.APPROVALS])
+        status = wf["status"]
+        self.assertEqual(status["id"], dw.STATUS_KPI)
+        self.assertEqual(status["source"], {"kind": "sql", "connectionId": "conn-1",
+                                            "statement": "select * from (values\n(1)\n) as t(STATUS_ROW)"})
+        (column,) = status["columns"]
+        self.assertEqual(column["formula"],
+                         'Coalesce(Lookup([Approvals/Status], Max([Approvals/Log Order]), '
+                         '[Approvals/Log Order]), "Draft")')
+
+    def test_status_sits_on_parameters_when_the_workbook_has_it(self):
+        manifest = {**SUBMIT_ONLY, "workflows": SUBMIT_ONLY["workflows"] + [
+            {"macro": "RollForwardMonth_Click", "class": "ACTION_WRITEBACK", "actionId": "roll-forward",
+             "label": "Roll forward one month", "effect": "update-rows", "writes": True,
+             "target": {"elementId": "parameters", "columns": ["Forecast Start Month"]}}]}
+        wf = dw.workflow_elements(manifest, "conn-1", "FY27 forecast")
+        self.assertEqual(wf["status"]["source"], {"kind": "table", "elementId": dw.PARAMETERS})
+
+
 if __name__ == "__main__":
     unittest.main()

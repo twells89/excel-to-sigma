@@ -352,7 +352,8 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
     if wanted[APPROVALS]:
         # Latest status = Status of the Approvals row with the last Log Order, held by a one-row table
         # (over the one-row Parameters table when the workbook has it: the shape proven live; otherwise
-        # over a one-row VALUES query, the shape of the planning app's boundary element).
+        # over a one-row VALUES query, the shape of the planning app's boundary element; proven live
+        # 2026-11-09: empty log -> no-status text, then the highest Log Order row's Status).
         source = ({"kind": "table", "elementId": PARAMETERS} if wanted[PARAMETERS] else
                   {"kind": "sql", "connectionId": connection_id,
                    "statement": "select * from (values\n(1)\n) as t(STATUS_ROW)"})
