@@ -602,7 +602,10 @@ def emit_manual_commit_program(spec, seed=None, table_seeds=(), series_colors=()
                                 f"{MAX_SEED_ROWS:,} rows per table")
     lines = ["# Enable manual commit on every input table (required for backend actions / agent tools);",
              "# first re-apply the typed columns' display formats / hidden flags, the table style and column widths (a workbook POST may drop them).",
-             "# Run once through Sigma MCP Code Mode after the workbook is created."]
+             "# Run once through Sigma MCP Code Mode after the workbook is created.",
+             "# Pass this whole file unchanged as one build_workbook program: do not shorten, split or rewrite",
+             "# it. If it fails, report the error and stop. Sigma reads back the same edit mode and table style",
+             "# whether or not a step ran, so a skipped step cannot be caught afterwards."]
     if seed or table_seeds:
         seeded = ([PARAMETERS] if seed else []) + [el for el, _c, _r in table_seeds]
         lines.append("# The seeds at the end write rows into " + ", ".join(seeded) + ": run once on a fresh "

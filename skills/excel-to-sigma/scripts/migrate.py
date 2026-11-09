@@ -2,7 +2,7 @@
 """Route an Excel workbook: audit + discover + classify, then print the next steps as JSON.
 
 usage: migrate.py plan <file.xlsx|.xlsm> [--out-dir DIR] [--intent read-only|editable|what-if]
-                       [--land-tables] [--enhance]
+                       [--land-tables] [--enhance] [--approvers EMAILS|none]
        migrate.py resolve-targets [--folder-name NAME] [--connection-name NAME] [--sigma-profile NAME]
 
 Writes migration-audit.json, discovery.json, macros.json (forecast with macros), macro-gate.json
@@ -45,6 +45,7 @@ from migration_gate import source_sha256  # noqa: E402
 from table_report import NoTableReportShape, PlanDraftError as TableReportDraftError  # noqa: E402
 from table_report import draft_table_report  # noqa: E402
 from xlsx_audit import audit_workbook  # noqa: E402
+from demo_workflows import WorkflowError, approver_list  # noqa: E402
 
 
 def interpreter(executable=None, skill_dir=SKILL_DIR):
@@ -115,11 +116,23 @@ LAND_DECISION = ("land source Tables in Snowflake? needs the snow CLI + a Snowfl
                  "yes = the optIns --land-tables commands, or re-run plan with --land-tables)")
 ENHANCE_DECISION = ("build the workflow planning app + agent? (yes/no; yes = the optIns --enhance commands, "
                     "or re-run plan with --enhance)")
+APPROVER_DECISION = ("who approves a submitted forecast? comma-separated emails, or none (with --enhance; "
+                     "re-run plan with --approvers EMAILS or --approvers none). Each approver gets Approve / "
+                     "Send back buttons that only work for them; none builds no decision buttons and Submit "
+                     "still logs the request. Ask even when the user did not mention approvals: the answer "
+                     "changes what is built")
+# Code Mode reads back the same edit mode, table preset and autofit on an input table whether or not the
+# setup program ran, so a rewritten program that skips a step cannot be caught afterwards: run the file as is.
+SETUP_VERBATIM = ("Pass the file's contents unchanged as one build_workbook program: do not shorten, split, reformat "
+                  "or rewrite it. If it fails, report the error to the user and stop; do not hand-edit it. A "
+                  "rewritten program can silently skip a step (manual commit, a seed, a style), and nothing "
+                  "afterwards can detect that.")
 # The forecast route's one post-create MCP step (replaces pasting seed CSVs in the UI).
 FORECAST_SETUP_HANDOFF = (
     f"Run the setup program the post wrote ({SETUP_PROGRAM}) once via Sigma MCP Code Mode build_workbook "
     "(target existing) on the new workbook: it enables manual commit on every input table and seeds the "
-    "rate and manual input tables with the seed CSV rows (fresh workbook only; the writes do not query first)")
+    "rate and manual input tables with the seed CSV rows (fresh workbook only; the writes do not query first). "
+    + SETUP_VERBATIM)
 RESOLVE_TARGETS = ("resolve both ids by name: python scripts/migrate.py resolve-targets --folder-name "
                    "'<folder name>' --connection-name '<connection name>'   # read-only; refuses a "
                    "connection without write access")
@@ -216,7 +229,7 @@ ENHANCE_SETUP_HANDOFF = (
     f"Run the setup program the --workflows post wrote ({SETUP_PROGRAM}) once via Sigma MCP Code Mode "
     "build_workbook (target existing) on the new workbook: it enables manual commit on every input table "
     "(backend actions and agent tools can only write input tables with manual commit enabled) and seeds the "
-    "Parameters row plus the rate and manual input tables (fresh workbook only)")
+    "Parameters row plus the rate and manual input tables (fresh workbook only). " + SETUP_VERBATIM)
 # The live proof of the workflows and the agent, before the run is called clean (off camera).
 SMOKE_PASS_HANDOFF = (
     "Smoke pass once the workbook is seeded, before calling the run clean: switch scenario (forecast changes), "
@@ -227,15 +240,18 @@ SMOKE_PASS_HANDOFF = (
 MACRO_GATE = "<workdir>/macro-gate.json"
 
 
-def forecast_commands(tables, enhanced, intent=None):
+def forecast_commands(tables, enhanced, intent=None, approvers=None):
     """The forecast route in the order it runs. With ``tables`` (the user said yes to landing), Phase 1b
     lands them and every build reads the landed actuals; with ``enhanced`` (yes to the planning app +
     agent) the workflows manifest, the Phase 6 pitch and the agent ride the same builds. The setup
     program flag rides every build unless the plan is read-only without workflows (no input tables).
+    ``approvers`` (normalised emails; empty = none) rides every enhanced build as ``--approvers``.
     Returns ``(next_commands, staging_alternative)``."""
     landed = (" --actuals-table <db>.<schema>.<prefix>ACTUALS --landing <workdir>/landing.json"
               if tables else "")
     workflows = " --workflows <workdir>/workflows.json" if enhanced else ""
+    if enhanced and approvers:
+        workflows += " --approvers " + shlex.quote(",".join(approvers))
     program = (f" --emit-manual-commit-program {SETUP_PROGRAM}"
                if enhanced or intent != "read-only" else "")
     build = (f"python scripts/build-forecast-model.py <workdir>/plan.json{landed}{workflows}{program} "
@@ -408,14 +424,31 @@ def plan(args):
                          "macro, so there is no workflow for a planning app or agent to run.")
         land = bool(tables and args.land_tables)
         enhanced = bool(eligible and args.enhance)
+        approvers = None   # None: not answered yet; []: the user said none
+        if args.approvers is not None:
+            if not eligible:
+                notes.append("--approvers ignored: no workflow for a planning app, so no Approve / Send back.")
+            elif args.approvers.strip().lower() == "none":
+                approvers = []
+            else:
+                try:
+                    approvers = approver_list(args.approvers)
+                except WorkflowError as error:
+                    print(f"--approvers: {error}", file=sys.stderr)
+                    return 1
+                if not approvers:
+                    print("--approvers: pass comma-separated emails, or none", file=sys.stderr)
+                    return 1
         base_handoffs = handoffs
 
         def variant(with_land, with_enhance):
-            cmds, staging = forecast_commands(tables if with_land else [], with_enhance, args.intent)
+            cmds, staging = forecast_commands(tables if with_land else [], with_enhance, args.intent, approvers)
             return cmds, staging, forecast_handoffs(base_handoffs, with_enhance, args.intent)
 
         next_commands, staging_alternative, handoffs = variant(land, enhanced)
         chosen = [f for f, on in (("--land-tables", land), ("--enhance", enhanced)) if on]
+        if approvers is not None and eligible:
+            chosen.append("--approvers " + shlex.quote(",".join(approvers) or "none"))
         for flag, offered, decision, with_land, with_enhance in (
                 ("--land-tables", bool(tables) and not land, LAND_DECISION, True, enhanced),
                 ("--enhance", eligible and not enhanced, ENHANCE_DECISION, land, True)):
@@ -427,6 +460,10 @@ def plan(args):
                              + ([f"--intent {args.intent}"] if args.intent else []) + chosen + [flag])
             opt_ins.append({"flag": flag, "decision": decision, "rerun": rerun, "nextCommands": cmds,
                             "stagingAlternative": staging, "userHandoffs": opt_handoffs})
+        if eligible and approvers is None:
+            decisions.append(APPROVER_DECISION)
+        elif eligible and not approvers:
+            notes.append("--approvers none: no Approve / Send back buttons; Submit still logs the request.")
         if args.intent:
             decisions = [d for d in decisions if not d.startswith("intent:")]
         else:
@@ -532,6 +569,8 @@ def main(argv=None):
                    "read-only builds write no setup program")
     p.add_argument("--land-tables", action="store_true", help="forecast: the user said yes to landing the "
                    "source Tables in Snowflake (Phase 1b)")
+    p.add_argument("--approvers", metavar="EMAILS", help="forecast with --enhance: the user's answer to who "
+                   "approves a submitted forecast (comma-separated emails, or none)")
     p.add_argument("--enhance", action="store_true", help="forecast with action / scenario macros: the user "
                    "said yes to the workflow planning app + agent (Phase 6)")
     r = sub.add_parser("resolve-targets", help="look up the folder and write-enabled connection ids by name")

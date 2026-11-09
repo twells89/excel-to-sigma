@@ -1583,7 +1583,9 @@ def main(argv=None):
                    "staging": bool(args.staging_approval)}, stream, indent=1)
     if written:
         print(f"NEXT: run {written} once on this workbook through Sigma MCP Code Mode "
-              "build_workbook (target existing) before anyone edits it or the agent writes.")
+              "build_workbook (target existing) before anyone edits it or the agent writes. Pass the file "
+              "unchanged as one program (do not shorten, split or rewrite it); if it fails, report the error "
+              "and stop.")
     return 0
 
 if __name__=="__main__":
