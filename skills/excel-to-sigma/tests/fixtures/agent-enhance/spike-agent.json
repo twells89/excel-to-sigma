@@ -1,0 +1,140 @@
+{
+ "agent": {
+  "dataSources": [
+   {
+    "elementId": "forecast",
+    "kind": "table"
+   },
+   {
+    "elementId": "parameters",
+    "kind": "table"
+   },
+   {
+    "elementId": "approvals",
+    "kind": "table"
+   },
+   {
+    "elementId": "assumptions",
+    "kind": "table"
+   }
+  ],
+  "id": "fpa-agent",
+  "instructions": "You operate an FP&A forecast workbook. Read @dataSource(\"parameters\") and @dataSource(\"approvals\"). To roll the forecast forward one month call @tool(\"roll-forward\"). To submit for approval call @tool(\"submit-approval\"). After any write, re-query the affected table before reporting.",
+  "name": "FP&A forecast agent",
+  "tools": [
+   {
+    "description": "Inserts one Parameters row. Inputs scenario (text).",
+    "kind": "action",
+    "name": "Seed parameters row",
+    "steps": [
+     {
+      "effect": "insert-rows",
+      "kind": "effect",
+      "tableElementId": "parameters",
+      "values": {
+       "pa-scn": {
+        "inputName": "scenario",
+        "type": "agent-input"
+       },
+       "pa-start": {
+        "formula": "Date(\"2026-03-01\")",
+        "type": "formula"
+       }
+      }
+     }
+    ],
+    "toolId": "seed-param"
+   },
+   {
+    "description": "Inserts one Assumptions row. Inputs scenario (text), region (text), growth_pct (number, e.g. 0.05).",
+    "kind": "action",
+    "name": "Seed assumption row",
+    "steps": [
+     {
+      "effect": "insert-rows",
+      "kind": "effect",
+      "tableElementId": "assumptions",
+      "values": {
+       "as-g": {
+        "inputName": "growth_pct",
+        "type": "agent-input"
+       },
+       "as-reg": {
+        "inputName": "region",
+        "type": "agent-input"
+       },
+       "as-scn": {
+        "inputName": "scenario",
+        "type": "agent-input"
+       }
+      }
+     }
+    ],
+    "toolId": "seed-assumption"
+   },
+   {
+    "description": "Advances Forecast Start Month in Parameters by one month.",
+    "kind": "action",
+    "name": "Roll forecast forward one month",
+    "requiresApproval": true,
+    "steps": [
+     {
+      "effect": "update-rows",
+      "kind": "effect",
+      "tableElementId": "parameters",
+      "values": {
+       "pa-start": {
+        "formula": "DateAdd(\"month\", 1, Max([Parameters/Forecast Start Month]))",
+        "type": "formula"
+       }
+      },
+      "whichRows": {
+       "formula": "True",
+       "type": "formula"
+      }
+     }
+    ],
+    "toolId": "roll-forward"
+   },
+   {
+    "description": "Inserts a Submitted row into Approvals.",
+    "kind": "action",
+    "name": "Submit forecast for approval",
+    "requiresApproval": true,
+    "steps": [
+     {
+      "effect": "insert-rows",
+      "kind": "effect",
+      "tableElementId": "approvals",
+      "values": {
+       "ap-at": {
+        "formula": "Today()",
+        "type": "formula"
+       },
+       "ap-by": {
+        "type": "constant",
+        "value": {
+         "type": "text",
+         "value": "agent"
+        }
+       },
+       "ap-status": {
+        "type": "constant",
+        "value": {
+         "type": "text",
+         "value": "Submitted"
+        }
+       }
+      }
+     }
+    ],
+    "toolId": "submit-approval"
+   }
+  ]
+ },
+ "chat": {
+  "agentId": "fpa-agent",
+  "id": "chat",
+  "kind": "chat"
+ }
+}

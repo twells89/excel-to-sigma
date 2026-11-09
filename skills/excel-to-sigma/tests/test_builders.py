@@ -105,6 +105,88 @@ class TestWorkbookBuilders(unittest.TestCase):
         return FORECAST.build_wb_spec(
             forecast_plan(), "dm", {"glDetail": "gl", "spine": "sp", "assumptions": "as"})
 
+    def _landing(self, tmp=None, month_type="VARCHAR", csv_path=None):
+        cols = (("Posting Date", "POSTING_DATE", "DATE"), ("Month", "MONTH", month_type),
+                ("Line Item", "LINE_ITEM", "VARCHAR"), ("Region", "REGION", "VARCHAR"),
+                ("Product Line", "PRODUCT_LINE", "VARCHAR"), ("Amount", "AMOUNT", "NUMBER(38,6)"))
+        entry = {"excelTable": "tblActuals", "snowflakeTable": "FPA_REH_ACTUALS", "rowCount": 1,
+                 "columns": [{"header": h, "name": n, "type": t} for h, n, t in cols]}
+        if csv_path:
+            entry["csv"] = str(csv_path)
+        return {"database": "CSA", "schema": "TJ", "tables": [entry]}
+
+    def test_forecast_actuals_from_landed_table(self):
+        plan = forecast_plan()
+        landing = self._landing()
+        landed = FORECAST.landed_actuals_source(landing, "CSA.TJ.FPA_REH_ACTUALS", plan)
+        inline_dm = FORECAST.build_dm_spec(plan)
+        landed_dm = FORECAST.build_dm_spec(plan, landed)
+        inline_gl = next(e for e in inline_dm["pages"][0]["elements"] if e["id"] == "glDetail")
+        gl = next(e for e in landed_dm["pages"][0]["elements"] if e["id"] == "glDetail")
+        self.assertEqual(inline_gl["source"]["kind"], "sql")
+        self.assertEqual(gl["source"], {"kind": "warehouse-table", "connectionId": "connection",
+                                        "path": ["CSA", "TJ", "FPA_REH_ACTUALS"]})
+        self.assertNotIn("values", json.dumps(gl).lower())
+        formulas = {c["name"]: c["formula"] for c in gl["columns"]}
+        self.assertEqual(formulas["Amount"], "[FPA_REH_ACTUALS/AMOUNT]")
+        # user-visible names are the source headers, never the builder's internal aliases
+        self.assertEqual(formulas["Region"], "[FPA_REH_ACTUALS/REGION]")
+        self.assertEqual(formulas["Product Line"], "[FPA_REH_ACTUALS/PRODUCT_LINE]")
+        self.assertNotIn("Department", formulas)
+        self.assertNotIn("Vendor", formulas)
+        self.assertIn('"Jan-26", 1', formulas["Month Num"])
+        others = [e for e in landed_dm["pages"][0]["elements"] if e["id"] != "glDetail"]
+        self.assertTrue(all(e["source"]["kind"] == "sql" for e in others))
+        self.assertEqual(len(gl["columns"]), len(inline_gl["columns"]))
+        wb = FORECAST.build_wb_spec(plan, "dm", {"glDetail": "gl", "spine": "sp", "assumptions": "as"},
+                                    landed=landed)
+        wb_text = json.dumps(wb)
+        self.assertIn("[GL Detail/Month Num]", wb_text)
+        self.assertIn("[GL Detail/Region]", wb_text)
+        self.assertIn("[GL Detail/Product Line]", wb_text)
+        self.assertNotIn("Department", wb_text)
+        self.assertNotIn("Vendor", wb_text)
+        gl_table = next(e for e in all_dicts(wb) if e.get("id") == "glTable")
+        self.assertEqual([c["name"] for c in gl_table["columns"]][3:5], ["Region", "Product Line"])
+        actuals = next(e for e in all_dicts(wb) if e.get("id") == "actuals")
+        self.assertTrue(all(c["formula"].startswith("[GL Detail/") for c in actuals["columns"] if c["id"] != "a_p"))
+        # the warehouse-table element in the DM spec is identified by its Txn Date column
+        self.assertEqual(FORECAST.map_dm_elements(landed_dm)["glDetail"], "glDetail")
+        with self.assertRaises(FORECAST.PlanError):
+            FORECAST.landed_actuals_source(landing, "CSA.TJ.FPA_REH_PLAN", plan)
+
+    def test_landed_csv_total_matches_plan_actuals_used_by_parity(self):
+        import csv as csv_module, tempfile
+        plan = forecast_plan()
+        plan_total = sum(float(r["amt"]) for r in plan["actuals"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "actuals.csv"
+            rows = [{"POSTING_DATE": r["date"], "MONTH": r["month"], "LINE_ITEM": r["line"],
+                     "REGION": r["dept"], "PRODUCT_LINE": r["vendor"], "AMOUNT": f"{float(r['amt']):.2f}"}
+                    for r in plan["actuals"]]
+            rows.append({**rows[0], "AMOUNT": ""})  # blank Amount lands as NULL = 0
+            with open(path, "w", newline="", encoding="utf-8") as stream:
+                writer = csv_module.DictWriter(stream, fieldnames=list(rows[0]))
+                writer.writeheader(); writer.writerows(rows)
+            landing = self._landing(csv_path=path)
+            # the landed Amount total (blank as zero) equals the plan total parity is computed from
+            landed_total = sum(float(r["AMOUNT"] or 0) for r in rows)
+            self.assertAlmostEqual(landed_total, plan_total, places=2)
+            FORECAST.landed_actuals_source(landing, "CSA.TJ.FPA_REH_ACTUALS", plan)
+            # a landed table whose Amount total drifts from the plan fails loudly
+            rows[0]["AMOUNT"] = f"{float(rows[0]['AMOUNT']) + 1000:.2f}"
+            with open(path, "w", newline="", encoding="utf-8") as stream:
+                writer = csv_module.DictWriter(stream, fieldnames=list(rows[0]))
+                writer.writeheader(); writer.writerows(rows)
+            with self.assertRaisesRegex(FORECAST.PlanError, "does not match the plan"):
+                FORECAST.landed_actuals_source(landing, "CSA.TJ.FPA_REH_ACTUALS", plan)
+
+    def test_landed_month_column_typed_date_fails_loudly(self):
+        plan = forecast_plan()
+        with self.assertRaisesRegex(FORECAST.PlanError, r"MONTH.*VARCHAR.*DATE"):
+            FORECAST.landed_actuals_source(self._landing(month_type="DATE"),
+                                           "CSA.TJ.FPA_REH_ACTUALS", plan)
+
     def test_forecast_builder_emits_current_pivot_axes_without_forbidden_visibility(self):
         workbook = self.build_forecast_workbook()
 

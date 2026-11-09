@@ -17,6 +17,7 @@ from macro_behavior import analyze_macro_source
 from native_actions import (build_native_action_plan,validate_native_action_plan,
     bind_native_action_target,emit_action_schema,checkpoint_action_schema,
     emit_native_action_program,audit_native_action_readback,emit_input_identity_projection)
+from demo_workflows import build_workflow_manifest
 
 
 def read(path):return json.loads(Path(path).read_text(encoding='utf-8'))
@@ -27,6 +28,11 @@ def write(path,value):
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
     commands=p.add_subparsers(dest='command',required=True)
+    demo=commands.add_parser('demo-manifest',help='classify a macro module/.xlsm and write workflows.json '
+        '(native workflows + dispositions); never executes VBA')
+    demo.add_argument('macros')
+    demo.add_argument('--landed',action='store_true',help='this run landed the source Tables in Snowflake '
+        '(Phase 1b): the refresh disposition says so')
     prepare=commands.add_parser('prepare')
     prepare.add_argument('source')
     for name in ('base-manifest','base-receipt','presentation-bindings','contents','input-readbacks','decisions'):
@@ -55,6 +61,8 @@ def parser():
 
 def main(argv=None):
     a=parser().parse_args(argv)
+    if a.command=='demo-manifest':
+        write(a.out,build_workflow_manifest(a.macros,landed=a.landed));return 0
     if a.command=='prepare':
         result=build_native_action_plan(workbook_source=a.source,base_manifest=read(a.base_manifest),
             base_receipt=read(a.base_receipt),presentation_bindings=read(a.presentation_bindings),

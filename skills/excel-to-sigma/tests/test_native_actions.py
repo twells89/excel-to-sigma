@@ -557,4 +557,353 @@ class TestNativeActions(unittest.TestCase):
                 intervals=sorted((e.y(),e.y()+e.height()) for e in host.items)
                 self.assertTrue(all(a[1]<=b[0] for a,b in zip(intervals,intervals[1:])),(shared,intervals))
 
+
+import importlib.util
+import unittest.mock
+import io
+import contextlib
+import csv
+import types
+
+SCRIPTS=ROOT/'scripts'
+DEMO_KIT=ROOT.parents[1]/'docs'/'demo-kit'   # outside the skill: skipped in a standalone copy
+DEMO_BAS=DEMO_KIT/'demo-forecast-macros.bas'
+
+
+def _load(filename,name):
+    spec=importlib.util.spec_from_file_location(name,SCRIPTS/filename)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
+def _walk(value):
+    if isinstance(value,dict):
+        yield value
+        for child in value.values():yield from _walk(child)
+    elif isinstance(value,list):
+        for child in value:yield from _walk(child)
+
+
+@unittest.skipUnless(DEMO_KIT.is_dir(),'demo kit not present (standalone skill copy)')
+class TestDemoWorkflows(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import demo_workflows
+        cls.dw=demo_workflows
+        cls.build=_load('build-forecast-model.py','wf_forecast_builder')
+        cls.manifest=demo_workflows.build_workflow_manifest(DEMO_BAS)
+        cls.plan={'name':'Forecast fixture','intent':'what-if','connectionId':'conn-1','folderId':'folder',
+            'currencyFormat':'$,.0f','pctFormat':'.1%','fyLabel':'FY27',
+            'actualMonths':[{'month':'Jan-26','num':1,'end':'2026-01-31'}],
+            'forecastMonths':[{'month':'Feb-26','num':2,'end':'2026-02-28'}],
+            'lines':[{'line':'Revenue','section':'Revenue','secOrder':1,'lineOrder':1,'kind':'growth','rate':0.1,'juneBase':100.0}],
+            'assumptions':[['Revenue growth',0.1,'monthly']],
+            'actuals':[{'date':'2026-01-10','month':'Jan-26','line':'Revenue','section':'Revenue','secOrder':1,
+                'lineOrder':1,'dept':'Sales','vendor':'Customer','amt':100.0}]}
+        cls.els={'glDetail':'gl','spine':'sp','assumptions':'as','metricMap':'mm','planDetail':'pd'}
+
+    def spec(self,workflows=None):
+        return self.build.build_wb_spec(copy.deepcopy(self.plan),'dm',self.els,workflows=workflows)
+
+    def test_demo_manifest_routes(self):
+        flows={w['macro']:w for w in self.manifest['workflows']}
+        self.assertEqual(sorted(flows),['RollForwardMonth_Click','SetScenario','SnapshotVersion_Click','SubmitForApproval_Click'])
+        self.assertEqual({m:w['writes'] for m,w in flows.items()},{'RollForwardMonth_Click':True,
+            'SetScenario':False,'SnapshotVersion_Click':True,'SubmitForApproval_Click':True})
+        self.assertEqual(flows['RollForwardMonth_Click']['effect'],'update-rows')
+        self.assertEqual(flows['RollForwardMonth_Click']['target'],{'elementId':'parameters','columns':['Forecast Start Month']})
+        self.assertEqual(flows['SnapshotVersion_Click']['effect'],'insert-rows')
+        self.assertEqual(flows['SnapshotVersion_Click']['target']['elementId'],'versions')
+        self.assertEqual(flows['SubmitForApproval_Click']['effect'],'insert-rows')
+        self.assertEqual(flows['SubmitForApproval_Click']['class'],'EXTERNAL_IO')
+        self.assertEqual(flows['SubmitForApproval_Click']['target']['elementId'],'approvals')
+        self.assertEqual(flows['SetScenario']['effect'],'control')
+        self.assertEqual(flows['SetScenario']['target'],{'elementId':'parameters','columns':['Selected Scenario']})
+        for w in flows.values():
+            self.assertEqual(set(w)>={'macro','class','actionId','label','effect','target','writes'},True)
+        disp={d['macro']:d for d in self.manifest['dispositions']}
+        self.assertEqual({m for m in disp if m!='SubmitForApproval_Click'},{'RefreshActuals_Click','RecalcAll','FormatReport'})
+        self.assertEqual(disp['RefreshActuals_Click']['class'],'EXTERNAL_DATA_REFRESH')
+        self.assertEqual(disp['RecalcAll']['class'],'RECALC')
+        self.assertEqual(disp['FormatReport']['class'],'FORMAT_COSMETIC')
+        self.assertEqual(disp['SubmitForApproval_Click']['disposition'],'email-replaced-never-sent')
+        mapped={w['macro'] for w in self.manifest['workflows']}|set(disp)
+        self.assertEqual(len(mapped),7)
+
+    def test_set_scenario_note_names_the_switch_the_forecast_reads(self):
+        note=next(w['note'] for w in self.manifest['workflows'] if w['actionId']=='set-scenario')
+        self.assertIn('Downside / Base / Upside switch',note)
+        self.assertIn('forecast formulas read',note)
+        self.assertNotIn('no button action writes it',note)
+
+    def test_submit_never_emails(self):
+        for w in self.manifest['workflows']:
+            self.assertIn(w['effect'],('update-rows','insert-rows','control'))
+            self.assertNotIn('call-api',json.dumps(w).lower())
+            self.assertNotIn('email',json.dumps(w['effect']).lower())
+        wf=self.dw.workflow_elements(self.manifest,'conn-1','FY27 forecast')
+        submit=next(b for b in wf['buttons'] if b['id']=='btnSubmit')
+        effects=[e for a in submit['actions'] for e in a['effects']]
+        self.assertEqual([e['effect'] for e in effects],['insert-rows'])
+        self.assertEqual(effects[0]['tableElementId'],'approvals')
+        self.assertNotIn('call-api',json.dumps(wf))
+        self.assertNotIn('send-email',json.dumps(wf))
+
+    def only(self,*action_ids):
+        return {**self.manifest,'workflows':[w for w in self.manifest['workflows'] if w['actionId'] in action_ids]}
+
+    def test_workflow_elements_emit_only_the_tables_their_workflows_target(self):
+        app={'scenario_control':'Scenario','start':'Max([Forecast Boundary/Start Month])'}
+        cases=[(('snapshot-version',),app,['versions'],False,['btnSnapshot']),
+               (('submit-approval',),app,['approvals'],True,['btnSubmit']),
+               (('roll-forward',),app,['parameters'],False,['btnRoll']),
+               (('set-scenario',),app,['parameters'],False,[]),
+               (('set-scenario','roll-forward','snapshot-version','submit-approval'),app,
+                ['parameters','versions','approvals'],True,['btnRoll','btnSnapshot','btnSubmit']),
+               # Snapshot reads the Parameters row when there is no scenario switch / boundary element
+               (('snapshot-version',),{},['parameters','versions'],False,['btnSnapshot'])]
+        for ids,kwargs,tables,status,buttons in cases:
+            with self.subTest(ids=ids,kwargs=kwargs):
+                wf=self.dw.workflow_elements(self.only(*ids),'conn-1','FY27 forecast',**kwargs)
+                self.assertEqual([t['id'] for t in wf['tables']],tables)
+                self.assertEqual(wf['status'] is not None,status)
+                self.assertEqual([b['id'] for b in wf['buttons']],buttons)
+                text=json.dumps(wf)
+                for el,name in (('parameters','Parameters'),('versions','Versions'),('approvals','Approvals')):
+                    if el not in tables:   # nothing refers to a table that is not emitted
+                        self.assertNotIn(f'[{name}/',text)
+
+    def test_workflow_elements_refuse_a_manifest_that_is_not_an_object(self):
+        for bad in ([],'workflows',None,{'version':2,'workflows':[]},{'version':1,'workflows':['roll-forward']}):
+            with self.subTest(bad=bad),self.assertRaisesRegex(self.dw.WorkflowError,'manifest'):
+                self.dw.workflow_elements(bad,'conn-1','FY27 forecast')
+
+    def test_submit_names_a_generic_approver_and_dispositions_are_generic(self):
+        wf=self.dw.workflow_elements(self.manifest,'conn-1','FY27 forecast')
+        submit=next(b for b in wf['buttons'] if b['id']=='btnSubmit')
+        values=submit['actions'][0]['effects'][0]['values']
+        self.assertEqual(values['ap_to'],{'type':'constant','value':{'type':'text','value':'Approver'}})
+        self.assertNotIn('CFO',json.dumps(self.manifest))
+        disp={d['macro']:d['note'] for d in self.manifest['dispositions']}
+        self.assertIn('the email the macro sent',disp['SubmitForApproval_Click'].lower())
+        self.assertNotIn('Snowflake',disp['RefreshActuals_Click'])     # no landing on this run
+        landed=self.dw.build_workflow_manifest(DEMO_BAS,landed=True)
+        note=next(d['note'] for d in landed['dispositions'] if d['macro']=='RefreshActuals_Click')
+        self.assertIn('landed in Snowflake',note)
+
+    def test_unrouted_macro_is_dispositioned_not_dropped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'m.bas'
+            p.write_text('Sub Mystery()\n    Dim x As Long\n    x = 1\nEnd Sub\n')
+            m=self.dw.build_workflow_manifest(p)
+        self.assertEqual(m['workflows'],[])
+        self.assertEqual(m['dispositions'][0]['macro'],'Mystery')
+
+    def test_without_workflows_unchanged(self):
+        base=self.spec(); again=self.spec(None)
+        self.assertEqual(base,again)
+        ids={e['id'] for e in _walk(base) if 'id' in e}
+        self.assertFalse(ids&{'parameters','versions','approvals','btnRoll','btnSnapshot','btnSubmit','approvalStatus'})
+
+    def test_workflows_added_to_workbook(self):
+        spec=self.spec(self.manifest)
+        by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
+        for tid,names in (('parameters',['Selected Scenario','Forecast Start Month']),
+                ('versions',['Version','Scenario','Forecast Start Month','FY Revenue','FY Gross Margin','FY EBITDA','Saved By','Saved At','Comment','Log Order']),
+                ('approvals',['Request','Submitted By','Approver','Status','Submitted At','Decided By','Decided At','Comment','Log Order'])):
+            t=by_id[tid]
+            self.assertEqual(t['kind'],'input-table')
+            self.assertEqual(t['source'],{'kind':'empty','connectionId':'conn-1'})
+            self.assertEqual([c['name'] for c in t['columns'] if 'type' in c],names)
+            self.assertFalse({c['id'] for c in t['columns']}&{'CREATED_BY','CREATED_AT'})
+        self.assertEqual(sorted(k for k in ('btnRoll','btnSnapshot','btnSubmit') if k in by_id),['btnRoll','btnSnapshot','btnSubmit'])
+        roll=by_id['btnRoll']['actions'][0]['effects'][0]
+        self.assertEqual(roll['effect'],'update-rows')
+        self.assertEqual(roll['whichRows'],{'type':'formula','formula':'true'})
+        # the planning app advances its one boundary element (which reads Parameters.Forecast Start Month)
+        self.assertEqual(roll['values']['pa_start']['formula'],'DateAdd("month", 1, Max([Forecast Boundary/Start Month]))')
+        self.assertIn('[Parameters/Forecast Start Month]',json.dumps(by_id['boundary']))
+        approve=by_id['btnSubmit']['actions'][0]['effects'][0]
+        self.assertEqual(approve['values']['ap_status']['value']['value'],'Submitted')
+        self.assertIn('FY27',approve['values']['ap_req']['value']['value'])
+        self.assertEqual(by_id['approvalStatus']['kind'],'table')
+        self.assertEqual(by_id['approvalStatus']['source'],{'kind':'table','elementId':'parameters'})
+        wire=self.build.workbook_wire.wire_workbook(spec)
+        layout=wire['contents']['layout']
+        for eid in ('parameters','versions','approvals','btnRoll','btnSnapshot','btnSubmit','approvalStatus','hdrTitle','hdrBand'):
+            self.assertIn(f'elementId="{eid}"',layout)
+
+    def test_snapshot_freezes_headline_figures_from_kpi_formulas(self):
+        spec=self.spec(self.manifest)
+        by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
+        eff=by_id['btnSnapshot']['actions'][0]['effects'][0]
+        self.assertEqual(eff['effect'],'insert-rows'); self.assertEqual(eff['tableElementId'],'versions')
+        cols={c['name']:c['id'] for c in by_id['versions']['columns'] if 'type' in c}
+        # one row covers every Versions column but the free-text Comment (migrated rows carry the source's)
+        self.assertEqual(set(eff['values']),set(cols.values())-{cols['Comment']})
+        self.assertEqual(eff['values'][cols['Log Order']]['formula'],'Coalesce(Max([Versions/Log Order]), 0) + 1')
+        f=lambda name:eff['values'][cols[name]]['formula']
+        # Log Order is a number column: Text() of the raw sum labels the version "v8.0000000000000000000"
+        self.assertEqual(f('Version'),'Concat("v", Text(Int(Coalesce(Max([Versions/Log Order]), 0) + 1)))')
+        plain=self.spec()   # the plain dashboard's KPI tiles carry the same headline formulas
+        tiles={e['id']:e['columns'][0]['formula'] for pg in plain['pages'] for e in pg['elements'] if e['kind']=='kpi-chart'}
+        self.assertEqual(f('FY Revenue'),tiles['kpiRev'])
+        self.assertIn(f('FY EBITDA'),set(tiles.values()))  # the EBITDA row's own KPI formula, not recomputed
+        self.assertTrue(tiles['kpiGM'].startswith('('+f('FY Gross Margin')+')'))
+        self.assertNotEqual(f('FY EBITDA'),f('FY Gross Margin'))
+        self.assertEqual(f('Scenario'),'Max([Parameters/Selected Scenario])')
+        self.assertIn('CurrentUserEmail()',f('Saved By')); self.assertEqual(f('Saved At'),'Now()')
+
+    def test_latest_status_is_the_last_entered_approval(self):
+        # entry order, not Submitted At: migrated history keeps the source's own (possibly future) dates
+        spec=self.spec(self.manifest)
+        by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
+        self.assertEqual(by_id['approvalStatus']['columns'][0]['formula'],
+            'Coalesce(Lookup([Approvals/Status], Max([Approvals/Log Order]), [Approvals/Log Order]), "Draft")')
+        sub=by_id['btnSubmit']['actions'][0]['effects'][0]['values']
+        self.assertEqual(sub['ap_seq']['formula'],'Coalesce(Max([Approvals/Log Order]), 0) + 1')
+
+    def test_manual_commit_program_final_mode_and_seed(self):
+        spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
+        seed={'scenario':'Base','start':'2026-02-01'}
+        program=self.dw.emit_manual_commit_program(spec,seed)
+        modes=[l.split("'")[1] for l in program.splitlines() if l.startswith('t.set_edit_mode(')]
+        self.assertEqual(modes.count('draft'),modes.count('published-all-users'))
+        self.assertEqual(set(modes),{'draft','published-all-users'})
+        pairs=[l for l in program.splitlines() if l.startswith('t.set_edit_mode(')]
+        self.assertTrue(all(pairs[i+1]=="t.set_edit_mode('published-all-users')" for i in range(0,len(pairs),2)))
+        self.assertIn("c_scn = t.get_column('pa_scn')",program)
+        self.assertIn("c_start = t.get_column('pa_start')",program)
+        self.assertIn("isinstance(c_scn, LiteralEditableColumn)",program)
+        self.assertIn("t.upsert_rows([{c_scn: 'Base', c_start: '2026-02-01'}])",program)
+        self.assertGreater(program.index('upsert_rows'),program.rindex("set_edit_mode('published-all-users')"))
+        compile(program,'program','exec')
+
+    def test_manual_commit_program_covers_every_input_table(self):
+        spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
+        program=self.dw.emit_manual_commit_program(spec)
+        tables=[e['id'] for e in spec['contents']['elements'] if e['kind']=='input-table']
+        self.assertGreaterEqual(len(tables),5)  # rate + manual inputs plus the three workflow tables
+        for tid in tables:
+            self.assertIn(f"get_element('{tid}')",program)
+        self.assertEqual(program.count("t.set_edit_mode('draft')"),len(tables))
+        self.assertEqual(program.count("t.set_edit_mode('published-all-users')"),len(tables))
+        self.assertEqual(program.count('isinstance(t, InputTable)'),len(tables))
+        self.assertIn("get_page('model').get_element('versions')",program)   # plumbing lives on the hidden page
+        self.assertIn("get_page('model').get_element('parameters')",program)
+        compile(program,'program','exec')
+
+    def test_cli_writes_program_dry_run(self):
+        build=self.build
+        with tempfile.TemporaryDirectory() as d:
+            plan=Path(d)/'plan.json';plan.write_text(json.dumps(self.plan))
+            wf=Path(d)/'workflows.json';wf.write_text(json.dumps(self.manifest))
+            out=Path(d)/'out';prog=Path(d)/'program.py'
+            args=[str(plan),'--out-dir',str(out),'--workflows',str(wf),'--emit-manual-commit-program',str(prog)]
+            gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate),\
+                    unittest.mock.patch.object(build.demo_workflows,'source_history',return_value=[]):
+                rc=build.main(args)
+            self.assertEqual(rc,0)
+            self.assertIn("set_edit_mode('published-all-users')",prog.read_text())
+            wired=json.loads((out/'wb_spec.json').read_text())
+            self.assertIn('btnRoll',{e['id'] for e in wired['contents']['elements']})
+            self.assertIn("c_start: '2026-02-01'",prog.read_text())  # plan's first forecast month
+            self.assertFalse((out/'parameters_seed.csv').exists())
+
+    @staticmethod
+    def run_program(program):
+        """Execute the emitted program against a fake Code Mode host; return
+        ``{elementId: [[row dict keyed by column id], ...]}`` per upsert_rows call."""
+        class LiteralEditableColumn:
+            def __init__(self,cid):self.cid=cid
+            def set_format_pattern(self,pattern):self.pattern=pattern
+            def set_visible(self,visible):self.visible=visible
+        class InputTableStyle:   # the SDK's InputTable.table_style() (sdk/sigma/tableStyle.py)
+            def set_preset(self,preset):self.preset=preset
+            def set_grid_lines(self,lines):self.lines=lines
+            def set_autofit_columns(self,show):self.autofit=show
+        class InputTable:
+            def __init__(self,eid,calls):self.eid=eid;self.calls=calls
+            def get_column(self,cid):return LiteralEditableColumn(cid)
+            def table_style(self):return InputTableStyle()
+            def set_column_width(self,column,width):pass
+            def set_edit_mode(self,mode):pass
+            def upsert_rows(self,rows):
+                self.calls.setdefault(self.eid,[]).append([{c.cid:v for c,v in r.items()} for r in rows])
+        calls={}
+        class Page:
+            def get_element(self,eid):return InputTable(eid,calls)
+        sigma=types.SimpleNamespace(workbook=types.SimpleNamespace(get_page=lambda pid:Page()))
+        exec(compile(program,'program','exec'),{'sigma':sigma,'InputTable':InputTable,
+                                                 'LiteralEditableColumn':LiteralEditableColumn})
+        return calls
+
+    def test_cli_program_seeds_rate_and_manual_tables_from_the_seed_csv_rows(self):
+        build=self.build
+        plan=json.loads((SCRIPTS/'sample-model-plan.json').read_text())
+        with tempfile.TemporaryDirectory() as d:
+            planp=Path(d)/'plan.json';planp.write_text(json.dumps(plan))
+            wf=Path(d)/'workflows.json';wf.write_text(json.dumps(self.manifest))
+            out=Path(d)/'out';prog=Path(d)/'program.py'
+            gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate),\
+                    unittest.mock.patch.object(build.demo_workflows,'source_history',return_value=[]):
+                rc=build.main([str(planp),'--out-dir',str(out),'--workflows',str(wf),'--emit-manual-commit-program',str(prog)])
+            self.assertEqual(rc,0)
+            program=prog.read_text()
+            with (out/'rate_seed.csv').open(newline='') as f:rate_csv=list(csv.DictReader(f))
+            with (out/'manual_seed.csv').open(newline='') as f:man_csv=list(csv.DictReader(f))
+        self.assertEqual((len(rate_csv),len(man_csv)),(5,24))
+        calls=self.run_program(program)
+        # one upsert per editable table, every seed row in that one batch
+        self.assertEqual({k:len(v) for k,v in calls.items()},{'parameters':1,'rateInput':1,'manualInput':1})
+        rate,manual=calls['rateInput'][0],calls['manualInput'][0]
+        self.assertEqual(len(rate),len(rate_csv)); self.assertEqual(len(manual),len(man_csv))
+        self.assertEqual([{'LINE_ITEM':r['LINE_ITEM'],'RATE':str(r['RATE'])} for r in rate],rate_csv)
+        self.assertEqual([{k:(f'{v:.2f}' if k=='AMOUNT' else str(v)) for k,v in r.items()} for r in manual],man_csv)
+        self.assertEqual(rate[0],{'LINE_ITEM':'Subscription Revenue','RATE':float(rate_csv[0]['RATE'])})
+        self.assertEqual(manual[0]['LINE_ITEM'],'Professional Services Rev')
+        self.assertEqual(manual[0]['AMOUNT'],70000.0)
+        self.assertIsInstance(manual[0]['MONTH_NUM'],int)
+        # typed checks guard every seeded table and column, and seeds follow every mode switch
+        for eid in ('rateInput','manualInput'):
+            self.assertIn(f"raise RuntimeError('{eid} is not an InputTable')",program)
+        self.assertIn("raise RuntimeError('rateInput.RATE is not an editable column')",program)
+        self.assertGreater(program.index('upsert_rows'),program.rindex("set_edit_mode('published-all-users')"))
+
+    def test_cli_program_without_workflows_seeds_only_rate_and_manual(self):
+        build=self.build
+        plan=json.loads((SCRIPTS/'sample-model-plan.json').read_text())
+        with tempfile.TemporaryDirectory() as d:
+            planp=Path(d)/'plan.json';planp.write_text(json.dumps(plan))
+            out=Path(d)/'out';prog=Path(d)/'program.py'
+            gate=(Path(d)/'source.xlsx',{'status':'DRAFT','sourceSha256':'0'*64})
+            with contextlib.redirect_stdout(io.StringIO()),unittest.mock.patch.object(build,'gate_plan_source',return_value=gate),\
+                    unittest.mock.patch.object(build.demo_workflows,'source_history',return_value=[]):
+                rc=build.main([str(planp),'--out-dir',str(out),'--emit-manual-commit-program',str(prog)])
+            self.assertEqual(rc,0)
+            calls=self.run_program(prog.read_text())
+        self.assertEqual({k:len(v[0]) for k,v in calls.items()},{'rateInput':5,'manualInput':24})
+
+    def test_program_seed_rejects_more_than_2000_rows_and_unknown_tables(self):
+        spec=self.build.workbook_wire.wire_workbook(self.spec(self.manifest))
+        rows=[['L',i] for i in range(2001)]
+        with self.assertRaisesRegex(self.dw.WorkflowError,'2,000'):
+            self.dw.emit_manual_commit_program(spec,table_seeds=[('rateInput',['LINE_ITEM','RATE'],rows)])
+        with self.assertRaisesRegex(self.dw.WorkflowError,'nope'):
+            self.dw.emit_manual_commit_program(spec,table_seeds=[('nope',['A'],[['x']])])
+        program=self.dw.emit_manual_commit_program(spec,table_seeds=[('rateInput',['LINE_ITEM','RATE'],rows[:2000])])
+        self.assertEqual(len(self.run_program(program)['rateInput'][0]),2000)
+
+    def test_demo_manifest_cli(self):
+        mod=_load('macro-actions.py','wf_macro_actions')
+        with tempfile.TemporaryDirectory() as d:
+            out=Path(d)/'workflows.json'
+            self.assertEqual(mod.main(['demo-manifest',str(DEMO_BAS),'--out',str(out)]),0)
+            self.assertEqual(len(json.loads(out.read_text())['workflows']),4)
+            self.assertNotIn('Snowflake',out.read_text())
+            self.assertEqual(mod.main(['demo-manifest',str(DEMO_BAS),'--landed','--out',str(out)]),0)
+            self.assertIn('landed in Snowflake',out.read_text())
+
 if __name__=='__main__':unittest.main()

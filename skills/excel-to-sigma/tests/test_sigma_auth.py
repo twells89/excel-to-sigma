@@ -322,8 +322,16 @@ class CliProfileTests(AuthTestCase):
             sigma_auth.get_session()
 
     def test_profile_names_cannot_smuggle_flags(self):
-        for bad in ("-x", "a b", "", "a;b", "../x"):
+        for bad in ("-x", " x", "", "a;b", "../x"):
             with self.assertRaises(sigma_auth.SigmaAuthError, msg=bad):
+                sigma_auth.use_cli_profile(bad)
+
+    def test_profile_names_allow_spaces_and_parentheses_but_no_shell_metacharacters(self):
+        sigma_auth.use_cli_profile("tj-wells-1989 (1)")
+        self.assertEqual(os.environ["SIGMA_CLI_PROFILE"], "tj-wells-1989 (1)")
+        for bad in ("a;b", "a$b", "a`b", "a|b", "a&b", "a\nb", "a\rb", " lead", "(lead", "a>b", "a<b",
+                    "a'b", 'a"b', "a\\b", "a*b", "a\tb"):
+            with self.assertRaises(sigma_auth.SigmaAuthError, msg=repr(bad)):
                 sigma_auth.use_cli_profile(bad)
 
     def test_use_cli_profile_sets_the_environment_variable(self):

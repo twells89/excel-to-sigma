@@ -35,7 +35,9 @@ REFRESH_AFTER_SECONDS = 50 * 60
 CLI_BINARY = "sigma"
 CLI_TIMEOUT_SECONDS = 60
 HTTP_TIMEOUT_SECONDS = 300
-_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Spaces and parentheses are allowed (e.g. "acme (1)"); the CLI is always run with an argv
+# list, never a shell, and a name can't start with '-', so no metacharacter is interpreted.
+_PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._() -]*")
 _BASE_URL_LINE_RE = re.compile(r"^\s*Base URL:\s*(\S+)\s*$", re.MULTILINE)
 # OAuth profiles report the bare API host instead of a Base URL line (sigma 1.2.3).
 _API_HOST_LINE_RE = re.compile(r"^\s*API host:\s*([A-Za-z0-9.-]+)\s*$", re.MULTILINE)
@@ -96,7 +98,7 @@ def use_cli_profile(name):
 def _validate_profile(name):
     if not isinstance(name, str) or not _PROFILE_RE.fullmatch(name):
         raise SigmaAuthError(
-            "invalid Sigma CLI profile name (letters, digits, '.', '_' and '-' only)")
+            "invalid Sigma CLI profile name (letters, digits, spaces and '.', '_', '-', '(', ')' only)")
     return name
 
 

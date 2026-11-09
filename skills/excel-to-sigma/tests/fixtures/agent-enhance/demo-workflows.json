@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "workflows": [
+    {
+      "macro": "SetScenario",
+      "class": "WHATIF_SCENARIO",
+      "actionId": "set-scenario",
+      "label": "Set scenario",
+      "effect": "control",
+      "target": {
+        "elementId": "parameters",
+        "columns": [
+          "Selected Scenario"
+        ]
+      },
+      "writes": false,
+      "note": "The planning app's Downside / Base / Upside switch is a workbook control the forecast formulas read (set-scenario sets it; Snapshot records its value). Without the planning app, the one-row Parameters input table holds Selected Scenario instead."
+    },
+    {
+      "macro": "RollForwardMonth_Click",
+      "class": "ACTION_WRITEBACK",
+      "actionId": "roll-forward",
+      "label": "Roll forward one month",
+      "effect": "update-rows",
+      "target": {
+        "elementId": "parameters",
+        "columns": [
+          "Forecast Start Month"
+        ]
+      },
+      "writes": true,
+      "note": "Advances Parameters.Forecast Start Month by one month (update-rows, DateAdd). Replaces the VBA that copied the first forecast month into the Actuals table."
+    },
+    {
+      "macro": "SnapshotVersion_Click",
+      "class": "ACTION_WRITEBACK",
+      "actionId": "snapshot-version",
+      "label": "Snapshot version",
+      "effect": "insert-rows",
+      "target": {
+        "elementId": "versions",
+        "columns": [
+          "Version",
+          "Snapshot At",
+          "Scenario",
+          "Forecast Start Month",
+          "Saved By"
+        ]
+      },
+      "writes": true,
+      "note": "Appends a Versions row (version label, time, scenario, forecast start month, user). The VBA also pasted the forecast grid as static values; the row logs the parameters in force instead, and the live Forecast stays reproducible from them."
+    },
+    {
+      "macro": "SubmitForApproval_Click",
+      "class": "EXTERNAL_IO",
+      "actionId": "submit-approval",
+      "label": "Submit for approval",
+      "effect": "insert-rows",
+      "target": {
+        "elementId": "approvals",
+        "columns": [
+          "Request",
+          "Submitted By",
+          "Approver",
+          "Status",
+          "Submitted At"
+        ]
+      },
+      "writes": true,
+      "note": "Appends an Approvals row (status Submitted, user, time). The VBA also protected the sheet and sent an Outlook email; neither is reproduced."
+    }
+  ],
+  "dispositions": [
+    {
+      "macro": "RefreshActuals_Click",
+      "class": "EXTERNAL_DATA_REFRESH",
+      "disposition": "replaced-by-live-warehouse",
+      "note": "The macro's external data reload is replaced by the source Tables landed in Snowflake (Phase 1b), which Sigma reads live; no refresh button is needed."
+    },
+    {
+      "macro": "SubmitForApproval_Click",
+      "class": "EXTERNAL_IO",
+      "disposition": "email-replaced-never-sent",
+      "note": "The email the macro sent is replaced by the Approvals row and the latest-status header; no email is sent by the workflow, the button or the agent."
+    },
+    {
+      "macro": "RecalcAll",
+      "class": "RECALC",
+      "disposition": "replaced-by-live-calculation",
+      "note": "Sigma recalculates on read; there is nothing to port."
+    },
+    {
+      "macro": "FormatReport",
+      "class": "FORMAT_COSMETIC",
+      "disposition": "styling",
+      "note": "Cell formatting is carried by workbook styling and number formats, not an action."
+    }
+  ]
+}

@@ -381,3 +381,12 @@ not authorize substitution. Sales stage/rep metadata, inventory suppliers, and
 unrepresented summary scopes remain acceptance work. Expense PolicyExcess uses
 scalar `Greatest(amount - limit, 0)`, retaining the missing-policy null guard;
 source blank arithmetic and cent-boundary parity require separate runtime checks.
+
+## Forecast planning app (`build-forecast-model.py --workflows`)
+
+A forecast whose macros became workflows is presented as a planning app rather than a
+dashboard; the layout, the scenario switch, the landed plan comparisons and the setup-program
+display fixes are described in SKILL.md ("The planning app") and implemented in
+`scripts/lib/forecast_app.py`. It follows the same rules as this page: layout is written last,
+every helper element lives on the hidden `Model (sources)` page, text spans use only
+color / background-color / font-size / font-family, and labels are sentence case.

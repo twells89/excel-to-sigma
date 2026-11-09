@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import shlex
 import sys
 import tempfile
 import unittest
@@ -55,6 +56,341 @@ class TestRouter(unittest.TestCase):
         path = self.dir / "table.xlsx"
         wb.save(path)
         return path
+
+    def macro_enabled_forecast(self, xlsx=None):
+        """A forecast source as a real .xlsm: the 08 fixture's vbaProject.bin (one recorded
+        macro) injected with the macro-enabled workbook content type and its relationship.
+        Default source: the P&L fixture (no Excel Tables)."""
+        if xlsx is None:
+            xlsx = self.dir / "pnl.xlsx"
+            fixture.build_pnl(xlsx)
+        with zipfile.ZipFile(ROOT / "tests" / "fixtures" / "broader-eight"
+                             / "08 Inventory Replenishment Plan.xlsm") as donor:
+            vba = donor.read("xl/vbaProject.bin")
+        xlsm = xlsx.with_suffix(".xlsm")
+        with zipfile.ZipFile(xlsx) as src, zipfile.ZipFile(xlsm, "w", zipfile.ZIP_DEFLATED) as dst:
+            for item in src.infolist():
+                data = src.read(item.filename)
+                if item.filename == "[Content_Types].xml":
+                    text = data.decode("utf-8").replace(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+                        "application/vnd.ms-excel.sheet.macroEnabled.main+xml")
+                    assert "macroEnabled.main" in text
+                    data = text.replace("</Types>", '<Default Extension="bin" '
+                                        'ContentType="application/vnd.ms-office.vbaProject"/></Types>').encode()
+                elif item.filename == "xl/_rels/workbook.xml.rels":
+                    data = data.decode("utf-8").replace("</Relationships>", '<Relationship Id="rIdVBA" '
+                        'Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" '
+                        'Target="vbaProject.bin"/></Relationships>').encode()
+                dst.writestr(item, data)
+            dst.writestr("xl/vbaProject.bin", vba)
+        return xlsx, xlsm
+
+    def demo_source(self):
+        """The demo forecast (formal Tables tblActuals, tblPlan, ...) as .xlsx and .xlsm."""
+        maker_path = ROOT.parents[1] / "docs" / "demo-kit" / "make-demo-forecast.py"
+        if not maker_path.is_file():
+            self.skipTest("demo kit not present (standalone skill copy)")
+        spec = importlib.util.spec_from_file_location("make_demo_router", maker_path)
+        maker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(maker)
+        return self.macro_enabled_forecast(Path(maker.build_demo_workbook(self.dir)))
+
+    @staticmethod
+    def enhance_absent(test, result):
+        text = "\n".join(result["nextCommands"])
+        test.assertNotIn("recommend-agent.py", text)
+        test.assertNotIn("demo-manifest", text)
+        test.assertNotIn("--workflows", text)
+        test.assertNotIn("refs/agent-enhance.md", result["readRefs"])
+        test.assertFalse(any("--workflows" in h for h in result["userHandoffs"]))
+
+    def demo_macros(self):
+        return json.loads((ROOT / "tests" / "fixtures" / "agent-enhance" / "demo-macros.json").read_text())
+
+    def plan_with_macros(self, path, macros, *extra):
+        from unittest import mock
+        real = MIGRATE.run_json
+
+        def fake(*args):
+            return macros if Path(args[0]).name == "macro-classify.py" else real(*args)
+        with mock.patch.object(MIGRATE, "run_json", fake):
+            return self.plan(path, *extra)
+
+    def test_navigation_only_macro_gets_no_enhance(self):
+        try:
+            import oletools  # noqa: F401
+        except ImportError:
+            self.skipTest("oletools is not installed")
+        xlsx, xlsm = self.macro_enabled_forecast()
+        # No Excel Tables: nothing to land, so no landing step, decision or landed-actuals flags.
+        _, plain = self.plan(xlsx)
+        text = "\n".join(plain["nextCommands"])
+        self.assertNotIn("land-in-snowflake.py", text)
+        self.assertNotIn("--actuals-table", text)
+        self.assertFalse(any("Snowflake" in d for d in plain["askUser"]))
+        self.enhance_absent(self, plain)
+        # Real macro-enabled forecast source, real macro-classify (no mock): its one macro is an AUTO
+        # NAVIGATION macro, so there is no workflow to build: no Enhance offer, decision or commands.
+        code, enabled = self.plan(xlsm)
+        self.assertEqual(code, 0)
+        self.assertEqual(enabled["archetype"], "forecast")
+        self.assertEqual([(m["name"], m["class"], m["status"]) for m in enabled["macros"]],
+                         [("Macro1", "NAVIGATION", "AUTO")])
+        self.assertIn("macro-classify.py", enabled["nextCommands"][0])   # Phase 0b still runs
+        self.enhance_absent(self, enabled)
+        self.assertFalse(any("planning app" in d for d in enabled["askUser"]))
+        self.assertEqual(enabled["optIns"], [])
+        # asking for it anyway changes nothing and says why
+        _, forced = self.plan(xlsm, "--enhance")
+        self.enhance_absent(self, forced)
+        self.assertTrue(any("--enhance" in n for n in forced["notes"]))
+
+    def test_action_macros_offer_enhance_as_an_opt_in(self):
+        _, xlsm = self.macro_enabled_forecast()
+        code, result = self.plan_with_macros(xlsm, self.demo_macros())
+        self.assertEqual(code, 0)
+        # offered, not run: the default commands are the plain build
+        self.enhance_absent(self, {**result, "readRefs": []})
+        self.assertIn("refs/agent-enhance.md", result["readRefs"])
+        decision = next(d for d in result["askUser"] if "planning app" in d)
+        self.assertIn("build the workflow planning app + agent? (yes/no", decision)
+        opt = next(o for o in result["optIns"] if o["flag"] == "--enhance")
+        self.assertEqual(opt["decision"], decision)
+        self.assertIn("--enhance", opt["rerun"])
+        cmds = opt["nextCommands"]
+        self.assertLess(next(i for i, c in enumerate(cmds) if "demo-manifest" in c),
+                        next(i for i, c in enumerate(cmds) if "recommend-agent.py" in c))
+        self.assertIn("--agent-macros", cmds[-1])
+        self.assertTrue(any("Smoke pass" in h for h in opt["userHandoffs"]))
+        self.assertTrue((self.out / "macros.json").is_file())
+        # opted in: the same commands become nextCommands
+        _, enhanced = self.plan_with_macros(xlsm, self.demo_macros(), "--enhance")
+        self.assertEqual(enhanced["nextCommands"], cmds)
+        self.assertFalse(any(o["flag"] == "--enhance" for o in enhanced["optIns"]))
+        self.assertFalse(any("planning app" in d for d in enhanced["askUser"]))
+
+    def test_forecast_with_tables_and_macros_lists_the_run_in_order(self):
+        # The demo shape: Excel Tables + macros. Landing and Enhance are each the user's yes/no; by
+        # default nextCommands is the plain build. Opted in, nextCommands is the order the run takes;
+        # every build carries the landed actuals, the workflows and one setup-program name; the agent
+        # rides the post.
+        _, xlsm = self.demo_source()
+        code, default = self.plan_with_macros(xlsm, self.demo_macros())
+        self.assertEqual(code, 0)
+        plain = default["nextCommands"]
+        self.assertIn("macro-classify.py", plain[0])
+        self.assertNotIn("land-in-snowflake.py", "\n".join(plain))
+        self.assertNotIn("--actuals-table", "\n".join(plain + default["stagingAlternative"]))
+        self.enhance_absent(self, {**default, "readRefs": []})
+        land_q = next(d for d in default["askUser"] if "land source Tables in Snowflake?" in d)
+        self.assertIn("snow CLI", land_q)
+        self.assertIn("Snowflake connection", land_q)
+        self.assertTrue(any("planning app + agent?" in d for d in default["askUser"]))
+        self.assertEqual(sorted(o["flag"] for o in default["optIns"]), ["--enhance", "--land-tables"])
+        landed_only = next(o for o in default["optIns"] if o["flag"] == "--land-tables")["nextCommands"]
+        self.assertIn("tblActuals, tblPlan", next(c for c in landed_only if "land-in-snowflake.py" in c))
+        self.assertNotIn("--workflows", "\n".join(landed_only))
+        code, result = self.plan_with_macros(xlsm, self.demo_macros(), "--land-tables", "--enhance")
+        self.assertEqual(code, 0)
+        self.assertEqual(result["archetype"], "forecast")
+        self.assertEqual(result["optIns"], [])
+        cmds = result["nextCommands"]
+        execute = next(c for c in cmds if "land-in-snowflake.py" in c and "--execute" in c)
+        self.assertNotIn("--grant-select-to <role>  ", execute)
+        self.assertIn("optional", execute.split("#", 1)[1])   # the grant is an optional add, not required
+        self.assertNotIn(" --grant-select-to", execute.split("#", 1)[0])
+
+        def kind(c):
+            for key, label in (("macro-classify.py", "classify"), ("land-in-snowflake.py --", None),
+                               ("draft-forecast-plan.py", "draft"), ("demo-manifest", "manifest"),
+                               ("recommend-agent.py", "pitch")):
+                if key in c and label:
+                    return label
+            if "land-in-snowflake.py" in c:
+                return "land-execute" if "--execute" in c else "land-dry"
+            if "build-forecast-model.py" in c:
+                return "post" if "--post" in c else "build-dry"
+            return c
+        self.assertEqual([kind(c) for c in cmds], ["classify", "land-dry", "land-execute", "draft", "manifest",
+                                                   "build-dry", "pitch", "post"])
+        program = str(self.out / "setup-program.py")
+        everything = json.dumps(result)
+        self.assertNotIn("manual-commit.py", everything)
+        self.assertNotIn("--merge-into", "\n".join(cmds))
+        self.assertIn("tblActuals, tblPlan", next(c for c in cmds if kind(c) == "land-dry"))
+        builds = [c for c in cmds if "build-forecast-model.py" in c] + result["stagingAlternative"]
+        self.assertEqual(len(builds), 5)
+        for c in builds:
+            for flag in ("--actuals-table", "--landing", "--workflows " + str(self.out / "workflows.json"),
+                         "--emit-manual-commit-program " + program):
+                self.assertIn(flag, c)
+        post = cmds[-1]
+        self.assertIn("--agent-macros " + str(self.out / "macros.json"), post)
+        self.assertIn("--post --review-dispositions", post)
+        self.assertNotIn("--agent-macros", cmds[cmds.index(post) - 2])   # the dry run precedes the yes
+        template, approve, staged = result["stagingAlternative"]
+        # the agent's template step carries no approval; approving is the reviewer's own terminal step
+        self.assertIn("--staging-approval-template", template)
+        self.assertNotIn("--approve-for-staging", template)
+        self.assertNotIn("--owner", template)
+        self.assertIn("--approve-for-staging", approve)
+        self.assertIn("--owner", approve)
+        self.assertIn("USER HANDOFF", approve)
+        self.assertIn("own terminal", approve)
+        self.assertIn("--post --staging-approval", staged)
+        self.assertIn("--agent-macros", staged)
+        setup = [h for h in result["userHandoffs"] if "setup program" in h]
+        self.assertEqual(len(setup), 1)
+        self.assertIn(program, setup[0])
+        self.assertTrue(any("Smoke pass" in h for h in result["userHandoffs"]))
+        gate = json.loads((self.out / "macro-gate.json").read_text())
+        self.assertEqual(result["macroGate"], str(self.out / "macro-gate.json"))
+        self.assertEqual((gate["procedures"], gate["dropped"]), (7, []))
+        self.assertEqual(len(gate["nonAuto"]), 6)
+        self.assertFalse(any(r["verified"] for r in gate["records"]))
+        self.assertTrue(any("resolve-targets" in d for d in result["askUser"]))
+
+    def test_macro_enabled_non_forecast_source_gets_no_enhance(self):
+        try:
+            import oletools  # noqa: F401
+        except ImportError:
+            self.skipTest("oletools is not installed")
+        # 08 Inventory Replenishment Plan.xlsm: real macros, table-report archetype.
+        _, result = self.plan(ROOT / "tests" / "fixtures" / "broader-eight"
+                              / "08 Inventory Replenishment Plan.xlsm")
+        self.assertEqual(result["archetype"], "table-report")
+        self.assertEqual([m["status"] for m in result["macros"]], ["AUTO"])
+        self.enhance_absent(self, result)
+        self.assertNotIn("land-in-snowflake.py", "\n".join(result["nextCommands"]))
+        self.assertNotIn("--emit-manual-commit-program", "\n".join(result["nextCommands"]))
+        self.assertFalse((self.out / "macros.json").exists())
+        # Non-forecast table workbooks never get the forecast-only landing/Enhance commands.
+        _, table = self.plan(self.table_workbook())
+        self.enhance_absent(self, table)
+        self.assertNotIn("--emit-manual-commit-program", "\n".join(table["nextCommands"]))
+
+    def test_macro_classify_without_a_procedure_list_gets_no_enhance(self):
+        from unittest import mock
+        _, xlsm = self.macro_enabled_forecast()
+        real = MIGRATE.run_json
+
+        def raises(*args):
+            raise RuntimeError("olevba exploded")
+
+        for label, outcome in (("empty list", []), ("error dict", {"error": "no VBA"}),
+                               ("raised", raises)):
+            def fake(*args, outcome=outcome):
+                if Path(args[0]).name == "macro-classify.py":
+                    return outcome(*args) if callable(outcome) else outcome
+                return real(*args)
+            with self.subTest(label), mock.patch.object(MIGRATE, "run_json", fake):
+                code, result = self.plan(xlsm)
+                self.assertEqual(code, 0)
+                self.assertEqual(result["archetype"], "forecast")
+                self.enhance_absent(self, result)
+                self.assertIn("build-forecast-model.py", "\n".join(result["nextCommands"]))
+                self.assertFalse((self.out / "macros.json").exists())
+        self.assertIn("macro-classify failed (olevba exploded)", " ".join(result["notes"]))
+
+    def test_forecast_route_seeds_through_the_setup_program_not_a_paste(self):
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path)
+        _, result = self.plan(path)
+        handoffs = result["userHandoffs"]
+        self.assertFalse(any("paste" in h.lower() for h in handoffs), handoffs)
+        program = str(self.out / "setup-program.py")
+        post = next(c for c in result["nextCommands"] if "--post" in c)
+        self.assertIn("--emit-manual-commit-program " + program, post)
+        setup = [h for h in handoffs if "setup program" in h]
+        self.assertEqual(len(setup), 1, handoffs)
+        self.assertIn("Sigma MCP Code Mode build_workbook", setup[0])
+        self.assertIn(program, setup[0])
+        self.assertIn("once", setup[0])
+        self.assertIn("rate", setup[0])
+        self.assertNotIn("Parameters", setup[0])
+
+    def test_enhanced_forecast_has_one_setup_handoff_that_also_seeds_parameters(self):
+        _, xlsm = self.macro_enabled_forecast()
+        _, result = self.plan_with_macros(xlsm, self.demo_macros(), "--enhance")
+        handoffs = result["userHandoffs"]
+        self.assertFalse(any("paste" in h.lower() for h in handoffs), handoffs)
+        setup = [h for h in handoffs if "setup program" in h]
+        self.assertEqual(len(setup), 1, handoffs)
+        self.assertIn("--workflows", setup[0])
+        self.assertIn("Parameters", setup[0])
+        self.assertIn("manual commit", setup[0])
+
+    def test_commands_start_with_the_interpreter_that_ran_the_router(self):
+        skill = self.dir / "skill"
+        venv_py = skill / ".venv" / "bin" / "python"
+        self.assertEqual(MIGRATE.interpreter(str(venv_py), skill), ".venv/bin/python")
+        outside = self.dir / "elsewhere" / "my python" / "python3.15"
+        self.assertEqual(MIGRATE.interpreter(str(outside), skill), shlex.quote(str(outside)))
+        record = {"nextCommands": ["python scripts/migrate.py plan a.xlsx", "x   # then python scripts/b.py"],
+                  "notes": ["run with python3 scripts/c.py", "mypython scripts/d.py", "python scripts"]}
+        self.assertEqual(MIGRATE.with_interpreter(record, ".venv/bin/python"),
+                         {"nextCommands": [".venv/bin/python scripts/migrate.py plan a.xlsx",
+                                           "x   # then .venv/bin/python scripts/b.py"],
+                          "notes": ["run with python3 scripts/c.py", "mypython scripts/d.py", "python scripts"]})
+
+    def test_plan_prints_no_bare_python_commands(self):
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path)
+        original = MIGRATE.PY
+        MIGRATE.PY = ".venv/bin/python"
+        try:
+            code, result = self.plan(path, "--intent", "editable", "--land-tables", "--enhance")
+        finally:
+            MIGRATE.PY = original
+        self.assertEqual(code, 0)
+        text = json.dumps(result)
+        self.assertNotRegex(text, r"(?<![\w./-])python scripts/")
+        self.assertIn(".venv/bin/python scripts/", text)
+        for command in result["nextCommands"]:
+            words = command.split()
+            if len(words) > 1 and words[1].startswith("scripts/"):
+                self.assertEqual(words[0], ".venv/bin/python", command)
+
+    def test_read_only_forecast_route_writes_no_setup_program_and_dry_runs(self):
+        import subprocess
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path)
+        code, result = self.plan(path, "--intent", "read-only")
+        self.assertEqual(code, 0)
+        everything = "\n".join(result["nextCommands"] + result["stagingAlternative"])
+        self.assertNotIn("--emit-manual-commit-program", everything)
+        self.assertNotIn("<intent>", everything)
+        self.assertIn("--intent read-only", everything)
+        self.assertFalse(any("setup program" in h for h in result["userHandoffs"]), result["userHandoffs"])
+        # run the route's own draft + dry-run build commands: a read-only plan has no input tables
+        for command in result["nextCommands"]:
+            if "--post" in command:
+                break
+            command = (command.split("   #")[0].replace("<conn>", "conn-1").replace("<folder>", "fold-1")
+                       .replace(f"{MIGRATE.PY} scripts/", f"{sys.executable} {SCRIPTS}/"))
+            import shlex
+            done = subprocess.run(shlex.split(command), capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, command + "\n" + done.stdout + done.stderr)
+        self.assertTrue((self.out / "build" / "wb_spec.json").is_file())
+        self.assertFalse((self.out / "setup-program.py").exists())
+        # editable / what-if plans have input tables: their builds write the program
+        for intent in ("editable", "what-if"):
+            _, editable = self.plan(path, "--intent", intent)
+            post = next(c for c in editable["nextCommands"] if "--post" in c)
+            self.assertIn("--emit-manual-commit-program " + str(self.out / "setup-program.py"), post)
+            self.assertTrue(any("setup program" in h for h in editable["userHandoffs"]))
+
+    def test_phase6_docs_name_the_demo_manifest_step_and_no_plan_tasks(self):
+        import re
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        phase6 = skill[skill.index("## Phase 6"):skill.index("## What this skill does NOT do")]
+        self.assertRegex(phase6, r"macro-actions\.py demo-manifest \S+ --out \S*workflows\.json")
+        self.assertNotIn("Paste seed", skill)
+        for name in ("agent-enhance.md", "input-tables.md", "forecast-recipes.md", "sigma-build-gotchas.md"):
+            text = (ROOT / "refs" / name).read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"\(Task \d+\)", text), name)
+        self.assertIsNone(re.search(r"\(Task \d+\)", phase6))
 
     def test_forecast_archetype_routes_to_drafter_then_builder(self):
         path = self.dir / "pnl.xlsx"

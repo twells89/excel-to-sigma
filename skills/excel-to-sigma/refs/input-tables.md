@@ -264,6 +264,37 @@ Use **empty + CSV** (below) instead when you're seeding **starting values**
 dimension cross-product. Use **linked** when the grain is a dimension product and
 forecasters enter net-new measures.
 
+## Manual commit: required before actions or agents can write (live-proven)
+
+Backend actions (buttons) and workbook-agent tools can only write to input tables that have
+**manual commit** enabled. A REST `POST /v2/workbooks/spec` never enables it, so a freshly
+built workbook's write actions fail until it is set. Fix, once per input table, after the
+workbook exists, through Sigma MCP Code Mode: `set_edit_mode('draft')` then
+`set_edit_mode('published-all-users')`. `published-all-users` is data entry for everyone with
+workbook access. Spec `inputMode` maps to the SDK mode as: `edit` = `draft`,
+`explore` = `published-explore`, `view` = `published-all-users`.
+`build-forecast-model.py --emit-manual-commit-program OUT.py` writes this program. After the
+mode switches it seeds, with one `InputTable.upsert_rows` batch per table (at most 2,000 rows
+each, every table and column checked with `isinstance(..., InputTable)` /
+`isinstance(..., LiteralEditableColumn)` first):
+- `rateInput` (`LINE_ITEM`, `RATE`) and `manualInput` (`LINE_ITEM`, `MONTH`, `MONTH_NUM`,
+  `MONTH_END`, `AMOUNT`) with exactly the rows of `rate_seed.csv` / `manual_seed.csv`, for an
+  editable or what-if plan;
+- the single Parameters row (Base scenario, first forecast month), only when the build had
+  `--workflows`.
+- with `--workflows`, the `versions` / `approvals` logs with the source workbook's own
+  `tblVersions` / `tblApprovals` rows (`demo_workflows.source_history`: version / request,
+  scenario, who, when, status, comment, plus `Log Order` 1..n), so the migrated workbook keeps
+  its history instead of empty logs; buttons continue the numbering (`Coalesce(Max([Log Order]), 0) + 1`).
+
+Run it once via Sigma MCP Code Mode `build_workbook`, on a fresh workbook only: the writes do
+not query first and keys are not enforced, so a second run duplicates rows. The seeds are the
+program's last statements; everything above them (formats, `table_style()` preset / grid lines /
+autofit, `set_column_width`, series colours, edit modes) only sets authoring state and is safe to
+re-run. The builder refuses to write a program whose calls do not bind against
+`scripts/lib/sdk_signatures.py` (the recorded Sigma MCP `sdk://sdk/sigma/*.py` stubs). Query the
+tables afterward to confirm the seeds and a button write land.
+
 ## Seed rows through Sigma MCP Code Mode
 
 For an existing empty input table, first `describe` and `query` it, resolve its

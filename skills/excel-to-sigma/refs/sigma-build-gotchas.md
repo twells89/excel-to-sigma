@@ -63,6 +63,19 @@ Excel path.
 - **Input-table specifics** live in `refs/input-tables.md` (write connection, empty
   source, system columns without `type`, publish gate).
 
+## Writes, agents and approvals (live-proven)
+
+- **Manual commit is required** for backend actions and workbook-agent tools to write an input
+  table; the REST spec POST never enables it. Post-create, run the MCP Code Mode program
+  `set_edit_mode('draft')` then `set_edit_mode('published-all-users')` per input table
+  (`build-forecast-model.py --emit-manual-commit-program`; its seeds of the rate / manual input
+  tables and the Parameters row are not idempotent, run the program once on a fresh workbook only). Spec `inputMode` -> SDK mode:
+  `edit` = `draft`, `explore` = `published-explore`, `view` = `published-all-users`.
+- Agent SQL that selects input-table system columns (`CREATED_BY`, ...) errors
+  "Ambiguous column reference"; select the user columns only.
+- `requiresApproval` on an agent tool is enforced in the chat UI, not over the REST/MCP run
+  API; test approval behavior in the UI.
+
 ## Auth
 
 Prefer OAuth: `eval "$(bash scripts/browser-login.sh)"` (or `sigma auth login` and
