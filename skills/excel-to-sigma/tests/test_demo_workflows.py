@@ -123,6 +123,17 @@ class NoParametersStatusTests(unittest.TestCase):
         wf = dw.workflow_elements(manifest, "conn-1", "FY27 forecast")
         self.assertEqual(wf["status"]["source"], {"kind": "table", "elementId": dw.PARAMETERS})
 
+class SetupProgramHeaderTests(unittest.TestCase):
+    def test_program_says_run_it_unchanged(self):
+        wf = dw.workflow_elements(SUBMIT_ONLY, "conn-1", "FY27 forecast")
+        import workbook_wire
+        spec = workbook_wire.wire_workbook({"name": "wb", "pages": [{"id": "p", "name": "P",
+                                                                    "elements": wf["tables"]}]})
+        program = dw.emit_manual_commit_program(spec)
+        head = program.split("\n\n", 1)[0]
+        self.assertIn("Pass this whole file unchanged as one build_workbook program", head)
+        self.assertIn("If it fails, report the error and stop.", head)
+
 
 if __name__ == "__main__":
     unittest.main()

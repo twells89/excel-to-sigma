@@ -170,6 +170,51 @@ class TestRouter(unittest.TestCase):
         self.assertFalse(any(o["flag"] == "--enhance" for o in enhanced["optIns"]))
         self.assertFalse(any("planning app" in d for d in enhanced["askUser"]))
 
+    def test_enhance_asks_who_approves_until_answered(self):
+        _, xlsm = self.macro_enabled_forecast()
+        # offered or chosen, the planning app needs the approver answer: it decides the decision buttons
+        for extra in ((), ("--enhance",)):
+            _, result = self.plan_with_macros(xlsm, self.demo_macros(), *extra)
+            self.assertIn(MIGRATE.APPROVER_DECISION, result["askUser"], extra)
+            self.assertNotIn("--approvers", json.dumps(result["nextCommands"]))
+        # answered with emails: normalised, on every enhanced build, carried into reruns; no longer asked
+        code, result = self.plan_with_macros(xlsm, self.demo_macros(), "--enhance",
+                                             "--approvers", " CFO@Example.com, cfo@example.com,vp@example.com ")
+        self.assertEqual(code, 0)
+        self.assertNotIn(MIGRATE.APPROVER_DECISION, result["askUser"])
+        builds = [c for c in result["nextCommands"] + result["stagingAlternative"] if "build-forecast-model.py" in c]
+        self.assertTrue(builds)
+        for c in builds:
+            self.assertIn("--approvers cfo@example.com,vp@example.com", c)
+        # offered (not chosen): the opt-in's commands carry the answer and its rerun keeps it
+        _, offered = self.plan_with_macros(xlsm, self.demo_macros(), "--approvers", "cfo@example.com")
+        opt = next(o for o in offered["optIns"] if o["flag"] == "--enhance")
+        self.assertIn("--approvers cfo@example.com", opt["rerun"])
+        self.assertTrue(all("--approvers cfo@example.com" in c for c in opt["nextCommands"]
+                            if "build-forecast-model.py" in c))
+        self.assertNotIn("--approvers", json.dumps(offered["nextCommands"]))   # plain build: no workflows
+        # answered none: no flag, a note, not asked again
+        _, none = self.plan_with_macros(xlsm, self.demo_macros(), "--enhance", "--approvers", "none")
+        self.assertNotIn(MIGRATE.APPROVER_DECISION, none["askUser"])
+        self.assertNotIn("--approvers", json.dumps(none["nextCommands"]))
+        self.assertTrue(any("--approvers none" in n for n in none["notes"]))
+        # a bad email is refused before anything is written
+        code, bad = self.plan_with_macros(xlsm, self.demo_macros(), "--enhance", "--approvers", "cfo")
+        self.assertEqual((code, bad), (1, None))
+
+    def test_no_planning_app_no_approver_question(self):
+        path = self.dir / "pnl.xlsx"
+        fixture.build_pnl(path)
+        _, result = self.plan(path, "--intent", "what-if")
+        self.assertNotIn(MIGRATE.APPROVER_DECISION, result["askUser"])
+        _, forced = self.plan(path, "--intent", "what-if", "--approvers", "cfo@example.com")
+        self.assertTrue(any("--approvers ignored" in n for n in forced["notes"]))
+
+    def test_setup_handoffs_say_run_the_program_as_written(self):
+        for handoff in (MIGRATE.FORECAST_SETUP_HANDOFF, MIGRATE.ENHANCE_SETUP_HANDOFF):
+            self.assertIn("unchanged as one build_workbook program", handoff)
+            self.assertIn("do not hand-edit", handoff)
+
     def test_forecast_with_tables_and_macros_lists_the_run_in_order(self):
         # The demo shape: Excel Tables + macros. Landing and Enhance are each the user's yes/no; by
         # default nextCommands is the plain build. Opted in, nextCommands is the order the run takes;

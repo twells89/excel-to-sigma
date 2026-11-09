@@ -680,6 +680,17 @@ Prerequisites the agent depends on:
   `sdk://sdk/sigma/*.py`; checked by `scripts/lib/code_mode_check.py`), so a wrong method,
   arity or value (a grid-lines or edit-mode name) stops the build instead of the one-time run.
   Refresh that file from `read_resource` when the SDK changes.
+- **Run the setup program exactly as written.** Pass the whole file unchanged as one
+  `build_workbook` program: do not shorten, split, reformat or rewrite it. If it fails, report
+  the error to the user and stop; fix the builder, not the program. Nothing can check the
+  result afterwards: Code Mode reads back the same edit mode (`published-all-users`), table
+  preset and autofit on an input table whether or not the program ran (checked live,
+  2026-11-09), so a rewritten program that drops manual commit, a seed or a style fails quietly.
+- **Ask who approves.** With `--enhance`, `migrate.py plan` lists "who approves a submitted
+  forecast?" under `askUser` until it is re-run with `--approvers EMAILS` or `--approvers none`.
+  Ask it even if the user never mentioned approvals: emails add Approve / Send back buttons that
+  only work for those approvers, and none builds no decision buttons. The answer rides every
+  build command as `--approvers`.
 - Agent SQL that touches input-table system columns (`CREATED_BY` ...) fails with
   "Ambiguous column reference"; ground tools in the user columns. See
   `refs/sigma-build-gotchas.md`.
