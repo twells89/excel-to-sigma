@@ -98,10 +98,10 @@ These were settled by the author, not the user; check them while reading.
    confirms the rebuild of that version equals today's live grid cell by cell (line × month), before
    anything changes.
 4. **Which versions are comparable:** a new boolean Versions column, `Inputs Frozen`, written `true` by
-   Snapshot. Migrated rows (seeded from the source log) and any snapshot saved before this feature
-   leave it empty, show "Numbers not recorded" (migrated) or "Saved before inputs were frozen"
-   (older Sigma snapshots), and are not offered in Compare to. Empty driver columns are never used
-   as the signal.
+   Snapshot. Migrated rows (seeded from the source log) leave it empty, show "Numbers not recorded
+   in the source", and are not offered in Compare to. Empty driver columns are never used as the
+   signal. (A fresh build cannot hold a Sigma snapshot saved before this feature, so no second label
+   is needed.)
 5. **Stored values are the effective values** the live forecast used: for a rate,
    `Coalesce(input, default rate)`; for a manual cell, `Coalesce(input, source manual value)`. A
    version is self-contained, the rebuild applies no defaults, and a later change to defaults never
