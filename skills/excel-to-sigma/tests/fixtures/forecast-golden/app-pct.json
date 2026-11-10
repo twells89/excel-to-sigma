@@ -902,6 +902,7 @@
       },
       {
        "format": {
+        "displayNullAs": "\u2014",
         "formatString": "$.3~s",
         "kind": "number"
        },
@@ -911,6 +912,7 @@
       },
       {
        "format": {
+        "displayNullAs": "\u2014",
         "formatString": "$.3~s",
         "kind": "number"
        },
@@ -988,6 +990,7 @@
       },
       {
        "format": {
+        "displayNullAs": "\u2014",
         "formatString": ",.0f",
         "kind": "number",
         "prefix": "$",

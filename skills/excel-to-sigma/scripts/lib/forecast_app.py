@@ -220,15 +220,16 @@ def compare_elements(ctx):
              "columns": [{"id": "cl_line", "name": "Line Item", "formula": "[Custom SQL/LINE_ITEM]"},
                          {"id": "cl_t", "name": "Today", "format": MILLIONS_RAW,
                           "formula": f"Lookup(Sum([{COMPARE}/Today FY]), [Line Item], [{COMPARE}/Line Item])"},
-                         {"id": "cl_v", "name": "Version", "format": MILLIONS_RAW,
+                         {"id": "cl_v", "name": "Version", "format": {**MILLIONS_RAW, "displayNullAs": NULL_DASH},
                           "formula": (f"If({picked} = 0, Null, "
                                       f"Lookup(Sum([{COMPARE}/Version FY]), [Line Item], [{COMPARE}/Line Item]))")},
-                         {"id": "cl_c", "name": "Change", "formula": "[Today] - [Version]", "format": MILLIONS_RAW},
+                         {"id": "cl_c", "name": "Change", "formula": "[Today] - [Version]",
+                          "format": {**MILLIONS_RAW, "displayNullAs": NULL_DASH}},
                          {"id": "cl_abs", "name": "Size of change", "formula": "Abs([Change])", "hidden": True}],
              "sort": [{"columnId": "cl_abs", "direction": "descending"}],
              "tableStyle": {"preset": "presentation"}, "tableComponents": {"summaryBar": "hidden"},
              "style": dict(CARD)}
-    thousands = {"kind": "number", "formatString": ",.0f", "prefix": "$", "suffix": "K"}
+    thousands = {"kind": "number", "formatString": ",.0f", "prefix": "$", "suffix": "K", "displayNullAs": NULL_DASH}
     grid = {"id": "compareGrid", "kind": "pivot-table", "name": "By line and month",
             "source": {"kind": "table", "elementId": "compareFacts"},
             "columns": [{"id": "cg_line", "name": "Line Item", "formula": f"[{COMPARE}/Line Item]"},

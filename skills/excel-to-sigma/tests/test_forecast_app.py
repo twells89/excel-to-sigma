@@ -589,6 +589,13 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual(grid.group(1), "1 / 25")
         self.assertGreaterEqual(int(grid.group(2)), int(lines.group(3)))
 
+    def test_compare_cells_show_a_dash_not_null(self):
+        b = self.by_id(self.spec())
+        for el, cols in (("compareLines", ("cl_v", "cl_c")), ("compareGrid", ("cg_amt",))):
+            fmt = {c["id"]: c.get("format", {}) for c in b[el]["columns"]}
+            for cid in cols:
+                self.assertEqual(fmt[cid].get("displayNullAs"), forecast_app.NULL_DASH, (el, cid))
+
     def test_no_frozen_version_shows_empty_state(self):
         migrated = {"ve_ver": "v0", "ve_seq": 0}
         m = self.model(date(2027, 7, 1), versions=[migrated])
