@@ -86,10 +86,10 @@ class ForecastAppTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def spec(self, workflows="default", plan_src="default", history=None, name=None):
+    def spec(self, workflows="default", plan_src="default", history=None, name=None, plan=None):
         wf = self.manifest if workflows == "default" else workflows
         ps = self.plan_src if plan_src == "default" else plan_src
-        plan = copy.deepcopy(self.plan)
+        plan = copy.deepcopy(plan or self.plan)
         if name:
             plan["name"] = name
         return self.build.build_wb_spec(plan, "dm-1", self.els, landed=self.landed,
@@ -452,7 +452,7 @@ class ForecastAppTests(unittest.TestCase):
                 june[r["line"]] = june.get(r["line"], 0.0) + float(r["amt"])
         return {line: round(amount * self.JULY_UPLIFT, 2) for line, amount in june.items()}
 
-    def model(self, start, july=False, history=None):
+    def model(self, start, july=False, history=None, controls=None, versions=None, plan=None):
         raw = [{"POSTING_DATE": date.fromisoformat(r["date"]), "MONTH": r["month"], "LINE_ITEM": r["line"],
                 "REGION": "", "AMOUNT": float(r["amt"])} for r in self.plan["actuals"]]
         if july:
@@ -466,10 +466,83 @@ class ForecastAppTests(unittest.TestCase):
                   "parameters": [] if start is None else [{"pa_start": start}]}
         for element, cols, rows in history or []:
             inputs[element] = [dict(zip(cols, r)) for r in rows]
-        dm = self.build.build_dm_spec(self.plan, self.landed, self.plan_src, app=True)
-        return pe.Model(self.spec(history=history), dm,
+        if versions is not None:
+            inputs["versions"] = list(versions)
+        P = plan or self.plan
+        dm = self.build.build_dm_spec(P, self.landed, self.plan_src, app=True)
+        return pe.Model(self.spec(history=history, plan=plan), dm,
                         warehouse={"FPA_X_ACTUALS": raw, "FPA_X_PLAN": plan_rows},
-                        inputs=inputs, controls={"Scenario": "Base"})
+                        inputs=inputs, controls={"Scenario": "Base", "CompareTo": None, **(controls or {})})
+
+    # ---------------------------------------------------------------- versions: rebuild
+    def snapshot(self, m, scenario="Base", log_order=1):
+        """The Versions row the Snapshot button writes, evaluated over model ``m`` (who / when stubbed)."""
+        (effect,) = self.by_id(self.spec())["btnSnapshot"]["actions"][0]["effects"]
+        row = {}
+        for cid, value in effect["values"].items():
+            if value["type"] == "constant":
+                row[cid] = value["value"]["value"]
+            elif value["type"] == "control":
+                row[cid] = scenario
+            elif "CurrentUserEmail" in value["formula"]:
+                row[cid] = "fpa@example.com"
+            elif value["formula"] == "Now()":
+                row[cid] = date(2027, 7, 15)
+            else:
+                row[cid] = m.scalar(value["formula"])
+        row["ve_seq"] = log_order
+        return row
+
+    @staticmethod
+    def grid(rows):
+        return {(r["Line Item"], r["Month Num"]): round(r["Amount"], 2) for r in rows}
+
+    def test_rebuild_of_a_fresh_snapshot_equals_today_cell_by_cell(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m)
+        self.assertEqual(v1[dw.INPUTS_FROZEN[0]], dw.FROZEN)
+        m2 = self.model(date(2027, 7, 1), versions=[v1])
+        today, version = self.grid(m2.rows("pnlCombined")), self.grid(m2.rows("versionCombined"))
+        self.assertTrue(today)
+        self.assertEqual(version, today)
+
+    def test_rebuild_uses_the_versions_scenario_not_the_switch(self):
+        upside = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"})
+        v1 = self.snapshot(upside, scenario="Upside")
+        m = self.model(date(2027, 7, 1), versions=[v1])          # live switch back on Base
+        self.assertEqual(self.grid(m.rows("versionCombined")), self.grid(upside.rows("pnlCombined")))
+        self.assertNotEqual(self.grid(m.rows("versionCombined")), self.grid(m.rows("pnlCombined")))
+
+    def test_rebuild_keeps_the_versions_start_month_after_roll_forward(self):
+        before = self.model(date(2027, 7, 1), july=True)
+        v1 = self.snapshot(before)
+        after = self.model(date(2027, 8, 1), july=True, versions=[v1])
+        def july(rows):
+            return {r["Line Item"]: r for r in rows if r["Month Num"] == 19}
+        self.assertEqual({r["Period"] for r in july(after.rows("versionCombined")).values()}, {"Forecast"})
+        self.assertEqual({r["Period"] for r in july(after.rows("pnlCombined")).values()}, {"Actual"})
+        self.assertEqual(self.grid(after.rows("versionCombined")), self.grid(before.rows("pnlCombined")))
+
+    def test_compare_to_picks_the_named_version_else_the_latest_frozen_one(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m, log_order=1)
+        up = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"})
+        v2 = {**self.snapshot(up, scenario="Upside", log_order=2), "ve_ver": "v2"}
+        migrated = {"ve_ver": "v0", "ve_seq": 0}                   # a seeded history row: never frozen
+        latest = self.model(date(2027, 7, 1), versions=[migrated, v1, v2])
+        self.assertEqual(self.grid(latest.rows("versionCombined")), self.grid(up.rows("pnlCombined")))
+        named = self.model(date(2027, 7, 1), versions=[migrated, v1, v2], controls={"CompareTo": "v1"})
+        self.assertEqual(self.grid(named.rows("versionCombined")), self.grid(m.rows("pnlCombined")))
+        self.assertEqual([r["Version"] for r in latest.rows("frozenVersions")], ["v1", "v2"])
+
+    def test_rebuild_runs_the_pct_second_pass(self):
+        pct = copy.deepcopy(self.plan)
+        line = next(ln for ln in pct["lines"] if ln["kind"] == "growth" and ln["section"] != "Revenue")
+        line.update({"kind": "pct_of_total", "of": "Revenue", "rate": 0.1})
+        m = self.model(date(2027, 7, 1), plan=pct)
+        v1 = self.snapshot(m)
+        m2 = self.model(date(2027, 7, 1), plan=pct, versions=[v1])
+        self.assertEqual(self.grid(m2.rows("versionCombined")), self.grid(m2.rows("pnlCombined")))
 
     @staticmethod
     def first_money(model, body):
