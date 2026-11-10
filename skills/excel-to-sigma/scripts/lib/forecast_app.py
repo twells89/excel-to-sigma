@@ -151,6 +151,8 @@ COMPARE_SHOW = "CompareShow"
 NOT_RECORDED = "Numbers not recorded in the source"
 REBUILT_NOTE = "Rebuilt from the saved inputs with actuals as they are now"
 NO_VERSIONS = "No saved versions to compare yet"
+AMBIGUOUS = "More than one saved version matches; pick one in Compare to"
+PICK_ONE = "Pick a saved version in Compare to"
 
 
 def compare_sum(coefficients, which, fy_nums):
@@ -176,10 +178,12 @@ def compare_elements(ctx):
                 "columns": [{"id": f"{eid}_{k}", "name": n, "formula": f"[{src}/{n}]"}
                             for k, n in (("sec", "Section"), ("line", "Line Item"), ("lo", "Line Order"),
                                          ("m", "Month"), ("mn", "Month Num"), ("amt", "Amount"))]
-                + [{"id": f"{eid}_w", "name": "Which", "formula": f'"{which}"'}]}
+                + [{"id": f"{eid}_w", "name": "Which", "formula": f'"{which}"'},
+                   {"id": f"{eid}_vl", "name": "Version Label",
+                    "formula": '"Today"' if which == "Today" else "Max([Version Pick/Version])"}]}
     today, version = side("todayFacts", "Today Facts", "pnlCombined", "Today"), \
         side("versionFacts", "Version Facts", "versionCombined", "Version")
-    names = ["Section", "Line Item", "Line Order", "Month", "Month Num", "Amount", "Which"]
+    names = ["Section", "Line Item", "Line Order", "Month", "Month Num", "Amount", "Which", "Version Label"]
     U = "Union of 2 Sources"
     in_fy = (f"[Month Num] >= {fy[0]} and [Month Num] <= {fy[-1]}" if fy else "True")
     facts = {"id": "compareFacts", "kind": "table", "name": COMPARE,
@@ -192,7 +196,8 @@ def compare_elements(ctx):
                 {"id": "cf_tfy", "name": "Today FY", "formula": f"If({in_fy}, [Today Amount], 0)"},
                 {"id": "cf_vfy", "name": "Version FY", "formula": f"If({in_fy}, [Version Amount], 0)"}]}
     head = text("compareHead", "## Compare to a saved version\n" + span(
-        f'{{{{If(Count([Frozen Versions/Version]) = 0, "{NO_VERSIONS}", "{REBUILT_NOTE}")}}}}', MUTED, 13), "top")
+        f'{{{{If(Count([Frozen Versions/Version]) = 0, "{NO_VERSIONS}", Count([Version Pick/Version]) > 1, '
+        f'"{AMBIGUOUS}", Count([Version Pick/Version]) = 0, "{PICK_ONE}", "{REBUILT_NOTE}")}}}}', MUTED, 13), "top")
     show = {"id": "ctlCompareShow", "kind": "control", "controlId": COMPARE_SHOW, "name": "Show",
             "controlType": "segmented", "selectionMode": "single", "value": "Change",
             "source": {"kind": "manual", "valueType": "text", "values": ["Today", "Version", "Change"]}}
@@ -202,18 +207,19 @@ def compare_elements(ctx):
     if len(rows) >= 2:
         picks.append(("cmpMargin", sentence(rows[0]["label"]), rows[0]["coefficients"]))
     picks.append(("cmpProfit", sentence(rows[kpi["bottom"]]["label"]), rows[kpi["bottom"]]["coefficients"]))
-    picked = "Count([Version Pick/Version])"
+    picked = "Count([Version Pick/Version])"   # exactly 1 when a version is compared
     def money_or_dash(expr):
         # a text format pipe prints a NULL as "null": no version picked reads as a dash instead
         r = f"Round(({expr}) / 1000000, 1)"
-        return (f'{{{{If({picked} = 0, "{NULL_DASH}", Concat(If({r} < 0, "-$", "$"), Text(Abs({r})), "M"))}}}}')
+        return (f'{{{{If({picked} != 1, "{NULL_DASH}", Concat(If({r} < 0, "-$", "$"), Text(Abs({r})), "M"))}}}}')
     cards = []
     for eid, title, coef in picks:
         t, ver = compare_sum(coef, "Today", fy), compare_sum(coef, "Version", fy)
         cards.append(text(eid, kpi_body(title, money_m(t), span("Version ", MUTED) + span(money_or_dash(ver), INK),
                                         span("Change since version ", MUTED)
                                         + span(money_or_dash(f"{t} - ({ver})"), INK))))
-    lines_sql = ("select * from (values\n" + ",\n".join(f"('{esc(n).replace(chr(39), chr(39) * 2)}', {o})"
+    # SQL literals: the line name exactly as written, apostrophes doubled (never the markdown escaper)
+    lines_sql = ("select * from (values\n" + ",\n".join(f"('{n.replace(chr(39), chr(39) * 2)}', {o})"
                                                       for n, o in v["lines"]) + "\n) as t(LINE_ITEM, LINE_ORDER)")
     lines = {"id": "compareLines", "kind": "table", "name": "Change by line",
              "source": {"kind": "sql", "connectionId": v["connection"], "statement": lines_sql},
@@ -221,7 +227,7 @@ def compare_elements(ctx):
                          {"id": "cl_t", "name": "Today", "format": MILLIONS_RAW,
                           "formula": f"Lookup(Sum([{COMPARE}/Today FY]), [Line Item], [{COMPARE}/Line Item])"},
                          {"id": "cl_v", "name": "Version", "format": {**MILLIONS_RAW, "displayNullAs": NULL_DASH},
-                          "formula": (f"If({picked} = 0, Null, "
+                          "formula": (f"If({picked} != 1, Null, "
                                       f"Lookup(Sum([{COMPARE}/Version FY]), [Line Item], [{COMPARE}/Line Item]))")},
                          {"id": "cl_c", "name": "Change", "formula": "[Today] - [Version]",
                           "format": {**MILLIONS_RAW, "displayNullAs": NULL_DASH}},
@@ -238,7 +244,7 @@ def compare_elements(ctx):
                         {"id": "cg_mn", "name": "Month Num", "formula": f"[{COMPARE}/Month Num]"},
                         {"id": "cg_fy", "name": "In FY", "formula": f'If({in_fy.replace("[Month Num]", f"[{COMPARE}/Month Num]")}, "Yes", "No")', "hidden": True},
                         {"id": "cg_amt", "name": "Amount", "format": thousands,
-                         "formula": (f'If({picked} = 0 and [{COMPARE_SHOW}] != "Today", Null, '
+                         "formula": (f'If({picked} != 1 and [{COMPARE_SHOW}] != "Today", Null, '
                                      f'Sum(Switch([{COMPARE_SHOW}], "Today", [{COMPARE}/Today Amount], "Version", '
                                      f'[{COMPARE}/Version Amount], [{COMPARE}/Today Amount] - [{COMPARE}/Version Amount])) / 1000)')}],
             "values": ["cg_amt"],

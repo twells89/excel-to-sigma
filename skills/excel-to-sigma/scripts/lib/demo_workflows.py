@@ -84,16 +84,25 @@ class DriverColumn(NamedTuple):
     default: float         # the plan's value: what the live forecast uses when no input row exists
 
 
+def _column_name(text):
+    """A Sigma column name a formula path can carry: slashes and brackets become spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[/\[\]]+", " ", text)).strip()
+
+
 def version_drivers(P):
     """One Versions column per growth-rate line (plan order) and per manual line x forecast month."""
     import forecast_calc as calc
-    out = [DriverColumn(f"ve_r{i}", f"{ln['line']} rate", "rate", ln["line"], None, ln["rate"])
+    for ln in P["lines"]:
+        if '"' in ln["line"] or "\\" in ln["line"]:
+            raise WorkflowError(f"line item {ln['line']!r} contains a quote or backslash; a driver formula "
+                                "cannot name it")
+    out = [DriverColumn(f"ve_r{i}", _column_name(f"{ln['line']} rate"), "rate", ln["line"], None, ln["rate"])
            for i, ln in enumerate(l for l in P["lines"] if l["kind"] in RATE_KINDS)]
     manual = [ln for ln in P["lines"] if ln["kind"] == "manual"]
     if manual:
         periods, n_act = calc.plan_periods(P)
         months = calc.month_views(periods)[n_act:]
-        out += [DriverColumn(f"ve_m{i}_{m['num']}", f"{ln['line']} {m['month']}", "manual", ln["line"], m["num"],
+        out += [DriverColumn(f"ve_m{i}_{m['num']}", _column_name(f"{ln['line']} {m['month']}"), "manual", ln["line"], m["num"],
                              ln["manual"][j])
                 for i, ln in enumerate(manual) for j, m in enumerate(months)]
     return out

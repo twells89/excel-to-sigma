@@ -618,6 +618,48 @@ class ForecastAppTests(unittest.TestCase):
         self.assertEqual(comparable["v0"], "Numbers not recorded in the source")
         self.assertEqual(comparable["v1"], "Pick it in Compare to")
 
+    # ---------------------------------------------------------------- versions: final-review fixes
+    @staticmethod
+    def sums(rows):
+        out = {}
+        for r in rows:
+            key = (r["Line Item"], r["Month Num"])
+            out[key] = round(out.get(key, 0.0) + r["Amount"], 2)
+        return out
+
+    def test_rebuild_survives_the_start_month_moving_back(self):
+        # snapshot after Roll forward (Aug-27, July landed), then the start month is put back to Jul-27
+        aug = self.model(date(2027, 8, 1), july=True)
+        v = self.snapshot(aug)
+        back = self.model(date(2027, 7, 1), july=True, versions=[v])
+        self.assertEqual(self.sums(back.rows("versionCombined")), self.sums(aug.rows("pnlCombined")))
+
+    def test_two_frozen_rows_with_the_same_log_order_are_not_blended(self):
+        m = self.model(date(2027, 7, 1))
+        up = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"})
+        a = {**self.snapshot(m, log_order=5), "ve_ver": "v5"}
+        b = {**self.snapshot(up, scenario="Upside", log_order=5), "ve_ver": "v5b"}
+        both = self.model(date(2027, 7, 1), versions=[a, b])
+        self.assertEqual(both.rows("versionCombined"), [])
+        head = self.render(both, self.by_id(self.spec())["compareHead"]["body"])
+        self.assertIn("More than one saved version matches", head)
+        named = self.model(date(2027, 7, 1), versions=[a, b], controls={"CompareTo": "v5b"})
+        self.assertEqual(self.sums(named.rows("versionCombined")), self.sums(up.rows("pnlCombined")))
+
+    def test_change_by_line_keeps_line_names_as_written(self):
+        plan = copy.deepcopy(self.plan)
+        plan["lines"][0]["line"] = "R&D <Opex> O'Neil"
+        sql = self.by_id(self.spec(plan=plan))["compareLines"]["source"]["statement"]
+        self.assertIn("'R&D <Opex> O''Neil'", sql)
+        self.assertNotIn("&amp;", sql)
+
+    def test_compare_facts_name_the_version(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m)
+        m2 = self.model(date(2027, 7, 1), versions=[v1])
+        labels = {r["Which"]: r["Version Label"] for r in m2.rows("compareFacts")}
+        self.assertEqual(labels, {"Today": "Today", "Version": "v1"})
+
     @staticmethod
     def first_money(model, body):
         """The first ``$x.xM`` figure of a KPI card body, evaluated (the card's own emitted formula)."""

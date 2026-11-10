@@ -175,6 +175,17 @@ class VersionDriverTests(unittest.TestCase):
         manual = next(d for d in drivers if d.kind == "manual" and d.month_num == 26)
         self.assertEqual((manual.line, manual.name, manual.default), ("LATAM Opex", "LATAM Opex Aug-27", 615000.0))
 
+    def test_driver_names_are_safe_column_paths(self):
+        plan = json.loads(json.dumps(PLAN))
+        plan["lines"][0]["line"] = "Salaries/Wages [US]"
+        rate = dw.version_drivers(plan)[0]
+        self.assertEqual(rate.line, "Salaries/Wages [US]")
+        self.assertEqual(rate.name, "Salaries Wages US rate")
+        self.assertIn('= "Salaries/Wages [US]"', dw.driver_formula(rate))
+        plan["lines"][0]["line"] = 'Say "hi"'
+        with self.assertRaisesRegex(dw.WorkflowError, "quote"):
+            dw.version_drivers(plan)
+
     def test_snapshot_writes_every_driver_and_inputs_frozen(self):
         drivers = dw.version_drivers(PLAN)
         wf = self.elements(drivers=drivers)

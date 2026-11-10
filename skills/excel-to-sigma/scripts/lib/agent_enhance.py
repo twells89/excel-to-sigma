@@ -201,8 +201,10 @@ def _instructions(rec, name, scenario_control=None, grounding=(), plan=False):
         lines.append('To save the current numbers as a version call @tool("snapshot-version").')
     if "compareFacts" in grounding:
         lines.append('@dataSource("compareFacts") holds today\'s forecast and the saved version picked in Compare '
-                     'to, by line item and month (Which = Today or Version). Answer "what changed since a version" '
-                     'from it; the Compare to control picks the version, the latest saved one by default.')
+                     'to, by line item and month (Which = Today or Version; Version Label names the version). Answer '
+                     '"what changed since a version" from it and always say which version you compared. It holds one '
+                     'version at a time, the latest saved one unless another is picked in Compare to: if the user asks '
+                     'about a different version, tell them to pick it in Compare to.')
     if "submit-approval" in ids:
         lines.append('To submit the forecast for approval call @tool("submit-approval"). Never send email.')
     if DRIVER_ID in ids:

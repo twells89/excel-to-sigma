@@ -763,6 +763,7 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
     does not carry. The actuals keep their constant Period label.
     """
     S = bnd["start_key"]
+    A = actuals["name"]   # the element this stage's own actuals window lives in (live: "Actuals")
     actuals["columns"] += [
         {"id": "a_mk", "name": "Month Key", "formula": month_key(f"[{actuals_prefix(actuals)}/Month End]")},
         {"id": "a_win", "name": "Window", "formula": f'If([Month Key] < {S}, "Actual", "Forecast")'}]
@@ -777,11 +778,11 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
         {"id": "f_sk", "name": "Start Key", "formula": S},
         {"id": "f_bk", "name": "Base Key", "formula": "[Start Key] - 1"},
         {"id": "f_land", "name": "Landed",
-         "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Month Key], [Actuals/Month Key])"},
+         "formula": f"Lookup(Sum([{A}/Amount]), [Line Item], [{A}/Line Item], [Month Key], [{A}/Month Key])"},
         {"id": "f_win", "name": "Window", "formula": (f'If([Month Key] >= [Start Key], "Forecast", IsNull([Landed]), '
                                                        f'"{forecast_app.AWAITING}", "Actual")')},
         {"id": "f_la", "name": "Last Actual",
-         "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Base Key], [Actuals/Month Key])"},
+         "formula": f"Lookup(Sum([{A}/Amount]), [Line Item], [{A}/Line Item], [Base Key], [{A}/Month Key])"},
         {"id": "f_seed", "name": "Seed",
          "formula": ('Coalesce([Last Actual], If([Kind] = "flat", [June Base], '
                      f'[June Base] * (1 + [Eff Rate]) ^ ([Base Key] - {bnd["last_key"]})))')}]
@@ -966,13 +967,14 @@ def version_elements(P, drivers, actuals_base, *, spreads, cur, boundary, sec_co
     # "Versions" also names the visible log view, so a cross-element reference goes through the unique
     # "Frozen Versions"; the pick itself reads the Versions table directly (its own source).
     latest = "Max([Frozen Versions/Log Order])"
+    latest_of = f"Max(If([Frozen Versions/Version] = [{COMPARE_CONTROL}], [Frozen Versions/Log Order]))"
     pick = {"id": "versionPick", "kind": "table", "name": "Version Pick",
             "source": {"kind": "table", "elementId": demo_workflows.VERSIONS},
             "columns": cols(V, "vp") + [
                 {"id": "vp_pick", "name": "Picked",
                  "formula": (f'If([{V}/{frozen_name}] = "{demo_workflows.FROZEN}", '
                              f'If(IsNull([{COMPARE_CONTROL}]), If([Log Order] = {latest}, "Yes", "No"), '
-                             f'If([Version] = [{COMPARE_CONTROL}], "Yes", "No")), "No")')}],
+                             f'If([Version] = [{COMPARE_CONTROL}] and [Log Order] = {latest_of}, "Yes", "No")), "No")')}],
             "filters": [{"id": "vp_f", "columnId": "vp_pick", "kind": "list", "mode": "include", "values": ["Yes"]}]}
     actuals = {**copy.deepcopy(actuals_base), "id": "versionActuals", "name": "Version Actuals"}
     stages = forecast_stage_elements(P, version_stage_inputs(P, drivers, spreads), editable=True, spreads=spreads,
@@ -980,9 +982,9 @@ def version_elements(P, drivers, actuals_base, *, spreads, cur, boundary, sec_co
                                      ids=VERSION_STAGE_IDS)
     combined = combined_element("versionCombined", "Version Combined", "versionActuals", stages[-1]["id"],
                                 sec_cols, cur)
-    # nothing picked (no frozen version yet): no version rows, rather than a forecast with no boundary
+    # exactly one picked row, else no version rows: nothing frozen yet, or two frozen rows tie (never blended)
     combined["columns"].append({"id": "c_hasv", "name": "Has Version", "hidden": True,
-                                "formula": 'If(Count([Version Pick/Version]) > 0, "Yes", "No")'})
+                                "formula": 'If(Count([Version Pick/Version]) = 1, "Yes", "No")'})
     combined["filters"] = [{"id": "c_hasv_f", "columnId": "c_hasv", "kind": "list", "mode": "include",
                             "values": ["Yes"]}]
     control = {"id": "ctlCompareTo", "kind": "control", "controlId": COMPARE_CONTROL, "name": "Compare to",

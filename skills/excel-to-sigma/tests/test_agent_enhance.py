@@ -286,6 +286,8 @@ class AgentEnhanceTests(unittest.TestCase):
         agent = frag["agents"][0]
         self.assertIn("compareFacts", [d.get("elementId") for d in agent.get("dataSources", [])])
         self.assertIn('@dataSource("compareFacts")', agent["instructions"])
+        self.assertIn("Version Label", agent["instructions"])
+        self.assertIn("say which version", agent["instructions"])
         bare = ae.agent_document_fragment(rec, "A", ["forecast", "versions"],
                                           effects_by_action=eff)["agents"][0]["instructions"]
         self.assertNotIn("compareFacts", bare)

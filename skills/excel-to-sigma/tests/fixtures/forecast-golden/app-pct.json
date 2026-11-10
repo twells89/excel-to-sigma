@@ -825,7 +825,7 @@
      "verticalAlign": "top"
     },
     {
-     "body": "## Compare to a saved version\n<span style=\"color: #64748B; font-size: 13px\">{{If(Count([Frozen Versions/Version]) = 0, \"No saved versions to compare yet\", \"Rebuilt from the saved inputs with actuals as they are now\")}}</span>",
+     "body": "## Compare to a saved version\n<span style=\"color: #64748B; font-size: 13px\">{{If(Count([Frozen Versions/Version]) = 0, \"No saved versions to compare yet\", Count([Version Pick/Version]) > 1, \"More than one saved version matches; pick one in Compare to\", Count([Version Pick/Version]) = 0, \"Pick a saved version in Compare to\", \"Rebuilt from the saved inputs with actuals as they are now\")}}</span>",
      "id": "compareHead",
      "kind": "text",
      "verticalAlign": "top"
@@ -867,19 +867,19 @@
      "value": "Change"
     },
     {
-     "body": "<span style=\"color: #64748B; font-size: 13px\">FY27 revenue</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) = 0, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) = 0, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
+     "body": "<span style=\"color: #64748B; font-size: 13px\">FY27 revenue</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
      "id": "cmpRevenue",
      "kind": "text",
      "verticalAlign": "center"
     },
     {
-     "body": "<span style=\"color: #64748B; font-size: 13px\">Gross margin</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) = 0, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) = 0, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
+     "body": "<span style=\"color: #64748B; font-size: 13px\">Gross margin</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
      "id": "cmpMargin",
      "kind": "text",
      "verticalAlign": "center"
     },
     {
-     "body": "<span style=\"color: #64748B; font-size: 13px\">EBITDA</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) = 0, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) = 0, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
+     "body": "<span style=\"color: #64748B; font-size: 13px\">EBITDA</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
      "id": "cmpProfit",
      "kind": "text",
      "verticalAlign": "center"
@@ -906,7 +906,7 @@
         "formatString": "$.3~s",
         "kind": "number"
        },
-       "formula": "If(Count([Version Pick/Version]) = 0, Null, Lookup(Sum([Compare Facts/Version FY]), [Line Item], [Compare Facts/Line Item]))",
+       "formula": "If(Count([Version Pick/Version]) != 1, Null, Lookup(Sum([Compare Facts/Version FY]), [Line Item], [Compare Facts/Line Item]))",
        "id": "cl_v",
        "name": "Version"
       },
@@ -996,7 +996,7 @@
         "prefix": "$",
         "suffix": "K"
        },
-       "formula": "If(Count([Version Pick/Version]) = 0 and [CompareShow] != \"Today\", Null, Sum(Switch([CompareShow], \"Today\", [Compare Facts/Today Amount], \"Version\", [Compare Facts/Version Amount], [Compare Facts/Today Amount] - [Compare Facts/Version Amount])) / 1000)",
+       "formula": "If(Count([Version Pick/Version]) != 1 and [CompareShow] != \"Today\", Null, Sum(Switch([CompareShow], \"Today\", [Compare Facts/Today Amount], \"Version\", [Compare Facts/Version Amount], [Compare Facts/Today Amount] - [Compare Facts/Version Amount])) / 1000)",
        "id": "cg_amt",
        "name": "Amount"
       }
@@ -2058,7 +2058,7 @@
        "name": "LATAM Opex Dec-27"
       },
       {
-       "formula": "If([Versions/Inputs Frozen] = \"Yes\", If(IsNull([CompareTo]), If([Log Order] = Max([Frozen Versions/Log Order]), \"Yes\", \"No\"), If([Version] = [CompareTo], \"Yes\", \"No\")), \"No\")",
+       "formula": "If([Versions/Inputs Frozen] = \"Yes\", If(IsNull([CompareTo]), If([Log Order] = Max([Frozen Versions/Log Order]), \"Yes\", \"No\"), If([Version] = [CompareTo] and [Log Order] = Max(If([Frozen Versions/Version] = [CompareTo], [Frozen Versions/Log Order])), \"Yes\", \"No\")), \"No\")",
        "id": "vp_pick",
        "name": "Picked"
       }
@@ -2248,7 +2248,7 @@
        "name": "Base Key"
       },
       {
-       "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Month Key], [Actuals/Month Key])",
+       "formula": "Lookup(Sum([Version Actuals/Amount]), [Line Item], [Version Actuals/Line Item], [Month Key], [Version Actuals/Month Key])",
        "id": "f_land",
        "name": "Landed"
       },
@@ -2258,7 +2258,7 @@
        "name": "Window"
       },
       {
-       "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Base Key], [Actuals/Month Key])",
+       "formula": "Lookup(Sum([Version Actuals/Amount]), [Line Item], [Version Actuals/Line Item], [Base Key], [Version Actuals/Month Key])",
        "id": "f_la",
        "name": "Last Actual"
       },
@@ -2459,7 +2459,7 @@
        "name": "OpEx Amt"
       },
       {
-       "formula": "If(Count([Version Pick/Version]) > 0, \"Yes\", \"No\")",
+       "formula": "If(Count([Version Pick/Version]) = 1, \"Yes\", \"No\")",
        "hidden": true,
        "id": "c_hasv",
        "name": "Has Version"
@@ -3094,6 +3094,11 @@
        "formula": "\"Today\"",
        "id": "todayFacts_w",
        "name": "Which"
+      },
+      {
+       "formula": "\"Today\"",
+       "id": "todayFacts_vl",
+       "name": "Version Label"
       }
      ],
      "id": "todayFacts",
@@ -3140,6 +3145,11 @@
        "formula": "\"Version\"",
        "id": "versionFacts_w",
        "name": "Which"
+      },
+      {
+       "formula": "Max([Version Pick/Version])",
+       "id": "versionFacts_vl",
+       "name": "Version Label"
       }
      ],
      "id": "versionFacts",
@@ -3186,6 +3196,11 @@
        "formula": "[Union of 2 Sources/Which]",
        "id": "cf_6",
        "name": "Which"
+      },
+      {
+       "formula": "[Union of 2 Sources/Version Label]",
+       "id": "cf_7",
+       "name": "Version Label"
       },
       {
        "formula": "If([Which] = \"Today\", [Amount], 0)",
@@ -3261,6 +3276,13 @@
         "sourceColumns": [
          "[Which]",
          "[Which]"
+        ]
+       },
+       {
+        "outputColumnName": "Version Label",
+        "sourceColumns": [
+         "[Version Label]",
+         "[Version Label]"
         ]
        }
       ],
