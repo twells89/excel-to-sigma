@@ -563,11 +563,10 @@ class ForecastAppTests(unittest.TestCase):
         live = self.kpis(m2)
         for card, name in (("cmpRevenue", "Revenue"), ("cmpMargin", "Gross Margin"), ("cmpProfit", "EBITDA")):
             text = self.render(m2, b[card]["body"])
-            today, version, change = (m2.scalar(e) for e in re.findall(r"\{\{\((.*?)\) / 1000000 \|", b[card]["body"]))
-            self.assertAlmostEqual(today, live[name], places=2, msg=card)
-            self.assertAlmostEqual(version, live[name], places=2, msg=card)
-            self.assertAlmostEqual(change, 0.0, places=2, msg=card)
-            self.assertIn("Version", text)
+            self.assertNotIn("null", text.lower(), card)
+            want = f"${round(live[name] / 1e6, 1):g}M"
+            self.assertIn(f"Version {want}", text, card)
+            self.assertIn("Change since version $0M", text, card)
         lines = m2.rows("compareLines")
         self.assertTrue(lines)
         self.assertTrue(all(abs(r["Change"]) < 0.005 for r in lines))
@@ -582,17 +581,25 @@ class ForecastAppTests(unittest.TestCase):
         moved = sorted(lines, key=lambda r: -abs(r["Change"]))
         self.assertGreater(abs(moved[0]["Change"]), 0)
 
+    def test_compare_grid_spans_the_page_below_the_line_changes(self):
+        wired = self.build.workbook_wire.wire_workbook(self.spec())["contents"]["layout"]
+        pg = wired.split('id="pgVersions"')[1].split("</Page>")[0]
+        grid = re.search(r'elementId="compareGrid" gridColumn="([^"]+)" gridRow="(\d+) / (\d+)"', pg)
+        lines = re.search(r'elementId="compareLines" gridColumn="([^"]+)" gridRow="(\d+) / (\d+)"', pg)
+        self.assertEqual(grid.group(1), "1 / 25")
+        self.assertGreaterEqual(int(grid.group(2)), int(lines.group(3)))
+
     def test_no_frozen_version_shows_empty_state(self):
         migrated = {"ve_ver": "v0", "ve_seq": 0}
         m = self.model(date(2027, 7, 1), versions=[migrated])
         head = self.render(m, self.by_id(self.spec())["compareHead"]["body"])
         self.assertIn("No saved versions to compare yet", head)
         self.assertEqual(m.rows("versionCombined"), [])
-        body = self.by_id(self.spec())["cmpRevenue"]["body"]
-        today, version, change = (m.scalar(e) for e in re.findall(r"\{\{\((.*?)\) / 1000000 \|", body))
-        self.assertIsNotNone(today)
-        self.assertIsNone(version)
-        self.assertIsNone(change)
+        text = self.render(m, self.by_id(self.spec())["cmpRevenue"]["body"])
+        self.assertNotIn("null", text.lower())
+        self.assertIn("Version \u2014", text)
+        self.assertIn("Change since version \u2014", text)
+        self.assertTrue(all(r["Version"] is None and r["Change"] is None for r in m.rows("compareLines")))
         frozen = self.model(date(2027, 7, 1), versions=[migrated, self.snapshot(self.model(date(2027, 7, 1)))])
         self.assertIn("Rebuilt from the saved inputs with actuals as they are now",
                       self.render(frozen, self.by_id(self.spec())["compareHead"]["body"]))

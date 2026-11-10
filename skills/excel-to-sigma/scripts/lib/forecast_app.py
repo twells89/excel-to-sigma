@@ -202,13 +202,17 @@ def compare_elements(ctx):
     if len(rows) >= 2:
         picks.append(("cmpMargin", sentence(rows[0]["label"]), rows[0]["coefficients"]))
     picks.append(("cmpProfit", sentence(rows[kpi["bottom"]]["label"]), rows[kpi["bottom"]]["coefficients"]))
+    picked = "Count([Version Pick/Version])"
+    def money_or_dash(expr):
+        # a text format pipe prints a NULL as "null": no version picked reads as a dash instead
+        r = f"Round(({expr}) / 1000000, 1)"
+        return (f'{{{{If({picked} = 0, "{NULL_DASH}", Concat(If({r} < 0, "-$", "$"), Text(Abs({r})), "M"))}}}}')
     cards = []
     for eid, title, coef in picks:
-        t = compare_sum(coef, "Today", fy)
-        # no version picked: the Version and Change figures are blank, not $0
-        ver = f"If(Count([Version Pick/Version]) = 0, Null, {compare_sum(coef, 'Version', fy)})"
-        cards.append(text(eid, kpi_body(title, money_m(t), span("Version ", MUTED) + span(money_m(ver), INK),
-                                        span("Change since version ", MUTED) + span(money_m(f"{t} - ({ver})"), INK))))
+        t, ver = compare_sum(coef, "Today", fy), compare_sum(coef, "Version", fy)
+        cards.append(text(eid, kpi_body(title, money_m(t), span("Version ", MUTED) + span(money_or_dash(ver), INK),
+                                        span("Change since version ", MUTED)
+                                        + span(money_or_dash(f"{t} - ({ver})"), INK))))
     lines_sql = ("select * from (values\n" + ",\n".join(f"('{esc(n).replace(chr(39), chr(39) * 2)}', {o})"
                                                       for n, o in v["lines"]) + "\n) as t(LINE_ITEM, LINE_ORDER)")
     lines = {"id": "compareLines", "kind": "table", "name": "Change by line",
@@ -217,7 +221,8 @@ def compare_elements(ctx):
                          {"id": "cl_t", "name": "Today", "format": MILLIONS_RAW,
                           "formula": f"Lookup(Sum([{COMPARE}/Today FY]), [Line Item], [{COMPARE}/Line Item])"},
                          {"id": "cl_v", "name": "Version", "format": MILLIONS_RAW,
-                          "formula": f"Lookup(Sum([{COMPARE}/Version FY]), [Line Item], [{COMPARE}/Line Item])"},
+                          "formula": (f"If({picked} = 0, Null, "
+                                      f"Lookup(Sum([{COMPARE}/Version FY]), [Line Item], [{COMPARE}/Line Item]))")},
                          {"id": "cl_c", "name": "Change", "formula": "[Today] - [Version]", "format": MILLIONS_RAW},
                          {"id": "cl_abs", "name": "Size of change", "formula": "Abs([Change])", "hidden": True}],
              "sort": [{"columnId": "cl_abs", "direction": "descending"}],
@@ -232,8 +237,9 @@ def compare_elements(ctx):
                         {"id": "cg_mn", "name": "Month Num", "formula": f"[{COMPARE}/Month Num]"},
                         {"id": "cg_fy", "name": "In FY", "formula": f'If({in_fy.replace("[Month Num]", f"[{COMPARE}/Month Num]")}, "Yes", "No")', "hidden": True},
                         {"id": "cg_amt", "name": "Amount", "format": thousands,
-                         "formula": (f'Sum(Switch([{COMPARE_SHOW}], "Today", [{COMPARE}/Today Amount], "Version", '
-                                     f'[{COMPARE}/Version Amount], [{COMPARE}/Today Amount] - [{COMPARE}/Version Amount])) / 1000')}],
+                         "formula": (f'If({picked} = 0 and [{COMPARE_SHOW}] != "Today", Null, '
+                                     f'Sum(Switch([{COMPARE_SHOW}], "Today", [{COMPARE}/Today Amount], "Version", '
+                                     f'[{COMPARE}/Version Amount], [{COMPARE}/Today Amount] - [{COMPARE}/Version Amount])) / 1000)')}],
             "values": ["cg_amt"],
             "rowsBy": [{"columnId": "cg_line", "sort": {"direction": "ascending", "by": "cg_lo", "aggregation": "min"}}],
             "columnsBy": [{"columnId": "cg_m", "sort": {"direction": "ascending", "by": "cg_mn", "aggregation": "min"}}],
@@ -737,8 +743,8 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons, status=
             width = 24 // len(cards_ids)
             lines += [_el(c, 1 + i * width, 1 + (i + 1) * width, at, at + 6) for i, c in enumerate(cards_ids)]
             at += 6
-            lines += [_el(compare[-2], 1, 10, at, at + 20), _el(compare[-1], 10, 25, at, at + 20)]
-            at += 20
+            lines += [_el(compare[-2], 1, 25, at, at + 16), _el(compare[-1], 1, 25, at + 16, at + 40)]
+            at += 40
         for view in logs:
             if view == "approvalsView" and decisions:    # Approve / Send back + caption, above the Approvals table
                 buttons_at = {"btnApprove": (1, 4), "btnReturn": (4, 7), "decisionNote": (7, 25)}
