@@ -1,0 +1,919 @@
+{
+ "folderId": "fold-1",
+ "kind": "workbook",
+ "layout": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pnl\">\n  <Element elementId=\"pnlHeader\" gridColumn=\"1 / 25\" gridRow=\"1 / 4\"/>\n  <Element elementId=\"kpiRev\" gridColumn=\"1 / 7\" gridRow=\"4 / 10\"/>\n  <Element elementId=\"kpiEbitda\" gridColumn=\"7 / 13\" gridRow=\"4 / 10\"/>\n  <Element elementId=\"kpiNI\" gridColumn=\"13 / 19\" gridRow=\"4 / 10\"/>\n  <Element elementId=\"kpiGM\" gridColumn=\"19 / 25\" gridRow=\"4 / 10\"/>\n  <Element elementId=\"monthlyTrend\" gridColumn=\"1 / 25\" gridRow=\"10 / 25\"/>\n  <Element elementId=\"pnlPivot\" gridColumn=\"1 / 25\" gridRow=\"25 / 55\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"detail\">\n  <Element elementId=\"glTable\" gridColumn=\"1 / 25\" gridRow=\"1 / 37\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"inputs\">\n  <Element elementId=\"assumpTable\" gridColumn=\"1 / 25\" gridRow=\"1 / 13\"/>\n  <Element elementId=\"rateInput\" gridColumn=\"1 / 25\" gridRow=\"13 / 29\"/>\n  <Element elementId=\"manualInput\" gridColumn=\"1 / 25\" gridRow=\"29 / 49\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"model\">\n  <Element elementId=\"actuals\" gridColumn=\"1 / 25\" gridRow=\"1 / 13\"/>\n  <Element elementId=\"spineWrap\" gridColumn=\"1 / 25\" gridRow=\"13 / 25\"/>\n  <Element elementId=\"forecast\" gridColumn=\"1 / 25\" gridRow=\"25 / 37\"/>\n  <Element elementId=\"pnlCombined\" gridColumn=\"1 / 25\" gridRow=\"37 / 49\"/>\n</Page>",
+ "name": "Vantora FY27 Rolling Forecast \u2014 golden",
+ "pages": [
+  {
+   "elements": [
+    {
+     "body": "# Vantora FY27 Rolling Forecast \u2014 golden\nMonthly actuals and forecast performance",
+     "id": "pnlHeader",
+     "kind": "text",
+     "style": {
+      "backgroundColor": "#F8FAFC",
+      "borderRadius": "round",
+      "color": "#0F172A"
+     }
+    },
+    {
+     "columns": [
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)",
+       "id": "v"
+      }
+     ],
+     "id": "kpiRev",
+     "kind": "kpi-chart",
+     "name": "FY27 Total Revenue",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#2563EB",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "value": {
+      "columnId": "v"
+     }
+    },
+    {
+     "columns": [
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)",
+       "id": "v"
+      }
+     ],
+     "id": "kpiEbitda",
+     "kind": "kpi-chart",
+     "name": "FY27 Gross Margin",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": {
+       "kind": "theme",
+       "ref": "colors-border"
+      },
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "value": {
+      "columnId": "v"
+     }
+    },
+    {
+     "columns": [
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24) - SumIf([PnL Combined/OpEx Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)",
+       "id": "v"
+      }
+     ],
+     "id": "kpiNI",
+     "kind": "kpi-chart",
+     "name": "FY27 EBITDA",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": {
+       "kind": "theme",
+       "ref": "colors-border"
+      },
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "value": {
+      "columnId": "v"
+     }
+    },
+    {
+     "columns": [
+      {
+       "format": {
+        "formatString": ".1%",
+        "kind": "number"
+       },
+       "formula": "(SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)) / SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)",
+       "id": "v"
+      }
+     ],
+     "id": "kpiGM",
+     "kind": "kpi-chart",
+     "name": "FY27 Gross Margin %",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": {
+       "kind": "theme",
+       "ref": "colors-border"
+      },
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "value": {
+      "columnId": "v"
+     }
+    },
+    {
+     "columns": [
+      {
+       "format": {
+        "formatString": "%b-%y",
+        "kind": "datetime"
+       },
+       "formula": "DateTrunc(\"month\", [PnL Combined/Month End])",
+       "id": "t_month",
+       "name": "Month"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "Sum([PnL Combined/Revenue Amt])",
+       "id": "t_revenue",
+       "name": "Revenue"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt])",
+       "id": "t_gross_margin",
+       "name": "Gross Margin"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "Sum([PnL Combined/Revenue Amt]) - Sum([PnL Combined/COGS Amt]) - Sum([PnL Combined/OpEx Amt])",
+       "id": "t_ebitda",
+       "name": "EBITDA"
+      }
+     ],
+     "id": "monthlyTrend",
+     "kind": "line-chart",
+     "legend": {
+      "position": "bottom"
+     },
+     "lineAreaStyle": {
+      "interpolation": "monotone"
+     },
+     "name": "Monthly Revenue, Gross Margin & EBITDA",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": {
+       "kind": "theme",
+       "ref": "colors-border"
+      },
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "xAxis": {
+      "columnId": "t_month",
+      "sort": {
+       "direction": "ascending"
+      }
+     },
+     "yAxis": {
+      "columnIds": [
+       "t_revenue",
+       "t_gross_margin",
+       "t_ebitda"
+      ],
+      "format": {
+       "marks": "grid",
+       "scale": {
+        "type": "linear",
+        "zero": false
+       }
+      }
+     }
+    },
+    {
+     "axisTotals": [
+      {
+       "axisId": "grand-row-total",
+       "visibility": "hidden"
+      }
+     ],
+     "columns": [
+      {
+       "formula": "[PnL Combined/Section]",
+       "id": "p_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[PnL Combined/Section Order]",
+       "id": "p_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[PnL Combined/Line Item]",
+       "id": "p_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[PnL Combined/Line Order]",
+       "id": "p_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[PnL Combined/Period]",
+       "id": "p_per",
+       "name": "Period"
+      },
+      {
+       "format": {
+        "formatString": "%b-%y",
+        "kind": "datetime"
+       },
+       "formula": "[PnL Combined/Month End]",
+       "id": "p_m",
+       "name": "Month"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "Sum([PnL Combined/Amount])",
+       "id": "p_amt",
+       "name": "Amount"
+      }
+     ],
+     "columnsBy": [
+      {
+       "columnId": "p_per",
+       "sort": {
+        "direction": "ascending"
+       }
+      },
+      {
+       "columnId": "p_m",
+       "sort": {
+        "direction": "ascending"
+       }
+      }
+     ],
+     "id": "pnlPivot",
+     "kind": "pivot-table",
+     "name": "P&L Statement",
+     "rowsBy": [
+      {
+       "columnId": "p_sec",
+       "sort": {
+        "aggregation": "min",
+        "by": "p_so",
+        "direction": "ascending"
+       }
+      },
+      {
+       "columnId": "p_line",
+       "sort": {
+        "aggregation": "min",
+        "by": "p_lo",
+        "direction": "ascending"
+       }
+      }
+     ],
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": {
+       "kind": "theme",
+       "ref": "colors-border"
+      },
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "values": [
+      "p_amt"
+     ]
+    }
+   ],
+   "id": "pnl",
+   "name": "P&L Overview"
+  },
+  {
+   "elements": [
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Txn Date]",
+       "id": "g1",
+       "name": "Txn Date"
+      },
+      {
+       "formula": "[Custom SQL/Month]",
+       "id": "g2",
+       "name": "Month"
+      },
+      {
+       "formula": "[Custom SQL/Line Item]",
+       "id": "g3",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Custom SQL/Department]",
+       "id": "g4",
+       "name": "Department"
+      },
+      {
+       "formula": "[Custom SQL/Vendor]",
+       "id": "g5",
+       "name": "Vendor"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "[Custom SQL/Amount]",
+       "id": "g6",
+       "name": "Amount"
+      }
+     ],
+     "id": "glTable",
+     "kind": "table",
+     "name": "GL Transaction Detail (Actuals)",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "glDetail",
+      "kind": "data-model"
+     }
+    }
+   ],
+   "id": "detail",
+   "name": "Detail"
+  },
+  {
+   "elements": [
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Driver]",
+       "id": "d1",
+       "name": "Driver"
+      },
+      {
+       "format": {
+        "formatString": ".1%",
+        "kind": "number"
+       },
+       "formula": "[Custom SQL/Monthly Rate]",
+       "id": "d2",
+       "name": "Monthly Rate"
+      },
+      {
+       "formula": "[Custom SQL/Basis]",
+       "id": "d3",
+       "name": "Basis"
+      }
+     ],
+     "id": "assumpTable",
+     "kind": "table",
+     "name": "Forecast Assumptions",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "assumptions",
+      "kind": "data-model"
+     }
+    },
+    {
+     "columns": [
+      {
+       "id": "ID"
+      },
+      {
+       "id": "LINE_ITEM",
+       "name": "Line Item",
+       "type": "text"
+      },
+      {
+       "format": {
+        "formatString": ".1%",
+        "kind": "number"
+       },
+       "id": "RATE",
+       "name": "Rate",
+       "type": "number"
+      }
+     ],
+     "id": "rateInput",
+     "inputMode": "edit",
+     "kind": "input-table",
+     "name": "Growth Rates (editable)",
+     "order": [
+      "LINE_ITEM",
+      "RATE"
+     ],
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "empty"
+     }
+    },
+    {
+     "columns": [
+      {
+       "id": "ID"
+      },
+      {
+       "id": "LINE_ITEM",
+       "name": "Line Item",
+       "type": "text"
+      },
+      {
+       "id": "MONTH",
+       "name": "Month",
+       "type": "text"
+      },
+      {
+       "id": "MONTH_NUM",
+       "name": "Month Num",
+       "type": "number"
+      },
+      {
+       "id": "MONTH_END",
+       "name": "Month End",
+       "type": "datetime"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "id": "AMOUNT",
+       "name": "Amount",
+       "type": "number"
+      }
+     ],
+     "id": "manualInput",
+     "inputMode": "edit",
+     "kind": "input-table",
+     "name": "Manual Forecast (editable)",
+     "order": [
+      "LINE_ITEM",
+      "MONTH",
+      "AMOUNT"
+     ],
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "empty"
+     }
+    }
+   ],
+   "id": "inputs",
+   "name": "Inputs"
+  },
+  {
+   "elements": [
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Section]",
+       "id": "a_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Custom SQL/Section Order]",
+       "id": "a_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Custom SQL/Line Item]",
+       "id": "a_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Custom SQL/Line Order]",
+       "id": "a_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Custom SQL/Month]",
+       "id": "a_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Custom SQL/Month Num]",
+       "id": "a_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Custom SQL/Month End]",
+       "id": "a_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "[Custom SQL/Amount]",
+       "id": "a_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Actual\"",
+       "id": "a_p",
+       "name": "Period"
+      }
+     ],
+     "id": "actuals",
+     "kind": "table",
+     "name": "Actuals",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "glDetail",
+      "kind": "data-model"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Section]",
+       "id": "s_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Custom SQL/Section Order]",
+       "id": "s_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Custom SQL/Line Item]",
+       "id": "s_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Custom SQL/Line Order]",
+       "id": "s_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Custom SQL/Month]",
+       "id": "s_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Custom SQL/Month Num]",
+       "id": "s_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Custom SQL/Month End]",
+       "id": "s_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "[Custom SQL/N]",
+       "id": "s_n",
+       "name": "N"
+      },
+      {
+       "formula": "[Custom SQL/Kind]",
+       "id": "s_k",
+       "name": "Kind"
+      },
+      {
+       "formula": "[Custom SQL/Default Rate]",
+       "id": "s_dr",
+       "name": "Default Rate"
+      },
+      {
+       "formula": "[Custom SQL/Manual Value]",
+       "id": "s_mv",
+       "name": "Manual Value"
+      },
+      {
+       "formula": "[Custom SQL/June Base]",
+       "id": "s_jb",
+       "name": "June Base"
+      }
+     ],
+     "id": "spineWrap",
+     "kind": "table",
+     "name": "Forecast Spine",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "spine",
+      "kind": "data-model"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[FJ/Section]",
+       "id": "f_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[FJ/Section Order]",
+       "id": "f_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[FJ/Line Item]",
+       "id": "f_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[FJ/Line Order]",
+       "id": "f_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[FJ/Month]",
+       "id": "f_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[FJ/Month Num]",
+       "id": "f_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[FJ/Month End]",
+       "id": "f_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "[FJ/N]",
+       "id": "f_n",
+       "name": "N"
+      },
+      {
+       "formula": "[FJ/Kind]",
+       "id": "f_k",
+       "name": "Kind"
+      },
+      {
+       "formula": "[FJ/June Base]",
+       "id": "f_jb",
+       "name": "June Base"
+      },
+      {
+       "formula": "Coalesce([Rates/Rate], [FJ/Default Rate])",
+       "id": "f_er",
+       "name": "Eff Rate"
+      },
+      {
+       "formula": "Coalesce([Manual/Amount], [FJ/Manual Value])",
+       "id": "f_em",
+       "name": "Eff Manual"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "If([Kind] = \"manual\", [Eff Manual], [Kind] = \"flat\", [June Base], [June Base] * (1 + [Eff Rate]) ^ [N])",
+       "id": "f_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Forecast\"",
+       "id": "f_p",
+       "name": "Period"
+      }
+     ],
+     "id": "forecast",
+     "kind": "table",
+     "name": "Forecast",
+     "source": {
+      "joins": [
+       {
+        "columns": [
+         {
+          "left": "[Line Item]",
+          "right": "[Line Item]"
+         }
+        ],
+        "joinType": "left-outer",
+        "left": {
+         "elementId": "spineWrap",
+         "kind": "table"
+        },
+        "name": "Rates",
+        "right": {
+         "elementId": "rateInput",
+         "kind": "table"
+        }
+       },
+       {
+        "columns": [
+         {
+          "left": "[Line Item]",
+          "right": "[Line Item]"
+         },
+         {
+          "left": "[Month Num]",
+          "right": "[Month Num]"
+         }
+        ],
+        "joinType": "left-outer",
+        "left": {
+         "elementId": "spineWrap",
+         "kind": "table"
+        },
+        "name": "Manual",
+        "right": {
+         "elementId": "manualInput",
+         "kind": "table"
+        }
+       }
+      ],
+      "kind": "join",
+      "name": "FJ",
+      "primarySource": {
+       "elementId": "spineWrap",
+       "kind": "table"
+      }
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Union of 2 Sources/Section]",
+       "id": "c_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Union of 2 Sources/Section Order]",
+       "id": "c_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Item]",
+       "id": "c_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Order]",
+       "id": "c_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month]",
+       "id": "c_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month Num]",
+       "id": "c_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month End]",
+       "id": "c_me",
+       "name": "Month End"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "[Union of 2 Sources/Amount]",
+       "id": "c_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "[Union of 2 Sources/Period]",
+       "id": "c_p",
+       "name": "Period"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Revenue\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_rev",
+       "name": "Revenue Amt"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Cost of Revenue\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_cogs",
+       "name": "COGS Amt"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Operating Expenses\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_opex",
+       "name": "OpEx Amt"
+      }
+     ],
+     "id": "pnlCombined",
+     "kind": "table",
+     "name": "PnL Combined",
+     "source": {
+      "kind": "union",
+      "matches": [
+       {
+        "outputColumnName": "Section",
+        "sourceColumns": [
+         "[Section]",
+         "[Section]"
+        ]
+       },
+       {
+        "outputColumnName": "Section Order",
+        "sourceColumns": [
+         "[Section Order]",
+         "[Section Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Item",
+        "sourceColumns": [
+         "[Line Item]",
+         "[Line Item]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Order",
+        "sourceColumns": [
+         "[Line Order]",
+         "[Line Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Month",
+        "sourceColumns": [
+         "[Month]",
+         "[Month]"
+        ]
+       },
+       {
+        "outputColumnName": "Month Num",
+        "sourceColumns": [
+         "[Month Num]",
+         "[Month Num]"
+        ]
+       },
+       {
+        "outputColumnName": "Month End",
+        "sourceColumns": [
+         "[Month End]",
+         "[Month End]"
+        ]
+       },
+       {
+        "outputColumnName": "Amount",
+        "sourceColumns": [
+         "[Amount]",
+         "[Amount]"
+        ]
+       },
+       {
+        "outputColumnName": "Period",
+        "sourceColumns": [
+         "[Period]",
+         "[Period]"
+        ]
+       }
+      ],
+      "sources": [
+       {
+        "elementId": "actuals",
+        "kind": "table"
+       },
+       {
+        "elementId": "forecast",
+        "kind": "table"
+       }
+      ]
+     }
+    }
+   ],
+   "id": "model",
+   "name": "Model (sources)",
+   "visibility": "hidden"
+  }
+ ],
+ "schemaVersion": 1
+}
