@@ -2,6 +2,7 @@
 """Approve / Send back: approver-only update-rows decisions on the Approvals table."""
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -133,6 +134,85 @@ class SetupProgramHeaderTests(unittest.TestCase):
         head = program.split("\n\n", 1)[0]
         self.assertIn("Pass this whole file unchanged as one build_workbook program", head)
         self.assertIn("If it fails, report the error and stop.", head)
+
+
+FIG = {"revenue": "Sum([PnL Combined/Amount])", "grossMargin": "Sum([PnL Combined/GM])",
+       "ebitda": "Sum([PnL Combined/EBITDA])"}
+GROWTH = ["North America Revenue", "EMEA Revenue", "APAC Revenue", "LATAM Revenue", "North America Cost of Revenue",
+          "EMEA Cost of Revenue", "APAC Cost of Revenue", "LATAM Cost of Revenue", "North America Opex", "EMEA Opex"]
+PLAN = {"lines": [*({"line": n, "kind": "growth", "rate": 0.01 + i / 1000} for i, n in enumerate(GROWTH)),
+                  {"line": "APAC Opex", "kind": "flat"},
+                  {"line": "LATAM Opex", "kind": "manual",
+                   "manual": [610000.0, 615000.0, 622000.0, 630000.0, 640000.0, 655000.0]}],
+        "periods": [{"label": "Jun-27", "num": 24, "end": "2027-06-30", "role": "actual"},
+                    *({"label": m, "num": 25 + i, "end": None, "role": "forecast"}
+                      for i, m in enumerate(["Jul-27", "Aug-27", "Sep-27", "Oct-27", "Nov-27", "Dec-27"]))]}
+
+
+def snapshot_values(wf):
+    button = next(b for b in wf["buttons"] if b["id"] == dw.BUTTON_IDS["snapshot-version"])
+    (effect,) = button["actions"][0]["effects"]
+    return effect["values"]
+
+
+@unittest.skipUnless(DEMO_KIT.is_dir(), "demo kit not present (standalone skill copy)")
+class VersionDriverTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.manifest = dw.build_workflow_manifest(DEMO_KIT / "demo-forecast-macros.bas")
+
+    def elements(self, **extra):
+        return dw.workflow_elements(self.manifest, "conn-1", "FY27 forecast", FIG, scenario_control="Scenario",
+                                    no_status="Draft", **extra)
+
+    def test_version_drivers_cover_every_rate_line_and_manual_cell(self):
+        drivers = dw.version_drivers(PLAN)
+        self.assertEqual([d.kind for d in drivers].count("rate"), 10)
+        self.assertEqual([d.kind for d in drivers].count("manual"), 6)
+        self.assertEqual(len({d.cid for d in drivers}), 16)
+        rate = next(d for d in drivers if d.line == "EMEA Revenue")
+        self.assertEqual((rate.name, rate.month_num, rate.default), ("EMEA Revenue rate", None, 0.011))
+        manual = next(d for d in drivers if d.kind == "manual" and d.month_num == 26)
+        self.assertEqual((manual.line, manual.name, manual.default), ("LATAM Opex", "LATAM Opex Aug-27", 615000.0))
+
+    def test_snapshot_writes_every_driver_and_inputs_frozen(self):
+        drivers = dw.version_drivers(PLAN)
+        wf = self.elements(drivers=drivers)
+        values = snapshot_values(wf)
+        for d in drivers:
+            formula = values[d.cid]["formula"]
+            self.assertTrue(formula.startswith("Coalesce(Max(If("), formula)
+            self.assertTrue(formula.endswith(f", {d.default!r})"), formula)   # unedited line: its default
+            self.assertIn(f'= "{d.line}"', formula)
+        self.assertIn("[Manual forecast/Month Num] = 26", values[next(d.cid for d in drivers if d.month_num == 26)]["formula"])
+        self.assertEqual(values[dw.INPUTS_FROZEN[0]], {"type": "constant", "value": {"type": "text", "value": "Yes"}})
+        versions = next(t for t in wf["tables"] if t["id"] == dw.VERSIONS)
+        declared = {c["id"]: c for c in versions["columns"]}
+        for d in drivers:
+            self.assertEqual(declared[d.cid]["type"], "number")
+        self.assertEqual(declared[dw.INPUTS_FROZEN[0]]["type"], "text")
+
+    def test_migrated_history_never_sets_inputs_frozen(self):
+        src = load_demo_source()
+        seeds = {el: cols for el, cols, _rows in dw.source_history(src)}
+        self.assertNotIn(dw.INPUTS_FROZEN[0], seeds[dw.VERSIONS])
+
+    def test_no_drivers_keeps_todays_versions_table(self):
+        before = json.loads((ROOT / "tests" / "fixtures" / "versions" / "workflow-elements-before.json").read_text())
+        self.assertEqual(json.loads(json.dumps(self.elements(), sort_keys=True)), before)
+
+    def test_snapshot_disposition_records_the_fidelity_difference(self):
+        notes = " ".join(w.get("note", "") for w in self.manifest["workflows"] if w["actionId"] == "snapshot-version")
+        self.assertIn("freezes the inputs and rebuilds the version", notes)
+
+
+def load_demo_source():
+    import importlib.util
+    import tempfile
+    spec = importlib.util.spec_from_file_location("make_demo_forecast_v", DEMO_KIT / "make-demo-forecast.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build_demo_workbook(Path(tempfile.mkdtemp()))
 
 
 if __name__ == "__main__":

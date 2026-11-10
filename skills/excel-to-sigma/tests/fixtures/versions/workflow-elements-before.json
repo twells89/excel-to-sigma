@@ -1,0 +1,314 @@
+{
+ "approvers": [],
+ "buttons": [
+  {
+   "actions": [
+    {
+     "effects": [
+      {
+       "effect": "update-rows",
+       "tableElementId": "parameters",
+       "values": {
+        "pa_start": {
+         "formula": "DateAdd(\"month\", 1, Max([Parameters/Forecast Start Month]))",
+         "type": "formula"
+        }
+       },
+       "whichRows": {
+        "formula": "true",
+        "type": "formula"
+       }
+      }
+     ],
+     "id": "a-roll-forward",
+     "trigger": "on-click"
+    }
+   ],
+   "appearance": "filled",
+   "id": "btnRoll",
+   "kind": "button",
+   "text": "Roll forward one month"
+  },
+  {
+   "actions": [
+    {
+     "effects": [
+      {
+       "effect": "insert-rows",
+       "tableElementId": "versions",
+       "values": {
+        "ve_at": {
+         "formula": "Now()",
+         "type": "formula"
+        },
+        "ve_by": {
+         "formula": "CurrentUserEmail()",
+         "type": "formula"
+        },
+        "ve_ebitda": {
+         "formula": "Sum([PnL Combined/EBITDA])",
+         "type": "formula"
+        },
+        "ve_gm": {
+         "formula": "Sum([PnL Combined/GM])",
+         "type": "formula"
+        },
+        "ve_rev": {
+         "formula": "Sum([PnL Combined/Amount])",
+         "type": "formula"
+        },
+        "ve_scn": {
+         "control": "Scenario",
+         "type": "control"
+        },
+        "ve_seq": {
+         "formula": "Coalesce(Max([Versions/Log Order]), 0) + 1",
+         "type": "formula"
+        },
+        "ve_start": {
+         "formula": "Max([Parameters/Forecast Start Month])",
+         "type": "formula"
+        },
+        "ve_ver": {
+         "formula": "Concat(\"v\", Text(Int(Coalesce(Max([Versions/Log Order]), 0) + 1)))",
+         "type": "formula"
+        }
+       }
+      }
+     ],
+     "id": "a-snapshot-version",
+     "trigger": "on-click"
+    }
+   ],
+   "appearance": "filled",
+   "id": "btnSnapshot",
+   "kind": "button",
+   "text": "Snapshot version"
+  },
+  {
+   "actions": [
+    {
+     "effects": [
+      {
+       "effect": "insert-rows",
+       "tableElementId": "approvals",
+       "values": {
+        "ap_at": {
+         "formula": "Now()",
+         "type": "formula"
+        },
+        "ap_by": {
+         "formula": "CurrentUserEmail()",
+         "type": "formula"
+        },
+        "ap_req": {
+         "type": "constant",
+         "value": {
+          "type": "text",
+          "value": "FY27 forecast"
+         }
+        },
+        "ap_seq": {
+         "formula": "Coalesce(Max([Approvals/Log Order]), 0) + 1",
+         "type": "formula"
+        },
+        "ap_status": {
+         "type": "constant",
+         "value": {
+          "type": "text",
+          "value": "Submitted"
+         }
+        },
+        "ap_to": {
+         "type": "constant",
+         "value": {
+          "type": "text",
+          "value": "Approver"
+         }
+        }
+       }
+      }
+     ],
+     "id": "a-submit-approval",
+     "trigger": "on-click"
+    }
+   ],
+   "appearance": "outline",
+   "id": "btnSubmit",
+   "kind": "button",
+   "text": "Submit for approval"
+  }
+ ],
+ "decisions": [],
+ "status": {
+  "columns": [
+   {
+    "formula": "Coalesce(Lookup([Approvals/Status], Max([Approvals/Log Order]), [Approvals/Log Order]), \"Draft\")",
+    "id": "st_v",
+    "name": "Latest approval status"
+   }
+  ],
+  "id": "approvalStatus",
+  "kind": "table",
+  "name": "Latest approval status",
+  "source": {
+   "elementId": "parameters",
+   "kind": "table"
+  }
+ },
+ "tables": [
+  {
+   "columns": [
+    {
+     "hidden": true,
+     "id": "ID",
+     "name": "Row ID"
+    },
+    {
+     "id": "pa_start",
+     "name": "Forecast Start Month",
+     "type": "datetime"
+    }
+   ],
+   "id": "parameters",
+   "inputMode": "edit",
+   "kind": "input-table",
+   "name": "Parameters",
+   "source": {
+    "connectionId": "conn-1",
+    "kind": "empty"
+   }
+  },
+  {
+   "columns": [
+    {
+     "hidden": true,
+     "id": "ID",
+     "name": "Row ID"
+    },
+    {
+     "id": "ve_ver",
+     "name": "Version",
+     "type": "text"
+    },
+    {
+     "id": "ve_scn",
+     "name": "Scenario",
+     "type": "text"
+    },
+    {
+     "id": "ve_start",
+     "name": "Forecast Start Month",
+     "type": "datetime"
+    },
+    {
+     "id": "ve_rev",
+     "name": "FY Revenue",
+     "type": "number"
+    },
+    {
+     "id": "ve_gm",
+     "name": "FY Gross Margin",
+     "type": "number"
+    },
+    {
+     "id": "ve_ebitda",
+     "name": "FY EBITDA",
+     "type": "number"
+    },
+    {
+     "id": "ve_by",
+     "name": "Saved By",
+     "type": "text"
+    },
+    {
+     "id": "ve_at",
+     "name": "Saved At",
+     "type": "datetime"
+    },
+    {
+     "id": "ve_note",
+     "name": "Comment",
+     "type": "text"
+    },
+    {
+     "hidden": true,
+     "id": "ve_seq",
+     "name": "Log Order",
+     "type": "number"
+    }
+   ],
+   "id": "versions",
+   "inputMode": "view",
+   "kind": "input-table",
+   "name": "Versions",
+   "source": {
+    "connectionId": "conn-1",
+    "kind": "empty"
+   }
+  },
+  {
+   "columns": [
+    {
+     "hidden": true,
+     "id": "ID",
+     "name": "Row ID"
+    },
+    {
+     "id": "ap_req",
+     "name": "Request",
+     "type": "text"
+    },
+    {
+     "id": "ap_by",
+     "name": "Submitted By",
+     "type": "text"
+    },
+    {
+     "id": "ap_to",
+     "name": "Approver",
+     "type": "text"
+    },
+    {
+     "id": "ap_status",
+     "name": "Status",
+     "type": "text"
+    },
+    {
+     "id": "ap_at",
+     "name": "Submitted At",
+     "type": "datetime"
+    },
+    {
+     "id": "ap_dby",
+     "name": "Decided By",
+     "type": "text"
+    },
+    {
+     "id": "ap_dat",
+     "name": "Decided At",
+     "type": "datetime"
+    },
+    {
+     "id": "ap_note",
+     "name": "Comment",
+     "type": "text"
+    },
+    {
+     "hidden": true,
+     "id": "ap_seq",
+     "name": "Log Order",
+     "type": "number"
+    }
+   ],
+   "id": "approvals",
+   "inputMode": "view",
+   "kind": "input-table",
+   "name": "Approvals",
+   "source": {
+    "connectionId": "conn-1",
+    "kind": "empty"
+   }
+  }
+ ]
+}

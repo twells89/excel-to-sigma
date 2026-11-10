@@ -565,7 +565,7 @@ def check_parity(P, computed, tolerance):
     return ok
 
 # ---------- seed CSVs ----------
-RATE_KINDS = ("growth", "yoy", "pct_of_total")  # lines whose rate is an editable driver
+RATE_KINDS = demo_workflows.RATE_KINDS  # lines whose rate is an editable driver
 
 
 RATE_SEED_COLUMNS = ("LINE_ITEM", "RATE")
@@ -1078,7 +1078,8 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
         wf = demo_workflows.workflow_elements(
             workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast", figures,
             scenario_control=forecast_app.SCENARIO_CONTROL if spreads else None, no_status="Draft",
-            start=forecast_app.START_MONTH if approved_inputs is None else demo_workflows.DEFAULT_START)
+            start=forecast_app.START_MONTH if approved_inputs is None else demo_workflows.DEFAULT_START,
+            drivers=demo_workflows.version_drivers(P) if editable and approved_inputs is None else None)
         return app_spec(P, dm, els, wf=wf, rows=rows, kpi={"middle": middle, "bottom": bottom},
                         first_positive=first_positive, fy_nums=fy_nums, periods=periods, n_act=n_act,
                         hidden=[actuals, spineWrap, *forecast_stages, pnlCombined], pivot=pivot, gl=glTable,
