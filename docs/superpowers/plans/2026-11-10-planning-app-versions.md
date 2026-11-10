@@ -54,7 +54,10 @@ git add docs/superpowers/plans/2026-11-10-planning-app-versions.md
 git commit -m "docs(excel-to-sigma): record the version driver-pull probe result"
 ```
 
-**Probe result:** _(filled in by Step 5)_
+**Probe result (2026-11-10, workbook `aaf6b58c…`, trashed):** both candidates passed. The edited rate line read 0.05 (its input), the unedited line 0.02 (its default); the edited manual cell read 999, the unedited 600; `Inputs Frozen` read `Yes`. Chosen, since the local evaluator already supports `Max` and `If`:
+- `PULL_RATE = 'Coalesce(Max(If([Growth rates/Line item] = "{line}", [Growth rates/Monthly growth rate])), {default})'`
+- `PULL_MANUAL = 'Coalesce(Max(If([Manual forecast/Line item] = "{line}" and [Manual forecast/Month Num] = {month_num}, [Manual forecast/Amount])), {default})'`
+- `Inputs Frozen` is a **text** column written `"Yes"`: POST refuses boolean input-table columns ("Invalid kind: input-table"). Later tasks read `INPUTS_FROZEN = ("ve_frozen", "Inputs Frozen", "text")` and filter on `= "Yes"`.
 
 ---
 
