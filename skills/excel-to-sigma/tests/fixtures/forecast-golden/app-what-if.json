@@ -1,7 +1,7 @@
 {
  "folderId": "fold-1",
  "kind": "workbook",
- "layout": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgForecast\">\n  <Container elementId=\"hdrBand\" type=\"grid\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"hdrTitle\" gridColumn=\"1 / 8\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"ctlScenario\" gridColumn=\"8 / 13\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"hdrStatus\" gridColumn=\"13 / 16\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnRoll\" gridColumn=\"18 / 20\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnSnapshot\" gridColumn=\"20 / 22\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnSubmit\" gridColumn=\"22 / 25\" gridRow=\"1 / 5\"/>\n  </Container>\n  <Container elementId=\"kpiRevenue\" type=\"grid\" gridColumn=\"1 / 7\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiRevenueText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiMargin\" type=\"grid\" gridColumn=\"7 / 13\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiMarginText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiProfit\" type=\"grid\" gridColumn=\"13 / 19\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiProfitText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiMonths\" type=\"grid\" gridColumn=\"19 / 25\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiMonthsText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Element elementId=\"revTrend\" gridColumn=\"1 / 17\" gridRow=\"11 / 33\"/>\n  <Container elementId=\"agentPanel\" type=\"grid\" gridColumn=\"17 / 25\" gridRow=\"11 / 33\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"agentHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 4\"/>\n  </Container>\n  <Element elementId=\"plSummary\" gridColumn=\"1 / 25\" gridRow=\"33 / 49\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgAssumptions\">\n  <Element elementId=\"asmHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\"/>\n  <Element elementId=\"rateInput\" gridColumn=\"1 / 10\" gridRow=\"5 / 19\"/>\n  <Element elementId=\"manualInput\" gridColumn=\"10 / 18\" gridRow=\"5 / 19\"/>\n  <Container elementId=\"asmImpactCard\" type=\"grid\" gridColumn=\"18 / 25\" gridRow=\"5 / 19\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"asmImpact\" gridColumn=\"1 / 25\" gridRow=\"1 / 14\"/>\n  </Container>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgDetail\">\n  <Element elementId=\"pnlPivot\" gridColumn=\"1 / 25\" gridRow=\"1 / 41\"/>\n  <Element elementId=\"glTable\" gridColumn=\"1 / 25\" gridRow=\"41 / 63\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgVersions\">\n  <Element elementId=\"logHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\"/>\n  <Element elementId=\"versionsView\" gridColumn=\"1 / 25\" gridRow=\"5 / 29\"/>\n  <Element elementId=\"approvalsView\" gridColumn=\"1 / 25\" gridRow=\"29 / 43\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"model\">\n  <Element elementId=\"actuals\" gridColumn=\"1 / 25\" gridRow=\"1 / 13\"/>\n  <Element elementId=\"spineWrap\" gridColumn=\"1 / 25\" gridRow=\"13 / 25\"/>\n  <Element elementId=\"forecast\" gridColumn=\"1 / 25\" gridRow=\"25 / 37\"/>\n  <Element elementId=\"pnlCombined\" gridColumn=\"1 / 25\" gridRow=\"37 / 49\"/>\n  <Element elementId=\"frozenVersions\" gridColumn=\"1 / 25\" gridRow=\"49 / 61\"/>\n  <Element elementId=\"versionPick\" gridColumn=\"1 / 25\" gridRow=\"61 / 73\"/>\n  <Element elementId=\"versionActuals\" gridColumn=\"1 / 25\" gridRow=\"73 / 85\"/>\n  <Element elementId=\"versionForecast\" gridColumn=\"1 / 25\" gridRow=\"85 / 97\"/>\n  <Element elementId=\"versionCombined\" gridColumn=\"1 / 25\" gridRow=\"97 / 109\"/>\n  <Element elementId=\"ctlCompareTo\" gridColumn=\"1 / 25\" gridRow=\"109 / 121\"/>\n  <Element elementId=\"boundary\" gridColumn=\"1 / 25\" gridRow=\"121 / 133\"/>\n  <Element elementId=\"reportFacts\" gridColumn=\"1 / 25\" gridRow=\"133 / 145\"/>\n  <Element elementId=\"metricWrap\" gridColumn=\"1 / 25\" gridRow=\"145 / 157\"/>\n  <Element elementId=\"summaryFacts\" gridColumn=\"1 / 25\" gridRow=\"157 / 169\"/>\n  <Element elementId=\"agentFacts\" gridColumn=\"1 / 25\" gridRow=\"169 / 181\"/>\n  <Element elementId=\"parameters\" gridColumn=\"1 / 25\" gridRow=\"181 / 193\"/>\n  <Element elementId=\"versions\" gridColumn=\"1 / 25\" gridRow=\"193 / 205\"/>\n  <Element elementId=\"approvals\" gridColumn=\"1 / 25\" gridRow=\"205 / 217\"/>\n  <Element elementId=\"approvalStatus\" gridColumn=\"1 / 25\" gridRow=\"217 / 229\"/>\n  <Element elementId=\"assumpTable\" gridColumn=\"1 / 25\" gridRow=\"229 / 241\"/>\n</Page>",
+ "layout": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgForecast\">\n  <Container elementId=\"hdrBand\" type=\"grid\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"hdrTitle\" gridColumn=\"1 / 8\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"ctlScenario\" gridColumn=\"8 / 13\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"hdrStatus\" gridColumn=\"13 / 16\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnRoll\" gridColumn=\"18 / 20\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnSnapshot\" gridColumn=\"20 / 22\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnSubmit\" gridColumn=\"22 / 25\" gridRow=\"1 / 5\"/>\n  </Container>\n  <Container elementId=\"kpiRevenue\" type=\"grid\" gridColumn=\"1 / 7\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiRevenueText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiMargin\" type=\"grid\" gridColumn=\"7 / 13\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiMarginText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiProfit\" type=\"grid\" gridColumn=\"13 / 19\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiProfitText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiMonths\" type=\"grid\" gridColumn=\"19 / 25\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiMonthsText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Element elementId=\"revTrend\" gridColumn=\"1 / 17\" gridRow=\"11 / 33\"/>\n  <Container elementId=\"agentPanel\" type=\"grid\" gridColumn=\"17 / 25\" gridRow=\"11 / 33\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"agentHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 4\"/>\n  </Container>\n  <Element elementId=\"plSummary\" gridColumn=\"1 / 25\" gridRow=\"33 / 49\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgAssumptions\">\n  <Element elementId=\"asmHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\"/>\n  <Element elementId=\"rateInput\" gridColumn=\"1 / 10\" gridRow=\"5 / 19\"/>\n  <Element elementId=\"manualInput\" gridColumn=\"10 / 18\" gridRow=\"5 / 19\"/>\n  <Container elementId=\"asmImpactCard\" type=\"grid\" gridColumn=\"18 / 25\" gridRow=\"5 / 19\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"asmImpact\" gridColumn=\"1 / 25\" gridRow=\"1 / 14\"/>\n  </Container>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgDetail\">\n  <Element elementId=\"pnlPivot\" gridColumn=\"1 / 25\" gridRow=\"1 / 41\"/>\n  <Element elementId=\"glTable\" gridColumn=\"1 / 25\" gridRow=\"41 / 63\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgVersions\">\n  <Element elementId=\"logHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\"/>\n  <Element elementId=\"compareHead\" gridColumn=\"1 / 13\" gridRow=\"5 / 9\"/>\n  <Element elementId=\"ctlCompareTo\" gridColumn=\"13 / 19\" gridRow=\"5 / 9\"/>\n  <Element elementId=\"ctlCompareShow\" gridColumn=\"19 / 25\" gridRow=\"5 / 9\"/>\n  <Element elementId=\"cmpRevenue\" gridColumn=\"1 / 9\" gridRow=\"9 / 15\"/>\n  <Element elementId=\"cmpMargin\" gridColumn=\"9 / 17\" gridRow=\"9 / 15\"/>\n  <Element elementId=\"cmpProfit\" gridColumn=\"17 / 25\" gridRow=\"9 / 15\"/>\n  <Element elementId=\"compareLines\" gridColumn=\"1 / 10\" gridRow=\"15 / 35\"/>\n  <Element elementId=\"compareGrid\" gridColumn=\"10 / 25\" gridRow=\"15 / 35\"/>\n  <Element elementId=\"versionsView\" gridColumn=\"1 / 25\" gridRow=\"35 / 59\"/>\n  <Element elementId=\"approvalsView\" gridColumn=\"1 / 25\" gridRow=\"59 / 73\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"model\">\n  <Element elementId=\"actuals\" gridColumn=\"1 / 25\" gridRow=\"1 / 13\"/>\n  <Element elementId=\"spineWrap\" gridColumn=\"1 / 25\" gridRow=\"13 / 25\"/>\n  <Element elementId=\"forecast\" gridColumn=\"1 / 25\" gridRow=\"25 / 37\"/>\n  <Element elementId=\"pnlCombined\" gridColumn=\"1 / 25\" gridRow=\"37 / 49\"/>\n  <Element elementId=\"frozenVersions\" gridColumn=\"1 / 25\" gridRow=\"49 / 61\"/>\n  <Element elementId=\"versionPick\" gridColumn=\"1 / 25\" gridRow=\"61 / 73\"/>\n  <Element elementId=\"versionActuals\" gridColumn=\"1 / 25\" gridRow=\"73 / 85\"/>\n  <Element elementId=\"versionForecast\" gridColumn=\"1 / 25\" gridRow=\"85 / 97\"/>\n  <Element elementId=\"versionCombined\" gridColumn=\"1 / 25\" gridRow=\"97 / 109\"/>\n  <Element elementId=\"boundary\" gridColumn=\"1 / 25\" gridRow=\"109 / 121\"/>\n  <Element elementId=\"reportFacts\" gridColumn=\"1 / 25\" gridRow=\"121 / 133\"/>\n  <Element elementId=\"metricWrap\" gridColumn=\"1 / 25\" gridRow=\"133 / 145\"/>\n  <Element elementId=\"summaryFacts\" gridColumn=\"1 / 25\" gridRow=\"145 / 157\"/>\n  <Element elementId=\"agentFacts\" gridColumn=\"1 / 25\" gridRow=\"157 / 169\"/>\n  <Element elementId=\"parameters\" gridColumn=\"1 / 25\" gridRow=\"169 / 181\"/>\n  <Element elementId=\"versions\" gridColumn=\"1 / 25\" gridRow=\"181 / 193\"/>\n  <Element elementId=\"approvals\" gridColumn=\"1 / 25\" gridRow=\"193 / 205\"/>\n  <Element elementId=\"approvalStatus\" gridColumn=\"1 / 25\" gridRow=\"205 / 217\"/>\n  <Element elementId=\"todayFacts\" gridColumn=\"1 / 25\" gridRow=\"217 / 229\"/>\n  <Element elementId=\"versionFacts\" gridColumn=\"1 / 25\" gridRow=\"229 / 241\"/>\n  <Element elementId=\"compareFacts\" gridColumn=\"1 / 25\" gridRow=\"241 / 253\"/>\n  <Element elementId=\"assumpTable\" gridColumn=\"1 / 25\" gridRow=\"253 / 265\"/>\n</Page>",
  "name": "Vantora FY27 Rolling Forecast \u2014 golden",
  "pages": [
   {
@@ -825,6 +825,231 @@
      "verticalAlign": "top"
     },
     {
+     "body": "## Compare to a saved version\n<span style=\"color: #64748B; font-size: 13px\">{{If(Count([Frozen Versions/Version]) = 0, \"No saved versions to compare yet\", \"Rebuilt from the saved inputs with actuals as they are now\")}}</span>",
+     "id": "compareHead",
+     "kind": "text",
+     "verticalAlign": "top"
+    },
+    {
+     "controlId": "CompareTo",
+     "controlType": "list",
+     "id": "ctlCompareTo",
+     "kind": "control",
+     "mode": "include",
+     "name": "Compare to",
+     "selectionMode": "single",
+     "source": {
+      "columnId": "fv_ver",
+      "kind": "source",
+      "source": {
+       "elementId": "frozenVersions",
+       "kind": "table"
+      }
+     },
+     "values": []
+    },
+    {
+     "controlId": "CompareShow",
+     "controlType": "segmented",
+     "id": "ctlCompareShow",
+     "kind": "control",
+     "name": "Show",
+     "selectionMode": "single",
+     "source": {
+      "kind": "manual",
+      "valueType": "text",
+      "values": [
+       "Today",
+       "Version",
+       "Change"
+      ]
+     },
+     "value": "Change"
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">FY27 revenue</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{(If(Count([Version Pick/Version]) = 0, Null, SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000 | $,.1f}}M</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (If(Count([Version Pick/Version]) = 0, Null, SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)))) / 1000000 | $,.1f}}M</span></span>",
+     "id": "cmpRevenue",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">Gross margin</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{(If(Count([Version Pick/Version]) = 0, Null, SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000 | $,.1f}}M</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (If(Count([Version Pick/Version]) = 0, Null, SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)))) / 1000000 | $,.1f}}M</span></span>",
+     "id": "cmpMargin",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">EBITDA</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{(If(Count([Version Pick/Version]) = 0, Null, SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000 | $,.1f}}M</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (If(Count([Version Pick/Version]) = 0, Null, SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)))) / 1000000 | $,.1f}}M</span></span>",
+     "id": "cmpProfit",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/LINE_ITEM]",
+       "id": "cl_line",
+       "name": "Line Item"
+      },
+      {
+       "format": {
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "Lookup(Sum([Compare Facts/Today FY]), [Line Item], [Compare Facts/Line Item])",
+       "id": "cl_t",
+       "name": "Today"
+      },
+      {
+       "format": {
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "Lookup(Sum([Compare Facts/Version FY]), [Line Item], [Compare Facts/Line Item])",
+       "id": "cl_v",
+       "name": "Version"
+      },
+      {
+       "format": {
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "[Today] - [Version]",
+       "id": "cl_c",
+       "name": "Change"
+      },
+      {
+       "formula": "Abs([Change])",
+       "hidden": true,
+       "id": "cl_abs",
+       "name": "Size of change"
+      }
+     ],
+     "id": "compareLines",
+     "kind": "table",
+     "name": "Change by line",
+     "sort": [
+      {
+       "columnId": "cl_abs",
+       "direction": "descending"
+      }
+     ],
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "sql",
+      "statement": "select * from (values\n('North America Revenue', 1),\n('EMEA Revenue', 2),\n('APAC Revenue', 3),\n('LATAM Revenue', 4),\n('North America Cost of Revenue', 5),\n('EMEA Cost of Revenue', 6),\n('APAC Cost of Revenue', 7),\n('LATAM Cost of Revenue', 8),\n('North America Opex', 9),\n('EMEA Opex', 10),\n('APAC Opex', 11),\n('LATAM Opex', 12)\n) as t(LINE_ITEM, LINE_ORDER)"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableComponents": {
+      "summaryBar": "hidden"
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     }
+    },
+    {
+     "axisTotals": [
+      {
+       "axisId": "grand-row-total",
+       "visibility": "hidden"
+      }
+     ],
+     "columns": [
+      {
+       "formula": "[Compare Facts/Line Item]",
+       "id": "cg_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Compare Facts/Line Order]",
+       "id": "cg_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Compare Facts/Month]",
+       "id": "cg_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Compare Facts/Month Num]",
+       "id": "cg_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "If([Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24, \"Yes\", \"No\")",
+       "hidden": true,
+       "id": "cg_fy",
+       "name": "In FY"
+      },
+      {
+       "format": {
+        "formatString": ",.0f",
+        "kind": "number",
+        "prefix": "$",
+        "suffix": "K"
+       },
+       "formula": "Sum(Switch([CompareShow], \"Today\", [Compare Facts/Today Amount], \"Version\", [Compare Facts/Version Amount], [Compare Facts/Today Amount] - [Compare Facts/Version Amount])) / 1000",
+       "id": "cg_amt",
+       "name": "Amount"
+      }
+     ],
+     "columnsBy": [
+      {
+       "columnId": "cg_m",
+       "sort": {
+        "aggregation": "min",
+        "by": "cg_mn",
+        "direction": "ascending"
+       }
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "cg_fy",
+       "id": "cg_f",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Yes"
+       ]
+      }
+     ],
+     "id": "compareGrid",
+     "kind": "pivot-table",
+     "name": "By line and month",
+     "rowsBy": [
+      {
+       "columnId": "cg_line",
+       "sort": {
+        "aggregation": "min",
+        "by": "cg_lo",
+        "direction": "ascending"
+       }
+      }
+     ],
+     "source": {
+      "elementId": "compareFacts",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     },
+     "values": [
+      "cg_amt"
+     ]
+    },
+    {
      "columns": [
       {
        "formula": "[Versions/Version]",
@@ -889,6 +1114,11 @@
        "formula": "Coalesce([Versions/Comment], \"\")",
        "id": "versionsView_8",
        "name": "Comment"
+      },
+      {
+       "formula": "If([Versions/Inputs Frozen] = \"Yes\", \"Pick it in Compare to\", \"Numbers not recorded in the source\")",
+       "id": "versionsView_cmp",
+       "name": "Compare"
       },
       {
        "formula": "[Versions/Log Order]",
@@ -2029,6 +2259,23 @@
        "formula": "If([Union of 2 Sources/Section] = \"Operating Expenses\", [Union of 2 Sources/Amount], 0)",
        "id": "c_opex",
        "name": "OpEx Amt"
+      },
+      {
+       "formula": "If(Count([Version Pick/Version]) > 0, \"Yes\", \"No\")",
+       "hidden": true,
+       "id": "c_hasv",
+       "name": "Has Version"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "c_hasv",
+       "id": "c_hasv_f",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Yes"
+       ]
       }
      ],
      "id": "versionCombined",
@@ -2112,24 +2359,6 @@
        }
       ]
      }
-    },
-    {
-     "controlId": "CompareTo",
-     "controlType": "list",
-     "id": "ctlCompareTo",
-     "kind": "control",
-     "mode": "include",
-     "name": "Compare to",
-     "selectionMode": "single",
-     "source": {
-      "columnId": "fv_ver",
-      "kind": "source",
-      "source": {
-       "elementId": "frozenVersions",
-       "kind": "table"
-      }
-     },
-     "values": []
     },
     {
      "columns": [
@@ -2629,6 +2858,224 @@
      "source": {
       "elementId": "parameters",
       "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[PnL Combined/Section]",
+       "id": "todayFacts_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[PnL Combined/Line Item]",
+       "id": "todayFacts_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[PnL Combined/Line Order]",
+       "id": "todayFacts_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[PnL Combined/Month]",
+       "id": "todayFacts_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[PnL Combined/Month Num]",
+       "id": "todayFacts_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[PnL Combined/Amount]",
+       "id": "todayFacts_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Today\"",
+       "id": "todayFacts_w",
+       "name": "Which"
+      }
+     ],
+     "id": "todayFacts",
+     "kind": "table",
+     "name": "Today Facts",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Version Combined/Section]",
+       "id": "versionFacts_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Version Combined/Line Item]",
+       "id": "versionFacts_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Version Combined/Line Order]",
+       "id": "versionFacts_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Version Combined/Month]",
+       "id": "versionFacts_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Version Combined/Month Num]",
+       "id": "versionFacts_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Version Combined/Amount]",
+       "id": "versionFacts_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Version\"",
+       "id": "versionFacts_w",
+       "name": "Which"
+      }
+     ],
+     "id": "versionFacts",
+     "kind": "table",
+     "name": "Version Facts",
+     "source": {
+      "elementId": "versionCombined",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Union of 2 Sources/Section]",
+       "id": "cf_0",
+       "name": "Section"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Item]",
+       "id": "cf_1",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Order]",
+       "id": "cf_2",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month]",
+       "id": "cf_3",
+       "name": "Month"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month Num]",
+       "id": "cf_4",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Union of 2 Sources/Amount]",
+       "id": "cf_5",
+       "name": "Amount"
+      },
+      {
+       "formula": "[Union of 2 Sources/Which]",
+       "id": "cf_6",
+       "name": "Which"
+      },
+      {
+       "formula": "If([Which] = \"Today\", [Amount], 0)",
+       "id": "cf_t",
+       "name": "Today Amount"
+      },
+      {
+       "formula": "If([Which] = \"Version\", [Amount], 0)",
+       "id": "cf_v",
+       "name": "Version Amount"
+      },
+      {
+       "formula": "If([Month Num] >= 13 and [Month Num] <= 24, [Today Amount], 0)",
+       "id": "cf_tfy",
+       "name": "Today FY"
+      },
+      {
+       "formula": "If([Month Num] >= 13 and [Month Num] <= 24, [Version Amount], 0)",
+       "id": "cf_vfy",
+       "name": "Version FY"
+      }
+     ],
+     "id": "compareFacts",
+     "kind": "table",
+     "name": "Compare Facts",
+     "source": {
+      "kind": "union",
+      "matches": [
+       {
+        "outputColumnName": "Section",
+        "sourceColumns": [
+         "[Section]",
+         "[Section]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Item",
+        "sourceColumns": [
+         "[Line Item]",
+         "[Line Item]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Order",
+        "sourceColumns": [
+         "[Line Order]",
+         "[Line Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Month",
+        "sourceColumns": [
+         "[Month]",
+         "[Month]"
+        ]
+       },
+       {
+        "outputColumnName": "Month Num",
+        "sourceColumns": [
+         "[Month Num]",
+         "[Month Num]"
+        ]
+       },
+       {
+        "outputColumnName": "Amount",
+        "sourceColumns": [
+         "[Amount]",
+         "[Amount]"
+        ]
+       },
+       {
+        "outputColumnName": "Which",
+        "sourceColumns": [
+         "[Which]",
+         "[Which]"
+        ]
+       }
+      ],
+      "sources": [
+       {
+        "elementId": "todayFacts",
+        "kind": "table"
+       },
+       {
+        "elementId": "versionFacts",
+        "kind": "table"
+       }
+      ]
      }
     },
     {

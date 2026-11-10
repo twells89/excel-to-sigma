@@ -980,6 +980,11 @@ def version_elements(P, drivers, actuals_base, *, spreads, cur, boundary, sec_co
                                      ids=VERSION_STAGE_IDS)
     combined = combined_element("versionCombined", "Version Combined", "versionActuals", stages[-1]["id"],
                                 sec_cols, cur)
+    # nothing picked (no frozen version yet): no version rows, rather than a forecast with no boundary
+    combined["columns"].append({"id": "c_hasv", "name": "Has Version", "hidden": True,
+                                "formula": 'If(Count([Version Pick/Version]) > 0, "Yes", "No")'})
+    combined["filters"] = [{"id": "c_hasv_f", "columnId": "c_hasv", "kind": "list", "mode": "include",
+                            "values": ["Yes"]}]
     control = {"id": "ctlCompareTo", "kind": "control", "controlId": COMPARE_CONTROL, "name": "Compare to",
                "controlType": "list", "mode": "include", "selectionMode": "single", "values": [],
                "source": {"kind": "source", "source": {"kind": "table", "elementId": "frozenVersions"},
@@ -1199,11 +1204,13 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
         return app_spec(P, dm, els, wf=wf, rows=rows, kpi={"middle": middle, "bottom": bottom},
                         first_positive=first_positive, fy_nums=fy_nums, periods=periods, n_act=n_act,
                         hidden=[actuals, spineWrap, *forecast_stages, pnlCombined,
-                                *((versions or {}).get("elements") or []),
-                                *([versions["control"]] if versions else [])], pivot=pivot, gl=glTable,
+                                *((versions or {}).get("elements") or [])], pivot=pivot, gl=glTable,
                         assump=assumpTable, rate=rateInput if editable else None,
                         manual=manualInput if editable else None, plan_src=plan_src, spreads=spreads,
-                        cur=cur, landed=landed, history=history)
+                        cur=cur, landed=landed, history=history,
+                        versions=({"control": versions["control"], "connection": conn,
+                                   "lines": [(ln["line"], ln["lineOrder"]) for ln in P["lines"]]}
+                                  if versions else None))
     main_els=[header]+([wf["tables"][0], wf["status"], *wf["buttons"]] if wf else [])+kpis+[trend]+source_charts+[pivot]
     detail_els=[glTable]
     input_els=[assumpTable]
@@ -1236,7 +1243,7 @@ def _app_titles(P):
 
 
 def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_act, hidden, pivot, gl, assump,
-             rate, manual, plan_src, spreads, cur, landed, history=None):
+             rate, manual, plan_src, spreads, cur, landed, history=None, versions=None):
     """The planning-app workbook (lib/forecast_app.py) for a forecast built with --workflows."""
     by_num = {p["num"]: p for p in periods}
     fy_label = re.sub(r"\s+total$", "", P.get("fyLabel") or "FY", flags=re.I)
@@ -1289,7 +1296,9 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
            "landed": landed is not None,
            "cost_lines": cost_lines(P),
            # migrated log rows per table (the setup program seeds them from the source's own logs)
-           "history": {el: len(rows) for el, _cols, rows in (history or []) if rows}}
+           "history": {el: len(rows) for el, _cols, rows in (history or []) if rows},
+           # the saved-version compare section (an editable planning app with Snapshot)
+           "versions": versions}
     app = forecast_app.build(ctx)
     return {"name": P["name"], "schemaVersion": 1, "kind": "workbook", "folderId": P["folderId"],
             "pages": app["pages"], "layout": app["layout"], "settings": app["settings"]}

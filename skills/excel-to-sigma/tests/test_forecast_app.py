@@ -544,6 +544,66 @@ class ForecastAppTests(unittest.TestCase):
         m2 = self.model(date(2027, 7, 1), plan=pct, versions=[v1])
         self.assertEqual(self.grid(m2.rows("versionCombined")), self.grid(m2.rows("pnlCombined")))
 
+    # ---------------------------------------------------------------- versions: compare section
+    def test_compare_section_sits_above_the_logs_on_the_versions_page(self):
+        spec = self.spec()
+        page = next(p for p in spec["pages"] if p["id"] == "pgVersions")
+        order = [e["id"] for e in page["elements"]]
+        for el in ("compareHead", "ctlCompareTo", "ctlCompareShow", "cmpRevenue", "compareLines", "compareGrid"):
+            self.assertIn(el, order)
+        self.assertLess(order.index("compareGrid"), order.index("versionsView"))
+        wired = self.build.workbook_wire.wire_workbook(spec)["contents"]["layout"]
+        pg = wired.split('id="pgVersions"')[1].split("</Page>")[0]
+        self.assertLess(pg.index('"compareGrid"'), pg.index('"versionsView"'))
+
+    def test_compare_kpis_match_the_live_kpis_when_version_equals_today(self):
+        m = self.model(date(2027, 7, 1))
+        m2 = self.model(date(2027, 7, 1), versions=[self.snapshot(m)])
+        b = self.by_id(self.spec())
+        live = self.kpis(m2)
+        for card, name in (("cmpRevenue", "Revenue"), ("cmpMargin", "Gross Margin"), ("cmpProfit", "EBITDA")):
+            text = self.render(m2, b[card]["body"])
+            today, version, change = (m2.scalar(e) for e in re.findall(r"\{\{\((.*?)\) / 1000000 \|", b[card]["body"]))
+            self.assertAlmostEqual(today, live[name], places=2, msg=card)
+            self.assertAlmostEqual(version, live[name], places=2, msg=card)
+            self.assertAlmostEqual(change, 0.0, places=2, msg=card)
+            self.assertIn("Version", text)
+        lines = m2.rows("compareLines")
+        self.assertTrue(lines)
+        self.assertTrue(all(abs(r["Change"]) < 0.005 for r in lines))
+
+    def test_compare_lines_put_the_biggest_move_first(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m)
+        up = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"}, versions=[v1])
+        lines = up.rows("compareLines")
+        order = self.by_id(self.spec())["compareLines"]["sort"]
+        self.assertEqual(order[0]["direction"], "descending")
+        moved = sorted(lines, key=lambda r: -abs(r["Change"]))
+        self.assertGreater(abs(moved[0]["Change"]), 0)
+
+    def test_no_frozen_version_shows_empty_state(self):
+        migrated = {"ve_ver": "v0", "ve_seq": 0}
+        m = self.model(date(2027, 7, 1), versions=[migrated])
+        head = self.render(m, self.by_id(self.spec())["compareHead"]["body"])
+        self.assertIn("No saved versions to compare yet", head)
+        self.assertEqual(m.rows("versionCombined"), [])
+        body = self.by_id(self.spec())["cmpRevenue"]["body"]
+        today, version, change = (m.scalar(e) for e in re.findall(r"\{\{\((.*?)\) / 1000000 \|", body))
+        self.assertIsNotNone(today)
+        self.assertIsNone(version)
+        self.assertIsNone(change)
+        frozen = self.model(date(2027, 7, 1), versions=[migrated, self.snapshot(self.model(date(2027, 7, 1)))])
+        self.assertIn("Rebuilt from the saved inputs with actuals as they are now",
+                      self.render(frozen, self.by_id(self.spec())["compareHead"]["body"]))
+
+    def test_migrated_rows_say_numbers_not_recorded(self):
+        migrated = {"ve_ver": "v0", "ve_seq": 0}
+        m = self.model(date(2027, 7, 1), versions=[migrated, self.snapshot(self.model(date(2027, 7, 1)))])
+        comparable = {r["Version"]: r["Compare"] for r in m.rows("versionsView")}
+        self.assertEqual(comparable["v0"], "Numbers not recorded in the source")
+        self.assertEqual(comparable["v1"], "Pick it in Compare to")
+
     @staticmethod
     def first_money(model, body):
         """The first ``$x.xM`` figure of a KPI card body, evaluated (the card's own emitted formula)."""

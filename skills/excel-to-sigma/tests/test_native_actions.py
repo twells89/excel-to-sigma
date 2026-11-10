@@ -709,7 +709,9 @@ class TestDemoWorkflows(unittest.TestCase):
         spec=self.spec(self.manifest)
         by_id={e['id']:e for pg in spec['pages'] for e in pg['elements']}
         for tid,names in (('parameters',['Selected Scenario','Forecast Start Month']),
-                ('versions',['Version','Scenario','Forecast Start Month','FY Revenue','FY Gross Margin','FY EBITDA','Saved By','Saved At','Comment','Log Order']),
+                # an editable plan's Snapshot also freezes each driver it used, and marks the row comparable
+                ('versions',['Version','Scenario','Forecast Start Month','FY Revenue','FY Gross Margin','FY EBITDA','Saved By','Saved At','Comment','Log Order']
+                 +[d.name for d in self.dw.version_drivers(self.plan)]+['Inputs Frozen']),
                 ('approvals',['Request','Submitted By','Approver','Status','Submitted At','Decided By','Decided At','Comment','Log Order'])):
             t=by_id[tid]
             self.assertEqual(t['kind'],'input-table')

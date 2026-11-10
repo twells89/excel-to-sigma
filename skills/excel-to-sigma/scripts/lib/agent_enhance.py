@@ -199,6 +199,10 @@ def _instructions(rec, name, scenario_control=None, grounding=(), plan=False):
         lines.append('To roll the forecast forward one month call @tool("roll-forward").')
     if "snapshot-version" in ids:
         lines.append('To save the current numbers as a version call @tool("snapshot-version").')
+    if "compareFacts" in grounding:
+        lines.append('@dataSource("compareFacts") holds today\'s forecast and the saved version picked in Compare '
+                     'to, by line item and month (Which = Today or Version). Answer "what changed since a version" '
+                     'from it; the Compare to control picks the version, the latest saved one by default.')
     if "submit-approval" in ids:
         lines.append('To submit the forecast for approval call @tool("submit-approval"). Never send email.')
     if DRIVER_ID in ids:
@@ -367,7 +371,7 @@ def _append_to_page(layout, page_id, element_id, rows, columns=(1, 25)):
     return layout[:block.end(2)] + line + layout[block.end(2):]
 
 
-GROUNDING = ("forecast", "parameters", "versions", "approvals", "rateInput", AGENT_FACTS)
+GROUNDING = ("forecast", "parameters", "versions", "approvals", "rateInput", AGENT_FACTS, "compareFacts")
 
 
 def recommend_for_workbook(macros, workflows, wb=None, name="FP&A forecast agent", fragment=True,

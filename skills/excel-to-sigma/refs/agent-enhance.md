@@ -89,6 +89,9 @@ does this reuse automatically.
   that anyone who can call the agent there can run them without a prompt.
 - After any write, approved or declined, the agent must re-query the affected table and
   report the data, not the tool result.
+- The agent reads `compareFacts` (today's forecast and the version picked in Compare to, by
+  line item and month, `Which` = Today / Version) to answer "what changed since v9?". It has
+  no compare tool; the snapshot tool reuses the button's effects, so it freezes the drivers too.
 - No email is ever sent by a tool. The Submit tool appends an Approvals row only.
 - The Approvals log is an editable input table: after the setup program it is published
   `published-all-users`, so everyone with access to the workbook can add, change or delete its
