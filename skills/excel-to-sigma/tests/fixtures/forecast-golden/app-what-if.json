@@ -1,0 +1,3158 @@
+{
+ "folderId": "fold-1",
+ "kind": "workbook",
+ "layout": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgForecast\">\n  <Container elementId=\"hdrBand\" type=\"grid\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"hdrTitle\" gridColumn=\"1 / 8\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"ctlScenario\" gridColumn=\"8 / 13\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"hdrStatus\" gridColumn=\"13 / 16\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnRoll\" gridColumn=\"18 / 20\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnSnapshot\" gridColumn=\"20 / 22\" gridRow=\"1 / 5\"/>\n    <Element elementId=\"btnSubmit\" gridColumn=\"22 / 25\" gridRow=\"1 / 5\"/>\n  </Container>\n  <Container elementId=\"kpiRevenue\" type=\"grid\" gridColumn=\"1 / 7\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiRevenueText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiMargin\" type=\"grid\" gridColumn=\"7 / 13\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiMarginText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiProfit\" type=\"grid\" gridColumn=\"13 / 19\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiProfitText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Container elementId=\"kpiMonths\" type=\"grid\" gridColumn=\"19 / 25\" gridRow=\"5 / 11\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"kpiMonthsText\" gridColumn=\"1 / 25\" gridRow=\"1 / 6\"/>\n  </Container>\n  <Element elementId=\"revTrend\" gridColumn=\"1 / 17\" gridRow=\"11 / 33\"/>\n  <Container elementId=\"agentPanel\" type=\"grid\" gridColumn=\"17 / 25\" gridRow=\"11 / 33\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"agentHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 4\"/>\n  </Container>\n  <Element elementId=\"plSummary\" gridColumn=\"1 / 25\" gridRow=\"33 / 49\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgAssumptions\">\n  <Element elementId=\"asmHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\"/>\n  <Element elementId=\"rateInput\" gridColumn=\"1 / 10\" gridRow=\"5 / 19\"/>\n  <Element elementId=\"manualInput\" gridColumn=\"10 / 18\" gridRow=\"5 / 19\"/>\n  <Container elementId=\"asmImpactCard\" type=\"grid\" gridColumn=\"18 / 25\" gridRow=\"5 / 19\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\">\n    <Element elementId=\"asmImpact\" gridColumn=\"1 / 25\" gridRow=\"1 / 14\"/>\n  </Container>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgDetail\">\n  <Element elementId=\"pnlPivot\" gridColumn=\"1 / 25\" gridRow=\"1 / 41\"/>\n  <Element elementId=\"glTable\" gridColumn=\"1 / 25\" gridRow=\"41 / 63\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"pgVersions\">\n  <Element elementId=\"logHead\" gridColumn=\"1 / 25\" gridRow=\"1 / 5\"/>\n  <Element elementId=\"compareHead\" gridColumn=\"1 / 13\" gridRow=\"5 / 9\"/>\n  <Element elementId=\"ctlCompareTo\" gridColumn=\"13 / 19\" gridRow=\"5 / 9\"/>\n  <Element elementId=\"ctlCompareShow\" gridColumn=\"19 / 25\" gridRow=\"5 / 9\"/>\n  <Element elementId=\"cmpRevenue\" gridColumn=\"1 / 9\" gridRow=\"9 / 15\"/>\n  <Element elementId=\"cmpMargin\" gridColumn=\"9 / 17\" gridRow=\"9 / 15\"/>\n  <Element elementId=\"cmpProfit\" gridColumn=\"17 / 25\" gridRow=\"9 / 15\"/>\n  <Element elementId=\"compareLines\" gridColumn=\"1 / 25\" gridRow=\"15 / 31\"/>\n  <Element elementId=\"compareGrid\" gridColumn=\"1 / 25\" gridRow=\"31 / 55\"/>\n  <Element elementId=\"versionsView\" gridColumn=\"1 / 25\" gridRow=\"55 / 79\"/>\n  <Element elementId=\"approvalsView\" gridColumn=\"1 / 25\" gridRow=\"79 / 93\"/>\n</Page>\n<Page type=\"grid\" gridTemplateColumns=\"repeat(24, 1fr)\" gridTemplateRows=\"auto\" id=\"model\">\n  <Element elementId=\"actuals\" gridColumn=\"1 / 25\" gridRow=\"1 / 13\"/>\n  <Element elementId=\"spineWrap\" gridColumn=\"1 / 25\" gridRow=\"13 / 25\"/>\n  <Element elementId=\"forecast\" gridColumn=\"1 / 25\" gridRow=\"25 / 37\"/>\n  <Element elementId=\"pnlCombined\" gridColumn=\"1 / 25\" gridRow=\"37 / 49\"/>\n  <Element elementId=\"frozenVersions\" gridColumn=\"1 / 25\" gridRow=\"49 / 61\"/>\n  <Element elementId=\"versionPick\" gridColumn=\"1 / 25\" gridRow=\"61 / 73\"/>\n  <Element elementId=\"versionActuals\" gridColumn=\"1 / 25\" gridRow=\"73 / 85\"/>\n  <Element elementId=\"versionForecast\" gridColumn=\"1 / 25\" gridRow=\"85 / 97\"/>\n  <Element elementId=\"versionCombined\" gridColumn=\"1 / 25\" gridRow=\"97 / 109\"/>\n  <Element elementId=\"boundary\" gridColumn=\"1 / 25\" gridRow=\"109 / 121\"/>\n  <Element elementId=\"reportFacts\" gridColumn=\"1 / 25\" gridRow=\"121 / 133\"/>\n  <Element elementId=\"metricWrap\" gridColumn=\"1 / 25\" gridRow=\"133 / 145\"/>\n  <Element elementId=\"summaryFacts\" gridColumn=\"1 / 25\" gridRow=\"145 / 157\"/>\n  <Element elementId=\"agentFacts\" gridColumn=\"1 / 25\" gridRow=\"157 / 169\"/>\n  <Element elementId=\"parameters\" gridColumn=\"1 / 25\" gridRow=\"169 / 181\"/>\n  <Element elementId=\"versions\" gridColumn=\"1 / 25\" gridRow=\"181 / 193\"/>\n  <Element elementId=\"approvals\" gridColumn=\"1 / 25\" gridRow=\"193 / 205\"/>\n  <Element elementId=\"approvalStatus\" gridColumn=\"1 / 25\" gridRow=\"205 / 217\"/>\n  <Element elementId=\"todayFacts\" gridColumn=\"1 / 25\" gridRow=\"217 / 229\"/>\n  <Element elementId=\"versionFacts\" gridColumn=\"1 / 25\" gridRow=\"229 / 241\"/>\n  <Element elementId=\"compareFacts\" gridColumn=\"1 / 25\" gridRow=\"241 / 253\"/>\n  <Element elementId=\"assumpTable\" gridColumn=\"1 / 25\" gridRow=\"253 / 265\"/>\n</Page>",
+ "name": "Vantora FY27 Rolling Forecast \u2014 golden",
+ "pages": [
+  {
+   "elements": [
+    {
+     "id": "hdrBand",
+     "kind": "container",
+     "style": {
+      "backgroundColor": "#F8FAFC",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     }
+    },
+    {
+     "body": "## <span style=\"color: #FFFFFF; background-color: #2563EB\"> V </span> FY27 rolling forecast\n<span style=\"color: #64748B; font-size: 13px\">Vantora \u00b7 actuals through {{DateFormat(Max([Actuals/Month End]), \"%b-%y\")}}</span><span style=\"color: #B45309; font-size: 13px\">{{If(Max([Actuals/Month Key]) < Max([Forecast Boundary/Start Key]) - 1, Concat(\" \u00b7 \", DateFormat(Max([Forecast Boundary/Last Closed Month]), \"%b-%y\"), \" awaiting actuals\"), \"\")}}</span>",
+     "id": "hdrTitle",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "controlId": "Scenario",
+     "controlType": "segmented",
+     "id": "ctlScenario",
+     "kind": "control",
+     "name": "Scenario",
+     "selectionMode": "single",
+     "source": {
+      "kind": "manual",
+      "valueType": "text",
+      "values": [
+       "Downside",
+       "Base",
+       "Upside"
+      ]
+     },
+     "value": "Base"
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 12px\">Status</span>\n\n<span style=\"color: #B45309; background-color: #FEF3C7; font-size: 14px\">{{If(Max([Latest approval status/Latest approval status]) = \"Draft\", \"  Draft  \", \"\")}}</span><span style=\"color: #1D4ED8; background-color: #DBEAFE; font-size: 14px\">{{If(Max([Latest approval status/Latest approval status]) = \"Submitted\", \"  Submitted  \", \"\")}}</span><span style=\"color: #1D4ED8; background-color: #DBEAFE; font-size: 14px\">{{If(Max([Latest approval status/Latest approval status]) = \"Pending\", \"  Pending  \", \"\")}}</span><span style=\"color: #15803D; background-color: #DCFCE7; font-size: 14px\">{{If(Max([Latest approval status/Latest approval status]) = \"Approved\", \"  Approved  \", \"\")}}</span><span style=\"color: #B91C1C; background-color: #FEE2E2; font-size: 14px\">{{If(Max([Latest approval status/Latest approval status]) = \"Returned\", \"  Returned  \", \"\")}}</span>",
+     "id": "hdrStatus",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "actions": [
+      {
+       "effects": [
+        {
+         "effect": "update-rows",
+         "tableElementId": "parameters",
+         "values": {
+          "pa_start": {
+           "formula": "DateAdd(\"month\", 1, Max([Forecast Boundary/Start Month]))",
+           "type": "formula"
+          }
+         },
+         "whichRows": {
+          "formula": "true",
+          "type": "formula"
+         }
+        }
+       ],
+       "id": "a-roll-forward",
+       "trigger": "on-click"
+      }
+     ],
+     "align": "stretch",
+     "appearance": "outline",
+     "borderRadius": "round",
+     "id": "btnRoll",
+     "kind": "button",
+     "size": "medium",
+     "text": "Roll forward"
+    },
+    {
+     "actions": [
+      {
+       "effects": [
+        {
+         "effect": "insert-rows",
+         "tableElementId": "versions",
+         "values": {
+          "ve_at": {
+           "formula": "Now()",
+           "type": "formula"
+          },
+          "ve_by": {
+           "formula": "CurrentUserEmail()",
+           "type": "formula"
+          },
+          "ve_ebitda": {
+           "formula": "SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24) - SumIf([PnL Combined/OpEx Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)",
+           "type": "formula"
+          },
+          "ve_frozen": {
+           "type": "constant",
+           "value": {
+            "type": "text",
+            "value": "Yes"
+           }
+          },
+          "ve_gm": {
+           "formula": "SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24) - SumIf([PnL Combined/COGS Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)",
+           "type": "formula"
+          },
+          "ve_m0_19": {
+           "formula": "Coalesce(Max(If([Manual forecast/Line item] = \"LATAM Opex\" and [Manual forecast/Month Num] = 19, [Manual forecast/Amount])), 610000.0)",
+           "type": "formula"
+          },
+          "ve_m0_20": {
+           "formula": "Coalesce(Max(If([Manual forecast/Line item] = \"LATAM Opex\" and [Manual forecast/Month Num] = 20, [Manual forecast/Amount])), 615000.0)",
+           "type": "formula"
+          },
+          "ve_m0_21": {
+           "formula": "Coalesce(Max(If([Manual forecast/Line item] = \"LATAM Opex\" and [Manual forecast/Month Num] = 21, [Manual forecast/Amount])), 622000.0)",
+           "type": "formula"
+          },
+          "ve_m0_22": {
+           "formula": "Coalesce(Max(If([Manual forecast/Line item] = \"LATAM Opex\" and [Manual forecast/Month Num] = 22, [Manual forecast/Amount])), 630000.0)",
+           "type": "formula"
+          },
+          "ve_m0_23": {
+           "formula": "Coalesce(Max(If([Manual forecast/Line item] = \"LATAM Opex\" and [Manual forecast/Month Num] = 23, [Manual forecast/Amount])), 640000.0)",
+           "type": "formula"
+          },
+          "ve_m0_24": {
+           "formula": "Coalesce(Max(If([Manual forecast/Line item] = \"LATAM Opex\" and [Manual forecast/Month Num] = 24, [Manual forecast/Amount])), 655000.0)",
+           "type": "formula"
+          },
+          "ve_r0": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"North America Revenue\", [Growth rates/Monthly growth rate])), 0.01)",
+           "type": "formula"
+          },
+          "ve_r1": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"EMEA Revenue\", [Growth rates/Monthly growth rate])), 0.009)",
+           "type": "formula"
+          },
+          "ve_r2": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"APAC Revenue\", [Growth rates/Monthly growth rate])), 0.014)",
+           "type": "formula"
+          },
+          "ve_r3": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"LATAM Revenue\", [Growth rates/Monthly growth rate])), 0.012)",
+           "type": "formula"
+          },
+          "ve_r4": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"North America Cost of Revenue\", [Growth rates/Monthly growth rate])), 0.008)",
+           "type": "formula"
+          },
+          "ve_r5": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"EMEA Cost of Revenue\", [Growth rates/Monthly growth rate])), 0.008)",
+           "type": "formula"
+          },
+          "ve_r6": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"APAC Cost of Revenue\", [Growth rates/Monthly growth rate])), 0.011)",
+           "type": "formula"
+          },
+          "ve_r7": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"LATAM Cost of Revenue\", [Growth rates/Monthly growth rate])), 0.01)",
+           "type": "formula"
+          },
+          "ve_r8": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"North America Opex\", [Growth rates/Monthly growth rate])), 0.006)",
+           "type": "formula"
+          },
+          "ve_r9": {
+           "formula": "Coalesce(Max(If([Growth rates/Line item] = \"EMEA Opex\", [Growth rates/Monthly growth rate])), 0.005)",
+           "type": "formula"
+          },
+          "ve_rev": {
+           "formula": "SumIf([PnL Combined/Revenue Amt], [PnL Combined/Month Num] >= 13 and [PnL Combined/Month Num] <= 24)",
+           "type": "formula"
+          },
+          "ve_scn": {
+           "control": "Scenario",
+           "type": "control"
+          },
+          "ve_seq": {
+           "formula": "Coalesce(Max([Versions/Log Order]), 0) + 1",
+           "type": "formula"
+          },
+          "ve_start": {
+           "formula": "Max([Forecast Boundary/Start Month])",
+           "type": "formula"
+          },
+          "ve_ver": {
+           "formula": "Concat(\"v\", Text(Int(Coalesce(Max([Versions/Log Order]), 0) + 1)))",
+           "type": "formula"
+          }
+         }
+        }
+       ],
+       "id": "a-snapshot-version",
+       "trigger": "on-click"
+      }
+     ],
+     "align": "stretch",
+     "appearance": "outline",
+     "borderRadius": "round",
+     "id": "btnSnapshot",
+     "kind": "button",
+     "size": "medium",
+     "text": "Snapshot"
+    },
+    {
+     "actions": [
+      {
+       "effects": [
+        {
+         "effect": "insert-rows",
+         "tableElementId": "approvals",
+         "values": {
+          "ap_at": {
+           "formula": "Now()",
+           "type": "formula"
+          },
+          "ap_by": {
+           "formula": "CurrentUserEmail()",
+           "type": "formula"
+          },
+          "ap_req": {
+           "type": "constant",
+           "value": {
+            "type": "text",
+            "value": "FY27 forecast"
+           }
+          },
+          "ap_seq": {
+           "formula": "Coalesce(Max([Approvals/Log Order]), 0) + 1",
+           "type": "formula"
+          },
+          "ap_status": {
+           "type": "constant",
+           "value": {
+            "type": "text",
+            "value": "Submitted"
+           }
+          },
+          "ap_to": {
+           "type": "constant",
+           "value": {
+            "type": "text",
+            "value": "Approver"
+           }
+          }
+         }
+        }
+       ],
+       "id": "a-submit-approval",
+       "trigger": "on-click"
+      }
+     ],
+     "align": "stretch",
+     "appearance": "filled",
+     "borderRadius": "round",
+     "fillColor": "#2563EB",
+     "id": "btnSubmit",
+     "kind": "button",
+     "size": "medium",
+     "text": "Submit for approval"
+    },
+    {
+     "id": "kpiRevenue",
+     "kind": "container",
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     }
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">FY27 revenue</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #15803D\">{{If(((SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / (SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] = \"Actual\" and [Forecast Facts/Month Num] >= 1 and [Forecast Facts/Month Num] <= 12)) - 1) >= 0, Concat(\"\u25b2 \", Text(Round(((SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / (SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] = \"Actual\" and [Forecast Facts/Month Num] >= 1 and [Forecast Facts/Month Num] <= 12)) - 1) * 100, 1)), \"%\"), \"\")}}</span><span style=\"color: #B91C1C\">{{If(((SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / (SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] = \"Actual\" and [Forecast Facts/Month Num] >= 1 and [Forecast Facts/Month Num] <= 12)) - 1) < 0, Concat(\"\u25bc \", Text(Round(Abs((SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / (SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] = \"Actual\" and [Forecast Facts/Month Num] >= 1 and [Forecast Facts/Month Num] <= 12)) - 1) * 100, 1)), \"%\"), \"\")}}</span><span style=\"color: #64748B\"> vs FY26 actual</span></span>",
+     "id": "kpiRevenueText",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "id": "kpiMargin",
+     "kind": "container",
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     }
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">Gross margin</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Cost of Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / (SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) | .1%}}**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #0F172A\">{{(SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Cost of Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M</span><span style=\"color: #64748B\"> gross margin</span></span>",
+     "id": "kpiMarginText",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "id": "kpiProfit",
+     "kind": "container",
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     }
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">EBITDA</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Cost of Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Operating Expenses\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #0F172A\">{{(SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Cost of Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Operating Expenses\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / (SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) | .1%}}</span><span style=\"color: #64748B\"> margin</span></span>",
+     "id": "kpiProfitText",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "id": "kpiMonths",
+     "kind": "container",
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     }
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">Forecast months left</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{DateDiff(\"month\", Max([Forecast Boundary/Start Month]), MakeDate(2027, 12, 1)) + 1}} of 12**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">{{DateFormat(Max([Forecast Boundary/Start Month]), \"%b-%y\")}} \u2192 {{DateFormat(MakeDate(2027, 12, 1), \"%b-%y\")}}</span></span>",
+     "id": "kpiMonthsText",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "color": {
+      "by": "category",
+      "column": "tr_cat",
+      "scheme": [
+       "#2563EB",
+       "#93C5FD"
+      ]
+     },
+     "columns": [
+      {
+       "format": {
+        "formatString": "%b-%y",
+        "kind": "datetime"
+       },
+       "formula": "DateTrunc(\"month\", [Forecast Facts/Month End])",
+       "id": "tr_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Forecast Facts/Phase]",
+       "id": "tr_cat",
+       "name": "Period"
+      },
+      {
+       "format": {
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "Sum(If([Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\", [Forecast Facts/Amount], Null))",
+       "id": "tr_rev",
+       "name": "Revenue"
+      }
+     ],
+     "id": "revTrend",
+     "kind": "combo-chart",
+     "legend": {
+      "position": "top"
+     },
+     "name": "Revenue: actual vs forecast",
+     "source": {
+      "elementId": "reportFacts",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "xAxis": {
+      "columnId": "tr_m",
+      "sort": {
+       "direction": "ascending"
+      }
+     },
+     "yAxis": {
+      "columnIds": [
+       {
+        "columnId": "tr_rev",
+        "type": "bar"
+       }
+      ],
+      "format": {
+       "marks": "grid"
+      }
+     }
+    },
+    {
+     "id": "agentPanel",
+     "kind": "container",
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     }
+    },
+    {
+     "body": "**Forecast agent**\n\n<span style=\"color: #64748B; font-size: 12px\">Ask about the forecast, or have it switch scenario, change a driver, roll forward, snapshot or submit for approval. Every change asks you first.</span>",
+     "id": "agentHead",
+     "kind": "text",
+     "verticalAlign": "top"
+    },
+    {
+     "axisTotals": [
+      {
+       "axisId": "grand-row-total",
+       "visibility": "hidden"
+      }
+     ],
+     "columns": [
+      {
+       "formula": "[Summary Facts/Metric]",
+       "id": "ps_m",
+       "name": "Line"
+      },
+      {
+       "formula": "[Summary Facts/Metric Order]",
+       "hidden": true,
+       "id": "ps_o",
+       "name": "Metric Order"
+      },
+      {
+       "format": {
+        "formatString": ",.1f",
+        "kind": "number",
+        "prefix": "$",
+        "suffix": "M"
+       },
+       "formula": "SumIf([Summary Facts/Signed Amount], [Summary Facts/Period] = \"Actual\" and [Summary Facts/Month Num] >= 1 and [Summary Facts/Month Num] <= 12) / 1000000",
+       "id": "ps_prior",
+       "name": "FY26 actual"
+      },
+      {
+       "format": {
+        "formatString": ",.1f",
+        "kind": "number",
+        "prefix": "$",
+        "suffix": "M"
+       },
+       "formula": "SumIf([Summary Facts/Signed Amount], [Summary Facts/Period] != \"Plan\" and [Summary Facts/Month Num] >= 13 and [Summary Facts/Month Num] <= 24) / 1000000",
+       "id": "ps_fc",
+       "name": "FY27 forecast"
+      }
+     ],
+     "id": "plSummary",
+     "kind": "pivot-table",
+     "name": "P&L summary",
+     "rowsBy": [
+      {
+       "columnId": "ps_m",
+       "sort": {
+        "aggregation": "min",
+        "by": "ps_o",
+        "direction": "ascending"
+       }
+      }
+     ],
+     "source": {
+      "elementId": "summaryFacts",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     },
+     "values": [
+      "ps_prior",
+      "ps_fc"
+     ]
+    }
+   ],
+   "id": "pgForecast",
+   "name": "Forecast"
+  },
+  {
+   "elements": [
+    {
+     "body": "## Growth drivers\n<span style=\"color: #64748B; font-size: 13px\">Monthly growth rate per forecast line. Edit a rate and the forecast recalculates. Manual forecast lines are typed in by hand, as in the source workbook, rather than grown from a driver.</span>\n<span style=\"color: #64748B; font-size: 13px\">Scenario: </span><span style=\"color: #0F172A; font-size: 13px\">**{{[Scenario]}}**</span><span style=\"color: #64748B; font-size: 13px\"> (switch it in the Forecast header; Downside and Upside move every growth rate by the source workbook's spread).</span>",
+     "id": "asmHead",
+     "kind": "text",
+     "verticalAlign": "top"
+    },
+    {
+     "id": "asmImpactCard",
+     "kind": "container",
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     }
+    },
+    {
+     "body": "**Forecast impact**\n\n<span style=\"color: #64748B; font-size: 12px\">Recalculates as you edit.</span>\n\n<span style=\"color: #64748B; font-size: 13px\">FY27 revenue</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"color: #64748B; font-size: 13px\">FY27 EBITDA</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Cost of Revenue\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24) - SumIf([Forecast Facts/Amount], [Forecast Facts/Section] = \"Operating Expenses\" and [Forecast Facts/Period] != \"Plan\" and [Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>",
+     "id": "asmImpact",
+     "kind": "text",
+     "verticalAlign": "top"
+    },
+    {
+     "columns": [
+      {
+       "hidden": true,
+       "id": "ID",
+       "name": "Row ID"
+      },
+      {
+       "id": "LINE_ITEM",
+       "name": "Line item",
+       "type": "text"
+      },
+      {
+       "format": {
+        "formatString": ".1%",
+        "kind": "number"
+       },
+       "id": "RATE",
+       "name": "Monthly growth rate",
+       "type": "number"
+      }
+     ],
+     "id": "rateInput",
+     "inputMode": "edit",
+     "kind": "input-table",
+     "name": "Growth rates",
+     "order": [
+      "LINE_ITEM",
+      "RATE"
+     ],
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "empty"
+     },
+     "tableComponents": {
+      "summaryBar": "hidden"
+     },
+     "tableStyle": {
+      "autofitColumns": "hidden",
+      "gridLines": "horizontal",
+      "preset": "spreadsheet"
+     }
+    },
+    {
+     "columns": [
+      {
+       "hidden": true,
+       "id": "ID",
+       "name": "Row ID"
+      },
+      {
+       "id": "LINE_ITEM",
+       "name": "Line item",
+       "type": "text"
+      },
+      {
+       "id": "MONTH",
+       "name": "Month",
+       "type": "text"
+      },
+      {
+       "hidden": true,
+       "id": "MONTH_NUM",
+       "name": "Month Num",
+       "type": "number"
+      },
+      {
+       "hidden": true,
+       "id": "MONTH_END",
+       "name": "Month End",
+       "type": "datetime"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "id": "AMOUNT",
+       "name": "Amount",
+       "type": "number"
+      }
+     ],
+     "id": "manualInput",
+     "inputMode": "edit",
+     "kind": "input-table",
+     "name": "Manual forecast",
+     "order": [
+      "LINE_ITEM",
+      "MONTH",
+      "AMOUNT"
+     ],
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "empty"
+     },
+     "tableComponents": {
+      "summaryBar": "hidden"
+     },
+     "tableStyle": {
+      "autofitColumns": "hidden",
+      "gridLines": "horizontal",
+      "preset": "spreadsheet"
+     }
+    }
+   ],
+   "id": "pgAssumptions",
+   "name": "Assumptions"
+  },
+  {
+   "elements": [
+    {
+     "axisTotals": [
+      {
+       "axisId": "grand-row-total",
+       "visibility": "hidden"
+      }
+     ],
+     "columns": [
+      {
+       "formula": "[PnL Combined/Section]",
+       "id": "p_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[PnL Combined/Section Order]",
+       "id": "p_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[PnL Combined/Line Item]",
+       "id": "p_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[PnL Combined/Line Order]",
+       "id": "p_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[PnL Combined/Period]",
+       "id": "p_per",
+       "name": "Period"
+      },
+      {
+       "format": {
+        "formatString": "%b-%y",
+        "kind": "datetime"
+       },
+       "formula": "[PnL Combined/Month End]",
+       "id": "p_m",
+       "name": "Month"
+      },
+      {
+       "format": {
+        "formatString": ",.0f",
+        "kind": "number",
+        "prefix": "$",
+        "suffix": "K"
+       },
+       "formula": "Sum([PnL Combined/Amount]) / 1000",
+       "id": "p_amt",
+       "name": "Amount"
+      }
+     ],
+     "columnsBy": [
+      {
+       "columnId": "p_per",
+       "sort": {
+        "direction": "ascending"
+       }
+      },
+      {
+       "columnId": "p_m",
+       "sort": {
+        "direction": "ascending"
+       }
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "p_m",
+       "endDate": "2027-12-31",
+       "id": "p_fy",
+       "kind": "date-range",
+       "mode": "between",
+       "startDate": "2027-01-01"
+      }
+     ],
+     "id": "pnlPivot",
+     "kind": "pivot-table",
+     "name": "Monthly P&L \u2014 FY27",
+     "rowsBy": [
+      {
+       "columnId": "p_sec",
+       "sort": {
+        "aggregation": "min",
+        "by": "p_so",
+        "direction": "ascending"
+       }
+      },
+      {
+       "columnId": "p_line",
+       "sort": {
+        "aggregation": "min",
+        "by": "p_lo",
+        "direction": "ascending"
+       }
+      }
+     ],
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": {
+       "kind": "theme",
+       "ref": "colors-border"
+      },
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     },
+     "values": [
+      "p_amt"
+     ]
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Month]",
+       "id": "g2",
+       "name": "Month"
+      },
+      {
+       "formula": "[Custom SQL/Line Item]",
+       "id": "g3",
+       "name": "Line item"
+      },
+      {
+       "formula": "[Custom SQL/Department]",
+       "id": "g4",
+       "name": "Department"
+      },
+      {
+       "formula": "[Custom SQL/Vendor]",
+       "id": "g5",
+       "name": "Vendor"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "[Custom SQL/Amount]",
+       "id": "g6",
+       "name": "Amount"
+      },
+      {
+       "formula": "DatePart(\"year\", [Custom SQL/Month End]) * 12 + DatePart(\"month\", [Custom SQL/Month End])",
+       "hidden": true,
+       "id": "g_mk",
+       "name": "Month key"
+      },
+      {
+       "formula": "If([Month key] < Max([Forecast Boundary/Start Key]), \"Actual\", \"Forecast\")",
+       "hidden": true,
+       "id": "g_win",
+       "name": "Window"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "g_win",
+       "id": "g_wf",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Actual"
+       ]
+      }
+     ],
+     "id": "glTable",
+     "kind": "table",
+     "name": "GL actuals",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "glDetail",
+      "kind": "data-model"
+     },
+     "tableComponents": {
+      "summaryBar": "hidden"
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     }
+    }
+   ],
+   "id": "pgDetail",
+   "name": "P&L detail"
+  },
+  {
+   "elements": [
+    {
+     "body": "## Versions & approvals\n<span style=\"color: #64748B; font-size: 13px\">Snapshot freezes the headline numbers as a version; Submit for approval logs a request. Both are written by the buttons on the Forecast page (or by the forecast agent, after you approve), with who and when, newest first. Both logs start empty in a new workbook.</span>",
+     "id": "logHead",
+     "kind": "text",
+     "verticalAlign": "top"
+    },
+    {
+     "body": "## Compare to a saved version\n<span style=\"color: #64748B; font-size: 13px\">{{If(Count([Frozen Versions/Version]) = 0, \"No saved versions to compare yet\", Count([Version Pick/Version]) > 1, \"More than one saved version matches; pick one in Compare to\", Count([Version Pick/Version]) = 0, \"Pick a saved version in Compare to\", \"Rebuilt from the saved inputs with actuals as they are now\")}}</span>",
+     "id": "compareHead",
+     "kind": "text",
+     "verticalAlign": "top"
+    },
+    {
+     "controlId": "CompareTo",
+     "controlType": "list",
+     "id": "ctlCompareTo",
+     "kind": "control",
+     "mode": "include",
+     "name": "Compare to",
+     "selectionMode": "single",
+     "source": {
+      "columnId": "fv_ver",
+      "kind": "source",
+      "source": {
+       "elementId": "frozenVersions",
+       "kind": "table"
+      }
+     },
+     "values": []
+    },
+    {
+     "controlId": "CompareShow",
+     "controlType": "segmented",
+     "id": "ctlCompareShow",
+     "kind": "control",
+     "name": "Show",
+     "selectionMode": "single",
+     "source": {
+      "kind": "manual",
+      "valueType": "text",
+      "values": [
+       "Today",
+       "Version",
+       "Change"
+      ]
+     },
+     "value": "Change"
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">FY27 revenue</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
+     "id": "cmpRevenue",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">Gross margin</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
+     "id": "cmpMargin",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "body": "<span style=\"color: #64748B; font-size: 13px\">EBITDA</span>\n\n<span style=\"color: #0F172A; font-size: 28px\">**{{(SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000 | $,.1f}}M**</span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24)) / 1000000, 1))), \"M\"))}}</span></span>\n\n<span style=\"font-size: 12px\"><span style=\"color: #64748B\">Change since version </span><span style=\"color: #0F172A\">{{If(Count([Version Pick/Version]) != 1, \"\u2014\", Concat(If(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1) < 0, \"-$\", \"$\"), Text(Abs(Round((SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Today\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - (SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Cost of Revenue\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24) - SumIf([Compare Facts/Amount], [Compare Facts/Section] = \"Operating Expenses\" and [Compare Facts/Which] = \"Version\" and [Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24))) / 1000000, 1))), \"M\"))}}</span></span>",
+     "id": "cmpProfit",
+     "kind": "text",
+     "verticalAlign": "center"
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/LINE_ITEM]",
+       "id": "cl_line",
+       "name": "Line Item"
+      },
+      {
+       "format": {
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "Lookup(Sum([Compare Facts/Today FY]), [Line Item], [Compare Facts/Line Item])",
+       "id": "cl_t",
+       "name": "Today"
+      },
+      {
+       "format": {
+        "displayNullAs": "\u2014",
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "If(Count([Version Pick/Version]) != 1, Null, Lookup(Sum([Compare Facts/Version FY]), [Line Item], [Compare Facts/Line Item]))",
+       "id": "cl_v",
+       "name": "Version"
+      },
+      {
+       "format": {
+        "displayNullAs": "\u2014",
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "[Today] - [Version]",
+       "id": "cl_c",
+       "name": "Change"
+      },
+      {
+       "formula": "Abs([Change])",
+       "hidden": true,
+       "id": "cl_abs",
+       "name": "Size of change"
+      }
+     ],
+     "id": "compareLines",
+     "kind": "table",
+     "name": "Change by line",
+     "sort": [
+      {
+       "columnId": "cl_abs",
+       "direction": "descending"
+      }
+     ],
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "sql",
+      "statement": "select * from (values\n('North America Revenue', 1),\n('EMEA Revenue', 2),\n('APAC Revenue', 3),\n('LATAM Revenue', 4),\n('North America Cost of Revenue', 5),\n('EMEA Cost of Revenue', 6),\n('APAC Cost of Revenue', 7),\n('LATAM Cost of Revenue', 8),\n('North America Opex', 9),\n('EMEA Opex', 10),\n('APAC Opex', 11),\n('LATAM Opex', 12)\n) as t(LINE_ITEM, LINE_ORDER)"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableComponents": {
+      "summaryBar": "hidden"
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     }
+    },
+    {
+     "axisTotals": [
+      {
+       "axisId": "grand-row-total",
+       "visibility": "hidden"
+      }
+     ],
+     "columns": [
+      {
+       "formula": "[Compare Facts/Line Item]",
+       "id": "cg_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Compare Facts/Line Order]",
+       "id": "cg_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Compare Facts/Month]",
+       "id": "cg_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Compare Facts/Month Num]",
+       "id": "cg_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "If([Compare Facts/Month Num] >= 13 and [Compare Facts/Month Num] <= 24, \"Yes\", \"No\")",
+       "hidden": true,
+       "id": "cg_fy",
+       "name": "In FY"
+      },
+      {
+       "format": {
+        "displayNullAs": "\u2014",
+        "formatString": ",.0f",
+        "kind": "number",
+        "prefix": "$",
+        "suffix": "K"
+       },
+       "formula": "If(Count([Version Pick/Version]) != 1 and [CompareShow] != \"Today\", Null, Sum(Switch([CompareShow], \"Today\", [Compare Facts/Today Amount], \"Version\", [Compare Facts/Version Amount], [Compare Facts/Today Amount] - [Compare Facts/Version Amount])) / 1000)",
+       "id": "cg_amt",
+       "name": "Amount"
+      }
+     ],
+     "columnsBy": [
+      {
+       "columnId": "cg_m",
+       "sort": {
+        "aggregation": "min",
+        "by": "cg_mn",
+        "direction": "ascending"
+       }
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "cg_fy",
+       "id": "cg_f",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Yes"
+       ]
+      }
+     ],
+     "id": "compareGrid",
+     "kind": "pivot-table",
+     "name": "By line and month",
+     "rowsBy": [
+      {
+       "columnId": "cg_line",
+       "sort": {
+        "aggregation": "min",
+        "by": "cg_lo",
+        "direction": "ascending"
+       }
+      }
+     ],
+     "source": {
+      "elementId": "compareFacts",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     },
+     "values": [
+      "cg_amt"
+     ]
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Versions/Version]",
+       "id": "versionsView_0",
+       "name": "Version"
+      },
+      {
+       "formula": "[Versions/Scenario]",
+       "id": "versionsView_1",
+       "name": "Scenario"
+      },
+      {
+       "formula": "Coalesce(DateFormat([Versions/Forecast Start Month], \"%b-%y\"), \"\u2014\")",
+       "id": "versionsView_2",
+       "name": "Forecast start"
+      },
+      {
+       "format": {
+        "displayNullAs": "\u2014",
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "[Versions/FY Revenue]",
+       "id": "versionsView_3",
+       "name": "FY27 revenue"
+      },
+      {
+       "format": {
+        "displayNullAs": "\u2014",
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "[Versions/FY Gross Margin]",
+       "id": "versionsView_4",
+       "name": "Gross margin"
+      },
+      {
+       "format": {
+        "displayNullAs": "\u2014",
+        "formatString": "$.3~s",
+        "kind": "number"
+       },
+       "formula": "[Versions/FY EBITDA]",
+       "id": "versionsView_5",
+       "name": "EBITDA"
+      },
+      {
+       "formula": "[Versions/Saved By]",
+       "id": "versionsView_6",
+       "name": "Saved by"
+      },
+      {
+       "format": {
+        "formatString": "%b %-d, %Y",
+        "kind": "datetime"
+       },
+       "formula": "[Versions/Saved At]",
+       "id": "versionsView_7",
+       "name": "Saved at"
+      },
+      {
+       "formula": "Coalesce([Versions/Comment], \"\")",
+       "id": "versionsView_8",
+       "name": "Comment"
+      },
+      {
+       "formula": "If([Versions/Inputs Frozen] = \"Yes\", \"Pick it in Compare to\", \"Numbers not recorded in the source\")",
+       "id": "versionsView_cmp",
+       "name": "Compare"
+      },
+      {
+       "formula": "[Versions/Log Order]",
+       "hidden": true,
+       "id": "versionsView_order",
+       "name": "Log Order"
+      }
+     ],
+     "id": "versionsView",
+     "kind": "table",
+     "name": "Versions",
+     "sort": [
+      {
+       "columnId": "versionsView_order",
+       "direction": "descending"
+      }
+     ],
+     "source": {
+      "elementId": "versions",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableComponents": {
+      "summaryBar": "hidden"
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Approvals/Status]",
+       "id": "approvalsView_0",
+       "name": "Status"
+      },
+      {
+       "formula": "[Approvals/Request]",
+       "id": "approvalsView_1",
+       "name": "Request"
+      },
+      {
+       "formula": "[Approvals/Submitted By]",
+       "id": "approvalsView_2",
+       "name": "Submitted by"
+      },
+      {
+       "format": {
+        "formatString": "%b %-d, %Y",
+        "kind": "datetime"
+       },
+       "formula": "[Approvals/Submitted At]",
+       "id": "approvalsView_3",
+       "name": "Submitted at"
+      },
+      {
+       "formula": "Coalesce([Approvals/Decided By], \"\u2014\")",
+       "id": "approvalsView_4",
+       "name": "Decided by"
+      },
+      {
+       "formula": "Coalesce(DateFormat([Approvals/Decided At], \"%b %d, %Y\"), \"\u2014\")",
+       "id": "approvalsView_5",
+       "name": "Decided at"
+      },
+      {
+       "formula": "Coalesce([Approvals/Comment], \"\")",
+       "id": "approvalsView_6",
+       "name": "Comment"
+      },
+      {
+       "formula": "[Approvals/Log Order]",
+       "hidden": true,
+       "id": "approvalsView_order",
+       "name": "Log Order"
+      }
+     ],
+     "id": "approvalsView",
+     "kind": "table",
+     "name": "Approvals",
+     "sort": [
+      {
+       "columnId": "approvalsView_order",
+       "direction": "descending"
+      }
+     ],
+     "source": {
+      "elementId": "approvals",
+      "kind": "table"
+     },
+     "style": {
+      "backgroundColor": "#FFFFFF",
+      "borderColor": "#E2E8F0",
+      "borderRadius": "round",
+      "borderWidth": 1
+     },
+     "tableComponents": {
+      "summaryBar": "hidden"
+     },
+     "tableStyle": {
+      "preset": "presentation"
+     }
+    }
+   ],
+   "id": "pgVersions",
+   "name": "Versions & approvals"
+  },
+  {
+   "elements": [
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Section]",
+       "id": "a_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Custom SQL/Section Order]",
+       "id": "a_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Custom SQL/Line Item]",
+       "id": "a_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Custom SQL/Line Order]",
+       "id": "a_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Custom SQL/Month]",
+       "id": "a_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Custom SQL/Month Num]",
+       "id": "a_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Custom SQL/Month End]",
+       "id": "a_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "[Custom SQL/Amount]",
+       "id": "a_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Actual\"",
+       "id": "a_p",
+       "name": "Period"
+      },
+      {
+       "formula": "DatePart(\"year\", [Custom SQL/Month End]) * 12 + DatePart(\"month\", [Custom SQL/Month End])",
+       "id": "a_mk",
+       "name": "Month Key"
+      },
+      {
+       "formula": "If([Month Key] < Max([Forecast Boundary/Start Key]), \"Actual\", \"Forecast\")",
+       "id": "a_win",
+       "name": "Window"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "a_win",
+       "id": "a_wf",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Actual"
+       ]
+      }
+     ],
+     "id": "actuals",
+     "kind": "table",
+     "name": "Actuals",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "glDetail",
+      "kind": "data-model"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Section]",
+       "id": "s_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Custom SQL/Section Order]",
+       "id": "s_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Custom SQL/Line Item]",
+       "id": "s_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Custom SQL/Line Order]",
+       "id": "s_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Custom SQL/Month]",
+       "id": "s_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Custom SQL/Month Num]",
+       "id": "s_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Custom SQL/Month End]",
+       "id": "s_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "[Custom SQL/N]",
+       "id": "s_n",
+       "name": "N"
+      },
+      {
+       "formula": "[Custom SQL/Kind]",
+       "id": "s_k",
+       "name": "Kind"
+      },
+      {
+       "formula": "[Custom SQL/Default Rate]",
+       "id": "s_dr",
+       "name": "Default Rate"
+      },
+      {
+       "formula": "[Custom SQL/Manual Value]",
+       "id": "s_mv",
+       "name": "Manual Value"
+      },
+      {
+       "formula": "[Custom SQL/June Base]",
+       "id": "s_jb",
+       "name": "June Base"
+      },
+      {
+       "formula": "[Custom SQL/Downside Spread]",
+       "id": "s_sp1",
+       "name": "Downside Spread"
+      },
+      {
+       "formula": "[Custom SQL/Upside Spread]",
+       "id": "s_sp2",
+       "name": "Upside Spread"
+      }
+     ],
+     "id": "spineWrap",
+     "kind": "table",
+     "name": "Forecast Spine",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "spine",
+      "kind": "data-model"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[FJ/Section]",
+       "id": "f_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[FJ/Section Order]",
+       "id": "f_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[FJ/Line Item]",
+       "id": "f_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[FJ/Line Order]",
+       "id": "f_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[FJ/Month]",
+       "id": "f_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[FJ/Month Num]",
+       "id": "f_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[FJ/Month End]",
+       "id": "f_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "If([Kind] = \"yoy\", [FJ/N], [Month Key] - [Base Key])",
+       "id": "f_n",
+       "name": "N"
+      },
+      {
+       "formula": "[FJ/Kind]",
+       "id": "f_k",
+       "name": "Kind"
+      },
+      {
+       "formula": "[FJ/June Base]",
+       "id": "f_jb",
+       "name": "June Base"
+      },
+      {
+       "formula": "Coalesce([Rates/Monthly growth rate], [FJ/Default Rate]) + Switch([Scenario], \"Downside\", [FJ/Downside Spread], \"Upside\", [FJ/Upside Spread], 0)",
+       "id": "f_er",
+       "name": "Eff Rate"
+      },
+      {
+       "formula": "Coalesce([Scenario], \"Base\")",
+       "id": "f_scn",
+       "name": "Active Scenario"
+      },
+      {
+       "formula": "Coalesce([Manual/Amount], [FJ/Manual Value])",
+       "id": "f_em",
+       "name": "Eff Manual"
+      },
+      {
+       "formula": "DatePart(\"year\", [FJ/Month End]) * 12 + DatePart(\"month\", [FJ/Month End])",
+       "id": "f_mk",
+       "name": "Month Key"
+      },
+      {
+       "formula": "Max([Forecast Boundary/Start Key])",
+       "id": "f_sk",
+       "name": "Start Key"
+      },
+      {
+       "formula": "[Start Key] - 1",
+       "id": "f_bk",
+       "name": "Base Key"
+      },
+      {
+       "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Month Key], [Actuals/Month Key])",
+       "id": "f_land",
+       "name": "Landed"
+      },
+      {
+       "formula": "If([Month Key] >= [Start Key], \"Forecast\", IsNull([Landed]), \"Awaiting actuals\", \"Actual\")",
+       "id": "f_win",
+       "name": "Window"
+      },
+      {
+       "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Base Key], [Actuals/Month Key])",
+       "id": "f_la",
+       "name": "Last Actual"
+      },
+      {
+       "formula": "Coalesce([Last Actual], If([Kind] = \"flat\", [June Base], [June Base] * (1 + [Eff Rate]) ^ ([Base Key] - 24330)))",
+       "id": "f_seed",
+       "name": "Seed"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "If([Kind] = \"manual\", [Eff Manual], [Kind] = \"flat\", [Seed], [Kind] = \"yoy\", [June Base] * (1 + [Eff Rate]) ^ [N], [Seed] * (1 + [Eff Rate]) ^ [N])",
+       "id": "f_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "If([Window] = \"Awaiting actuals\", \"Awaiting actuals\", \"Forecast\")",
+       "id": "f_p",
+       "name": "Period"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "f_win",
+       "id": "f_wf",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Forecast",
+        "Awaiting actuals"
+       ]
+      }
+     ],
+     "id": "forecast",
+     "kind": "table",
+     "name": "Forecast",
+     "source": {
+      "joins": [
+       {
+        "columns": [
+         {
+          "left": "[Line Item]",
+          "right": "[Line item]"
+         }
+        ],
+        "joinType": "left-outer",
+        "left": {
+         "elementId": "spineWrap",
+         "kind": "table"
+        },
+        "name": "Rates",
+        "right": {
+         "elementId": "rateInput",
+         "kind": "table"
+        }
+       },
+       {
+        "columns": [
+         {
+          "left": "[Line Item]",
+          "right": "[Line item]"
+         },
+         {
+          "left": "[Month Num]",
+          "right": "[Month Num]"
+         }
+        ],
+        "joinType": "left-outer",
+        "left": {
+         "elementId": "spineWrap",
+         "kind": "table"
+        },
+        "name": "Manual",
+        "right": {
+         "elementId": "manualInput",
+         "kind": "table"
+        }
+       }
+      ],
+      "kind": "join",
+      "name": "FJ",
+      "primarySource": {
+       "elementId": "spineWrap",
+       "kind": "table"
+      }
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Union of 2 Sources/Section]",
+       "id": "c_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Union of 2 Sources/Section Order]",
+       "id": "c_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Item]",
+       "id": "c_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Order]",
+       "id": "c_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month]",
+       "id": "c_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month Num]",
+       "id": "c_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month End]",
+       "id": "c_me",
+       "name": "Month End"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "[Union of 2 Sources/Amount]",
+       "id": "c_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "[Union of 2 Sources/Period]",
+       "id": "c_p",
+       "name": "Period"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Revenue\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_rev",
+       "name": "Revenue Amt"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Cost of Revenue\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_cogs",
+       "name": "COGS Amt"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Operating Expenses\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_opex",
+       "name": "OpEx Amt"
+      }
+     ],
+     "id": "pnlCombined",
+     "kind": "table",
+     "name": "PnL Combined",
+     "source": {
+      "kind": "union",
+      "matches": [
+       {
+        "outputColumnName": "Section",
+        "sourceColumns": [
+         "[Section]",
+         "[Section]"
+        ]
+       },
+       {
+        "outputColumnName": "Section Order",
+        "sourceColumns": [
+         "[Section Order]",
+         "[Section Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Item",
+        "sourceColumns": [
+         "[Line Item]",
+         "[Line Item]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Order",
+        "sourceColumns": [
+         "[Line Order]",
+         "[Line Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Month",
+        "sourceColumns": [
+         "[Month]",
+         "[Month]"
+        ]
+       },
+       {
+        "outputColumnName": "Month Num",
+        "sourceColumns": [
+         "[Month Num]",
+         "[Month Num]"
+        ]
+       },
+       {
+        "outputColumnName": "Month End",
+        "sourceColumns": [
+         "[Month End]",
+         "[Month End]"
+        ]
+       },
+       {
+        "outputColumnName": "Amount",
+        "sourceColumns": [
+         "[Amount]",
+         "[Amount]"
+        ]
+       },
+       {
+        "outputColumnName": "Period",
+        "sourceColumns": [
+         "[Period]",
+         "[Period]"
+        ]
+       }
+      ],
+      "sources": [
+       {
+        "elementId": "actuals",
+        "kind": "table"
+       },
+       {
+        "elementId": "forecast",
+        "kind": "table"
+       }
+      ]
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Versions/Version]",
+       "id": "fv_ver",
+       "name": "Version"
+      },
+      {
+       "formula": "[Versions/Log Order]",
+       "id": "fv_seq",
+       "name": "Log Order"
+      },
+      {
+       "formula": "[Versions/Scenario]",
+       "id": "fv_scn",
+       "name": "Scenario"
+      },
+      {
+       "formula": "[Versions/Forecast Start Month]",
+       "id": "fv_start",
+       "name": "Forecast Start Month"
+      },
+      {
+       "formula": "[Versions/North America Revenue rate]",
+       "id": "fv_ve_r0",
+       "name": "North America Revenue rate"
+      },
+      {
+       "formula": "[Versions/EMEA Revenue rate]",
+       "id": "fv_ve_r1",
+       "name": "EMEA Revenue rate"
+      },
+      {
+       "formula": "[Versions/APAC Revenue rate]",
+       "id": "fv_ve_r2",
+       "name": "APAC Revenue rate"
+      },
+      {
+       "formula": "[Versions/LATAM Revenue rate]",
+       "id": "fv_ve_r3",
+       "name": "LATAM Revenue rate"
+      },
+      {
+       "formula": "[Versions/North America Cost of Revenue rate]",
+       "id": "fv_ve_r4",
+       "name": "North America Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/EMEA Cost of Revenue rate]",
+       "id": "fv_ve_r5",
+       "name": "EMEA Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/APAC Cost of Revenue rate]",
+       "id": "fv_ve_r6",
+       "name": "APAC Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/LATAM Cost of Revenue rate]",
+       "id": "fv_ve_r7",
+       "name": "LATAM Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/North America Opex rate]",
+       "id": "fv_ve_r8",
+       "name": "North America Opex rate"
+      },
+      {
+       "formula": "[Versions/EMEA Opex rate]",
+       "id": "fv_ve_r9",
+       "name": "EMEA Opex rate"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Jul-27]",
+       "id": "fv_ve_m0_19",
+       "name": "LATAM Opex Jul-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Aug-27]",
+       "id": "fv_ve_m0_20",
+       "name": "LATAM Opex Aug-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Sep-27]",
+       "id": "fv_ve_m0_21",
+       "name": "LATAM Opex Sep-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Oct-27]",
+       "id": "fv_ve_m0_22",
+       "name": "LATAM Opex Oct-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Nov-27]",
+       "id": "fv_ve_m0_23",
+       "name": "LATAM Opex Nov-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Dec-27]",
+       "id": "fv_ve_m0_24",
+       "name": "LATAM Opex Dec-27"
+      },
+      {
+       "formula": "[Versions/Inputs Frozen]",
+       "id": "fv_frz",
+       "name": "Inputs Frozen"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "fv_frz",
+       "id": "fv_f",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Yes"
+       ]
+      }
+     ],
+     "id": "frozenVersions",
+     "kind": "table",
+     "name": "Frozen Versions",
+     "source": {
+      "elementId": "versions",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Versions/Version]",
+       "id": "vp_ver",
+       "name": "Version"
+      },
+      {
+       "formula": "[Versions/Log Order]",
+       "id": "vp_seq",
+       "name": "Log Order"
+      },
+      {
+       "formula": "[Versions/Scenario]",
+       "id": "vp_scn",
+       "name": "Scenario"
+      },
+      {
+       "formula": "[Versions/Forecast Start Month]",
+       "id": "vp_start",
+       "name": "Forecast Start Month"
+      },
+      {
+       "formula": "[Versions/North America Revenue rate]",
+       "id": "vp_ve_r0",
+       "name": "North America Revenue rate"
+      },
+      {
+       "formula": "[Versions/EMEA Revenue rate]",
+       "id": "vp_ve_r1",
+       "name": "EMEA Revenue rate"
+      },
+      {
+       "formula": "[Versions/APAC Revenue rate]",
+       "id": "vp_ve_r2",
+       "name": "APAC Revenue rate"
+      },
+      {
+       "formula": "[Versions/LATAM Revenue rate]",
+       "id": "vp_ve_r3",
+       "name": "LATAM Revenue rate"
+      },
+      {
+       "formula": "[Versions/North America Cost of Revenue rate]",
+       "id": "vp_ve_r4",
+       "name": "North America Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/EMEA Cost of Revenue rate]",
+       "id": "vp_ve_r5",
+       "name": "EMEA Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/APAC Cost of Revenue rate]",
+       "id": "vp_ve_r6",
+       "name": "APAC Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/LATAM Cost of Revenue rate]",
+       "id": "vp_ve_r7",
+       "name": "LATAM Cost of Revenue rate"
+      },
+      {
+       "formula": "[Versions/North America Opex rate]",
+       "id": "vp_ve_r8",
+       "name": "North America Opex rate"
+      },
+      {
+       "formula": "[Versions/EMEA Opex rate]",
+       "id": "vp_ve_r9",
+       "name": "EMEA Opex rate"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Jul-27]",
+       "id": "vp_ve_m0_19",
+       "name": "LATAM Opex Jul-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Aug-27]",
+       "id": "vp_ve_m0_20",
+       "name": "LATAM Opex Aug-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Sep-27]",
+       "id": "vp_ve_m0_21",
+       "name": "LATAM Opex Sep-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Oct-27]",
+       "id": "vp_ve_m0_22",
+       "name": "LATAM Opex Oct-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Nov-27]",
+       "id": "vp_ve_m0_23",
+       "name": "LATAM Opex Nov-27"
+      },
+      {
+       "formula": "[Versions/LATAM Opex Dec-27]",
+       "id": "vp_ve_m0_24",
+       "name": "LATAM Opex Dec-27"
+      },
+      {
+       "formula": "If([Versions/Inputs Frozen] = \"Yes\", If(IsNull([CompareTo]), If([Log Order] = Max([Frozen Versions/Log Order]), \"Yes\", \"No\"), If([Version] = [CompareTo] and [Log Order] = Max(If([Frozen Versions/Version] = [CompareTo], [Frozen Versions/Log Order])), \"Yes\", \"No\")), \"No\")",
+       "id": "vp_pick",
+       "name": "Picked"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "vp_pick",
+       "id": "vp_f",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Yes"
+       ]
+      }
+     ],
+     "id": "versionPick",
+     "kind": "table",
+     "name": "Version Pick",
+     "source": {
+      "elementId": "versions",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Section]",
+       "id": "a_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Custom SQL/Section Order]",
+       "id": "a_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Custom SQL/Line Item]",
+       "id": "a_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Custom SQL/Line Order]",
+       "id": "a_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Custom SQL/Month]",
+       "id": "a_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Custom SQL/Month Num]",
+       "id": "a_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Custom SQL/Month End]",
+       "id": "a_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "[Custom SQL/Amount]",
+       "id": "a_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Actual\"",
+       "id": "a_p",
+       "name": "Period"
+      },
+      {
+       "formula": "DatePart(\"year\", [Custom SQL/Month End]) * 12 + DatePart(\"month\", [Custom SQL/Month End])",
+       "id": "a_mk",
+       "name": "Month Key"
+      },
+      {
+       "formula": "If([Month Key] < DatePart(\"year\", Max([Version Pick/Forecast Start Month])) * 12 + DatePart(\"month\", Max([Version Pick/Forecast Start Month])), \"Actual\", \"Forecast\")",
+       "id": "a_win",
+       "name": "Window"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "a_win",
+       "id": "a_wf",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Actual"
+       ]
+      }
+     ],
+     "id": "versionActuals",
+     "kind": "table",
+     "name": "Version Actuals",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "glDetail",
+      "kind": "data-model"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Forecast Spine/Section]",
+       "id": "f_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Forecast Spine/Section Order]",
+       "id": "f_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Forecast Spine/Line Item]",
+       "id": "f_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Forecast Spine/Line Order]",
+       "id": "f_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Forecast Spine/Month]",
+       "id": "f_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Forecast Spine/Month Num]",
+       "id": "f_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Forecast Spine/Month End]",
+       "id": "f_me",
+       "name": "Month End"
+      },
+      {
+       "formula": "If([Kind] = \"yoy\", [Forecast Spine/N], [Month Key] - [Base Key])",
+       "id": "f_n",
+       "name": "N"
+      },
+      {
+       "formula": "[Forecast Spine/Kind]",
+       "id": "f_k",
+       "name": "Kind"
+      },
+      {
+       "formula": "[Forecast Spine/June Base]",
+       "id": "f_jb",
+       "name": "June Base"
+      },
+      {
+       "formula": "Switch([Forecast Spine/Line Item], \"North America Revenue\", Max([Version Pick/North America Revenue rate]), \"EMEA Revenue\", Max([Version Pick/EMEA Revenue rate]), \"APAC Revenue\", Max([Version Pick/APAC Revenue rate]), \"LATAM Revenue\", Max([Version Pick/LATAM Revenue rate]), \"North America Cost of Revenue\", Max([Version Pick/North America Cost of Revenue rate]), \"EMEA Cost of Revenue\", Max([Version Pick/EMEA Cost of Revenue rate]), \"APAC Cost of Revenue\", Max([Version Pick/APAC Cost of Revenue rate]), \"LATAM Cost of Revenue\", Max([Version Pick/LATAM Cost of Revenue rate]), \"North America Opex\", Max([Version Pick/North America Opex rate]), \"EMEA Opex\", Max([Version Pick/EMEA Opex rate]), [Forecast Spine/Default Rate]) + Switch(Max([Version Pick/Scenario]), \"Downside\", [Forecast Spine/Downside Spread], \"Upside\", [Forecast Spine/Upside Spread], 0)",
+       "id": "f_er",
+       "name": "Eff Rate"
+      },
+      {
+       "formula": "Coalesce(Max([Version Pick/Scenario]), \"Base\")",
+       "id": "f_scn",
+       "name": "Active Scenario"
+      },
+      {
+       "formula": "If([Forecast Spine/Line Item] = \"LATAM Opex\" and [Forecast Spine/Month Num] = 19, Max([Version Pick/LATAM Opex Jul-27]), [Forecast Spine/Line Item] = \"LATAM Opex\" and [Forecast Spine/Month Num] = 20, Max([Version Pick/LATAM Opex Aug-27]), [Forecast Spine/Line Item] = \"LATAM Opex\" and [Forecast Spine/Month Num] = 21, Max([Version Pick/LATAM Opex Sep-27]), [Forecast Spine/Line Item] = \"LATAM Opex\" and [Forecast Spine/Month Num] = 22, Max([Version Pick/LATAM Opex Oct-27]), [Forecast Spine/Line Item] = \"LATAM Opex\" and [Forecast Spine/Month Num] = 23, Max([Version Pick/LATAM Opex Nov-27]), [Forecast Spine/Line Item] = \"LATAM Opex\" and [Forecast Spine/Month Num] = 24, Max([Version Pick/LATAM Opex Dec-27]), [Forecast Spine/Manual Value])",
+       "id": "f_em",
+       "name": "Eff Manual"
+      },
+      {
+       "formula": "DatePart(\"year\", [Forecast Spine/Month End]) * 12 + DatePart(\"month\", [Forecast Spine/Month End])",
+       "id": "f_mk",
+       "name": "Month Key"
+      },
+      {
+       "formula": "DatePart(\"year\", Max([Version Pick/Forecast Start Month])) * 12 + DatePart(\"month\", Max([Version Pick/Forecast Start Month]))",
+       "id": "f_sk",
+       "name": "Start Key"
+      },
+      {
+       "formula": "[Start Key] - 1",
+       "id": "f_bk",
+       "name": "Base Key"
+      },
+      {
+       "formula": "Lookup(Sum([Version Actuals/Amount]), [Line Item], [Version Actuals/Line Item], [Month Key], [Version Actuals/Month Key])",
+       "id": "f_land",
+       "name": "Landed"
+      },
+      {
+       "formula": "If([Month Key] >= [Start Key], \"Forecast\", IsNull([Landed]), \"Awaiting actuals\", \"Actual\")",
+       "id": "f_win",
+       "name": "Window"
+      },
+      {
+       "formula": "Lookup(Sum([Version Actuals/Amount]), [Line Item], [Version Actuals/Line Item], [Base Key], [Version Actuals/Month Key])",
+       "id": "f_la",
+       "name": "Last Actual"
+      },
+      {
+       "formula": "Coalesce([Last Actual], If([Kind] = \"flat\", [June Base], [June Base] * (1 + [Eff Rate]) ^ ([Base Key] - 24330)))",
+       "id": "f_seed",
+       "name": "Seed"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "If([Kind] = \"manual\", [Eff Manual], [Kind] = \"flat\", [Seed], [Kind] = \"yoy\", [June Base] * (1 + [Eff Rate]) ^ [N], [Seed] * (1 + [Eff Rate]) ^ [N])",
+       "id": "f_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "If([Window] = \"Awaiting actuals\", \"Awaiting actuals\", \"Forecast\")",
+       "id": "f_p",
+       "name": "Period"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "f_win",
+       "id": "f_wf",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Forecast",
+        "Awaiting actuals"
+       ]
+      }
+     ],
+     "id": "versionForecast",
+     "kind": "table",
+     "name": "Version Forecast",
+     "source": {
+      "elementId": "spineWrap",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Union of 2 Sources/Section]",
+       "id": "c_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Union of 2 Sources/Section Order]",
+       "id": "c_so",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Item]",
+       "id": "c_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Order]",
+       "id": "c_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month]",
+       "id": "c_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month Num]",
+       "id": "c_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month End]",
+       "id": "c_me",
+       "name": "Month End"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "[Union of 2 Sources/Amount]",
+       "id": "c_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "[Union of 2 Sources/Period]",
+       "id": "c_p",
+       "name": "Period"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Revenue\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_rev",
+       "name": "Revenue Amt"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Cost of Revenue\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_cogs",
+       "name": "COGS Amt"
+      },
+      {
+       "formula": "If([Union of 2 Sources/Section] = \"Operating Expenses\", [Union of 2 Sources/Amount], 0)",
+       "id": "c_opex",
+       "name": "OpEx Amt"
+      },
+      {
+       "formula": "If(Count([Version Pick/Version]) = 1, \"Yes\", \"No\")",
+       "hidden": true,
+       "id": "c_hasv",
+       "name": "Has Version"
+      }
+     ],
+     "filters": [
+      {
+       "columnId": "c_hasv",
+       "id": "c_hasv_f",
+       "kind": "list",
+       "mode": "include",
+       "values": [
+        "Yes"
+       ]
+      }
+     ],
+     "id": "versionCombined",
+     "kind": "table",
+     "name": "Version Combined",
+     "source": {
+      "kind": "union",
+      "matches": [
+       {
+        "outputColumnName": "Section",
+        "sourceColumns": [
+         "[Section]",
+         "[Section]"
+        ]
+       },
+       {
+        "outputColumnName": "Section Order",
+        "sourceColumns": [
+         "[Section Order]",
+         "[Section Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Item",
+        "sourceColumns": [
+         "[Line Item]",
+         "[Line Item]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Order",
+        "sourceColumns": [
+         "[Line Order]",
+         "[Line Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Month",
+        "sourceColumns": [
+         "[Month]",
+         "[Month]"
+        ]
+       },
+       {
+        "outputColumnName": "Month Num",
+        "sourceColumns": [
+         "[Month Num]",
+         "[Month Num]"
+        ]
+       },
+       {
+        "outputColumnName": "Month End",
+        "sourceColumns": [
+         "[Month End]",
+         "[Month End]"
+        ]
+       },
+       {
+        "outputColumnName": "Amount",
+        "sourceColumns": [
+         "[Amount]",
+         "[Amount]"
+        ]
+       },
+       {
+        "outputColumnName": "Period",
+        "sourceColumns": [
+         "[Period]",
+         "[Period]"
+        ]
+       }
+      ],
+      "sources": [
+       {
+        "elementId": "versionActuals",
+        "kind": "table"
+       },
+       {
+        "elementId": "versionForecast",
+        "kind": "table"
+       }
+      ]
+     }
+    },
+    {
+     "columns": [
+      {
+       "format": {
+        "formatString": "%b-%y",
+        "kind": "datetime"
+       },
+       "formula": "Coalesce(Max([Parameters/Forecast Start Month]), MakeDate(2027, 7, 1))",
+       "id": "bd_start",
+       "name": "Start Month"
+      },
+      {
+       "formula": "DatePart(\"year\", [Start Month]) * 12 + DatePart(\"month\", [Start Month])",
+       "id": "bd_key",
+       "name": "Start Key"
+      },
+      {
+       "format": {
+        "formatString": "%b-%y",
+        "kind": "datetime"
+       },
+       "formula": "DateAdd(\"month\", -1, [Start Month])",
+       "id": "bd_last",
+       "name": "Last Closed Month"
+      }
+     ],
+     "id": "boundary",
+     "kind": "table",
+     "name": "Forecast Boundary",
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "sql",
+      "statement": "select * from (values\n(1)\n) as t(BOUNDARY_ROW)"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[PnL Combined/Section]",
+       "id": "rf_section",
+       "name": "Section"
+      },
+      {
+       "formula": "[PnL Combined/Section Order]",
+       "id": "rf_section_order",
+       "name": "Section Order"
+      },
+      {
+       "formula": "[PnL Combined/Line Item]",
+       "id": "rf_line_item",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[PnL Combined/Month Num]",
+       "id": "rf_month_num",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[PnL Combined/Month End]",
+       "id": "rf_month_end",
+       "name": "Month End"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "[PnL Combined/Amount]",
+       "id": "rf_amount",
+       "name": "Amount"
+      },
+      {
+       "formula": "[PnL Combined/Period]",
+       "id": "rf_period",
+       "name": "Period"
+      },
+      {
+       "formula": "\"\"",
+       "id": "rf_region",
+       "name": "Region"
+      },
+      {
+       "formula": "If(DatePart(\"year\", [PnL Combined/Month End]) * 12 + DatePart(\"month\", [PnL Combined/Month End]) >= Max([Forecast Boundary/Start Key]), \"Forecast\", IsNull(Lookup(Max([Actuals/Month Key]), DatePart(\"year\", [PnL Combined/Month End]) * 12 + DatePart(\"month\", [PnL Combined/Month End]), [Actuals/Month Key])), \"Forecast\", \"Actual\")",
+       "id": "rf_phase",
+       "name": "Phase"
+      }
+     ],
+     "id": "reportFacts",
+     "kind": "table",
+     "name": "Forecast Facts",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Metric]",
+       "id": "mm_m",
+       "name": "Metric"
+      },
+      {
+       "formula": "[Custom SQL/Metric Order]",
+       "id": "mm_o",
+       "name": "Metric Order"
+      },
+      {
+       "formula": "[Custom SQL/Section]",
+       "id": "mm_s",
+       "name": "Section"
+      },
+      {
+       "formula": "[Custom SQL/Weight]",
+       "id": "mm_w",
+       "name": "Weight"
+      }
+     ],
+     "id": "metricWrap",
+     "kind": "table",
+     "name": "Metric Map",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "metricMap",
+      "kind": "data-model"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Metrics/Metric]",
+       "id": "sf_m",
+       "name": "Metric"
+      },
+      {
+       "formula": "[Metrics/Metric Order]",
+       "id": "sf_o",
+       "name": "Metric Order"
+      },
+      {
+       "formula": "[SJ/Period]",
+       "id": "sf_p",
+       "name": "Period"
+      },
+      {
+       "formula": "[SJ/Month Num]",
+       "id": "sf_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[SJ/Amount] * [Metrics/Weight]",
+       "id": "sf_v",
+       "name": "Signed Amount"
+      }
+     ],
+     "id": "summaryFacts",
+     "kind": "table",
+     "name": "Summary Facts",
+     "source": {
+      "joins": [
+       {
+        "columns": [
+         {
+          "left": "[Section]",
+          "right": "[Section]"
+         }
+        ],
+        "joinType": "inner",
+        "left": {
+         "elementId": "reportFacts",
+         "kind": "table"
+        },
+        "name": "Metrics",
+        "right": {
+         "elementId": "metricWrap",
+         "kind": "table"
+        }
+       }
+      ],
+      "kind": "join",
+      "name": "SJ",
+      "primarySource": {
+       "elementId": "reportFacts",
+       "kind": "table"
+      }
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "If([Forecast Facts/Month Num] >= 13 and [Forecast Facts/Month Num] <= 24, \"FY27\", [Forecast Facts/Month Num] >= 1 and [Forecast Facts/Month Num] <= 12, \"FY26\", Null)",
+       "id": "af_fy",
+       "name": "Fiscal year"
+      },
+      {
+       "format": {
+        "formatString": "%b-%y",
+        "kind": "datetime"
+       },
+       "formula": "DateTrunc(\"month\", [Forecast Facts/Month End])",
+       "id": "af_m",
+       "name": "Month"
+      },
+      {
+       "formula": "If([Forecast Facts/Period] = \"Plan\", \"Plan\", [Forecast Facts/Period] = \"Actual\", \"Actual\", \"Forecast\")",
+       "id": "af_p",
+       "name": "Period"
+      },
+      {
+       "formula": "[Forecast Facts/Section]",
+       "id": "af_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Forecast Facts/Line Item]",
+       "id": "af_line",
+       "name": "Line item"
+      },
+      {
+       "formula": "[Forecast Facts/Region]",
+       "id": "af_region",
+       "name": "Region"
+      },
+      {
+       "format": {
+        "formatString": "$,.0f",
+        "kind": "number"
+       },
+       "formula": "[Forecast Facts/Amount]",
+       "id": "af_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "Coalesce([Scenario], \"Base\")",
+       "id": "af_scn",
+       "name": "Active scenario"
+      }
+     ],
+     "id": "agentFacts",
+     "kind": "table",
+     "name": "Monthly P&L facts",
+     "source": {
+      "elementId": "reportFacts",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "hidden": true,
+       "id": "ID",
+       "name": "Row ID"
+      },
+      {
+       "id": "pa_start",
+       "name": "Forecast Start Month",
+       "type": "datetime"
+      }
+     ],
+     "id": "parameters",
+     "inputMode": "edit",
+     "kind": "input-table",
+     "name": "Parameters",
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "empty"
+     }
+    },
+    {
+     "columns": [
+      {
+       "hidden": true,
+       "id": "ID",
+       "name": "Row ID"
+      },
+      {
+       "id": "ve_ver",
+       "name": "Version",
+       "type": "text"
+      },
+      {
+       "id": "ve_scn",
+       "name": "Scenario",
+       "type": "text"
+      },
+      {
+       "id": "ve_start",
+       "name": "Forecast Start Month",
+       "type": "datetime"
+      },
+      {
+       "id": "ve_rev",
+       "name": "FY Revenue",
+       "type": "number"
+      },
+      {
+       "id": "ve_gm",
+       "name": "FY Gross Margin",
+       "type": "number"
+      },
+      {
+       "id": "ve_ebitda",
+       "name": "FY EBITDA",
+       "type": "number"
+      },
+      {
+       "id": "ve_by",
+       "name": "Saved By",
+       "type": "text"
+      },
+      {
+       "id": "ve_at",
+       "name": "Saved At",
+       "type": "datetime"
+      },
+      {
+       "id": "ve_note",
+       "name": "Comment",
+       "type": "text"
+      },
+      {
+       "hidden": true,
+       "id": "ve_seq",
+       "name": "Log Order",
+       "type": "number"
+      },
+      {
+       "id": "ve_r0",
+       "name": "North America Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r1",
+       "name": "EMEA Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r2",
+       "name": "APAC Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r3",
+       "name": "LATAM Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r4",
+       "name": "North America Cost of Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r5",
+       "name": "EMEA Cost of Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r6",
+       "name": "APAC Cost of Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r7",
+       "name": "LATAM Cost of Revenue rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r8",
+       "name": "North America Opex rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_r9",
+       "name": "EMEA Opex rate",
+       "type": "number"
+      },
+      {
+       "id": "ve_m0_19",
+       "name": "LATAM Opex Jul-27",
+       "type": "number"
+      },
+      {
+       "id": "ve_m0_20",
+       "name": "LATAM Opex Aug-27",
+       "type": "number"
+      },
+      {
+       "id": "ve_m0_21",
+       "name": "LATAM Opex Sep-27",
+       "type": "number"
+      },
+      {
+       "id": "ve_m0_22",
+       "name": "LATAM Opex Oct-27",
+       "type": "number"
+      },
+      {
+       "id": "ve_m0_23",
+       "name": "LATAM Opex Nov-27",
+       "type": "number"
+      },
+      {
+       "id": "ve_m0_24",
+       "name": "LATAM Opex Dec-27",
+       "type": "number"
+      },
+      {
+       "id": "ve_frozen",
+       "name": "Inputs Frozen",
+       "type": "text"
+      }
+     ],
+     "id": "versions",
+     "inputMode": "view",
+     "kind": "input-table",
+     "name": "Versions",
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "empty"
+     }
+    },
+    {
+     "columns": [
+      {
+       "hidden": true,
+       "id": "ID",
+       "name": "Row ID"
+      },
+      {
+       "id": "ap_req",
+       "name": "Request",
+       "type": "text"
+      },
+      {
+       "id": "ap_by",
+       "name": "Submitted By",
+       "type": "text"
+      },
+      {
+       "id": "ap_to",
+       "name": "Approver",
+       "type": "text"
+      },
+      {
+       "id": "ap_status",
+       "name": "Status",
+       "type": "text"
+      },
+      {
+       "id": "ap_at",
+       "name": "Submitted At",
+       "type": "datetime"
+      },
+      {
+       "id": "ap_dby",
+       "name": "Decided By",
+       "type": "text"
+      },
+      {
+       "id": "ap_dat",
+       "name": "Decided At",
+       "type": "datetime"
+      },
+      {
+       "id": "ap_note",
+       "name": "Comment",
+       "type": "text"
+      },
+      {
+       "hidden": true,
+       "id": "ap_seq",
+       "name": "Log Order",
+       "type": "number"
+      }
+     ],
+     "id": "approvals",
+     "inputMode": "view",
+     "kind": "input-table",
+     "name": "Approvals",
+     "source": {
+      "connectionId": "conn-1",
+      "kind": "empty"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "Coalesce(Lookup([Approvals/Status], Max([Approvals/Log Order]), [Approvals/Log Order]), \"Draft\")",
+       "id": "st_v",
+       "name": "Latest approval status"
+      }
+     ],
+     "id": "approvalStatus",
+     "kind": "table",
+     "name": "Latest approval status",
+     "source": {
+      "elementId": "parameters",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[PnL Combined/Section]",
+       "id": "todayFacts_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[PnL Combined/Line Item]",
+       "id": "todayFacts_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[PnL Combined/Line Order]",
+       "id": "todayFacts_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[PnL Combined/Month]",
+       "id": "todayFacts_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[PnL Combined/Month Num]",
+       "id": "todayFacts_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[PnL Combined/Amount]",
+       "id": "todayFacts_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Today\"",
+       "id": "todayFacts_w",
+       "name": "Which"
+      },
+      {
+       "formula": "\"Today\"",
+       "id": "todayFacts_vl",
+       "name": "Version Label"
+      }
+     ],
+     "id": "todayFacts",
+     "kind": "table",
+     "name": "Today Facts",
+     "source": {
+      "elementId": "pnlCombined",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Version Combined/Section]",
+       "id": "versionFacts_sec",
+       "name": "Section"
+      },
+      {
+       "formula": "[Version Combined/Line Item]",
+       "id": "versionFacts_line",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Version Combined/Line Order]",
+       "id": "versionFacts_lo",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Version Combined/Month]",
+       "id": "versionFacts_m",
+       "name": "Month"
+      },
+      {
+       "formula": "[Version Combined/Month Num]",
+       "id": "versionFacts_mn",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Version Combined/Amount]",
+       "id": "versionFacts_amt",
+       "name": "Amount"
+      },
+      {
+       "formula": "\"Version\"",
+       "id": "versionFacts_w",
+       "name": "Which"
+      },
+      {
+       "formula": "Max([Version Pick/Version])",
+       "id": "versionFacts_vl",
+       "name": "Version Label"
+      }
+     ],
+     "id": "versionFacts",
+     "kind": "table",
+     "name": "Version Facts",
+     "source": {
+      "elementId": "versionCombined",
+      "kind": "table"
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Union of 2 Sources/Section]",
+       "id": "cf_0",
+       "name": "Section"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Item]",
+       "id": "cf_1",
+       "name": "Line Item"
+      },
+      {
+       "formula": "[Union of 2 Sources/Line Order]",
+       "id": "cf_2",
+       "name": "Line Order"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month]",
+       "id": "cf_3",
+       "name": "Month"
+      },
+      {
+       "formula": "[Union of 2 Sources/Month Num]",
+       "id": "cf_4",
+       "name": "Month Num"
+      },
+      {
+       "formula": "[Union of 2 Sources/Amount]",
+       "id": "cf_5",
+       "name": "Amount"
+      },
+      {
+       "formula": "[Union of 2 Sources/Which]",
+       "id": "cf_6",
+       "name": "Which"
+      },
+      {
+       "formula": "[Union of 2 Sources/Version Label]",
+       "id": "cf_7",
+       "name": "Version Label"
+      },
+      {
+       "formula": "If([Which] = \"Today\", [Amount], 0)",
+       "id": "cf_t",
+       "name": "Today Amount"
+      },
+      {
+       "formula": "If([Which] = \"Version\", [Amount], 0)",
+       "id": "cf_v",
+       "name": "Version Amount"
+      },
+      {
+       "formula": "If([Month Num] >= 13 and [Month Num] <= 24, [Today Amount], 0)",
+       "id": "cf_tfy",
+       "name": "Today FY"
+      },
+      {
+       "formula": "If([Month Num] >= 13 and [Month Num] <= 24, [Version Amount], 0)",
+       "id": "cf_vfy",
+       "name": "Version FY"
+      }
+     ],
+     "id": "compareFacts",
+     "kind": "table",
+     "name": "Compare Facts",
+     "source": {
+      "kind": "union",
+      "matches": [
+       {
+        "outputColumnName": "Section",
+        "sourceColumns": [
+         "[Section]",
+         "[Section]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Item",
+        "sourceColumns": [
+         "[Line Item]",
+         "[Line Item]"
+        ]
+       },
+       {
+        "outputColumnName": "Line Order",
+        "sourceColumns": [
+         "[Line Order]",
+         "[Line Order]"
+        ]
+       },
+       {
+        "outputColumnName": "Month",
+        "sourceColumns": [
+         "[Month]",
+         "[Month]"
+        ]
+       },
+       {
+        "outputColumnName": "Month Num",
+        "sourceColumns": [
+         "[Month Num]",
+         "[Month Num]"
+        ]
+       },
+       {
+        "outputColumnName": "Amount",
+        "sourceColumns": [
+         "[Amount]",
+         "[Amount]"
+        ]
+       },
+       {
+        "outputColumnName": "Which",
+        "sourceColumns": [
+         "[Which]",
+         "[Which]"
+        ]
+       },
+       {
+        "outputColumnName": "Version Label",
+        "sourceColumns": [
+         "[Version Label]",
+         "[Version Label]"
+        ]
+       }
+      ],
+      "sources": [
+       {
+        "elementId": "todayFacts",
+        "kind": "table"
+       },
+       {
+        "elementId": "versionFacts",
+        "kind": "table"
+       }
+      ]
+     }
+    },
+    {
+     "columns": [
+      {
+       "formula": "[Custom SQL/Driver]",
+       "id": "d1",
+       "name": "Driver"
+      },
+      {
+       "format": {
+        "formatString": ".1%",
+        "kind": "number"
+       },
+       "formula": "[Custom SQL/Monthly Rate]",
+       "id": "d2",
+       "name": "Monthly Rate"
+      },
+      {
+       "formula": "[Custom SQL/Basis]",
+       "id": "d3",
+       "name": "Basis"
+      }
+     ],
+     "id": "assumpTable",
+     "kind": "table",
+     "name": "Forecast Assumptions",
+     "source": {
+      "dataModelId": "dm-1",
+      "elementId": "assumptions",
+      "kind": "data-model"
+     }
+    }
+   ],
+   "id": "model",
+   "name": "Model (sources)",
+   "visibility": "hidden"
+  }
+ ],
+ "schemaVersion": 1,
+ "settings": {
+  "theme": {
+   "overrides": {
+    "categoricalScheme": [
+     "#2563EB",
+     "#93C5FD",
+     "#94A3B8",
+     "#14B8A6",
+     "#F59E0B",
+     "#8B5CF6"
+    ]
+   }
+  }
+ }
+}

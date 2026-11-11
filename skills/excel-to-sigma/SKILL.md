@@ -746,7 +746,10 @@ first execution of each path is never on camera. Log each step:
 1. Switch scenario (agent `set-scenario`, or the switch): the FY figures change.
 2. Roll forward (button or agent): Parameters `Forecast Start Month` +1 month; the closed month
    reads landed actuals on the chart, P&L detail and header; months left drop by one.
-3. Snapshot: one new Versions row labelled `v<N>` (an integer) with the frozen FY figures.
+3. Snapshot: one new Versions row labelled `v<N>` (an integer) with the frozen FY figures and,
+   in an editable planning app, every driver column and `Inputs Frozen = Yes`. Pick it in
+   Compare to on Versions & approvals: every Change in the grid is 0 and the Version KPIs equal
+   the live ones (the rebuild reproduces today from the frozen inputs).
 4. Submit for approval: one new Approvals row, status `Submitted`; the header pill follows.
 5. Agent `set-driver` on one line item: exactly one Growth Rates row changes.
 6. Read each back with Sigma MCP `query`; then restore — start month, the edited rate, delete
@@ -765,7 +768,14 @@ cards — FY revenue vs plan and vs prior FY, gross margin %, EBITDA, forecast m
 revenue chart with actual and forecast bars and a dashed plan line; the agent panel; forecast
 vs plan by region and a P&L summary), **Assumptions** (editable growth rates and manual lines
 with a live impact card), **P&L detail** (the FY's monthly P&L in $000s, actual | forecast, and
-the GL actuals) and **Versions & approvals** (newest-first read-only views of the logs). Every
+the GL actuals) and **Versions & approvals** (a compare section above newest-first read-only
+views of the logs). The compare section rebuilds the version picked in **Compare to** (the
+latest frozen one by default) from its frozen inputs with the live forecast's own math
+(`forecast_stage_elements`, fed `version_stage_inputs`) and shows FY revenue / gross margin /
+EBITDA today vs that version, the change by line item (biggest first) and the line × month grid
+(Show: Today / Version / Change). The source froze the Forecast grid as values; the app freezes
+the inputs and rebuilds, so a restated closed month changes a rebuilt version — the page says
+so. Migrated history rows read "Numbers not recorded in the source" and cannot be picked. Every
 helper — Parameters / Versions / Approvals input tables, the status table, the union and
 summary joins, the one `Forecast Boundary` — sits on the hidden `Model (sources)` page.
 The logs keep a hidden `Log Order` (entry order): migrated rows carry the source's own dates,

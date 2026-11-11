@@ -277,6 +277,21 @@ class AgentEnhanceTests(unittest.TestCase):
                                      {"type": "constant", "value": {"type": "text", "value": "Submitted"}})
                     self.assertEqual(step["values"]["ap_by"], {"type": "formula", "formula": "CurrentUserEmail()"})
 
+    def test_agent_reads_compare_facts(self):
+        self.assertIn("compareFacts", ae.GROUNDING)
+        macros, wfs = demo()
+        rec = ae.recommend_agent(macros, wfs)
+        eff = ae.button_effects(self._workbook())
+        frag = ae.agent_document_fragment(rec, "A", ["forecast", "versions", "compareFacts"], effects_by_action=eff)
+        agent = frag["agents"][0]
+        self.assertIn("compareFacts", [d.get("elementId") for d in agent.get("dataSources", [])])
+        self.assertIn('@dataSource("compareFacts")', agent["instructions"])
+        self.assertIn("Version Label", agent["instructions"])
+        self.assertIn("say which version", agent["instructions"])
+        bare = ae.agent_document_fragment(rec, "A", ["forecast", "versions"],
+                                          effects_by_action=eff)["agents"][0]["instructions"]
+        self.assertNotIn("compareFacts", bare)
+
     def _workbook(self):
         import demo_workflows as dw
         buttons = [{"id": bid, "kind": "button", "text": bid, "actions": [{"id": "a-" + aid, "trigger": "on-click",

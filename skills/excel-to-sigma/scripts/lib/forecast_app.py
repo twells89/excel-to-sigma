@@ -58,6 +58,7 @@ MONEY_M = "$,.1f"                       # applied to value / 1e6, then "M"
 CUR0 = {"kind": "number", "formatString": "$,.0f"}
 CUR_SI = {"kind": "number", "formatString": "$.3~s"}
 MILLIONS = {"kind": "number", "formatString": ",.1f", "prefix": "$", "suffix": "M"}   # on value / 1e6
+MILLIONS_RAW = {"kind": "number", "formatString": "$.3~s"}                              # on the raw value
 PCT1 = {"kind": "number", "formatString": ".1%"}
 SIGNED_PCT = {"kind": "number", "formatString": "+.1%"}
 MONTH_FMT = {"kind": "datetime", "formatString": "%b-%y"}
@@ -143,6 +144,116 @@ def boundary_element(connection_id, first_forecast, parameters=True):
                         {"id": "bd_key", "name": "Start Key", "formula": month_key("[Start Month]")},
                         {"id": "bd_last", "name": "Last Closed Month",
                          "formula": 'DateAdd("month", -1, [Start Month])', "format": MONTH_FMT}]}
+
+
+COMPARE = "Compare Facts"
+COMPARE_SHOW = "CompareShow"
+NOT_RECORDED = "Numbers not recorded in the source"
+REBUILT_NOTE = "Rebuilt from the saved inputs with actuals as they are now"
+NO_VERSIONS = "No saved versions to compare yet"
+AMBIGUOUS = "More than one saved version matches; pick one in Compare to"
+PICK_ONE = "Pick a saved version in Compare to"
+
+
+def compare_sum(coefficients, which, fy_nums):
+    """A section-weighted FY sum over ``Compare Facts`` rows of one side (``Today`` / ``Version``)."""
+    window = (f" and [{COMPARE}/Month Num] >= {fy_nums[0]} and [{COMPARE}/Month Num] <= {fy_nums[-1]}"
+              if fy_nums else "")
+    out = ""
+    for i, (section, weight) in enumerate(coefficients.items()):
+        term = (f'SumIf([{COMPARE}/Amount], [{COMPARE}/Section] = "{section}" and '
+                f'[{COMPARE}/Which] = "{which}"{window})')
+        term = term if abs(weight) == 1 else f"{abs(weight):g} * {term}"
+        out += (("-" if weight < 0 else "") + term) if i == 0 else (" - " if weight < 0 else " + ") + term
+    return out
+
+
+def compare_elements(ctx):
+    """The Versions & approvals page's compare section: today's forecast vs the picked saved version
+    (``versionCombined``, rebuilt by the builder), plus the hidden facts it reads."""
+    v, fy = ctx["versions"], ctx["fy_nums"]
+    def side(eid, name, source, which):
+        src = "PnL Combined" if source == "pnlCombined" else "Version Combined"
+        return {"id": eid, "kind": "table", "name": name, "source": {"kind": "table", "elementId": source},
+                "columns": [{"id": f"{eid}_{k}", "name": n, "formula": f"[{src}/{n}]"}
+                            for k, n in (("sec", "Section"), ("line", "Line Item"), ("lo", "Line Order"),
+                                         ("m", "Month"), ("mn", "Month Num"), ("amt", "Amount"))]
+                + [{"id": f"{eid}_w", "name": "Which", "formula": f'"{which}"'},
+                   {"id": f"{eid}_vl", "name": "Version Label",
+                    "formula": '"Today"' if which == "Today" else "Max([Version Pick/Version])"}]}
+    today, version = side("todayFacts", "Today Facts", "pnlCombined", "Today"), \
+        side("versionFacts", "Version Facts", "versionCombined", "Version")
+    names = ["Section", "Line Item", "Line Order", "Month", "Month Num", "Amount", "Which", "Version Label"]
+    U = "Union of 2 Sources"
+    in_fy = (f"[Month Num] >= {fy[0]} and [Month Num] <= {fy[-1]}" if fy else "True")
+    facts = {"id": "compareFacts", "kind": "table", "name": COMPARE,
+             "source": {"kind": "union", "sources": [{"kind": "table", "elementId": "todayFacts"},
+                                                     {"kind": "table", "elementId": "versionFacts"}],
+                        "matches": [{"outputColumnName": n, "sourceColumns": [f"[{n}]", f"[{n}]"]} for n in names]},
+             "columns": [{"id": f"cf_{i}", "name": n, "formula": f"[{U}/{n}]"} for i, n in enumerate(names)]
+             + [{"id": "cf_t", "name": "Today Amount", "formula": 'If([Which] = "Today", [Amount], 0)'},
+                {"id": "cf_v", "name": "Version Amount", "formula": 'If([Which] = "Version", [Amount], 0)'},
+                {"id": "cf_tfy", "name": "Today FY", "formula": f"If({in_fy}, [Today Amount], 0)"},
+                {"id": "cf_vfy", "name": "Version FY", "formula": f"If({in_fy}, [Version Amount], 0)"}]}
+    head = text("compareHead", "## Compare to a saved version\n" + span(
+        f'{{{{If(Count([Frozen Versions/Version]) = 0, "{NO_VERSIONS}", Count([Version Pick/Version]) > 1, '
+        f'"{AMBIGUOUS}", Count([Version Pick/Version]) = 0, "{PICK_ONE}", "{REBUILT_NOTE}")}}}}', MUTED, 13), "top")
+    show = {"id": "ctlCompareShow", "kind": "control", "controlId": COMPARE_SHOW, "name": "Show",
+            "controlType": "segmented", "selectionMode": "single", "value": "Change",
+            "source": {"kind": "manual", "valueType": "text", "values": ["Today", "Version", "Change"]}}
+    rows, kpi = ctx["rows"], ctx["kpi"]
+    rev = {ctx["first_positive"]: 1}
+    picks = [("cmpRevenue", f"{ctx['fy_label']} revenue", rev)]
+    if len(rows) >= 2:
+        picks.append(("cmpMargin", sentence(rows[0]["label"]), rows[0]["coefficients"]))
+    picks.append(("cmpProfit", sentence(rows[kpi["bottom"]]["label"]), rows[kpi["bottom"]]["coefficients"]))
+    picked = "Count([Version Pick/Version])"   # exactly 1 when a version is compared
+    def money_or_dash(expr):
+        # a text format pipe prints a NULL as "null": no version picked reads as a dash instead
+        r = f"Round(({expr}) / 1000000, 1)"
+        return (f'{{{{If({picked} != 1, "{NULL_DASH}", Concat(If({r} < 0, "-$", "$"), Text(Abs({r})), "M"))}}}}')
+    cards = []
+    for eid, title, coef in picks:
+        t, ver = compare_sum(coef, "Today", fy), compare_sum(coef, "Version", fy)
+        cards.append(text(eid, kpi_body(title, money_m(t), span("Version ", MUTED) + span(money_or_dash(ver), INK),
+                                        span("Change since version ", MUTED)
+                                        + span(money_or_dash(f"{t} - ({ver})"), INK))))
+    # SQL literals: the line name exactly as written, apostrophes doubled (never the markdown escaper)
+    lines_sql = ("select * from (values\n" + ",\n".join(f"('{n.replace(chr(39), chr(39) * 2)}', {o})"
+                                                      for n, o in v["lines"]) + "\n) as t(LINE_ITEM, LINE_ORDER)")
+    lines = {"id": "compareLines", "kind": "table", "name": "Change by line",
+             "source": {"kind": "sql", "connectionId": v["connection"], "statement": lines_sql},
+             "columns": [{"id": "cl_line", "name": "Line Item", "formula": "[Custom SQL/LINE_ITEM]"},
+                         {"id": "cl_t", "name": "Today", "format": MILLIONS_RAW,
+                          "formula": f"Lookup(Sum([{COMPARE}/Today FY]), [Line Item], [{COMPARE}/Line Item])"},
+                         {"id": "cl_v", "name": "Version", "format": {**MILLIONS_RAW, "displayNullAs": NULL_DASH},
+                          "formula": (f"If({picked} != 1, Null, "
+                                      f"Lookup(Sum([{COMPARE}/Version FY]), [Line Item], [{COMPARE}/Line Item]))")},
+                         {"id": "cl_c", "name": "Change", "formula": "[Today] - [Version]",
+                          "format": {**MILLIONS_RAW, "displayNullAs": NULL_DASH}},
+                         {"id": "cl_abs", "name": "Size of change", "formula": "Abs([Change])", "hidden": True}],
+             "sort": [{"columnId": "cl_abs", "direction": "descending"}],
+             "tableStyle": {"preset": "presentation"}, "tableComponents": {"summaryBar": "hidden"},
+             "style": dict(CARD)}
+    thousands = {"kind": "number", "formatString": ",.0f", "prefix": "$", "suffix": "K", "displayNullAs": NULL_DASH}
+    grid = {"id": "compareGrid", "kind": "pivot-table", "name": "By line and month",
+            "source": {"kind": "table", "elementId": "compareFacts"},
+            "columns": [{"id": "cg_line", "name": "Line Item", "formula": f"[{COMPARE}/Line Item]"},
+                        {"id": "cg_lo", "name": "Line Order", "formula": f"[{COMPARE}/Line Order]"},
+                        {"id": "cg_m", "name": "Month", "formula": f"[{COMPARE}/Month]"},
+                        {"id": "cg_mn", "name": "Month Num", "formula": f"[{COMPARE}/Month Num]"},
+                        {"id": "cg_fy", "name": "In FY", "formula": f'If({in_fy.replace("[Month Num]", f"[{COMPARE}/Month Num]")}, "Yes", "No")', "hidden": True},
+                        {"id": "cg_amt", "name": "Amount", "format": thousands,
+                         "formula": (f'If({picked} != 1 and [{COMPARE_SHOW}] != "Today", Null, '
+                                     f'Sum(Switch([{COMPARE_SHOW}], "Today", [{COMPARE}/Today Amount], "Version", '
+                                     f'[{COMPARE}/Version Amount], [{COMPARE}/Today Amount] - [{COMPARE}/Version Amount])) / 1000)')}],
+            "values": ["cg_amt"],
+            "rowsBy": [{"columnId": "cg_line", "sort": {"direction": "ascending", "by": "cg_lo", "aggregation": "min"}}],
+            "columnsBy": [{"columnId": "cg_m", "sort": {"direction": "ascending", "by": "cg_mn", "aggregation": "min"}}],
+            "filters": [{"id": "cg_f", "columnId": "cg_fy", "kind": "list", "mode": "include", "values": ["Yes"]}],
+            "axisTotals": [{"axisId": "grand-row-total", "visibility": "hidden"}],
+            "tableStyle": {"preset": "presentation"}, "style": dict(CARD)}
+    return {"visible": [head, v["control"], show, *cards, lines, grid], "hidden": [today, version, facts]}
 
 
 class Facts:
@@ -472,6 +583,10 @@ def build(ctx):
                  "formula": shown.get(n, lambda ref: ref)(f"[{table['name']}/{n}]"),
                  **({"format": fmt[n]} if n in fmt else {})}
                 for i, n in enumerate(names) if any(c["name"] == n for c in table["columns"])]
+        if view_id == "versionsView" and any(c["id"] == dw.INPUTS_FROZEN[0] for c in table["columns"]):
+            cols.append({"id": f"{view_id}_cmp", "name": "Compare",
+                         "formula": (f'If([{table["name"]}/{dw.INPUTS_FROZEN[1]}] = "{dw.FROZEN}", '
+                                     f'"Pick it in Compare to", "{NOT_RECORDED}")')})
         cols.append({"id": f"{view_id}_order", "name": dw.LOG_ORDER, "formula": f"[{table['name']}/{dw.LOG_ORDER}]",
                      "hidden": True})
         return {"id": view_id, "kind": "table", "name": title, "source": {"kind": "table", "elementId": table["id"]},
@@ -516,17 +631,20 @@ def build(ctx):
                                  **({"fillColor": PRIMARY} if primary else {})})
         decision_els.append(text("decisionNote", span("Only approvers can approve: "
                                                       + esc(", ".join(wf["approvers"])), MUTED, 12)))
+    compare = compare_elements(ctx) if ctx.get("versions") and dw.VERSIONS in logs else {"visible": [], "hidden": []}
     pages = [{"id": "pgForecast", "name": "Forecast", "elements": elements},
              {"id": "pgAssumptions", "name": "Assumptions", "elements": asm_els},
              {"id": "pgDetail", "name": "P&L detail", "elements": detail_els},
              *([{"id": "pgVersions", "name": PAGE_NAMES["pgVersions"] if log_title == "Versions & approvals"
-                  else log_title, "elements": [log_head, *log_views, *decision_els]}] if log_views else []),
+                  else log_title, "elements": [log_head, *compare["visible"], *log_views, *decision_els]}]
+               if log_views else []),
              {"id": "model", "name": "Model (sources)", "visibility": "hidden",
-              "elements": hidden + ([ctx["assump"]] if ctx["assump"] else [])}]
+              "elements": hidden + compare["hidden"] + ([ctx["assump"]] if ctx["assump"] else [])}]
     layout = app_layout(pages, controls=bool(controls), cards=[c for c, _ in cards], bottom=[b["id"] for b in bottom],
                         rate=rate is not None, manual=manual is not None,
                         buttons=[b["id"] for b in buttons], status=status_text is not None,
-                        logs=[v["id"] for v in log_views], decisions=[e["id"] for e in decision_els])
+                        logs=[v["id"] for v in log_views], decisions=[e["id"] for e in decision_els],
+                        compare=[e["id"] for e in compare["visible"]])
     theme = {"theme": {"overrides": {"categoricalScheme": [PRIMARY, FORECAST_TINT, PLAN_GREY, "#14B8A6", "#F59E0B",
                                                            "#8B5CF6"]}}}
     return {"pages": pages, "layout": layout, "settings": theme}
@@ -586,7 +704,7 @@ AGENT_CHAT_ROWS = (4, 22)        # the chat's rows inside the agent panel (merge
 
 
 def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons, status=True,
-               logs=("versionsView", "approvalsView"), decisions=()):
+               logs=("versionsView", "approvalsView"), decisions=(), compare=()):
     blocks = []
     def page(page_id, lines):
         blocks.append("\n".join([f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" '
@@ -625,6 +743,15 @@ def app_layout(pages, *, controls, cards, bottom, rate, manual, buttons, status=
     if logs:
         rows = {"versionsView": 24, "approvalsView": 14}
         lines, at = [_el("logHead", 1, 25, 1, 5)], 5
+        if compare:   # head + controls, three cards, change by line beside the line x month grid
+            head, ctl_to, ctl_show, *cards_ids = compare[:3] + compare[3:-2]
+            lines += [_el(head, 1, 13, at, at + 4), _el(ctl_to, 13, 19, at, at + 4), _el(ctl_show, 19, 25, at, at + 4)]
+            at += 4
+            width = 24 // len(cards_ids)
+            lines += [_el(c, 1 + i * width, 1 + (i + 1) * width, at, at + 6) for i, c in enumerate(cards_ids)]
+            at += 6
+            lines += [_el(compare[-2], 1, 25, at, at + 16), _el(compare[-1], 1, 25, at + 16, at + 40)]
+            at += 40
         for view in logs:
             if view == "approvalsView" and decisions:    # Approve / Send back + caption, above the Approvals table
                 buttons_at = {"btnApprove": (1, 4), "btnReturn": (4, 7), "decisionNote": (7, 25)}

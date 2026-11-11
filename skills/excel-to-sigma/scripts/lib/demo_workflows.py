@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 
@@ -62,6 +63,57 @@ COLUMN_IDS = {(el, name): cid for el, (_n, cols) in TABLES.items() for cid, name
 # The forecast start month a workflow reads when the workbook defines no single boundary element.
 DEFAULT_START = "Max([Parameters/Forecast Start Month])"
 
+# Versions: what a Snapshot freezes beyond the headline figures (an editable planning app only).
+RATE_KINDS = ("growth", "yoy", "pct_of_total")   # lines whose rate is an editable driver
+INPUTS_FROZEN = ("ve_frozen", "Inputs Frozen", "text")   # "Yes" on a Snapshot row; POST refuses boolean columns
+FROZEN = "Yes"
+RATE_TABLE, RATE_LINE, RATE_VALUE = "Growth rates", "Line item", "Monthly growth rate"
+MANUAL_TABLE, MANUAL_LINE, MANUAL_NUM, MANUAL_VALUE = "Manual forecast", "Line item", "Month Num", "Amount"
+# Proven live 2026-11-10 (one insert-rows pulls each value by line, falling back to the plan's default).
+PULL_RATE = f'Coalesce(Max(If([{RATE_TABLE}/{RATE_LINE}] = "{{line}}", [{RATE_TABLE}/{RATE_VALUE}])), {{default!r}})'
+PULL_MANUAL = (f'Coalesce(Max(If([{MANUAL_TABLE}/{MANUAL_LINE}] = "{{line}}" and [{MANUAL_TABLE}/{MANUAL_NUM}] = '
+               f'{{month_num}}, [{MANUAL_TABLE}/{MANUAL_VALUE}])), {{default!r}})')
+
+
+class DriverColumn(NamedTuple):
+    cid: str
+    name: str
+    kind: str              # "rate" | "manual"
+    line: str
+    month_num: int | None  # manual cells only
+    default: float         # the plan's value: what the live forecast uses when no input row exists
+
+
+def _column_name(text):
+    """A Sigma column name a formula path can carry: slashes and brackets become spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[/\[\]]+", " ", text)).strip()
+
+
+def version_drivers(P):
+    """One Versions column per growth-rate line (plan order) and per manual line x forecast month."""
+    import forecast_calc as calc
+    for ln in P["lines"]:
+        if '"' in ln["line"] or "\\" in ln["line"]:
+            raise WorkflowError(f"line item {ln['line']!r} contains a quote or backslash; a driver formula "
+                                "cannot name it")
+    out = [DriverColumn(f"ve_r{i}", _column_name(f"{ln['line']} rate"), "rate", ln["line"], None, ln["rate"])
+           for i, ln in enumerate(l for l in P["lines"] if l["kind"] in RATE_KINDS)]
+    manual = [ln for ln in P["lines"] if ln["kind"] == "manual"]
+    if manual:
+        periods, n_act = calc.plan_periods(P)
+        months = calc.month_views(periods)[n_act:]
+        out += [DriverColumn(f"ve_m{i}_{m['num']}", _column_name(f"{ln['line']} {m['month']}"), "manual", ln["line"], m["num"],
+                             ln["manual"][j])
+                for i, ln in enumerate(manual) for j, m in enumerate(months)]
+    return out
+
+
+def driver_formula(d):
+    """The Snapshot value for one driver column: the input table's value, else the plan's default."""
+    if d.kind == "rate":
+        return PULL_RATE.format(line=d.line, default=d.default)
+    return PULL_MANUAL.format(line=d.line, month_num=d.month_num, default=d.default)
+
 ROUTES = (
     # (name regex, classes allowed, workflow key)
     (re.compile(r"roll\s*forward", re.I), ("ACTION_WRITEBACK", "TRANSFORM_ROLLUP"), "roll-forward"),
@@ -99,8 +151,10 @@ NOTES = {
                     "first forecast month into the Actuals table.",
     "snapshot-version": "Appends ONE Versions row freezing the headline numbers at click time (version label, "
                         "scenario, forecast start month, FY revenue / gross margin / EBITDA taken from the same "
-                        "formulas the KPI tiles use, user, time). The VBA pasted the whole forecast grid as "
-                        "values; the full line x month grid is not reproduced.",
+                        "formulas the KPI tiles use, user, time) and, in an editable planning app, every driver "
+                        "value the forecast used (each growth rate, each manual cell) with Inputs Frozen = Yes. "
+                        "The source froze the Forecast grid as values; the migration freezes the inputs and "
+                        "rebuilds the version, so a restated closed month changes a rebuilt version.",
     "submit-approval": "Appends an Approvals row (status Submitted, user, time). The VBA also protected the "
                        "sheet and sent an Outlook email; neither is reproduced.",
     "set-scenario": "The planning app's Downside / Base / Upside switch is a workbook control the forecast "
@@ -239,7 +293,7 @@ def approver_filter(approvers):
 
 
 def action_effects(action_id, request_label, figures=None, scenario_control=None, start=DEFAULT_START,
-                   approvers=None):
+                   approvers=None, drivers=None):
     """The effect list for one workflow (live-proven working shapes).
 
     With ``scenario_control`` (the controlId of the workbook's scenario switch) Snapshot records the
@@ -264,7 +318,11 @@ def action_effects(action_id, request_label, figures=None, scenario_control=None
         names = {"revenue": "FY Revenue", "grossMargin": "FY Gross Margin", "ebitda": "FY EBITDA"}
         for key, formula in figures.items():
             values[names[key]] = _formula(formula)
-        return [{"effect": "insert-rows", "tableElementId": VERSIONS, "values": _values(VERSIONS, values)}]
+        row = _values(VERSIONS, values)
+        if drivers:
+            row.update({d.cid: _formula(driver_formula(d)) for d in drivers})
+            row[INPUTS_FROZEN[0]] = _const(FROZEN)
+        return [{"effect": "insert-rows", "tableElementId": VERSIONS, "values": row}]
     if action_id == "submit-approval":
         return [{"effect": "insert-rows", "tableElementId": APPROVALS, "values": _values(APPROVALS, {
             "Request": _const(request_label), "Submitted By": _formula("CurrentUserEmail()"),
@@ -281,7 +339,7 @@ def action_effects(action_id, request_label, figures=None, scenario_control=None
     raise WorkflowError(f"no button action for {action_id}")
 
 
-def input_table(element, connection_id, mode, figures=None, scenario_control=None):
+def input_table(element, connection_id, mode, figures=None, scenario_control=None, drivers=None):
     name, cols = TABLES[element]
     if element == PARAMETERS and scenario_control:
         cols = [c for c in cols if c[1] != "Selected Scenario"]   # the scenario switch holds it
@@ -292,11 +350,14 @@ def input_table(element, connection_id, mode, figures=None, scenario_control=Non
             "source": {"kind": "empty", "connectionId": connection_id},
             "columns": [{"id": "ID", "name": "Row ID", "hidden": True},
                         *[{"id": cid, "type": typ, "name": nm, **({"hidden": True} if cid in HIDDEN_COLUMNS else {})}
-                          for cid, nm, typ in cols]]}
+                          for cid, nm, typ in cols],
+                        *([{"id": d.cid, "type": "number", "name": d.name} for d in drivers]
+                          + [{"id": INPUTS_FROZEN[0], "type": INPUTS_FROZEN[2], "name": INPUTS_FROZEN[1]}]
+                          if element == VERSIONS and drivers else [])]}
 
 
 def workflow_elements(manifest, connection_id, request_label, figures=None, scenario_control=None,
-                      no_status="Not submitted", start=DEFAULT_START):
+                      no_status="Not submitted", start=DEFAULT_START, drivers=None):
     """Workbook elements for a manifest: ``{tables, buttons, status}``.
 
     ``figures`` maps revenue / grossMargin / ebitda to the workbook's KPI formulas;
@@ -335,7 +396,7 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
             "appearance": "outline" if action_id == "submit-approval" else "filled",
             "actions": [{"id": "a-" + action_id, "trigger": "on-click",
                          "effects": action_effects(action_id, request_label, figures, scenario_control,
-                                                   start)}]})
+                                                   start, drivers=drivers)}]})
     # Only the tables the workflows target: Parameters for set-scenario / roll-forward (or when an effect
     # reads its row: Snapshot without a scenario switch or boundary), Versions for Snapshot, Approvals and
     # the status for Submit.
@@ -345,7 +406,7 @@ def workflow_elements(manifest, connection_id, request_label, figures=None, scen
               VERSIONS: "snapshot-version" in items, APPROVALS: "submit-approval" in items}
     tables = [input_table(PARAMETERS, connection_id, "edit", scenario_control=scenario_control)
               if el == PARAMETERS else
-              input_table(VERSIONS, connection_id, "view", figures) if el == VERSIONS else
+              input_table(VERSIONS, connection_id, "view", figures, drivers=drivers) if el == VERSIONS else
               input_table(APPROVALS, connection_id, "view")
               for el in (PARAMETERS, VERSIONS, APPROVALS) if wanted[el]]
     status = None

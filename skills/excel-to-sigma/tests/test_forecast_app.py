@@ -86,10 +86,10 @@ class ForecastAppTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def spec(self, workflows="default", plan_src="default", history=None, name=None):
+    def spec(self, workflows="default", plan_src="default", history=None, name=None, plan=None):
         wf = self.manifest if workflows == "default" else workflows
         ps = self.plan_src if plan_src == "default" else plan_src
-        plan = copy.deepcopy(self.plan)
+        plan = copy.deepcopy(plan or self.plan)
         if name:
             plan["name"] = name
         return self.build.build_wb_spec(plan, "dm-1", self.els, landed=self.landed,
@@ -452,7 +452,7 @@ class ForecastAppTests(unittest.TestCase):
                 june[r["line"]] = june.get(r["line"], 0.0) + float(r["amt"])
         return {line: round(amount * self.JULY_UPLIFT, 2) for line, amount in june.items()}
 
-    def model(self, start, july=False, history=None):
+    def model(self, start, july=False, history=None, controls=None, versions=None, plan=None):
         raw = [{"POSTING_DATE": date.fromisoformat(r["date"]), "MONTH": r["month"], "LINE_ITEM": r["line"],
                 "REGION": "", "AMOUNT": float(r["amt"])} for r in self.plan["actuals"]]
         if july:
@@ -466,10 +466,199 @@ class ForecastAppTests(unittest.TestCase):
                   "parameters": [] if start is None else [{"pa_start": start}]}
         for element, cols, rows in history or []:
             inputs[element] = [dict(zip(cols, r)) for r in rows]
-        dm = self.build.build_dm_spec(self.plan, self.landed, self.plan_src, app=True)
-        return pe.Model(self.spec(history=history), dm,
+        if versions is not None:
+            inputs["versions"] = list(versions)
+        P = plan or self.plan
+        dm = self.build.build_dm_spec(P, self.landed, self.plan_src, app=True)
+        return pe.Model(self.spec(history=history, plan=plan), dm,
                         warehouse={"FPA_X_ACTUALS": raw, "FPA_X_PLAN": plan_rows},
-                        inputs=inputs, controls={"Scenario": "Base"})
+                        inputs=inputs, controls={"Scenario": "Base", "CompareTo": None, **(controls or {})})
+
+    # ---------------------------------------------------------------- versions: rebuild
+    def snapshot(self, m, scenario="Base", log_order=1):
+        """The Versions row the Snapshot button writes, evaluated over model ``m`` (who / when stubbed)."""
+        (effect,) = self.by_id(self.spec())["btnSnapshot"]["actions"][0]["effects"]
+        row = {}
+        for cid, value in effect["values"].items():
+            if value["type"] == "constant":
+                row[cid] = value["value"]["value"]
+            elif value["type"] == "control":
+                row[cid] = scenario
+            elif "CurrentUserEmail" in value["formula"]:
+                row[cid] = "fpa@example.com"
+            elif value["formula"] == "Now()":
+                row[cid] = date(2027, 7, 15)
+            else:
+                row[cid] = m.scalar(value["formula"])
+        row["ve_seq"] = log_order
+        return row
+
+    @staticmethod
+    def grid(rows):
+        return {(r["Line Item"], r["Month Num"]): round(r["Amount"], 2) for r in rows}
+
+    def test_rebuild_of_a_fresh_snapshot_equals_today_cell_by_cell(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m)
+        self.assertEqual(v1[dw.INPUTS_FROZEN[0]], dw.FROZEN)
+        m2 = self.model(date(2027, 7, 1), versions=[v1])
+        today, version = self.grid(m2.rows("pnlCombined")), self.grid(m2.rows("versionCombined"))
+        self.assertTrue(today)
+        self.assertEqual(version, today)
+
+    def test_rebuild_uses_the_versions_scenario_not_the_switch(self):
+        upside = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"})
+        v1 = self.snapshot(upside, scenario="Upside")
+        m = self.model(date(2027, 7, 1), versions=[v1])          # live switch back on Base
+        self.assertEqual(self.grid(m.rows("versionCombined")), self.grid(upside.rows("pnlCombined")))
+        self.assertNotEqual(self.grid(m.rows("versionCombined")), self.grid(m.rows("pnlCombined")))
+
+    def test_rebuild_keeps_the_versions_start_month_after_roll_forward(self):
+        before = self.model(date(2027, 7, 1), july=True)
+        v1 = self.snapshot(before)
+        after = self.model(date(2027, 8, 1), july=True, versions=[v1])
+        def july(rows):
+            return {r["Line Item"]: r for r in rows if r["Month Num"] == 19}
+        self.assertEqual({r["Period"] for r in july(after.rows("versionCombined")).values()}, {"Forecast"})
+        self.assertEqual({r["Period"] for r in july(after.rows("pnlCombined")).values()}, {"Actual"})
+        self.assertEqual(self.grid(after.rows("versionCombined")), self.grid(before.rows("pnlCombined")))
+
+    def test_compare_to_picks_the_named_version_else_the_latest_frozen_one(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m, log_order=1)
+        up = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"})
+        v2 = {**self.snapshot(up, scenario="Upside", log_order=2), "ve_ver": "v2"}
+        migrated = {"ve_ver": "v0", "ve_seq": 0}                   # a seeded history row: never frozen
+        latest = self.model(date(2027, 7, 1), versions=[migrated, v1, v2])
+        self.assertEqual(self.grid(latest.rows("versionCombined")), self.grid(up.rows("pnlCombined")))
+        named = self.model(date(2027, 7, 1), versions=[migrated, v1, v2], controls={"CompareTo": "v1"})
+        self.assertEqual(self.grid(named.rows("versionCombined")), self.grid(m.rows("pnlCombined")))
+        self.assertEqual([r["Version"] for r in latest.rows("frozenVersions")], ["v1", "v2"])
+
+    def test_rebuild_runs_the_pct_second_pass(self):
+        pct = copy.deepcopy(self.plan)
+        line = next(ln for ln in pct["lines"] if ln["kind"] == "growth" and ln["section"] != "Revenue")
+        line.update({"kind": "pct_of_total", "of": "Revenue", "rate": 0.1})
+        m = self.model(date(2027, 7, 1), plan=pct)
+        v1 = self.snapshot(m)
+        m2 = self.model(date(2027, 7, 1), plan=pct, versions=[v1])
+        self.assertEqual(self.grid(m2.rows("versionCombined")), self.grid(m2.rows("pnlCombined")))
+
+    # ---------------------------------------------------------------- versions: compare section
+    def test_compare_section_sits_above_the_logs_on_the_versions_page(self):
+        spec = self.spec()
+        page = next(p for p in spec["pages"] if p["id"] == "pgVersions")
+        order = [e["id"] for e in page["elements"]]
+        for el in ("compareHead", "ctlCompareTo", "ctlCompareShow", "cmpRevenue", "compareLines", "compareGrid"):
+            self.assertIn(el, order)
+        self.assertLess(order.index("compareGrid"), order.index("versionsView"))
+        wired = self.build.workbook_wire.wire_workbook(spec)["contents"]["layout"]
+        pg = wired.split('id="pgVersions"')[1].split("</Page>")[0]
+        self.assertLess(pg.index('"compareGrid"'), pg.index('"versionsView"'))
+
+    def test_compare_kpis_match_the_live_kpis_when_version_equals_today(self):
+        m = self.model(date(2027, 7, 1))
+        m2 = self.model(date(2027, 7, 1), versions=[self.snapshot(m)])
+        b = self.by_id(self.spec())
+        live = self.kpis(m2)
+        for card, name in (("cmpRevenue", "Revenue"), ("cmpMargin", "Gross Margin"), ("cmpProfit", "EBITDA")):
+            text = self.render(m2, b[card]["body"])
+            self.assertNotIn("null", text.lower(), card)
+            want = f"${round(live[name] / 1e6, 1):g}M"
+            self.assertIn(f"Version {want}", text, card)
+            self.assertIn("Change since version $0M", text, card)
+        lines = m2.rows("compareLines")
+        self.assertTrue(lines)
+        self.assertTrue(all(abs(r["Change"]) < 0.005 for r in lines))
+
+    def test_compare_lines_put_the_biggest_move_first(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m)
+        up = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"}, versions=[v1])
+        lines = up.rows("compareLines")
+        order = self.by_id(self.spec())["compareLines"]["sort"]
+        self.assertEqual(order[0]["direction"], "descending")
+        moved = sorted(lines, key=lambda r: -abs(r["Change"]))
+        self.assertGreater(abs(moved[0]["Change"]), 0)
+
+    def test_compare_grid_spans_the_page_below_the_line_changes(self):
+        wired = self.build.workbook_wire.wire_workbook(self.spec())["contents"]["layout"]
+        pg = wired.split('id="pgVersions"')[1].split("</Page>")[0]
+        grid = re.search(r'elementId="compareGrid" gridColumn="([^"]+)" gridRow="(\d+) / (\d+)"', pg)
+        lines = re.search(r'elementId="compareLines" gridColumn="([^"]+)" gridRow="(\d+) / (\d+)"', pg)
+        self.assertEqual(grid.group(1), "1 / 25")
+        self.assertGreaterEqual(int(grid.group(2)), int(lines.group(3)))
+
+    def test_compare_cells_show_a_dash_not_null(self):
+        b = self.by_id(self.spec())
+        for el, cols in (("compareLines", ("cl_v", "cl_c")), ("compareGrid", ("cg_amt",))):
+            fmt = {c["id"]: c.get("format", {}) for c in b[el]["columns"]}
+            for cid in cols:
+                self.assertEqual(fmt[cid].get("displayNullAs"), forecast_app.NULL_DASH, (el, cid))
+
+    def test_no_frozen_version_shows_empty_state(self):
+        migrated = {"ve_ver": "v0", "ve_seq": 0}
+        m = self.model(date(2027, 7, 1), versions=[migrated])
+        head = self.render(m, self.by_id(self.spec())["compareHead"]["body"])
+        self.assertIn("No saved versions to compare yet", head)
+        self.assertEqual(m.rows("versionCombined"), [])
+        text = self.render(m, self.by_id(self.spec())["cmpRevenue"]["body"])
+        self.assertNotIn("null", text.lower())
+        self.assertIn("Version \u2014", text)
+        self.assertIn("Change since version \u2014", text)
+        self.assertTrue(all(r["Version"] is None and r["Change"] is None for r in m.rows("compareLines")))
+        frozen = self.model(date(2027, 7, 1), versions=[migrated, self.snapshot(self.model(date(2027, 7, 1)))])
+        self.assertIn("Rebuilt from the saved inputs with actuals as they are now",
+                      self.render(frozen, self.by_id(self.spec())["compareHead"]["body"]))
+
+    def test_migrated_rows_say_numbers_not_recorded(self):
+        migrated = {"ve_ver": "v0", "ve_seq": 0}
+        m = self.model(date(2027, 7, 1), versions=[migrated, self.snapshot(self.model(date(2027, 7, 1)))])
+        comparable = {r["Version"]: r["Compare"] for r in m.rows("versionsView")}
+        self.assertEqual(comparable["v0"], "Numbers not recorded in the source")
+        self.assertEqual(comparable["v1"], "Pick it in Compare to")
+
+    # ---------------------------------------------------------------- versions: final-review fixes
+    @staticmethod
+    def sums(rows):
+        out = {}
+        for r in rows:
+            key = (r["Line Item"], r["Month Num"])
+            out[key] = round(out.get(key, 0.0) + r["Amount"], 2)
+        return out
+
+    def test_rebuild_survives_the_start_month_moving_back(self):
+        # snapshot after Roll forward (Aug-27, July landed), then the start month is put back to Jul-27
+        aug = self.model(date(2027, 8, 1), july=True)
+        v = self.snapshot(aug)
+        back = self.model(date(2027, 7, 1), july=True, versions=[v])
+        self.assertEqual(self.sums(back.rows("versionCombined")), self.sums(aug.rows("pnlCombined")))
+
+    def test_two_frozen_rows_with_the_same_log_order_are_not_blended(self):
+        m = self.model(date(2027, 7, 1))
+        up = self.model(date(2027, 7, 1), controls={"Scenario": "Upside"})
+        a = {**self.snapshot(m, log_order=5), "ve_ver": "v5"}
+        b = {**self.snapshot(up, scenario="Upside", log_order=5), "ve_ver": "v5b"}
+        both = self.model(date(2027, 7, 1), versions=[a, b])
+        self.assertEqual(both.rows("versionCombined"), [])
+        head = self.render(both, self.by_id(self.spec())["compareHead"]["body"])
+        self.assertIn("More than one saved version matches", head)
+        named = self.model(date(2027, 7, 1), versions=[a, b], controls={"CompareTo": "v5b"})
+        self.assertEqual(self.sums(named.rows("versionCombined")), self.sums(up.rows("pnlCombined")))
+
+    def test_change_by_line_keeps_line_names_as_written(self):
+        plan = copy.deepcopy(self.plan)
+        plan["lines"][0]["line"] = "R&D <Opex> O'Neil"
+        sql = self.by_id(self.spec(plan=plan))["compareLines"]["source"]["statement"]
+        self.assertIn("'R&D <Opex> O''Neil'", sql)
+        self.assertNotIn("&amp;", sql)
+
+    def test_compare_facts_name_the_version(self):
+        m = self.model(date(2027, 7, 1))
+        v1 = self.snapshot(m)
+        m2 = self.model(date(2027, 7, 1), versions=[v1])
+        labels = {r["Which"]: r["Version Label"] for r in m2.rows("compareFacts")}
+        self.assertEqual(labels, {"Today": "Today", "Version": "v1"})
 
     @staticmethod
     def first_money(model, body):

@@ -24,6 +24,8 @@ Intent (plan.intent):
 """
 import argparse, sys, os, re, json, csv, urllib.request, urllib.parse, urllib.error
 from pathlib import Path
+from dataclasses import dataclass
+import copy
 
 _LIB = Path(__file__).resolve().parent / "lib"
 if str(_LIB) not in sys.path:
@@ -565,7 +567,7 @@ def check_parity(P, computed, tolerance):
     return ok
 
 # ---------- seed CSVs ----------
-RATE_KINDS = ("growth", "yoy", "pct_of_total")  # lines whose rate is an editable driver
+RATE_KINDS = demo_workflows.RATE_KINDS  # lines whose rate is an editable driver
 
 
 RATE_SEED_COLUMNS = ("LINE_ITEM", "RATE")
@@ -761,6 +763,7 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
     does not carry. The actuals keep their constant Period label.
     """
     S = bnd["start_key"]
+    A = actuals["name"]   # the element this stage's own actuals window lives in (live: "Actuals")
     actuals["columns"] += [
         {"id": "a_mk", "name": "Month Key", "formula": month_key(f"[{actuals_prefix(actuals)}/Month End]")},
         {"id": "a_win", "name": "Window", "formula": f'If([Month Key] < {S}, "Actual", "Forecast")'}]
@@ -775,11 +778,11 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
         {"id": "f_sk", "name": "Start Key", "formula": S},
         {"id": "f_bk", "name": "Base Key", "formula": "[Start Key] - 1"},
         {"id": "f_land", "name": "Landed",
-         "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Month Key], [Actuals/Month Key])"},
+         "formula": f"Lookup(Sum([{A}/Amount]), [Line Item], [{A}/Line Item], [Month Key], [{A}/Month Key])"},
         {"id": "f_win", "name": "Window", "formula": (f'If([Month Key] >= [Start Key], "Forecast", IsNull([Landed]), '
                                                        f'"{forecast_app.AWAITING}", "Actual")')},
         {"id": "f_la", "name": "Last Actual",
-         "formula": "Lookup(Sum([Actuals/Amount]), [Line Item], [Actuals/Line Item], [Base Key], [Actuals/Month Key])"},
+         "formula": f"Lookup(Sum([{A}/Amount]), [Line Item], [{A}/Line Item], [Base Key], [{A}/Month Key])"},
         {"id": "f_seed", "name": "Seed",
          "formula": ('Coalesce([Last Actual], If([Kind] = "flat", [June Base], '
                      f'[June Base] * (1 + [Eff Rate]) ^ ([Base Key] - {bnd["last_key"]})))')}]
@@ -800,6 +803,195 @@ def apply_boundary(actuals, stage1, prefix, bnd, has_pct, read_only_cols=None):
 def actuals_prefix(actuals):
     """The source prefix the actuals wrap reads its columns through (``GL Detail`` / ``Custom SQL``)."""
     return actuals["columns"][0]["formula"][1:].split("/", 1)[0]
+
+
+
+@dataclass(frozen=True)
+class StageInputs:
+    """Where one set of forecast stages reads its drivers (the live workbook or a saved version)."""
+    rate: str       # a line's base rate before the scenario spread, in the stage's row context
+    manual: str     # a manual line's value for the row's month
+    scenario: str   # the active scenario name ("" when the plan has no spreads)
+    start_key: str  # month key of the first forecast month
+    source: dict    # the stage-1 element source
+    prefix: str     # the column prefix stage-1 formulas read through ("FJ", "Forecast Spine", ...)
+
+
+def live_stage_inputs(P, editable, spreads, rate_line=None, rate_col=None):
+    """The live forecast's inputs: the scenario control, Forecast Boundary and the editable input tables."""
+    scenario = f"[{forecast_app.SCENARIO_CONTROL}]" if spreads else ""
+    if editable:
+        source = {"kind":"join","name":"FJ","primarySource":{"kind":"table","elementId":"spineWrap"},
+
+                "joins":[{"name":"Rates","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"rateInput"},"columns":[{"left":"[Line Item]","right":f"[{rate_line}]"}]},
+                         {"name":"Manual","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"manualInput"},"columns":[{"left":"[Line Item]","right":f"[{rate_line}]"},{"left":"[Month Num]","right":"[Month Num]"}]}]}
+        return StageInputs(rate=f"Coalesce([Rates/{rate_col}], [FJ/Default Rate])",
+                           manual="Coalesce([Manual/Amount], [FJ/Manual Value])", scenario=scenario,
+                           start_key=forecast_app.START_KEY, source=source, prefix="FJ")
+    return StageInputs(rate="[Forecast Spine/Default Rate]", manual="[Forecast Spine/Manual Value]",
+                       scenario=scenario, start_key=forecast_app.START_KEY,
+                       source={"kind": "table", "elementId": "spineWrap"}, prefix="Forecast Spine")
+
+
+LIVE_STAGE_IDS = {"stage1": ("forecastCalc", "Forecast Base"), "ref": ("forecastRef", "Forecast Base Ref"),
+                  "final": ("forecast", "Forecast")}
+VERSION_STAGE_IDS = {"stage1": ("versionForecastCalc", "Version Forecast Base"),
+                     "ref": ("versionForecastRef", "Version Forecast Base Ref"),
+                     "final": ("versionForecast", "Version Forecast")}
+
+
+def forecast_stage_elements(P, inputs, *, editable, spreads, cur, workflows, actuals, boundary=None,
+                            ids=None):
+    """The forecast stages ([stage1] or, with percentage-of-total lines, [stage1, ref, final]): the one
+    place the forecast math is written. ``boundary`` (the planning app) windows ``actuals`` and stage 1
+    at ``inputs.start_key``. The live workbook and a saved version's rebuild both call this."""
+    periods, n_act, _sections = plan_model(P)
+    has_pct = any(ln["kind"] == "pct_of_total" for ln in P["lines"])
+    p = inputs.prefix
+    scenario_term = ""
+    if spreads:
+        scenario_term = (f" + Switch({inputs.scenario}, "
+                         + ", ".join(f'"{name}", [{p}/{col}]' for name, col, _s in spreads) + ", 0)")
+    # forecast element(s). Without percentage-of-total lines there is one "forecast" table;
+    # with them, "forecastCalc" computes every other line and "forecast" adds the lines
+    # that are a share of another section's forecast total (a second pass over per-month totals).
+    ids = ids or LIVE_STAGE_IDS
+    stage1_id, stage1_name = ids["stage1"] if has_pct else ids["final"]
+    pct_branch = '[Kind] = "pct", 0, ' if has_pct else ""
+    if editable:
+        forecast = {"id":stage1_id,"kind":"table","name":stage1_name,"source":copy.deepcopy(inputs.source),
+            "columns":[{"id":"f_sec","name":"Section","formula":f"[{p}/Section]"},{"id":"f_so","name":"Section Order","formula":f"[{p}/Section Order]"},
+                {"id":"f_line","name":"Line Item","formula":f"[{p}/Line Item]"},{"id":"f_lo","name":"Line Order","formula":f"[{p}/Line Order]"},
+                {"id":"f_m","name":"Month","formula":f"[{p}/Month]"},{"id":"f_mn","name":"Month Num","formula":f"[{p}/Month Num]"},{"id":"f_me","name":"Month End","formula":f"[{p}/Month End]"},
+                {"id":"f_n","name":"N","formula":f"[{p}/N]"},{"id":"f_k","name":"Kind","formula":f"[{p}/Kind]"},{"id":"f_jb","name":"June Base","formula":f"[{p}/June Base]"},
+                *([{"id":"f_of","name":"Of Section","formula":f"[{p}/Of Section]"}] if has_pct else []),
+                {"id":"f_er","name":"Eff Rate","formula":inputs.rate + scenario_term},
+                *([{"id":"f_scn","name":"Active Scenario","formula":f'Coalesce({inputs.scenario}, "{P["scenarios"]["default"]}")'}] if spreads else []),
+                {"id":"f_em","name":"Eff Manual","formula":inputs.manual},
+                {"id":"f_amt","name":"Amount","formula":'If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [June Base], ' + pct_branch + '[June Base] * (1 + [Eff Rate]) ^ [N])',"format":cur},
+                {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
+    else:
+        forecast = {"id":stage1_id,"kind":"table","name":stage1_name,"source":{"kind":"table","elementId":"spineWrap"},
+            "columns":[{"id":"f_sec","name":"Section","formula":"[Forecast Spine/Section]"},{"id":"f_so","name":"Section Order","formula":"[Forecast Spine/Section Order]"},
+                {"id":"f_line","name":"Line Item","formula":"[Forecast Spine/Line Item]"},{"id":"f_lo","name":"Line Order","formula":"[Forecast Spine/Line Order]"},
+                {"id":"f_m","name":"Month","formula":"[Forecast Spine/Month]"},{"id":"f_mn","name":"Month Num","formula":"[Forecast Spine/Month Num]"},{"id":"f_me","name":"Month End","formula":"[Forecast Spine/Month End]"},
+                *([{"id":"f_k","name":"Kind","formula":"[Forecast Spine/Kind]"},{"id":"f_of","name":"Of Section","formula":"[Forecast Spine/Of Section]"},
+                   {"id":"f_er","name":"Eff Rate","formula":"[Forecast Spine/Default Rate]" + scenario_term}]
+                  if has_pct else []),
+                {"id":"f_amt","name":"Amount","formula":'If([Forecast Spine/Kind] = "manual", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = "flat", [Forecast Spine/June Base], ' + ('[Forecast Spine/Kind] = "pct", 0, ' if has_pct else "") + '[Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])',"format":cur},
+                {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
+    if boundary is not None:
+        # The planning app: Roll forward moves the actual / forecast split (Parameters.Forecast Start Month).
+        ro = None if editable else [
+            {"id": "f_k", "name": "Kind", "formula": "[Forecast Spine/Kind]"},
+            {"id": "f_jb", "name": "June Base", "formula": "[Forecast Spine/June Base]"},
+            {"id": "f_er", "name": "Eff Rate", "formula": "[Forecast Spine/Default Rate]" + scenario_term},
+            *([{"id": "f_scn", "name": "Active Scenario",
+                "formula": f'Coalesce({inputs.scenario}, "{P["scenarios"]["default"]}")'}]
+              if spreads else []),
+            {"id": "f_em", "name": "Eff Manual", "formula": "[Forecast Spine/Manual Value]"}]
+        apply_boundary(actuals, forecast, p, {**boundary, "start_key": inputs.start_key}, has_pct, ro)
+    forecast_stages = [forecast]
+    if has_pct:
+        # Second pass without a join: a join to a grouped table also matches that table's
+        # detail rows (a section with N lines matches N+1 times and multiplies every share
+        # line). "Forecast Base Ref" is a plain copy of the base rows; each share line sums
+        # the base section's amounts for its own month with SumIf, one branch per
+        # (base section, forecast month) pair.
+        ref_id, ref_name = ids["ref"]
+        forecastRef = {"id":ref_id,"kind":"table","name":ref_name,"source":{"kind":"table","elementId":stage1_id},
+            "columns":[{"id":"r_sec","name":"Section","formula":f"[{stage1_name}/Section]"},
+                       {"id":"r_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},
+                       {"id":"r_amt","name":"Amount","formula":f"[{stage1_name}/Amount]","format":cur}]}
+        pairs = sorted({(ln["of"], v["num"]) for ln in P["lines"] if ln["kind"] == "pct_of_total"
+                        for v in calc.month_views(periods)[n_act:]}, key=lambda t: (t[1], t[0]))
+        branches = ", ".join(
+            f'[{stage1_name}/Of Section] = "{of}" and [{stage1_name}/Month Num] = {num}, '
+            f'SumIf([{ref_name}/Amount], [{ref_name}/Section] = "{of}" and [{ref_name}/Month Num] = {num})'
+            for of, num in pairs)
+        final = {"id":ids["final"][0],"kind":"table","name":ids["final"][1],"source":{"kind":"table","elementId":stage1_id},
+            "columns":[{"id":"g_sec","name":"Section","formula":f"[{stage1_name}/Section]"},{"id":"g_so","name":"Section Order","formula":f"[{stage1_name}/Section Order]"},
+                {"id":"g_line","name":"Line Item","formula":f"[{stage1_name}/Line Item]"},{"id":"g_lo","name":"Line Order","formula":f"[{stage1_name}/Line Order]"},
+                {"id":"g_m","name":"Month","formula":f"[{stage1_name}/Month]"},{"id":"g_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},{"id":"g_me","name":"Month End","formula":f"[{stage1_name}/Month End]"},
+                {"id":"g_amt","name":"Amount","formula":f'If([{stage1_name}/Kind] = "pct", [{stage1_name}/Eff Rate] * If({branches}, 0), [{stage1_name}/Amount])',"format":cur},
+                {"id":"g_p","name":"Period","formula":f"[{stage1_name}/Period]" if workflows else '"Forecast"'}]}
+        forecast_stages = [forecast, forecastRef, final]
+    return forecast_stages
+def combined_element(eid, name, actuals_id, forecast_id, sec_cols, cur):
+    """Actual rows + forecast rows as one table (the P&L every KPI, chart and pivot reads)."""
+    U = "Union of 2 Sources"
+    def m(nm): return {"outputColumnName": nm, "sourceColumns": [f"[{nm}]", f"[{nm}]"]}
+    return {"id":eid,"kind":"table","name":name,
+        "source":{"kind":"union","sources":[{"kind":"table","elementId":actuals_id},{"kind":"table","elementId":forecast_id}],
+                  "matches":[m("Section"),m("Section Order"),m("Line Item"),m("Line Order"),m("Month"),m("Month Num"),m("Month End"),m("Amount"),m("Period")]},
+        "columns":[{"id":"c_sec","name":"Section","formula":f"[{U}/Section]"},{"id":"c_so","name":"Section Order","formula":f"[{U}/Section Order]"},
+            {"id":"c_line","name":"Line Item","formula":f"[{U}/Line Item]"},{"id":"c_lo","name":"Line Order","formula":f"[{U}/Line Order]"},
+            {"id":"c_m","name":"Month","formula":f"[{U}/Month]"},{"id":"c_mn","name":"Month Num","formula":f"[{U}/Month Num]"},{"id":"c_me","name":"Month End","formula":f"[{U}/Month End]"},
+            {"id":"c_amt","name":"Amount","formula":f"[{U}/Amount]","format":cur},{"id":"c_p","name":"Period","formula":f"[{U}/Period]"},
+            *[{"id":col_id,"name":col_name,"formula":f'If([{U}/Section] = {literal}, [{U}/Amount], 0)'}
+              for col_id, col_name, literal in sec_cols.values()]]}
+
+
+def version_stage_inputs(P, drivers, spreads):
+    """A saved version's inputs: its frozen driver values (one-row ``Version Pick``), scenario and start month."""
+    p, pick = "Forecast Spine", "Version Pick"
+    rates = [d for d in drivers if d.kind == "rate"]
+    manual = [d for d in drivers if d.kind == "manual"]
+    rate = (f"Switch([{p}/Line Item], " + ", ".join(f'"{d.line}", Max([{pick}/{d.name}])' for d in rates)
+            + f", [{p}/Default Rate])") if rates else f"[{p}/Default Rate]"
+    man = ("If(" + ", ".join(f'[{p}/Line Item] = "{d.line}" and [{p}/Month Num] = {d.month_num}, Max([{pick}/{d.name}])'
+                             for d in manual) + f", [{p}/Manual Value])") if manual else f"[{p}/Manual Value]"
+    return StageInputs(rate=rate, manual=man, scenario=f"Max([{pick}/Scenario])" if spreads else "",
+                       start_key=month_key(f"Max([{pick}/Forecast Start Month])"),
+                       source={"kind": "table", "elementId": "spineWrap"}, prefix=p)
+
+
+COMPARE_CONTROL = "CompareTo"
+
+
+def version_elements(P, drivers, actuals_base, *, spreads, cur, boundary, sec_cols):
+    """The saved-version rebuild: the frozen Versions rows, the picked one, its actuals window, its forecast
+    stages (forecast_stage_elements, fed the version's inputs) and its actual + forecast union, plus the
+    Compare to control. Nothing picked = the frozen version with the highest Log Order."""
+    V = demo_workflows.TABLES[demo_workflows.VERSIONS][0]
+    frozen_id, frozen_name = demo_workflows.INPUTS_FROZEN[0], demo_workflows.INPUTS_FROZEN[1]
+    base = [("Version", "ver"), ("Log Order", "seq"), ("Scenario", "scn"), ("Forecast Start Month", "start")]
+    def cols(prefix, tag):
+        return ([{"id": f"{tag}_{k}", "name": nm, "formula": f"[{prefix}/{nm}]"} for nm, k in base]
+                + [{"id": f"{tag}_{d.cid}", "name": d.name, "formula": f"[{prefix}/{d.name}]"} for d in drivers])
+    frozen = {"id": "frozenVersions", "kind": "table", "name": "Frozen Versions",
+              "source": {"kind": "table", "elementId": demo_workflows.VERSIONS},
+              "columns": cols(V, "fv") + [{"id": "fv_frz", "name": frozen_name, "formula": f"[{V}/{frozen_name}]"}],
+              "filters": [{"id": "fv_f", "columnId": "fv_frz", "kind": "list", "mode": "include",
+                           "values": [demo_workflows.FROZEN]}]}
+    # "Versions" also names the visible log view, so a cross-element reference goes through the unique
+    # "Frozen Versions"; the pick itself reads the Versions table directly (its own source).
+    latest = "Max([Frozen Versions/Log Order])"
+    latest_of = f"Max(If([Frozen Versions/Version] = [{COMPARE_CONTROL}], [Frozen Versions/Log Order]))"
+    pick = {"id": "versionPick", "kind": "table", "name": "Version Pick",
+            "source": {"kind": "table", "elementId": demo_workflows.VERSIONS},
+            "columns": cols(V, "vp") + [
+                {"id": "vp_pick", "name": "Picked",
+                 "formula": (f'If([{V}/{frozen_name}] = "{demo_workflows.FROZEN}", '
+                             f'If(IsNull([{COMPARE_CONTROL}]), If([Log Order] = {latest}, "Yes", "No"), '
+                             f'If([Version] = [{COMPARE_CONTROL}] and [Log Order] = {latest_of}, "Yes", "No")), "No")')}],
+            "filters": [{"id": "vp_f", "columnId": "vp_pick", "kind": "list", "mode": "include", "values": ["Yes"]}]}
+    actuals = {**copy.deepcopy(actuals_base), "id": "versionActuals", "name": "Version Actuals"}
+    stages = forecast_stage_elements(P, version_stage_inputs(P, drivers, spreads), editable=True, spreads=spreads,
+                                     cur=cur, workflows=True, actuals=actuals, boundary=boundary,
+                                     ids=VERSION_STAGE_IDS)
+    combined = combined_element("versionCombined", "Version Combined", "versionActuals", stages[-1]["id"],
+                                sec_cols, cur)
+    # exactly one picked row, else no version rows: nothing frozen yet, or two frozen rows tie (never blended)
+    combined["columns"].append({"id": "c_hasv", "name": "Has Version", "hidden": True,
+                                "formula": 'If(Count([Version Pick/Version]) = 1, "Yes", "No")'})
+    combined["filters"] = [{"id": "c_hasv_f", "columnId": "c_hasv", "kind": "list", "mode": "include",
+                            "values": ["Yes"]}]
+    control = {"id": "ctlCompareTo", "kind": "control", "controlId": COMPARE_CONTROL, "name": "Compare to",
+               "controlType": "list", "mode": "include", "selectionMode": "single", "values": [],
+               "source": {"kind": "source", "source": {"kind": "table", "elementId": "frozenVersions"},
+                          "columnId": "fv_ver"}}
+    return {"control": control, "elements": [frozen, pick, actuals, *stages, combined]}
 
 
 def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows=None, plan_src=None, history=None):
@@ -830,11 +1022,6 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
     # With workflows the workbook is a planning app (lib/forecast_app.py): a scenario switch whose
     # value the forecast reads directly (a control's controlId is a formula handle).
     spreads = scenario_spreads(P) if (workflows is not None and approved_inputs is None) else []
-    scenario_term = ""
-    if spreads:
-        scenario_prefix = "FJ" if editable else "Forecast Spine"
-        scenario_term = (f" + Switch([{forecast_app.SCENARIO_CONTROL}], "
-                         + ", ".join(f'"{name}", [{scenario_prefix}/{col}]' for name, col, _s in spreads) + ", 0)")
     def dm(elid): return {"kind": "data-model", "dataModelId": dm_id, "elementId": els[elid]}
     elements = []
     # actuals wrap (live)
@@ -850,11 +1037,7 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
     spine_names += [(f"sp{i}", col) for i, (_n, col, _s) in enumerate(spreads, 1)]
     spineWrap = {"id":"spineWrap","kind":"table","name":"Forecast Spine","source":dm("spine"),
         "columns":[{"id":f"s_{k}","name":nm,"formula":f"[{DMP}/{nm}]"} for k,nm in spine_names]}
-    # forecast element(s). Without percentage-of-total lines there is one "forecast" table;
-    # with them, "forecastCalc" computes every other line and "forecast" adds the lines
-    # that are a share of another section's forecast total (a second pass over per-month totals).
-    stage1_id, stage1_name = ("forecastCalc", "Forecast Base") if has_pct else ("forecast", "Forecast")
-    pct_branch = '[Kind] = "pct", 0, ' if has_pct else ""
+    # forecast element(s) (forecast_stage_elements). Without percentage-of-total lines there is one "forecast" table;
     if editable:
         # The planning app (workflows) labels the editable tables in sentence case; join keys and the
         # forecast formulas follow the names (a join column is referenced by its display name).
@@ -870,78 +1053,14 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
                        {"id":"MONTH_NUM","type":"number","name":"Month Num",**({"hidden":True} if app else {})},
                        {"id":"MONTH_END","type":"datetime","name":"Month End",**({"hidden":True} if app else {})},
                        {"id":"AMOUNT","type":"number","name":"Amount","format":cur}],"order":["LINE_ITEM","MONTH","AMOUNT"]}
-        forecast = {"id":stage1_id,"kind":"table","name":stage1_name,
-            "source":{"kind":"join","name":"FJ","primarySource":{"kind":"table","elementId":"spineWrap"},
-                "joins":[{"name":"Rates","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"rateInput"},"columns":[{"left":"[Line Item]","right":f"[{RL}]"}]},
-                         {"name":"Manual","joinType":"left-outer","left":{"kind":"table","elementId":"spineWrap"},"right":{"kind":"table","elementId":"manualInput"},"columns":[{"left":"[Line Item]","right":f"[{RL}]"},{"left":"[Month Num]","right":"[Month Num]"}]}]},
-            "columns":[{"id":"f_sec","name":"Section","formula":"[FJ/Section]"},{"id":"f_so","name":"Section Order","formula":"[FJ/Section Order]"},
-                {"id":"f_line","name":"Line Item","formula":"[FJ/Line Item]"},{"id":"f_lo","name":"Line Order","formula":"[FJ/Line Order]"},
-                {"id":"f_m","name":"Month","formula":"[FJ/Month]"},{"id":"f_mn","name":"Month Num","formula":"[FJ/Month Num]"},{"id":"f_me","name":"Month End","formula":"[FJ/Month End]"},
-                {"id":"f_n","name":"N","formula":"[FJ/N]"},{"id":"f_k","name":"Kind","formula":"[FJ/Kind]"},{"id":"f_jb","name":"June Base","formula":"[FJ/June Base]"},
-                *([{"id":"f_of","name":"Of Section","formula":"[FJ/Of Section]"}] if has_pct else []),
-                {"id":"f_er","name":"Eff Rate","formula":f"Coalesce([Rates/{RR}], [FJ/Default Rate])" + scenario_term},
-                *([{"id":"f_scn","name":"Active Scenario","formula":f'Coalesce([{forecast_app.SCENARIO_CONTROL}], "{P["scenarios"]["default"]}")'}] if spreads else []),
-                {"id":"f_em","name":"Eff Manual","formula":"Coalesce([Manual/Amount], [FJ/Manual Value])"},
-                {"id":"f_amt","name":"Amount","formula":'If([Kind] = "manual", [Eff Manual], [Kind] = "flat", [June Base], ' + pct_branch + '[June Base] * (1 + [Eff Rate]) ^ [N])',"format":cur},
-                {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
-    else:
-        forecast = {"id":stage1_id,"kind":"table","name":stage1_name,"source":{"kind":"table","elementId":"spineWrap"},
-            "columns":[{"id":"f_sec","name":"Section","formula":"[Forecast Spine/Section]"},{"id":"f_so","name":"Section Order","formula":"[Forecast Spine/Section Order]"},
-                {"id":"f_line","name":"Line Item","formula":"[Forecast Spine/Line Item]"},{"id":"f_lo","name":"Line Order","formula":"[Forecast Spine/Line Order]"},
-                {"id":"f_m","name":"Month","formula":"[Forecast Spine/Month]"},{"id":"f_mn","name":"Month Num","formula":"[Forecast Spine/Month Num]"},{"id":"f_me","name":"Month End","formula":"[Forecast Spine/Month End]"},
-                *([{"id":"f_k","name":"Kind","formula":"[Forecast Spine/Kind]"},{"id":"f_of","name":"Of Section","formula":"[Forecast Spine/Of Section]"},
-                   {"id":"f_er","name":"Eff Rate","formula":"[Forecast Spine/Default Rate]" + scenario_term}]
-                  if has_pct else []),
-                {"id":"f_amt","name":"Amount","formula":'If([Forecast Spine/Kind] = "manual", [Forecast Spine/Manual Value], [Forecast Spine/Kind] = "flat", [Forecast Spine/June Base], ' + ('[Forecast Spine/Kind] = "pct", 0, ' if has_pct else "") + '[Forecast Spine/June Base] * (1 + [Forecast Spine/Default Rate]) ^ [Forecast Spine/N])',"format":cur},
-                {"id":"f_p","name":"Period","formula":'"Forecast"'}]}
-    if workflows is not None and approved_inputs is None:
-        # The planning app: Roll forward moves the actual / forecast split (Parameters.Forecast Start Month).
-        ro = None if editable else [
-            {"id": "f_k", "name": "Kind", "formula": "[Forecast Spine/Kind]"},
-            {"id": "f_jb", "name": "June Base", "formula": "[Forecast Spine/June Base]"},
-            {"id": "f_er", "name": "Eff Rate", "formula": "[Forecast Spine/Default Rate]" + scenario_term},
-            *([{"id": "f_scn", "name": "Active Scenario",
-                "formula": f'Coalesce([{forecast_app.SCENARIO_CONTROL}], "{P["scenarios"]["default"]}")'}]
-              if spreads else []),
-            {"id": "f_em", "name": "Eff Manual", "formula": "[Forecast Spine/Manual Value]"}]
-        boundary = forecast_boundary(P)
-        apply_boundary(actuals, forecast, "FJ" if editable else "Forecast Spine", boundary, has_pct, ro)
-    forecast_stages = [forecast]
-    if has_pct:
-        # Second pass without a join: a join to a grouped table also matches that table's
-        # detail rows (a section with N lines matches N+1 times and multiplies every share
-        # line). "Forecast Base Ref" is a plain copy of the base rows; each share line sums
-        # the base section's amounts for its own month with SumIf, one branch per
-        # (base section, forecast month) pair.
-        ref_name = "Forecast Base Ref"
-        forecastRef = {"id":"forecastRef","kind":"table","name":ref_name,"source":{"kind":"table","elementId":stage1_id},
-            "columns":[{"id":"r_sec","name":"Section","formula":f"[{stage1_name}/Section]"},
-                       {"id":"r_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},
-                       {"id":"r_amt","name":"Amount","formula":f"[{stage1_name}/Amount]","format":cur}]}
-        pairs = sorted({(ln["of"], v["num"]) for ln in P["lines"] if ln["kind"] == "pct_of_total"
-                        for v in calc.month_views(periods)[n_act:]}, key=lambda t: (t[1], t[0]))
-        branches = ", ".join(
-            f'[{stage1_name}/Of Section] = "{of}" and [{stage1_name}/Month Num] = {num}, '
-            f'SumIf([{ref_name}/Amount], [{ref_name}/Section] = "{of}" and [{ref_name}/Month Num] = {num})'
-            for of, num in pairs)
-        final = {"id":"forecast","kind":"table","name":"Forecast","source":{"kind":"table","elementId":stage1_id},
-            "columns":[{"id":"g_sec","name":"Section","formula":f"[{stage1_name}/Section]"},{"id":"g_so","name":"Section Order","formula":f"[{stage1_name}/Section Order]"},
-                {"id":"g_line","name":"Line Item","formula":f"[{stage1_name}/Line Item]"},{"id":"g_lo","name":"Line Order","formula":f"[{stage1_name}/Line Order]"},
-                {"id":"g_m","name":"Month","formula":f"[{stage1_name}/Month]"},{"id":"g_mn","name":"Month Num","formula":f"[{stage1_name}/Month Num]"},{"id":"g_me","name":"Month End","formula":f"[{stage1_name}/Month End]"},
-                {"id":"g_amt","name":"Amount","formula":f'If([{stage1_name}/Kind] = "pct", [{stage1_name}/Eff Rate] * If({branches}, 0), [{stage1_name}/Amount])',"format":cur},
-                {"id":"g_p","name":"Period","formula":f"[{stage1_name}/Period]" if workflows is not None else '"Forecast"'}]}
-        forecast_stages = [forecast, forecastRef, final]
-        forecast = final
-    def m(nm): return {"outputColumnName": nm, "sourceColumns": [f"[{nm}]", f"[{nm}]"]}
-    pnlCombined = {"id":"pnlCombined","kind":"table","name":C,
-        "source":{"kind":"union","sources":[{"kind":"table","elementId":"actuals"},{"kind":"table","elementId":"forecast"}],
-                  "matches":[m("Section"),m("Section Order"),m("Line Item"),m("Line Order"),m("Month"),m("Month Num"),m("Month End"),m("Amount"),m("Period")]},
-        "columns":[{"id":"c_sec","name":"Section","formula":f"[{U}/Section]"},{"id":"c_so","name":"Section Order","formula":f"[{U}/Section Order]"},
-            {"id":"c_line","name":"Line Item","formula":f"[{U}/Line Item]"},{"id":"c_lo","name":"Line Order","formula":f"[{U}/Line Order]"},
-            {"id":"c_m","name":"Month","formula":f"[{U}/Month]"},{"id":"c_mn","name":"Month Num","formula":f"[{U}/Month Num]"},{"id":"c_me","name":"Month End","formula":f"[{U}/Month End]"},
-            {"id":"c_amt","name":"Amount","formula":f"[{U}/Amount]","format":cur},{"id":"c_p","name":"Period","formula":f"[{U}/Period]"},
-            *[{"id":col_id,"name":col_name,"formula":f'If([{U}/Section] = {literal}, [{U}/Amount], 0)'}
-              for col_id, col_name, literal in sec_cols.values()]]}
+    actuals_base = copy.deepcopy(actuals)   # the version rebuild windows its own copy
+    inputs = live_stage_inputs(P, editable, spreads, RL if editable else None, RR if editable else None)
+    boundary = forecast_boundary(P) if workflows is not None and approved_inputs is None else None
+    forecast_stages = forecast_stage_elements(P, inputs, editable=editable, spreads=spreads, cur=cur,
+                                              workflows=workflows is not None, actuals=actuals,
+                                              boundary=boundary)
+    forecast = forecast_stages[-1]
+    pnlCombined = combined_element("pnlCombined", C, "actuals", "forecast", sec_cols, cur)
     if approved_inputs is not None:
         approved_nodes = {node["id"]: node for node in approved_graph["elements"]}
         actuals, spineWrap, forecast, pnlCombined = (
@@ -1078,13 +1197,22 @@ def build_wb_spec(P, dm_id, els, *, approved_inputs=None, landed=None, workflows
         wf = demo_workflows.workflow_elements(
             workflows, conn, f"{P.get('fyLabel') or 'FY'} forecast", figures,
             scenario_control=forecast_app.SCENARIO_CONTROL if spreads else None, no_status="Draft",
-            start=forecast_app.START_MONTH if approved_inputs is None else demo_workflows.DEFAULT_START)
+            start=forecast_app.START_MONTH if approved_inputs is None else demo_workflows.DEFAULT_START,
+            drivers=demo_workflows.version_drivers(P) if editable and approved_inputs is None else None)
+        versions = (version_elements(P, demo_workflows.version_drivers(P), actuals_base, spreads=spreads, cur=cur,
+                                     boundary=boundary, sec_cols=sec_cols)
+                    if editable and approved_inputs is None and wf.get("tables")
+                    and any(t["id"] == demo_workflows.VERSIONS for t in wf["tables"]) else None)
         return app_spec(P, dm, els, wf=wf, rows=rows, kpi={"middle": middle, "bottom": bottom},
                         first_positive=first_positive, fy_nums=fy_nums, periods=periods, n_act=n_act,
-                        hidden=[actuals, spineWrap, *forecast_stages, pnlCombined], pivot=pivot, gl=glTable,
+                        hidden=[actuals, spineWrap, *forecast_stages, pnlCombined,
+                                *((versions or {}).get("elements") or [])], pivot=pivot, gl=glTable,
                         assump=assumpTable, rate=rateInput if editable else None,
                         manual=manualInput if editable else None, plan_src=plan_src, spreads=spreads,
-                        cur=cur, landed=landed, history=history)
+                        cur=cur, landed=landed, history=history,
+                        versions=({"control": versions["control"], "connection": conn,
+                                   "lines": [(ln["line"], ln["lineOrder"]) for ln in P["lines"]]}
+                                  if versions else None))
     main_els=[header]+([wf["tables"][0], wf["status"], *wf["buttons"]] if wf else [])+kpis+[trend]+source_charts+[pivot]
     detail_els=[glTable]
     input_els=[assumpTable]
@@ -1117,7 +1245,7 @@ def _app_titles(P):
 
 
 def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_act, hidden, pivot, gl, assump,
-             rate, manual, plan_src, spreads, cur, landed, history=None):
+             rate, manual, plan_src, spreads, cur, landed, history=None, versions=None):
     """The planning-app workbook (lib/forecast_app.py) for a forecast built with --workflows."""
     by_num = {p["num"]: p for p in periods}
     fy_label = re.sub(r"\s+total$", "", P.get("fyLabel") or "FY", flags=re.I)
@@ -1170,7 +1298,9 @@ def app_spec(P, dm, els, *, wf, rows, kpi, first_positive, fy_nums, periods, n_a
            "landed": landed is not None,
            "cost_lines": cost_lines(P),
            # migrated log rows per table (the setup program seeds them from the source's own logs)
-           "history": {el: len(rows) for el, _cols, rows in (history or []) if rows}}
+           "history": {el: len(rows) for el, _cols, rows in (history or []) if rows},
+           # the saved-version compare section (an editable planning app with Snapshot)
+           "versions": versions}
     app = forecast_app.build(ctx)
     return {"name": P["name"], "schemaVersion": 1, "kind": "workbook", "folderId": P["folderId"],
             "pages": app["pages"], "layout": app["layout"], "settings": app["settings"]}
